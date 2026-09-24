@@ -1076,6 +1076,11 @@ pub struct Renderer {
     pose_capacity: u64,
     stats: FrameStats,
     meshes: Vec<GpuMesh>,
+    /// Slots of meshes released, for the next ones uploaded.
+    free_meshes: Vec<u32>,
+    /// Texture assets' resident levels and what the frames need
+    /// ([`crate::streaming_textures`]).
+    streams: std::collections::HashMap<TextureHandle, crate::streaming_textures::TextureStream>,
     /// Live meshes by their key: the mesh each is drawn with, and the
     /// version last uploaded.
     live: std::collections::HashMap<u64, (MeshHandle, u64)>,
@@ -2951,6 +2956,8 @@ impl Renderer {
             pose_capacity,
             stats: FrameStats::default(),
             meshes: Vec::new(),
+            free_meshes: Vec::new(),
+            streams: std::collections::HashMap::new(),
             live: std::collections::HashMap::new(),
             targets: std::collections::HashMap::new(),
             textures: Vec::new(),
@@ -3135,10 +3142,52 @@ impl Renderer {
         indices: &[u32],
     ) -> MeshHandle {
         let mesh = self.gpu_mesh(gpu, vertices, indices, true);
-        self.meshes.push(mesh);
-        let handle = MeshHandle(self.meshes.len() as u32 - 1);
+        // A slot given back by `release_mesh` first.
+        let handle = match self.free_meshes.pop() {
+            Some(slot) => {
+                self.meshes[slot as usize] = mesh;
+                MeshHandle(slot)
+            }
+            None => {
+                self.meshes.push(mesh);
+                MeshHandle(self.meshes.len() as u32 - 1)
+            }
+        };
         self.make_lods(gpu, handle, vertices, indices);
         handle
+    }
+
+    /// Give back a mesh's GPU memory — its buffers, its coarser levels,
+    /// its rays' structure — once nothing draws it: what a streamed region
+    /// does when the camera leaves it (`runity::streaming`). The handle
+    /// then draws nothing, and its slot goes to the next mesh uploaded, so
+    /// nothing may still hold it.
+    pub fn release_mesh(&mut self, gpu: &Gpu, handle: MeshHandle) {
+        let slot = handle.0 as usize;
+        if handle.0 & LOD_HANDLE != 0 || slot >= self.meshes.len() || self.free_meshes.contains(&handle.0) {
+            return;
+        }
+        let blank = crate::asset::Vertex {
+            position: [0.0; 3],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0; 2],
+        };
+        self.meshes[slot] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false);
+        if let Some(levels) = self.lods.remove(&handle.0) {
+            for (level, _) in levels {
+                let at = (level.0 & !LOD_HANDLE) as usize;
+                if at < self.lod_meshes.len() {
+                    self.lod_meshes[at] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false);
+                }
+            }
+        }
+        self.looks.remove(&handle);
+        self.free_meshes.push(handle.0);
+    }
+
+    /// Meshes uploaded and not released.
+    pub fn mesh_count(&self) -> usize {
+        self.meshes.len() - self.free_meshes.len()
     }
 
     /// A mesh of enough triangles gets its coarser levels ([`crate::lod`]).
@@ -3257,6 +3306,10 @@ impl Renderer {
         let id = crate::asset::AssetId::from(&texture.id);
         let handle = self.upload_texture_levels(gpu, &levels, texture.srgb);
         self.by_asset.insert(id, handle);
+        self.streams.insert(
+            handle,
+            crate::streaming_textures::TextureStream::new(id, &levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>()),
+        );
         handle
     }
 
@@ -3369,9 +3422,17 @@ impl Renderer {
         levels: &[(u32, u32, &[u8])],
         srgb: bool,
     ) -> TextureHandle {
-        let Some(&(width, height, _)) = levels.first() else {
+        if levels.is_empty() {
             return TextureHandle::WHITE;
-        };
+        }
+        let view = self.texture_view(gpu, levels, srgb);
+        self.textures.push(GpuTexture { view });
+        TextureHandle(self.textures.len() as u32 - 1)
+    }
+
+    /// A texture of these levels, uploaded, as a view.
+    fn texture_view(&self, gpu: &Gpu, levels: &[(u32, u32, &[u8])], srgb: bool) -> wgpu::TextureView {
+        let (width, height) = levels.first().map_or((1, 1), |l| (l.0, l.1));
         let format = if srgb {
             wgpu::TextureFormat::Rgba8UnormSrgb
         } else {
@@ -3413,9 +3474,60 @@ impl Renderer {
                 },
             );
         }
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.textures.push(GpuTexture { view });
-        TextureHandle(self.textures.len() as u32 - 1)
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    /// Bring each texture asset's resident levels to what the last frame
+    /// needed (mip streaming): a texture seen large gets its finer levels
+    /// back, one seen small or not at all for a while gives them up.
+    /// `texture` finds an asset's picture — the library's — and at most
+    /// `most` textures are uploaded again a call. How many were.
+    pub fn stream_textures<'a>(
+        &mut self,
+        gpu: &Gpu,
+        texture: impl Fn(crate::asset::AssetId) -> Option<&'a ArchivedTextureAsset>,
+        most: usize,
+    ) -> usize {
+        let mut changes: Vec<(TextureHandle, u32)> = self
+            .streams
+            .iter()
+            .filter_map(|(handle, s)| {
+                let want = s.wanted();
+                (want != s.first).then_some((*handle, want))
+            })
+            .collect();
+        // Finer first: what is blurry on the screen now matters most.
+        changes.sort_by_key(|(h, want)| (*want as i64 - self.streams[h].first as i64, h.0));
+        let mut done = 0;
+        for (handle, want) in changes.into_iter().take(most) {
+            let Some(stream) = self.streams.get(&handle).copied() else { continue };
+            let Some(asset) = texture(stream.id) else { continue };
+            let mut levels: Vec<(u32, u32, &[u8])> = vec![(asset.width.to_native(), asset.height.to_native(), asset.pixels.as_slice())];
+            for mip in asset.mips.iter() {
+                levels.push((mip.width.to_native(), mip.height.to_native(), mip.pixels.as_slice()));
+            }
+            let first = (want as usize).min(levels.len().saturating_sub(1));
+            let view = self.texture_view(gpu, &levels[first..], asset.srgb);
+            self.textures[handle.0 as usize] = GpuTexture { view };
+            if let Some(s) = self.streams.get_mut(&handle) {
+                s.first = first as u32;
+            }
+            done += 1;
+        }
+        if done > 0 {
+            // Groups made with the old pictures point at nothing.
+            self.map_groups.clear();
+            if let Some(bindless) = &mut self.bindless {
+                bindless.invalidate();
+            }
+        }
+        done
+    }
+
+    /// Texture memory the streamed textures hold now, and would at every
+    /// level, bytes.
+    pub fn texture_residency(&self) -> (u64, u64) {
+        self.streams.values().fold((0, 0), |(now, full), s| (now + s.bytes_from(s.first), full + s.bytes_from(0)))
     }
 
     /// Upload a mesh that is already in memory rather than in an asset.
@@ -5006,14 +5118,22 @@ impl Renderer {
                 // also be reported as culled.
                 None => false,
             };
+            let covers = if Some(draw.mesh) == terrain_mesh {
+                // The ground fills the view and tiles its maps finely.
+                1.0
+            } else {
+                this.coverage(draw, eye, &frame.camera)
+            };
             Prepared {
                 raw,
                 maps,
                 skinned,
                 level,
                 visible,
+                covers,
             }
         });
+        let streaming_textures = !self.streams.is_empty() && probe.is_none() && view.is_some() && !self.picturing;
         let mut shadow_index = BatchIndex::default();
         let mut clip_index = BatchIndex::default();
         let mut colour_index = BatchIndex::default();
@@ -5024,7 +5144,18 @@ impl Renderer {
                 skinned,
                 level,
                 visible,
+                covers,
             } = prepared;
+            // What its maps are seen at, for mip streaming: its height on
+            // the screen in pixels, times how often it tiles them.
+            if streaming_textures && visible && level.is_some() {
+                let texels = covers * height as f32 * raw.uv[0].abs().max(raw.uv[1].abs()).max(1.0);
+                for handle in raw.maps {
+                    if let Some(stream) = self.streams.get_mut(&TextureHandle(handle)) {
+                        stream.see(texels);
+                    }
+                }
+            }
             // Bindless: the maps travel with the instance, and draws are not
             // split by them.
             let maps = self.batch_maps(maps);
@@ -5076,6 +5207,11 @@ impl Renderer {
                 singles.push((look, mesh, maps, pose, raw));
             } else {
                 colour_index.push(&mut batches, (Some(look), mesh, maps), raw);
+            }
+        }
+        if streaming_textures {
+            for stream in self.streams.values_mut() {
+                stream.end_frame();
             }
         }
         stats.batches = batches.len() as u32;
@@ -6010,6 +6146,21 @@ impl DrawLookup<'_> {
     /// Which level of its mesh a draw is drawn with, from how much of the
     /// screen it covers — `None` when it is too small to draw at all. A
     /// skinned mesh keeps its own: its joints are bound to its vertices.
+    /// How much of the screen's height a draw covers.
+    fn coverage(&self, draw: &Draw, eye: Vec3, camera: &Camera) -> f32 {
+        let Some(base) = self.meshes.get(draw.mesh.0 as usize) else {
+            return 0.0;
+        };
+        let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
+        let (scale, _, _) = draw.transform.to_scale_rotation_translation();
+        let centre = draw.transform.transform_point3((min + max) * 0.5);
+        let radius = ((max - min) * scale.abs()).length() * 0.5;
+        match camera.ortho {
+            Some(half) => radius / half.max(1e-3),
+            None => crate::lod::coverage(radius, centre.distance(eye), camera.fov_y_degrees),
+        }
+    }
+
     fn level_of(&self, draw: &Draw, eye: Vec3, camera: &Camera, skinned: bool) -> Option<MeshHandle> {
         let base = self.meshes.get(draw.mesh.0 as usize)?;
         let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
@@ -6045,6 +6196,8 @@ struct Prepared {
     skinned: bool,
     level: Option<MeshHandle>,
     visible: bool,
+    /// The share of the screen's height it covers.
+    covers: f32,
 }
 
 /// Where each batch of a list is, by its key: thousands of draws into

@@ -300,6 +300,7 @@ pub use runity_render::ray;
 pub use runity_render::reflections;
 pub mod refs;
 pub mod shot;
+pub mod streaming;
 #[cfg(feature = "net")]
 pub use runity_net::relay;
 pub use runity_render::render;
@@ -391,6 +392,7 @@ pub mod scene {
         kinds.extend(crate::body::part_kinds());
         kinds.extend(runity_geometry::line::part_kinds());
         kinds.extend(runity_core::wind::part_kinds());
+        kinds.extend(runity_core::stream::part_kinds());
         kinds.extend(crate::look::part_kinds());
         #[cfg(feature = "animation")]
         kinds.extend(crate::motion::part_kinds());

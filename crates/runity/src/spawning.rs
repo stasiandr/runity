@@ -28,6 +28,7 @@ pub fn dressers<'a>(
     #[cfg(feature = "routes")]
     out.push(Box::new(crate::routes::RouteDress));
     out.push(Box::new(crate::appearance::LookDress { resolve, palette }));
+    out.push(Box::new(crate::streaming::StreamDress));
     #[cfg(feature = "audio")]
     out.push(Box::new(crate::audio::SoundDress));
     out

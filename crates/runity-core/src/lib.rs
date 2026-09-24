@@ -42,6 +42,7 @@ pub mod save;
 pub mod scene;
 pub mod shape;
 pub mod spelling;
+pub mod stream;
 pub mod strings;
 pub mod time;
 pub mod timers;

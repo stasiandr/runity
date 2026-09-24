@@ -38,7 +38,13 @@ fn name_of(bytes: &[u8], _kind: AssetKind) -> Option<String> {
 
 /// One asset's bytes, plus where they came from.
 struct Entry {
-    bytes: Vec<u8>,
+    /// Read when first asked for in a library opened lazily
+    /// ([`Library::open_lazy`]), and given back by [`Library::release`].
+    bytes: std::sync::OnceLock<Vec<u8>>,
+    /// Whether the bytes can be read again from `path`: not for assets
+    /// handed in as bytes (the web's).
+    on_disk: bool,
+    id: AssetId,
     kind: AssetKind,
     path: PathBuf,
     /// When the file was last written, as of the last read.
@@ -128,6 +134,76 @@ impl Library {
         (library, problems)
     }
 
+    /// Every `.rasset` in a directory, but only their headers: an asset's
+    /// body is read the first time something asks for it, and can be given
+    /// back with [`Library::release`] once it is on the GPU — what streams
+    /// a world's meshes and pictures off disk as it needs them, rather
+    /// than holding every one in memory from the start. A body that turns
+    /// out corrupt reads as missing, where [`Library::open`] would have
+    /// named it at once.
+    pub fn open_lazy(directory: impl AsRef<Path>) -> Result<(Self, Vec<(PathBuf, AssetError)>), AssetError> {
+        let mut library = Self::new();
+        let mut problems = Vec::new();
+        for entry in std::fs::read_dir(directory.as_ref())? {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rasset") {
+                continue;
+            }
+            match asset::read_head(&path) {
+                Ok((kind, id, name)) => {
+                    let index = library.entries.len();
+                    library.entries.push(Entry {
+                        bytes: std::sync::OnceLock::new(),
+                        on_disk: true,
+                        id,
+                        kind,
+                        modified: modified_at(&path),
+                        path,
+                        name: name.clone(),
+                    });
+                    library.by_id.insert(id, index);
+                    library.by_name.entry(name).or_default().push(index);
+                }
+                Err(e) => problems.push((path, e)),
+            }
+        }
+        Ok((library, problems))
+    }
+
+    /// An entry's bytes, read off disk now if they are not yet.
+    fn loaded(entry: &Entry) -> Option<&[u8]> {
+        if let Some(bytes) = entry.bytes.get() {
+            return Some(bytes.as_slice());
+        }
+        let bytes = asset::read(&entry.path).ok()?;
+        // Sound before it is kept: every later look is a cast.
+        asset::kind_of(&bytes).ok().filter(|k| *k == entry.kind)?;
+        let _ = entry.bytes.set(bytes);
+        entry.bytes.get().map(Vec::as_slice)
+    }
+
+    /// Give back the bytes of every asset read from disk that `keep` does
+    /// not want — once its mesh or picture is on the GPU, a game does not
+    /// need it in memory too. Asked for again, it is read again. What was
+    /// freed, in bytes.
+    pub fn release(&mut self, keep: impl Fn(AssetId) -> bool) -> usize {
+        let mut freed = 0;
+        for entry in &mut self.entries {
+            if !entry.on_disk || keep(entry.id) {
+                continue;
+            }
+            if let Some(bytes) = entry.bytes.take() {
+                freed += bytes.len();
+            }
+        }
+        freed
+    }
+
+    /// Bytes of assets held in memory now.
+    pub fn resident_bytes(&self) -> usize {
+        self.entries.iter().filter_map(|e| e.bytes.get()).map(Vec::len).sum()
+    }
+
     /// Add one asset file.
     pub fn add(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
         let path = path.as_ref();
@@ -150,8 +226,11 @@ impl Library {
         let name = name_of(&bytes, kind).unwrap_or_default();
 
         let index = self.entries.len();
+        let on_disk = path.is_file();
         self.entries.push(Entry {
-            bytes,
+            bytes: std::sync::OnceLock::from(bytes),
+            on_disk,
+            id,
             kind,
             path,
             modified: None,
@@ -211,12 +290,12 @@ impl Library {
     /// its format from (`MeshLibrary::mesh`…).
     pub fn bytes_of(&self, id: AssetId, kind: AssetKind) -> Option<&[u8]> {
         let entry = self.entries.get(*self.by_id.get(&id)?)?;
-        (entry.kind == kind).then_some(entry.bytes.as_slice())
+        (entry.kind == kind).then(|| Self::loaded(entry)).flatten()
     }
 
     /// The archive of the one asset of this kind with this file stem.
     pub fn bytes_named(&self, name: &str, kind: AssetKind) -> Option<&[u8]> {
-        self.named(name, kind).map(|e| e.bytes.as_slice())
+        self.named(name, kind).and_then(Self::loaded)
     }
 
     /// An asset a link names, of this kind: by its ID when the library
@@ -268,7 +347,7 @@ impl Library {
         match named.as_slice() {
             [one] => {
                 let entry = &self.entries[*one];
-                Some((id_of(&entry.bytes, entry.kind)?, entry.name.as_str()))
+                Some((entry.id, entry.name.as_str()))
             }
             _ => None,
         }
@@ -281,8 +360,7 @@ impl Library {
     /// lookup instead.
     pub fn id_by_name(&self, name: &str) -> Option<AssetId> {
         let index = *self.by_name.get(name)?.first()?;
-        let entry = self.entries.get(index)?;
-        id_of(&entry.bytes, entry.kind)
+        Some(self.entries.get(index)?.id)
     }
 
     /// Every asset of one kind, by the name a scene would use.
@@ -336,7 +414,8 @@ impl Library {
             }
             self.by_id.insert(id, index);
 
-            self.entries[index].bytes = bytes;
+            self.entries[index].bytes = std::sync::OnceLock::from(bytes);
+            self.entries[index].id = id;
             self.entries[index].kind = kind;
             self.entries[index].modified = now;
             changed.push(Reloaded {

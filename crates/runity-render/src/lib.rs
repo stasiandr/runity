@@ -42,6 +42,7 @@ pub mod render;
 pub mod restir;
 pub mod rope;
 pub mod ssao;
+pub mod streaming_textures;
 pub mod taa;
 pub mod terrain;
 pub mod tour;
