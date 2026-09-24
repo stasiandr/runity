@@ -33,6 +33,7 @@ pub mod native_menu;
 pub mod preferences;
 mod screens;
 mod studio;
+mod table;
 pub mod theme;
 mod tools;
 pub mod window;

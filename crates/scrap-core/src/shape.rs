@@ -406,6 +406,16 @@ impl Shape {
                     }
                 }
             }
+            (Shape::Map(_, item), V::Map(map)) => {
+                for (key, v) in map.iter() {
+                    let key = match key {
+                        V::String(key) => format!("\"{key}\""),
+                        _ => "…".to_string(),
+                    };
+                    item.check(v, &format!("{at}[{key}]"), out);
+                }
+            }
+            (Shape::Map(_, _), _) => wrong(out, "a map {..}"),
             (Shape::Struct(fields), V::Unit) if fields.is_empty() => {}
             (Shape::Struct(_), V::Unit) => {}
             (Shape::Struct(_), _) => wrong(out, "(field: value, …)"),

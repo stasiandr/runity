@@ -356,6 +356,7 @@ pub use scrap_render::reflections;
 pub mod refs;
 pub mod shot;
 pub mod streaming;
+pub use scrap_core::records;
 pub use scrap_core::ron_edit;
 pub use scrap_core::ron_text;
 /// Saving a game in progress, as the core has it.

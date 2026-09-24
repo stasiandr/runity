@@ -327,6 +327,7 @@ pub struct Studio {
     screens: Screens,
     animator: Animator,
     dialogues: crate::dialogues::Dialogues,
+    table: crate::table::Table,
     /// The network inspector, the world diff, the saves, the systems.
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
@@ -681,6 +682,8 @@ impl Studio {
         roots.insert(Panel::Animator, animator.root);
         let dialogues = crate::dialogues::Dialogues::new(&mut ui, lower);
         roots.insert(Panel::Dialogues, dialogues.root);
+        let table = crate::table::Table::new(&mut ui, lower);
+        roots.insert(Panel::Table, table.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -739,6 +742,7 @@ impl Studio {
             screens,
             animator,
             dialogues,
+            table,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -1431,6 +1435,9 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Dialogues) {
                 self.dialogues.update(&mut self.ui, &self.session);
+            }
+            if self.docks.is_showing(Panel::Table) {
+                self.table.update(&mut self.ui, &self.session);
             }
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
@@ -3391,6 +3398,9 @@ impl Studio {
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.dialogues.owns(&self.ui, node) {
             self.dialogues
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.table.owns(&self.ui, node) {
+            self.table
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.screens.owns(&self.ui, node) {
             self.screens

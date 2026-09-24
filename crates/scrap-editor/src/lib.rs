@@ -37,6 +37,7 @@ pub mod pickers;
 pub mod prefs;
 mod scene_view;
 mod surface;
+pub mod table;
 mod thumbnail;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
@@ -88,6 +89,9 @@ pub struct Session {
     target: OffscreenTarget,
     world: hecs::World,
     history: scrap::edit::History,
+    /// Cells set in tuning files, oldest first: what
+    /// [`Session::undo_cell`] takes back (`table`).
+    cell_edits: Vec<table::CellEdit>,
     scene_path: Option<PathBuf>,
     /// The project the open scene is in. Where prefabs, materials and the
     /// library are is the project's to say, so the editor finds exactly what
@@ -327,6 +331,7 @@ impl Session {
             target,
             world: hecs::World::new(),
             history: scrap::edit::History::new(Scene::default(), 64),
+            cell_edits: Vec::new(),
             scene_path: None,
             project: None,
             library: None,

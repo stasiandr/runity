@@ -4350,3 +4350,38 @@ fn t_and_y_are_the_rect_and_transform_tools_as_in_unity() {
     click(&mut s, "tool Rect");
     assert_eq!(s.session.tool(), scrap::gizmo::Tool::Rect);
 }
+
+#[test]
+fn the_table_sets_a_cell_of_a_tuning_record_and_sorts_by_a_column() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("tuning/enemies.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let text = "{\n    \"goblin\": (hp: 10, speed: 2.5),\n    \"orc\": (hp: 30), // slow\n}\n";
+    std::fs::write(&file, text).unwrap();
+    click(&mut s, "tab table");
+    click(&mut s, "table source tuning/enemies.ron");
+    let cell = s.ui.find("table cell orc hp").unwrap();
+    assert_eq!(s.ui.text(cell), Some("30"));
+
+    click(&mut s, "table cell orc hp");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "35");
+    key(&mut s, Key::Enter);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        text.replace("hp: 30", "hp: 35"),
+        "that number, and nothing else"
+    );
+
+    // Largest first on the second click.
+    click(&mut s, "table column hp");
+    click(&mut s, "table column hp");
+    s.ui.paint();
+    let y = |s: &Studio, name: &str| s.ui.rect(s.ui.find(name).unwrap()).y;
+    assert!(y(&s, "table row orc") < y(&s, "table row goblin"));
+
+    click(&mut s, "table undo");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}

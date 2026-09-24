@@ -93,6 +93,13 @@ pub const TUNING: &str = "tuning";
 /// without linking the game.
 pub const SHAPES: &str = "library/components.ron";
 
+/// What the game reads each file of `tuning/` as, written beside
+/// [`SHAPES`] by the same call: the columns of the editor's Table and what
+/// `scrap check` holds the files to.
+pub const TUNING_SHAPES: &str = "library/tuning.ron";
+/// [`TUNING_SHAPES`]'s file name, beside [`SHAPES`].
+pub const TUNING_SHAPES_FILE: &str = "tuning.ron";
+
 /// Where a built game keeps its project data, beside the executable.
 pub const DATA: &str = "data";
 
@@ -841,6 +848,9 @@ fn write_shapes() {
 fn game_components() -> Components {
     let mut components = Components::new();
     components::register(&mut components);
+    // What tuning/ is read as: the editor's Table shows its columns and
+    // `scrap check` its misspelt fields.
+    components.register_tuning::<WorldNumbers>("world");
     components
 }
 

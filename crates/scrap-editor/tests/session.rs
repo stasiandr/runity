@@ -5578,3 +5578,173 @@ fn the_selection_is_outlined_round_its_shape_and_its_children_in_blue() {
         count(&session, blue)
     );
 }
+
+#[test]
+fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Enemy {
+        hp: u32,
+        #[serde(default)]
+        speed: f32,
+    }
+    let Some((mut session, path)) = open("table-tuning") else {
+        return;
+    };
+    let root = root_of(&path);
+    let file = root.join("tuning/enemies.ron");
+    let text = "// Who the player meets.\n{\n    \"goblin\": (hp: 10, speed: 2.5), // small\n    \"orc\": (hp: 30),\n}\n";
+    std::fs::write(&file, text).unwrap();
+    assert!(session
+        .table_sources()
+        .contains(&"tuning/enemies.ron".to_string()));
+
+    // Before the game says what it reads: the fields the records write.
+    let table = session.table("tuning/enemies.ron").unwrap();
+    let columns: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(columns, ["hp", "speed"]);
+    let rows: Vec<(&str, Vec<String>)> = table
+        .rows
+        .iter()
+        .map(|r| (r.key.as_str(), r.cells.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("goblin", vec!["10".to_string(), "2.5".to_string()]),
+            ("orc", vec!["30".to_string(), String::new()]),
+        ]
+    );
+
+    // One cell: that number changes, the comments and the rest stay.
+    session
+        .set_cell("tuning/enemies.ron", "orc", "hp", "35")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        text.replace("hp: 30", "hp: 35")
+    );
+    assert_eq!(
+        session.undo_cell_label().as_deref(),
+        Some("set enemies orc.hp")
+    );
+    session.undo_cell().unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+    // The game says what it reads them as: a typo and a wrong kind of
+    // value are refused, and the file is left as it was.
+    let mut components = scrap::Components::new();
+    components.register_tuning::<std::collections::BTreeMap<String, Enemy>>("enemies");
+    components
+        .write_shapes(root.join(scrap::project::SHAPES))
+        .unwrap();
+    let table = session.table("tuning/enemies").unwrap();
+    assert_eq!(table.columns[0].shape, "whole number");
+    let e = session
+        .set_cell("tuning/enemies.ron", "orc", "hpp", "1")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("did you mean `hp`?"), "{e}");
+    let e = session
+        .set_cell("tuning/enemies.ron", "orc", "hp", "\"lots\"")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("whole number"), "{e}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+    // A column for several rows at once, as one step back.
+    session
+        .set_cells(
+            "tuning/enemies.ron",
+            &["goblin".into(), "orc".into()],
+            "speed",
+            "3.0",
+        )
+        .unwrap();
+    let now = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        now.contains("\"goblin\": (hp: 10, speed: 3.0), // small"),
+        "{now}"
+    );
+    assert!(now.contains("\"orc\": (hp: 30, speed: 3.0)"), "{now}");
+    session.undo_cell().unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    assert_eq!(session.undo_cell().unwrap(), None);
+
+    // A record that does not fit says so on its row.
+    std::fs::write(&file, "{ \"orc\": (hp: 30, sped: 1.0) }").unwrap();
+    let table = session.table("tuning/enemies.ron").unwrap();
+    assert!(
+        table.rows[0].problems[0].contains("did you mean `speed`?"),
+        "{table:?}"
+    );
+}
+
+#[test]
+fn entities_with_a_component_are_a_table_of_its_fields() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Door {
+        open_angle: f32,
+        #[serde(default)]
+        locked: bool,
+    }
+    let Some((mut session, path)) = open("table-scene") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let lid = id(&session, "lid");
+    session
+        .set_component(crate_id, "door", Some("(open_angle: 1.0)"))
+        .unwrap();
+    session
+        .set_component(lid, "door", Some("(open_angle: 2.0, locked: true)"))
+        .unwrap();
+    assert!(session.table_sources().contains(&"c:door".to_string()));
+
+    let table = session.table("c:door").unwrap();
+    let columns: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(columns, ["name", "open_angle", "locked"], "from the text");
+    assert_eq!(table.rows.len(), 2);
+    assert_eq!(table.rows[0].cells, ["crate", "1.0", ""]);
+
+    let mut components = scrap::Components::new();
+    components.register::<Door>("door");
+    components
+        .write_shapes(root_of(&path).join(scrap::project::SHAPES))
+        .unwrap();
+    let steps = session.undo_steps().len();
+    session
+        .set_cell("c:door", &crate_id.to_string(), "open_angle", "90.0")
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(session.table("c:door").unwrap().rows[0].cells[1], "90.0");
+    let e = session
+        .set_cell("c:door", &crate_id.to_string(), "locked", "3")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("true or false"), "{e}");
+
+    // A column of both, one step; undo takes both back.
+    session
+        .set_cells(
+            "c:door",
+            &[crate_id.to_string(), lid.to_string()],
+            "locked",
+            "false",
+        )
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 2);
+    let table = session.table("c:door").unwrap();
+    assert_eq!(table.rows[1].cells[2], "false");
+    session.undo().unwrap();
+    let table = session.table("c:door").unwrap();
+    assert_eq!(table.rows[1].cells[2], "true");
+    assert_eq!(table.rows[0].cells[2], "", "left out again");
+
+    // The name is the entity's.
+    session
+        .set_cell("c:door", &crate_id.to_string(), "name", "gate")
+        .unwrap();
+    assert_eq!(session.entity_name(crate_id).as_deref(), Some("gate"));
+}

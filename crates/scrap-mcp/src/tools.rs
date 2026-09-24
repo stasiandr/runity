@@ -120,6 +120,9 @@ pub fn list() -> Vec<Value> {
             "erase": { "type": "boolean" },
             "seed": { "type": "integer" },
         }), &["what", "centre", "radius"]),
+        tool("table", "Many things of one kind as a table — what a designer balances in. `source` is a tuning file, tuning/enemies.ron (a map { \"goblin\": (hp: 10), … } is a row a record; a struct is one row), or a scene search like find's, c:enemy (a row an entity; with c:<component> the columns are its fields, else name, model, material, position…). Without `source`, lists the sources there are. Returns tab-separated rows under a header: key, label, then a cell per column as the file writes it (empty: left at its default), with problems on the lines after a record that does not fit the game's type.", json!({ "source": { "type": "string" } }), &[]),
+        tool("set_cell", "Set one cell of a table from RON text (35, 2.5, true, \"fast\") — only that field changes in the file; empty `value` takes the field out, back to its default. `row` is the key table shows (a record's name, an entity's id; empty for a tuning file that is one struct); `rows` for the same value in several at once. Scene cells are one undo step; a tuning file is written at once (the running game reloads it) and undo_cell takes it back. A value that does not fit what the game reads changes nothing and says why.", json!({ "source": { "type": "string" }, "row": { "type": "string" }, "rows": { "type": "array", "items": { "type": "string" } }, "column": { "type": "string" }, "value": { "type": "string" } }), &["source", "column", "value"]),
+        tool("undo_cell", "Take back the last cell set in a tuning file: the file as it was before. Refused when the file changed since.", json!({}), &[]),
         tool("fence", "Copies of a model along a line through points — a fence, a row of lamps, a colonnade — as one entity with a spline and a spacing. The copies are built from those two and rebuilt when either changes (set_field `spline` or `along`); the file keeps only the line. One undo step; returns the entity's id.", json!({
             "what": { "type": "string", "description": "a model; builtin:cylinder makes posts" },
             "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
@@ -339,6 +342,77 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .set_field(id, &field, &value)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{id} {field} = {value}"))])
+        }
+        "table" => {
+            let session = server.session()?;
+            let Some(source) = optional_string(args, "source")? else {
+                let sources = session.table_sources();
+                return Ok(vec![text(if sources.is_empty() {
+                    "no tables: no tuning/*.ron and no components in the scene".to_string()
+                } else {
+                    sources.join("\n")
+                })]);
+            };
+            let table = session.table(&source).map_err(|e| e.to_string())?;
+            let mut out = String::new();
+            for problem in &table.problems {
+                let _ = writeln!(out, "problem: {problem}");
+            }
+            let header: Vec<String> = table
+                .columns
+                .iter()
+                .map(|c| {
+                    if c.shape.is_empty() {
+                        c.name.clone()
+                    } else {
+                        format!("{} ({})", c.name, c.shape)
+                    }
+                })
+                .collect();
+            let _ = writeln!(out, "key\tlabel\t{}", header.join("\t"));
+            for row in &table.rows {
+                let _ = writeln!(out, "{}\t{}\t{}", row.key, row.label, row.cells.join("\t"));
+                for problem in &row.problems {
+                    let _ = writeln!(out, "  problem: {problem}");
+                }
+            }
+            if table.rows.is_empty() {
+                out.push_str("no rows\n");
+            }
+            Ok(vec![text(out.trim_end_matches('\n').to_string())])
+        }
+        "set_cell" => {
+            let (source, column, value) = (
+                string(args, "source")?,
+                string(args, "column")?,
+                string(args, "value")?,
+            );
+            let rows: Vec<String> = match args.get("rows").and_then(Value::as_array) {
+                Some(rows) => rows
+                    .iter()
+                    .map(|r| {
+                        r.as_str()
+                            .map(str::to_string)
+                            .ok_or("rows are strings".to_string())
+                    })
+                    .collect::<Result<_, _>>()?,
+                None => vec![optional_string(args, "row")?.unwrap_or_default()],
+            };
+            server
+                .session()?
+                .set_cells(&source, &rows, &column, &value)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "{} {column} = {value}",
+                rows.join(", ")
+            ))])
+        }
+        "undo_cell" => {
+            let undone = server.session()?.undo_cell().map_err(|e| e.to_string())?;
+            Ok(vec![text(match undone {
+                Some(what) => format!("undone: {what}"),
+                None => "no cell to take back".to_string(),
+            })])
         }
         "get_entity" => {
             let id = id(args, "id")?;
