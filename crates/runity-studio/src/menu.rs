@@ -72,7 +72,11 @@ pub enum Action {
     Hand,
     ToggleSpace,
     TogglePivot,
+    /// Play the game — its own code, in its own window — or stop it.
     Play,
+    /// Simulate the scene's physics right here in the view, without the
+    /// game's code: what falls, falls. Stop puts it all back.
+    Simulate,
     /// The Game view (`true`) or the Scene view.
     GameView(bool),
     Pause,
@@ -395,6 +399,8 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
             "Play",
             vec![
                 item("Play / Stop", Action::Play),
+                MenuItem::separator(),
+                item("Simulate Physics Here", Action::Simulate),
                 item("Pause", Action::Pause),
                 item("Step", Action::Step),
                 item("Keep Simulation Changes", Action::KeepSimulation),

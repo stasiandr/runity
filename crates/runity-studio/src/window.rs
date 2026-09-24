@@ -39,6 +39,8 @@ struct Running {
     /// once.
     last_key_text: Option<(String, Instant)>,
     last_commit: Option<(String, Instant)>,
+    /// The pointer is held for the game in the view, as it asked.
+    captured: bool,
 }
 
 /// A panel's own window: the same UI tree, drawn from the panel's frame.
@@ -219,7 +221,27 @@ impl ApplicationHandler<Chosen> for App {
             ime: false,
             last_key_text: None,
             last_commit: None,
+            captured: false,
         });
+    }
+
+    /// Raw motion, for the game in the view looking around while it holds
+    /// the pointer.
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        let Some(run) = self.running.as_mut() else {
+            return;
+        };
+        if let (true, winit::event::DeviceEvent::MouseMotion { delta }) = (run.captured, event) {
+            run.studio.handle(&InputEvent::MouseMotion {
+                dx: delta.0 as f32,
+                dy: delta.1 as f32,
+            });
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -281,6 +303,12 @@ impl ApplicationHandler<Chosen> for App {
                     crate::studio::Cursor::Brush => winit::window::CursorIcon::Crosshair,
                 };
                 run.window.set_cursor(cursor);
+                // The game in the view looks around with the pointer held.
+                let capture = run.studio.captures_cursor();
+                if capture != run.captured {
+                    set_captured(&run.window, capture);
+                    run.captured = capture;
+                }
                 // The input method only while typing, its candidates at
                 // the caret.
                 let typing = run.studio.typing();
@@ -352,6 +380,20 @@ impl ApplicationHandler<Chosen> for App {
             run.studio.handle(&input);
         }
     }
+}
+
+/// Hold the pointer in the window and hide it, or let it go: locked where
+/// the platform can, else confined.
+fn set_captured(window: &Window, on: bool) {
+    use winit::window::CursorGrabMode;
+    if on {
+        let _ = window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+    } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+    }
+    window.set_cursor_visible(!on);
 }
 
 /// Open a window for each panel the studio has floating, and close the

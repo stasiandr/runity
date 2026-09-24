@@ -3747,6 +3747,16 @@ fn the_inspector_knows_a_game_component_by_what_the_game_wrote_down() {
 }
 
 #[test]
+fn play_leaves_an_untouched_scene_as_it_is_on_disk() {
+    let Some((mut session, path)) = open("game-untouched") else {
+        return;
+    };
+    let before = std::fs::read(&path).unwrap();
+    session.game_command().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before, "not saved: nothing to save");
+}
+
+#[test]
 fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
     let Some((mut session, path)) = open("game-command") else {
         return;
@@ -4823,6 +4833,28 @@ fn assets_are_brought_up_to_date_beside_the_frame_not_in_it() {
     assert_eq!(done, 1, "the new material");
     assert!(!session.importing());
     assert!(session.palette().iter().any(|(name, _)| name == "slate"));
+}
+
+/// Another editor on the same project takes the port file away when it
+/// closes; the one still open puts its own back, so Blender finds it.
+#[test]
+fn the_link_puts_its_port_back_when_another_editor_took_it() {
+    let Some((mut session, path)) = open_with(
+        "blender-link-kept",
+        r#"(entities: [])"#,
+    ) else {
+        return;
+    };
+    session.poll_blender();
+    let port = session.blender_port().expect("listening");
+    let file = path.parent().unwrap().parent().unwrap().join("library/blender-link");
+    std::fs::remove_file(&file).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    session.poll_blender();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap().trim(),
+        port.to_string()
+    );
 }
 
 /// A saved `.blend` and an object being moved, sent by Blender itself over

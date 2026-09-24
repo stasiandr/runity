@@ -973,11 +973,6 @@ impl shell::Game for Game {
         for phase in [Phase::Update, Phase::LateUpdate, Phase::PostLateUpdate] {
             self.modules.run(phase, &mut self.world, delta, Some(&mut self.profile));
         }
-        // Cloth and ropes in the scene's wind: only a look, stepped by the
-        // frame.
-        let wind = self.live.scene().wind().unwrap_or_default();
-        runity::cloth::run_cloth(&mut self.world, delta, &wind);
-        runity::rope::run_ropes(&mut self.world, delta, &wind);
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)

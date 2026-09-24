@@ -27,6 +27,9 @@
 
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod embedded;
+
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -166,7 +169,14 @@ fn hot<R>(f: impl FnMut() -> R) -> R {
 /// returns at once and the game runs on `requestAnimationFrame` — and the
 /// device comes up asynchronously, so `Game::start` is called a moment
 /// later, when it has.
+///
+/// Started by the editor's Play (`RUNITY_EMBED` set) there is no window:
+/// the game draws into the editor's view instead ([`runity_core::embed`]).
 pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(address) = std::env::var(runity_core::embed::EMBED_VAR) {
+        return embedded::run(&address, config, game);
+    }
     // Told on the loop's thread at the next turn, not in the handler: the
     // handler runs wherever the patch arrived, mid-frame for all it knows.
     #[cfg(not(target_arch = "wasm32"))]

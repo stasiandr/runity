@@ -25,6 +25,7 @@ pub use web_time;
 #[doc(hidden)]
 pub mod defaults;
 pub mod edit;
+pub mod embed;
 pub mod id;
 pub mod input;
 pub mod jobs;

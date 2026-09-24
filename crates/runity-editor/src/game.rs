@@ -1,9 +1,9 @@
 //! The game, run from the editor, talking into the Console.
 //!
 //! Unity's Console shows what the game logs while it plays; here the game
-//! is its own process (DNA, open question 1: the viewport stays the
-//! editor's), so what it prints — and what cargo says building it, compile
-//! errors first — comes back line by line into [`Session::console`]. The
+//! is its own process — the editor does not link its code — so what it
+//! prints, and what cargo says building it (compile errors first), comes
+//! back line by line into [`Session::console`]. The
 //! window calls [`Session::scene_view`] every frame, which collects it; a
 //! tool without a window calls [`Session::poll_game`].
 //!
@@ -13,17 +13,21 @@
 //! patches itself from it, keeping its state, without anyone saving. What
 //! is on disk under `scenes/` changes only when the person saves.
 //!
+//! It draws in the editor's Game view rather than a window of its own
+//! ([`crate::embedded`]): its frames come over a local socket, and what the
+//! person does over the view goes back.
+//!
 //! And back: the game writes what its world is like to the file named in
 //! `RUNITY_STATE_FILE` a few times a second (`LiveScene::report`), and the
 //! Inspector shows it as `game.` fields beside the document's.
 //!
 //! **Several players** ([`Session::set_players`], Unity's Multiplayer Play
-//! Mode): Play opens a window per player on this machine, playing together
-//! (DNA, postulate 4). The first is the host — `cargo run`, as alone, with
+//! Mode): Play starts a game per player on this machine, playing together
+//! (DNA, postulate 4). The first is the host, in the Game view — `cargo run`, as alone, with
 //! `RUNITY_NET=host:…`; once it is up, the others start from the same
 //! build with `join:…`, so nothing is compiled twice and nobody knocks
-//! before the door is there. Each has its own window, laid out side by
-//! side, its own player folder (`.runity/players/N/`: its own prefs and
+//! before the door is there. Each of the others has its own window, laid
+//! out side by side, its own player folder (`.runity/players/N/`: its own prefs and
 //! saves), and its lines in the Console under its name. The others can be
 //! made to play over a bad link ([`Session::set_link`]) — the dacha
 //! simulator's Bad Link window. All of them watch
@@ -84,6 +88,8 @@ pub(crate) struct Running {
     guests: Vec<Running>,
     /// The players still to start, when the host is up.
     waiting: Option<Waiting>,
+    /// Drawing into the Game view rather than a window.
+    pub(crate) embed: Option<crate::embedded::Embedded>,
 }
 
 /// Players who start once the host is: from the build the host ran, each
@@ -122,6 +128,7 @@ impl Running {
             label: None,
             guests: Vec::new(),
             waiting: None,
+            embed: None,
         })
     }
 
@@ -333,9 +340,17 @@ impl Session {
     /// starting again stops the one running.
     pub fn start_game(&mut self) -> EditResult<()> {
         let mut command = self.game_command()?;
+        // The host plays in the Game view; the others, when several play,
+        // each in a window of its own.
+        let (embed, address) = crate::embedded::Embedded::listen()?;
+        command.env(runity::embed::EMBED_VAR, address);
         let count = self.players();
         if count == 1 {
-            return self.run_in_console(command);
+            self.run_in_console(command)?;
+            if let Some(host) = self.game.as_mut() {
+                host.embed = Some(embed);
+            }
+            return Ok(());
         }
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let root = project.root().to_path_buf();
@@ -398,6 +413,7 @@ impl Session {
             .collect();
         self.run_in_console(command)?;
         if let Some(host) = self.game.as_mut() {
+            host.embed = Some(embed);
             host.label = Some("player 1".into());
             host.waiting = Some(Waiting { root, players });
         }
@@ -432,6 +448,7 @@ impl Session {
     /// it is seen to have ended — its last lines are in by then.
     pub fn poll_game(&mut self) -> Option<i32> {
         self.mirror_to_game();
+        self.poll_embedded();
         let running = self.game.as_mut()?;
         let mut said = running.start_guests();
         let (entries, exited) = running.collect();
@@ -465,8 +482,11 @@ impl Session {
             self.say(level, text);
         }
         let status = exited?;
-        // The host gone is the game gone: the others go with it.
-        self.game = None;
+        // The host gone is the game gone: the others go with it, and a
+        // Game view it drew in goes back to the scene.
+        if self.game.take().is_some_and(|g| g.embed.is_some()) {
+            self.game_view = false;
+        }
         let code = status.code().unwrap_or(-1);
         if status.success() {
             self.say(Level::Info, "the game ended");
@@ -615,6 +635,12 @@ impl Session {
     /// Whether a game started from here is still running.
     pub fn game_running(&mut self) -> bool {
         self.poll_game();
+        self.game.is_some()
+    }
+
+    /// Whether a game started from here was running when last polled —
+    /// for what is drawn every frame, which polls anyway.
+    pub fn is_game_running(&self) -> bool {
         self.game.is_some()
     }
 

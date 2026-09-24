@@ -254,6 +254,8 @@ struct Stamp {
     tool: Tool,
     hand: bool,
     playing: bool,
+    /// The game started with Play: the button turns back when it ends.
+    game: bool,
     paused: bool,
     hidden: usize,
     isolated: usize,
@@ -274,6 +276,7 @@ impl Stamp {
             tool: session.tool(),
             hand: session.hand(),
             playing: session.is_playing(),
+            game: session.is_game_running(),
             paused: session.is_paused(),
             hidden: session.hidden().len(),
             isolated: session.isolated().len(),
@@ -434,6 +437,9 @@ pub struct Studio {
     /// Buttons that went down in the Scene view: their release goes there
     /// too, wherever the pointer is by then.
     scene_buttons: HashSet<MouseButton>,
+    /// Buttons pressed over the game in the view: their release is the
+    /// game's too, wherever the pointer is by then.
+    game_buttons: HashSet<MouseButton>,
     /// The session frame's size when the renderer was last shown it.
     registered: Option<(u32, u32)>,
     drawn: Instant,
@@ -774,6 +780,7 @@ impl Studio {
             navigation: false,
             seen: None,
             scene_buttons: HashSet::new(),
+            game_buttons: HashSet::new(),
             registered: None,
             drawn: Instant::now(),
             frame_times: Vec::new(),
@@ -816,6 +823,7 @@ impl Studio {
         self.last_input.elapsed().as_secs_f32() < 1.0
             || self.ui.is_dirty()
             || self.session.is_playing()
+            || self.session.is_game_running()
             || self.session.is_dragging()
             || self.stroke.is_some()
             || self.job.is_some()
@@ -848,6 +856,95 @@ impl Studio {
 
     /// What the pointer should look like where it is: an I-beam over a
     /// field, a resize arrow over a border between panels.
+    /// Whether the game in the view is being played: the Game view is up
+    /// and the game Play started draws in it.
+    fn game_in_view(&self) -> bool {
+        self.session.is_game_view() && self.session.is_game_in_view() && self.popup.is_none()
+    }
+
+    /// Whether the pointer is the game's: captured — hidden, held, only its
+    /// motion counting — as the game asked.
+    pub fn captures_cursor(&self) -> bool {
+        self.game_in_view() && self.session.game_captures_cursor()
+    }
+
+    /// Hand what falls on the game in the view to it, as its own window
+    /// would: the pointer over it, the buttons pressed on it, the keys
+    /// while the view has the keyboard — except the editor's shortcuts, so
+    /// Ctrl/Cmd P still stops. `true` when the event was the game's alone.
+    fn to_game(
+        &mut self,
+        event: &InputEvent,
+        over_view: bool,
+        typing: bool,
+        to_view: impl Fn(f32, f32) -> (f32, f32),
+    ) -> bool {
+        if !self.game_in_view() {
+            self.game_buttons.clear();
+            return false;
+        }
+        let focused = self.ui.focused() == Some(self.viewport);
+        let (_, ctrl, _, command) = self.ui.modifiers();
+        let shortcut = if cfg!(target_os = "macos") { command } else { ctrl };
+        let modifier = |key: &Key| {
+            matches!(
+                key,
+                Key::LeftShift
+                    | Key::RightShift
+                    | Key::LeftControl
+                    | Key::RightControl
+                    | Key::LeftAlt
+                    | Key::RightAlt
+                    | Key::LeftSuper
+                    | Key::RightSuper
+            )
+        };
+        match event {
+            InputEvent::MouseMoved { x, y } => {
+                let (x, y) = to_view(*x, *y);
+                self.session.send_to_game(InputEvent::MouseMoved { x, y });
+                false
+            }
+            InputEvent::MouseMotion { .. } => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::MouseDown(button) if over_view => {
+                self.game_buttons.insert(*button);
+                self.ui.focus(Some(self.viewport));
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::MouseUp(button) if self.game_buttons.remove(button) => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::Scroll { .. } if over_view => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::KeyDown(key) if focused && !typing && (modifier(key) || !shortcut) => {
+                self.session.send_to_game(event.clone());
+                !modifier(key)
+            }
+            // Every release: a key held into the game comes up in it.
+            InputEvent::KeyUp(_) => {
+                self.session.send_to_game(event.clone());
+                false
+            }
+            InputEvent::Text(_) if focused && !typing && !shortcut => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::FocusLost => {
+                self.game_buttons.clear();
+                self.session.send_to_game(event.clone());
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn cursor(&self) -> Cursor {
         let node = self.ui.dragging().or(self.ui.hovered());
         match node {
@@ -993,6 +1090,9 @@ impl Studio {
                 .hovered()
                 .is_some_and(|h| self.bottom.owns_project(&self.ui, h));
             self.bottom.set_active(on);
+        }
+        if self.to_game(event, over_view, typing, to_view) {
+            return;
         }
         match event {
             InputEvent::MouseMoved { x, y } => {
@@ -2957,7 +3057,7 @@ impl Studio {
             if local { "Local" } else { "Global" },
         );
         set_word_toggle(ui, self.grid_button, s.show_grid());
-        let playing = s.is_playing();
+        let playing = s.is_playing() || s.is_game_running();
         set_icon_button(
             ui,
             t.play,
@@ -3043,14 +3143,15 @@ impl Studio {
             st.text_color(if e > 0 { ERROR } else { WARNING })
         });
         let mode = match (s.is_playing(), s.is_paused()) {
-            (true, true) => "paused",
-            (true, false) => "playing",
+            (true, true) => "simulation paused",
+            (true, false) => "simulating",
+            _ if s.is_game_running() => "playing",
             _ if s.is_prefab() => "prefab mode",
             _ => "editing",
         };
         ui.set_text(self.status.mode, mode);
         ui.restyle(self.status.mode, |st| {
-            st.text_color(if s.is_playing() { ACCENT } else { MUTED })
+            st.text_color(if s.is_playing() || s.is_game_running() { ACCENT } else { MUTED })
         });
         self.update_status_line();
     }
@@ -3999,8 +4100,33 @@ impl Studio {
                     s.set_pivot(next);
                 }
                 Action::Play => {
-                    // Play looks through the game's eyes, as Unity's Play
-                    // brings up the Game view; stop goes back.
+                    // Play is the game: its own code, input and camera, its
+                    // own process, drawing in the Game view. Pressed while
+                    // something plays — the game, or the physics simulated
+                    // here — it stops that.
+                    if s.is_playing() {
+                        s.stop();
+                        s.set_game_view(false);
+                    } else if s.is_game_running() {
+                        s.stop_game();
+                        s.set_game_view(false);
+                        s.say(Level::Info, "stopped the game");
+                    } else {
+                        if self.bottom.clear_on_play {
+                            s.clear_console();
+                        }
+                        s.start_game().map_err(|err| {
+                            format!("{err} — Play → Simulate Physics Here runs the scene's physics in the view instead")
+                        })?;
+                        // It builds, then draws here; the Game view shows
+                        // the scene through its camera until it does.
+                        s.set_game_view(true);
+                        self.ui.focus(Some(self.viewport));
+                    }
+                }
+                Action::Simulate => {
+                    // The simulation looks through the game's eyes, as
+                    // Unity's Play brings up the Game view; stop goes back.
                     if s.is_playing() {
                         s.stop();
                         s.set_game_view(false);
@@ -4015,6 +4141,9 @@ impl Studio {
                 Action::GameView(game) => s.set_game_view(game),
                 Action::Pause => {
                     if !s.is_playing() {
+                        if self.bottom.clear_on_play {
+                            s.clear_console();
+                        }
                         s.play();
                     }
                     let now = s.is_paused();
@@ -4128,12 +4257,17 @@ impl Studio {
                 Action::InstallBlenderPlugin => {
                     let blender = runity_import::blend::blender()
                         .ok_or("Blender was not found: install it, or set RUNITY_BLENDER to it")?;
+                    if runity_import::blend::blender_open() {
+                        return Err(
+                            "Blender is open: quit it and install again. Blender saves its preferences when it quits, over the ones that turn the plugin on".into(),
+                        );
+                    }
                     let folder =
                         runity_import::blend::install(&blender).map_err(|e| format!("{e:#}"))?;
                     s.say(
                         Level::Info,
                         format!(
-                            "the runity plugin is in Blender and on ({}); a Blender already open picks it up when restarted",
+                            "the runity plugin is in Blender and on ({}): open Blender, the runity tab is in the 3D view's sidebar (N)",
                             folder.display()
                         ),
                     );
@@ -5013,9 +5147,9 @@ fn tooltip(name: &str) -> Option<&'static str> {
 
         "grid" => "Show the grid",
         "status console" => "The Console's newest line: click to show the Console",
-        "play" => "Play / Stop",
-        "pause" => "Pause",
-        "step" => "One step",
+        "play" => "Play the game in the Game view / Stop",
+        "pause" => "Simulate physics here, paused",
+        "step" => "One step of physics simulated here",
         "undo" => "Undo",
         "redo" => "Redo",
         "save" => "Save the scene",

@@ -24,6 +24,7 @@ mod animation;
 mod blender_link;
 mod blockout;
 pub mod console;
+mod embedded;
 mod error;
 mod game;
 pub use game::MAX_PLAYERS;
@@ -2066,10 +2067,10 @@ impl Session {
     /// Play with the game's own code: save the open scene and give the
     /// command that runs the game on it (`cargo run` in the project, the
     /// scene named by `RUNITY_SCENE`, the file it watches by
-    /// `RUNITY_SCENE_FILE`) for the window to start. The game
-    /// opens its own window — the viewport stays the editor's, DNA open
-    /// question 1 untouched — and keeps up with the scene as it is edited
-    /// and saved, as every running game does. The editor's own
+    /// `RUNITY_SCENE_FILE`) for the window to start. Run alone the game
+    /// opens its own window; [`Session::start_game`] has it draw into the
+    /// Game view instead. Either way it keeps up with the scene as it is
+    /// edited and saved, as every running game does. The editor's own
     /// [`Session::play`] simulates physics in place without the game.
     pub fn game_command(&mut self) -> EditResult<std::process::Command> {
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
@@ -2080,12 +2081,19 @@ impl Session {
             )));
         }
         let path = self.scene_path.clone().ok_or(EditError::NoPath)?;
-        if !path.starts_with(project.scenes()) || is_prefab(Some(&path)) {
+        // Whatever way each was named — `studio scenes/main.ron` opens a
+        // relative path, the project's root is absolute.
+        let absolute = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if !absolute(&path).starts_with(absolute(&project.scenes())) || is_prefab(Some(&path)) {
             return Err(EditError::Scene(
                 "the game plays scenes from scenes/; open one to play it".into(),
             ));
         }
-        self.save_scene(None)?;
+        // Saved when there is something to save: an untouched scene is
+        // left as it is on disk, byte for byte.
+        if self.is_modified() {
+            self.save_scene(None)?;
+        }
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -2966,7 +2974,8 @@ impl Session {
             self.blender = blender_link::Link::start(project).ok();
             self.write_blender_hints();
         }
-        let Some(link) = &self.blender else { return 0 };
+        let Some(link) = &mut self.blender else { return 0 };
+        link.keep_port();
         let messages = link.drain();
         let count = messages.len();
         // In the order they came: a drag after a save moves what the save
@@ -3177,6 +3186,10 @@ impl Session {
 
     /// Draw one frame into the session's image.
     pub fn render(&mut self) {
+        // The game Play started draws the Game view itself.
+        if self.show_game_frame() {
+            return;
+        }
         // The project's material shaders, as they are saved.
         if self.shaders.is_none() {
             self.shaders = self.project().map(|p| {
