@@ -312,7 +312,8 @@ impl EntityDesc {
 ///
 /// Fresh random IDs, for things being created: an added or duplicated
 /// entity is a new thing and gets a new identity.
-pub(crate) fn assign_ids(
+#[doc(hidden)]
+pub fn assign_ids(
     entities: &mut [EntityDesc],
     seen: &mut std::collections::HashSet<EntityId>,
 ) -> usize {
@@ -329,7 +330,8 @@ pub(crate) fn assign_ids(
 /// Inserting a sibling above it does not change it; renaming it does. It is
 /// a stopgap until the file is saved and the ID written down, not a second
 /// kind of identity: a repeated ID is still re-minted at random.
-pub(crate) fn derive_ids(
+#[doc(hidden)]
+pub fn derive_ids(
     entities: &mut [EntityDesc],
     seen: &mut std::collections::HashSet<EntityId>,
 ) -> usize {

@@ -18,6 +18,7 @@
 pub use glam;
 pub use hecs;
 pub use ron;
+pub use runity_core::impl_parts;
 
 pub mod actions;
 pub mod animation;
@@ -25,7 +26,7 @@ pub mod appearance;
 pub mod animator;
 pub mod animgraph;
 /// The asset archive as the core has it: its header, its ID.
-pub mod asset_core;
+pub use runity_core::asset as asset_core;
 pub mod mesh_asset;
 mod asset_tests;
 
@@ -44,13 +45,13 @@ pub mod audio;
 pub mod bench;
 pub mod builtin;
 pub mod clouds;
-pub mod components;
-pub mod crash;
+pub use runity_core::components;
+pub use runity_core::crash;
 pub mod decals;
 pub mod dialogue;
 #[cfg(feature = "discord")]
 pub mod discord;
-pub mod edit;
+pub use runity_core::edit;
 pub mod exposure;
 pub mod floaters;
 pub mod foliage;
@@ -58,32 +59,32 @@ pub mod footprints;
 pub mod gizmo;
 pub mod gpu;
 pub mod graph_text;
-pub mod id;
-pub mod input;
+pub use runity_core::id;
+pub use runity_core::input;
 pub mod lan;
-pub mod layers;
+pub use runity_core::layers;
 pub mod lens;
-pub mod library;
-pub mod links;
+pub use runity_core::library;
+pub use runity_core::links;
 pub mod lights;
 pub mod live;
 pub mod material;
-pub mod merge;
+pub use runity_core::merge;
 pub mod moods;
 pub mod motion;
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;
 pub mod particles;
-pub mod parts;
+pub use runity_core::parts;
 pub mod party;
-pub mod perf;
+pub use runity_core::perf;
 #[cfg(feature = "physics")]
 pub mod physics;
-pub mod player_prefs;
+pub use runity_core::player_prefs;
 pub mod post;
-pub mod prefab;
-pub mod project;
+pub use runity_core::prefab;
+pub use runity_core::project;
 pub mod query;
 pub mod ray;
 pub mod reflections;
@@ -92,11 +93,11 @@ pub mod relay;
 pub mod render;
 #[cfg(feature = "reports")]
 pub mod reports;
-pub mod ron_edit;
-mod ron_text;
+pub use runity_core::ron_edit;
+pub use runity_core::ron_text;
 pub mod routes;
 /// Saving a game in progress, as the core has it.
-pub mod save_core;
+pub use runity_core::save as save_core;
 
 /// Saving a game in progress, and the report a running game sends the
 /// editor: the core's save with what the modules add to it.
@@ -117,9 +118,9 @@ pub mod save {
 }
 /// The scene file as the core has it: a line's identity, place and tree,
 /// its modules' fields as parts (docs/modules.md).
-pub mod scene_core;
+pub use runity_core::scene as scene_core;
 pub mod body;
-pub mod defaults;
+pub use runity_core::defaults;
 pub mod look;
 pub mod sound;
 pub mod spline;
@@ -166,32 +167,34 @@ pub mod prelude {
     pub use crate::spline::SplineLine;
 }
 pub mod screen;
-pub mod shape;
+pub use runity_core::shape;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
-pub mod spelling;
+pub use runity_core::spelling;
 pub mod ssao;
 #[cfg(feature = "steam")]
 pub mod steam;
-pub mod strings;
+pub use runity_core::strings;
 pub mod surface;
 pub mod taa;
 pub mod terrain;
-pub mod time;
-pub mod timers;
+pub use runity_core::time;
+pub use runity_core::timers;
 pub mod tour;
-pub mod tuned;
+pub use runity_core::tuned;
 pub mod ui;
 pub mod ui_render;
 pub mod volume;
 pub mod weather;
 pub mod widgets;
 /// The world as the core has it: hierarchy, identity, spawning.
-pub mod world_core;
+pub use runity_core::world as world_core;
 pub mod world_look;
 pub mod bodies;
 pub mod spawning;
 mod world_tests;
+#[cfg(test)]
+mod core_tests;
 
 /// A world of entities: the core's hierarchy and spawning, and every
 /// module's components of it, under one name as before they were cut

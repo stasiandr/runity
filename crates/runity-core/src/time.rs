@@ -136,7 +136,7 @@ impl Time {
     /// cannot take the number and then forget to run them:
     ///
     /// ```
-    /// # let mut time = runity::Time::default();
+    /// # let mut time = runity_core::Time::default();
     /// # time.advance(0.05);
     /// while time.next_step().is_some() {
     ///     // step the world by `time.settings().fixed_delta`

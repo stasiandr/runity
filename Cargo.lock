@@ -3046,6 +3046,7 @@ dependencies = [
  "rapier3d",
  "rkyv",
  "ron",
+ "runity-core",
  "serde",
  "serde_json",
  "sha2",
@@ -3066,6 +3067,19 @@ dependencies = [
  "runity",
  "runity-import",
  "serde",
+]
+
+[[package]]
+name = "runity-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam 0.32.1",
+ "hecs",
+ "rkyv",
+ "ron",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

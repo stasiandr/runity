@@ -2534,12 +2534,26 @@ dependencies = [
  "rapier3d",
  "rkyv",
  "ron",
+ "runity-core",
  "serde",
  "steamworks",
  "subsecond",
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "runity-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam 0.32.1",
+ "hecs",
+ "rkyv",
+ "ron",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

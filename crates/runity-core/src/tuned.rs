@@ -15,7 +15,7 @@
 //! # let dir = std::env::temp_dir().join("runity-tuned-doc");
 //! # std::fs::create_dir_all(&dir).unwrap();
 //! # std::fs::write(dir.join("player.ron"), "(jump: 1.2, speed: 4.0)").unwrap();
-//! let mut player = runity::Tuned::<Player>::load(dir.join("player.ron")).unwrap();
+//! let mut player = runity_core::Tuned::<Player>::load(dir.join("player.ron")).unwrap();
 //! let height = player.jump; // it derefs to the values
 //! # assert_eq!(height, 1.2);
 //! ```

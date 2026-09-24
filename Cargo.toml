@@ -12,6 +12,7 @@
 resolver = "2"
 members = [
     "crates/runity",
+    "crates/runity-core",
     "crates/runity-cli",
     "crates/runity-editor",
     "crates/runity-import",

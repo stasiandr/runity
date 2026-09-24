@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+runity-core = { path = "../runity-core" }
 anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
