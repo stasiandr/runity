@@ -1217,12 +1217,13 @@ impl Session {
     /// the same conflicts `scrap merge` reported — with the values, so each
     /// can be shown and settled here instead of in a text editor.
     pub fn merge_conflicts(&mut self) -> EditResult<Vec<scrap::merge::Conflict>> {
-        let stages = (
-            self.scene_at(":1"),
-            self.scene_at(":2"),
-            self.scene_at(":3"),
-        );
-        let (Ok(base), Ok(ours), Ok(theirs)) = stages else {
+        // One stage at a time: with no merge the first is missing, and
+        // each asked is a `git` run.
+        let stages = self.scene_at(":1").and_then(|base| {
+            let ours = self.scene_at(":2")?;
+            Ok((base, ours, self.scene_at(":3")?))
+        });
+        let Ok((base, ours, theirs)) = stages else {
             self.merge = None;
             return Ok(Vec::new());
         };
