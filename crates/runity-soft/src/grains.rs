@@ -66,7 +66,7 @@ pub const MOST: usize = 30_000;
 pub struct GrainsState {
     pub grains: Grains,
     particles: Particles,
-    grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>>,
+    grid: runity_core::hash::FastMap<(i32, i32, i32), Vec<u32>>,
     placed: bool,
     owed: f32,
 }

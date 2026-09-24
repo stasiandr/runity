@@ -24,6 +24,22 @@
 //! ```text
 //! dx serve --hotpatch     # rebuilds and patches while the window stays open
 //! ```
+//!
+//! With a render thread (on by default where there are threads), a frame
+//! is drawn on a thread of its own while the main one runs the next
+//! frame's fixed steps:
+//!
+//! ```text
+//! main:    … frame N ─┬─ tick, steps for N+1 ──┬─ frame N+1 ─┬─ …
+//! render:             └─ draw N, present N ────┘             └─ …
+//! ```
+//!
+//! What a step sees is what had arrived by the last frame — a step's input
+//! is a frame older than without it — and a step is handed no renderer
+//! ([`StepContext`]): what is reproducible does not touch the GPU. `frame`
+//! has the renderer to itself, as before: the thread that drew is done by
+//! then. On the web, or with `render_thread: false`, the same turns run
+//! one after the other.
 
 use std::sync::Arc;
 
@@ -46,6 +62,10 @@ pub struct WindowConfig {
     pub width: u32,
     pub height: u32,
     pub time: TimeSettings,
+    /// Draw each frame on a thread of its own, beside the next frame's
+    /// steps (see the module). On by default; `RUNITY_RENDER_THREAD=0`
+    /// turns it off, as does a target with no threads.
+    pub render_thread: bool,
 }
 
 impl Default for WindowConfig {
@@ -55,6 +75,8 @@ impl Default for WindowConfig {
             width: 1280,
             height: 720,
             time: TimeSettings::default(),
+            render_thread: cfg!(not(target_arch = "wasm32"))
+                && std::env::var("RUNITY_RENDER_THREAD").map_or(true, |v| v != "0"),
         }
     }
 }
@@ -83,7 +105,28 @@ pub struct Context<'a> {
     /// The drawable size in physical pixels, which is not the window's size
     /// on a HiDPI display.
     pub size: (u32, u32),
+    /// What the loop itself spent, on the CPU: the steps, the frame, the
+    /// drawing and the wait for the screen — beside the game's own
+    /// profiler, for F3.
+    pub loop_times: &'a runity_core::perf::Profiler,
     quit: bool,
+}
+
+/// What a fixed step is handed: the clock and the input, no renderer — a
+/// step is what has to be reproducible, and with a render thread it runs
+/// while the last frame is drawn.
+pub struct StepContext<'a> {
+    pub time: &'a Time,
+    pub input: &'a Input,
+    pub size: (u32, u32),
+    quit: bool,
+}
+
+impl StepContext<'_> {
+    /// Ask the loop to stop after this frame.
+    pub fn quit(&mut self) {
+        self.quit = true;
+    }
 }
 
 impl Context<'_> {
@@ -104,7 +147,7 @@ pub trait Game {
 
     /// Once per fixed simulation step, possibly several times per frame, and
     /// possibly not at all. Everything that has to be reproducible goes here.
-    fn step(&mut self, _ctx: &mut Context) {}
+    fn step(&mut self, _ctx: &mut StepContext) {}
 
     /// Once per frame. Camera and animation belong here, where the delta is
     /// the real one and motion stays smooth.
@@ -136,6 +179,7 @@ static PATCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 
 /// Open a window and run until the game or the user says otherwise.
 pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<()> {
+    let render_thread = config.render_thread;
     // Told on the loop's thread at the next turn, not in the handler: the
     // handler runs wherever the patch arrived, mid-frame for all it knows.
     subsecond::register_handler(Arc::new(|| {
@@ -152,6 +196,11 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         state: None,
         time,
         input: Input::new(),
+        render_thread,
+        stepped_ahead: false,
+        last_steps: std::time::Duration::ZERO,
+        loop_times: runity_core::perf::Profiler::new(600),
+        say_times: std::env::var_os("RUNITY_LOOP_TIMES").map(|_| std::time::Instant::now()),
         pads: match gilrs::Gilrs::new() {
             Ok(pads) => Some(pads),
             Err(e) => {
@@ -179,13 +228,28 @@ struct Shell<G: Game> {
     state: Option<Running>,
     time: Time,
     input: Input,
+    render_thread: bool,
+    /// The next frame's steps were run while the last one was drawn.
+    stepped_ahead: bool,
+    /// What the last frame's steps took: a thread for the drawing costs
+    /// a tenth of a millisecond, so steps cheaper than that do not get one.
+    last_steps: std::time::Duration,
+    loop_times: runity_core::perf::Profiler,
+    /// `RUNITY_LOOP_TIMES`: the loop's times to stderr every few seconds,
+    /// and when it last said them.
+    say_times: Option<std::time::Instant>,
     /// Gamepads. `None` where the platform has no way to ask — the game
     /// still runs, on keyboard and mouse.
     pads: Option<gilrs::Gilrs>,
 }
 
 impl<G: Game> Shell<G> {
-    fn context<'a>(state: &'a mut Running, time: &'a Time, input: &'a Input) -> Context<'a> {
+    fn context<'a>(
+        state: &'a mut Running,
+        time: &'a Time,
+        input: &'a Input,
+        loop_times: &'a runity_core::perf::Profiler,
+    ) -> Context<'a> {
         Context {
             time,
             input,
@@ -193,64 +257,160 @@ impl<G: Game> Shell<G> {
             size: (state.surface.width(), state.surface.height()),
             renderer: &mut state.renderer,
             overlay: &mut state.overlay,
+            loop_times,
             quit: false,
         }
     }
 }
 
+/// Tick the clock and run the steps it owes: through `subsecond::call`,
+/// so a rebuilt `step` takes effect in the running process. It costs one
+/// indirection through a jump table and buys not restarting to see a rule
+/// change — which is the entire reason gameplay is not behind a scripting
+/// language here. Whether the game asked to quit.
+fn run_steps<G: Game>(game: &mut G, time: &mut Time, input: &Input, size: (u32, u32)) -> bool {
+    time.tick();
+    let mut quit = false;
+    while time.next_step().is_some() {
+        let mut ctx = StepContext {
+            time,
+            input,
+            size,
+            quit: false,
+        };
+        subsecond::call(|| game.step(&mut ctx));
+        quit |= ctx.quit;
+    }
+    quit
+}
+
+/// Steps at least this long get the drawing on a thread beside them.
+const THREAD_FROM: std::time::Duration = std::time::Duration::from_micros(300);
+
+/// How drawing a frame went.
+enum Drawn {
+    Shown,
+    /// The swapchain needs making again (a drag, a minimise).
+    Outdated,
+    Failed(SurfaceError),
+}
+
+/// Draw `frame` and the overlay into the next swapchain image and show it,
+/// timing the CPU's part: acquiring (the wait for the screen), drawing,
+/// presenting.
+fn draw_frame(
+    gpu: &Gpu,
+    surface: &Surface,
+    renderer: &mut Renderer,
+    overlay: &mut crate::ui_render::UiRenderer,
+    frame: &Frame,
+    ui: &crate::ui::Ui,
+    times: &mut Vec<(&'static str, std::time::Duration)>,
+) -> Drawn {
+    let start = std::time::Instant::now();
+    // One acquired frame for both passes: the scene, then the overlay
+    // over it, then a single present. Acquiring twice would show an empty
+    // frame on top of a full one.
+    let acquired = match surface.begin_frame() {
+        Ok(acquired) => acquired,
+        Err(SurfaceError::Outdated) => return Drawn::Outdated,
+        Err(e) => return Drawn::Failed(e),
+    };
+    let acquired_at = std::time::Instant::now();
+    times.push(("acquire", acquired_at - start));
+    renderer.draw_ui_pictures(gpu, overlay, frame);
+    renderer.render_to_frame(gpu, &acquired, frame);
+    overlay.render_to_frame(gpu, &acquired, ui);
+    let drawn_at = std::time::Instant::now();
+    times.push(("render", drawn_at - acquired_at));
+    acquired.present(gpu);
+    times.push(("present", drawn_at.elapsed()));
+    Drawn::Shown
+}
+
 impl<G: Game> Shell<G> {
     /// One turn of the loop: advance the clock, run whatever simulation
-    /// steps are owed, draw once.
+    /// steps are owed, draw once — with a render thread, the next frame's
+    /// steps beside the drawing.
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        self.time.tick();
-
+        let size = (state.surface.width(), state.surface.height());
         let mut quit = false;
+        if !self.stepped_ahead {
+            let start = std::time::Instant::now();
+            quit |= run_steps(&mut self.game, &mut self.time, &self.input, size);
+            self.last_steps = start.elapsed();
+            self.loop_times.record("steps", self.last_steps);
+        }
+        self.stepped_ahead = false;
+
         if PATCHED.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            let mut ctx = Self::context(state, &self.time, &self.input);
+            let mut ctx = Self::context(state, &self.time, &self.input, &self.loop_times);
             let game = &mut self.game;
             subsecond::call(|| game.patched(&mut ctx));
             quit |= ctx.quit;
         }
-        while self.time.next_step().is_some() {
-            // Through `subsecond::call`, so a rebuilt `step` takes effect in
-            // the running process. It costs one indirection through a jump
-            // table and buys not restarting to see a rule change — which is
-            // the entire reason gameplay is not behind a scripting language
-            // here.
-            let mut ctx = Self::context(state, &self.time, &self.input);
-            let game = &mut self.game;
-            subsecond::call(|| game.step(&mut ctx));
-            quit |= ctx.quit;
-        }
 
-        let mut ctx = Self::context(state, &self.time, &self.input);
+        let start = std::time::Instant::now();
+        let mut ctx = Self::context(state, &self.time, &self.input, &self.loop_times);
         let game = &mut self.game;
         let frame = subsecond::call(|| game.frame(&mut ctx));
         quit |= ctx.quit;
+        self.loop_times.record("frame", start.elapsed());
 
-        // One acquired frame for both passes: the scene, then the overlay
-        // over it, then a single present. Acquiring twice would show an
-        // empty frame on top of a full one.
-        match state.surface.begin_frame() {
-            Ok(acquired) => {
-                state
-                    .renderer
-                    .draw_ui_pictures(&state.gpu, &mut state.overlay, &frame);
-                state
-                    .renderer
-                    .render_to_frame(&state.gpu, &acquired, &frame);
-                state
-                    .overlay
-                    .render_to_frame(&state.gpu, &acquired, self.game.overlay());
-                acquired.present(&state.gpu);
-            }
+        let mut times = Vec::with_capacity(3);
+        let threaded = self.render_thread && !quit && self.last_steps >= THREAD_FROM;
+        let drawn = if threaded {
+            // The overlay is the game's, which the steps are about to
+            // change: the drawing gets its own copy.
+            let ui = self.game.overlay().clone();
+            let Running {
+                gpu,
+                surface,
+                renderer,
+                overlay,
+                ..
+            } = state;
+            let (gpu, surface) = (&*gpu, &*surface);
+            let (game, time, input) = (&mut self.game, &mut self.time, &self.input);
+            let times = &mut times;
+            let (drawn, stepped, steps_took) = std::thread::scope(|scope| {
+                let drawing = std::thread::Builder::new()
+                    .name("runity-render".into())
+                    .spawn_scoped(scope, move || draw_frame(gpu, surface, renderer, overlay, &frame, &ui, times))
+                    .expect("a thread to draw on");
+                let start = std::time::Instant::now();
+                let stepped = run_steps(game, time, input, size);
+                let took = start.elapsed();
+                (drawing.join().expect("the render thread panicked"), stepped, took)
+            });
+            quit |= stepped;
+            self.stepped_ahead = true;
+            self.last_steps = steps_took;
+            self.loop_times.record("steps", steps_took);
+            drawn
+        } else {
+            draw_frame(
+                &state.gpu,
+                &state.surface,
+                &mut state.renderer,
+                &mut state.overlay,
+                &frame,
+                self.game.overlay(),
+                &mut times,
+            )
+        };
+        for (name, took) in times {
+            self.loop_times.record(name, took);
+        }
+        match drawn {
+            Drawn::Shown => {}
             // Routine: the window is being dragged or is minimised. Rebuild
             // the swapchain and let the next frame have it.
-            Err(SurfaceError::Outdated) => state.surface.reconfigure(&state.gpu),
-            Err(e) => {
+            Drawn::Outdated => state.surface.reconfigure(&state.gpu),
+            Drawn::Failed(e) => {
                 eprintln!("{e}");
                 quit = true;
             }
@@ -258,8 +418,18 @@ impl<G: Game> Shell<G> {
 
         // Events consumed, so a press does not survive into the next frame.
         // After drawing rather than before, because the frame that reads a
-        // press is the one it arrived in.
+        // press is the one it arrived in — and, with a render thread, after
+        // the next frame's steps, which read it too.
         self.input.begin_frame();
+
+        if let Some(said) = self.say_times.filter(|t| t.elapsed().as_secs_f32() > 5.0) {
+            let _ = said;
+            eprintln!("loop, render thread {}:", if self.render_thread { "on" } else { "off" });
+            for line in self.loop_times.lines() {
+                eprintln!("  {line}");
+            }
+            self.say_times = Some(std::time::Instant::now());
+        }
 
         if quit {
             event_loop.exit();
@@ -324,7 +494,7 @@ impl<G: Game> ApplicationHandler for Shell<G> {
             renderer,
             overlay,
         };
-        let mut ctx = Self::context(&mut state, &self.time, &self.input);
+        let mut ctx = Self::context(&mut state, &self.time, &self.input, &self.loop_times);
         self.game.start(&mut ctx);
         self.state = Some(state);
     }

@@ -207,7 +207,7 @@ fn contact_pass(bodies: &mut [Body], sheets: &[Option<Vec<[u32; 3]>>], friction:
         let c = (p / reach).floor();
         (c.x as i32, c.y as i32, c.z as i32)
     };
-    let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<Entry>> = Default::default();
+    let mut grid: runity_core::hash::FastMap<(i32, i32, i32), Vec<Entry>> = Default::default();
     for (b, (particles, _, _)) in bodies.iter().enumerate() {
         if !touching[b] {
             continue;
@@ -338,7 +338,7 @@ impl Pushes {
 /// near a triangle, or gone through it since a step ago, is put back on
 /// the side it came from, a sheet's thickness off; the triangle's corners
 /// take their share of the push by how near each is.
-fn sheet_pass(bodies: &[Body], s: usize, tris: &[[u32; 3]], grid: &std::collections::HashMap<(i32, i32, i32), Vec<Entry>>, reach: f32, befores: &[Vec<Vec3>], pushes: &mut Pushes) {
+fn sheet_pass(bodies: &[Body], s: usize, tris: &[[u32; 3]], grid: &runity_core::hash::FastMap<(i32, i32, i32), Vec<Entry>>, reach: f32, befores: &[Vec<Vec3>], pushes: &mut Pushes) {
     let thick = bodies[s].1;
     let most = bodies.iter().map(|b| b.1).fold(0.0f32, f32::max);
     for t in tris {

@@ -6,7 +6,7 @@
 
 pub mod shell;
 
-pub use shell::{run, Game, WindowConfig};
+pub use shell::{run, Game, StepContext, WindowConfig};
 
 // The core, the GPU, the render and the overlay, under the names this
 // module's code knows them by.

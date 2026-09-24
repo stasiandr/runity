@@ -18,6 +18,16 @@ pub struct Shot {
     pub problems: Vec<String>,
     /// Entities in the scene, once its prefabs are expanded.
     pub entities: usize,
+    /// The world it was spawned into, and what its frame is built with:
+    /// for timing a step of it and the frame's making ([`Shot::step`],
+    /// [`Shot::build`]).
+    pub world: hecs::World,
+    scene: Scene,
+    camera: crate::render::Camera,
+    lighting: crate::render::Lighting,
+    fog: FogSettings,
+    #[cfg(feature = "physics")]
+    physics: Option<crate::physics::PhysicsWorld>,
 }
 
 impl Shot {
@@ -156,7 +166,71 @@ impl Shot {
             frame,
             problems,
             entities: scene.entities.len(),
+            world,
+            scene,
+            camera,
+            lighting,
+            fog,
+            #[cfg(feature = "physics")]
+            physics: None,
         })
+    }
+
+    /// One fixed step of the scene's simulation, as a game's: soft bodies,
+    /// water and smoke, then physics. What a render thread would run
+    /// beside the drawing.
+    pub fn step(&mut self, seconds: f32) {
+        Self::step_world(
+            &mut self.world,
+            #[cfg(feature = "physics")]
+            &mut self.physics,
+            seconds,
+        );
+    }
+
+    /// A game's frame with a render thread (`runity::shell`): the frame
+    /// built, then drawn on a thread of its own while this one runs the
+    /// next step.
+    pub fn frame_pipelined(&mut self, seconds: f32) {
+        self.build();
+        let (renderer, gpu, target, frame) = (&mut self.renderer, &self.gpu, &self.target, &self.frame);
+        std::thread::scope(|scope| {
+            let drawing = scope.spawn(move || renderer.render(gpu, target, frame));
+            Self::step_world(
+                &mut self.world,
+                #[cfg(feature = "physics")]
+                &mut self.physics,
+                seconds,
+            );
+            drawing.join().expect("the drawing thread panicked");
+        });
+    }
+
+    fn step_world(
+        world: &mut hecs::World,
+        #[cfg(feature = "physics")] physics: &mut Option<crate::physics::PhysicsWorld>,
+        seconds: f32,
+    ) {
+        #[cfg(feature = "soft")]
+        crate::soft::step(world, seconds);
+        #[cfg(feature = "fluid")]
+        crate::fluid::step(world, seconds);
+        #[cfg(feature = "physics")]
+        physics
+            .get_or_insert_with(|| crate::physics::PhysicsWorld::new(seconds))
+            .run(world);
+    }
+
+    /// The frame built again from the world, as a game builds it each
+    /// frame.
+    pub fn build(&mut self) {
+        #[cfg(feature = "soft")]
+        crate::soft::show(&mut self.world, 0.0);
+        #[cfg(feature = "fluid")]
+        crate::fluid::show(&mut self.world, 0.0);
+        let mut frame = crate::build_frame(&self.world, self.camera, self.lighting, self.fog);
+        crate::world::scene_look(&mut frame, &self.scene);
+        self.frame = frame;
     }
 
     /// Frames to draw before the picture settles: what builds a history

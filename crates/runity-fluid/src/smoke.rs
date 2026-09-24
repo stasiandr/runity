@@ -298,29 +298,40 @@ impl SmokeState {
             self.velocity[at] += toward * (1.5 * dt * (0.3 + j as f32 / ny as f32)).min(1.0);
         }
         self.confine_vorticity(&cells, dt);
-        // Carry the speed along itself.
-        let was = self.velocity.clone();
+        // Carry the speed along itself: each cell's from the old field,
+        // across the cores (each writes only its own).
         let inv = 1.0 / self.dx;
-        for &(i, j, k) in &cells {
+        let carried = {
+            let this = &*self;
+            runity_core::jobs::map(&cells, CELLS_A_JOB, |&(i, j, k)| {
+                let at = this.at(i, j, k);
+                let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - this.velocity[at] * dt * inv;
+                this.sample(&this.velocity, p)
+            })
+        };
+        for (&(i, j, k), v) in cells.iter().zip(carried) {
             let at = self.at(i, j, k);
-            let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - was[at] * dt * inv;
-            self.velocity[at] = self.sample(&was, p);
+            self.velocity[at] = v;
         }
         self.solid_walls(&cells);
         self.project(&cells);
         // Carry smoke and heat along the speed, fading.
-        let (d0, h0) = (self.density.clone(), self.heat.clone());
         let keep = (1.0 - s.fade.max(0.0) * dt).max(0.0);
-        for &(i, j, k) in &cells {
+        let carried = {
+            let this = &*self;
+            runity_core::jobs::map(&cells, CELLS_A_JOB, |&(i, j, k)| {
+                let at = this.at(i, j, k);
+                if this.solid[at] {
+                    return (0.0, 0.0);
+                }
+                let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - this.velocity[at] * dt * inv;
+                (this.sample(&this.density, p) * keep, this.sample(&this.heat, p) * keep)
+            })
+        };
+        for (&(i, j, k), (d, h)) in cells.iter().zip(carried) {
             let at = self.at(i, j, k);
-            if self.solid[at] {
-                self.density[at] = 0.0;
-                self.heat[at] = 0.0;
-                continue;
-            }
-            let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - self.velocity[at] * dt * inv;
-            self.density[at] = self.sample(&d0, p) * keep;
-            self.heat[at] = self.sample(&h0, p) * keep;
+            self.density[at] = d;
+            self.heat[at] = h;
         }
     }
 
@@ -383,18 +394,36 @@ impl SmokeState {
         }
         self.pressure.fill(0.0);
         let mut next = self.pressure.clone();
+        // The awake cells: those of the awake blocks.
+        let [bx, by, bz] = [nx / BLOCK, ny / BLOCK, nz / BLOCK];
+        let awake = &self.awake;
+        let is_awake = |i: usize, j: usize, k: usize| {
+            let (a, b, c) = (i / BLOCK, j / BLOCK, k / BLOCK);
+            a < bx && b < by && c < bz && awake[(c * by + b) * bx + a]
+        };
         for _ in 0..24 {
-            for &(i, j, k) in cells {
-                if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                    continue;
+            // Each awake cell's next pressure from its neighbours' last: a
+            // Jacobi sweep, a slice of the grid to a core, each writing
+            // only its own.
+            let (pressure, solid) = (&self.pressure, &self.solid);
+            let slice = nx * ny;
+            runity_core::jobs::for_each_chunk_mut(&mut next, slice, |first, cells| {
+                let k = first / slice;
+                if k == 0 || k + 1 >= nz {
+                    return;
                 }
-                let at = (k * ny + j) * nx + i;
-                if self.solid[at] {
-                    continue;
+                for j in 1..ny - 1 {
+                    for i in 1..nx - 1 {
+                        let at = first + j * nx + i;
+                        if solid[at] || !is_awake(i, j, k) {
+                            continue;
+                        }
+                        let p = |a: usize| if solid[a] { pressure[at] } else { pressure[a] };
+                        cells[j * nx + i] =
+                            (p(at - 1) + p(at + 1) + p(at - nx) + p(at + nx) + p(at - slice) + p(at + slice) - divergence[at]) / 6.0;
+                    }
                 }
-                let p = |a: usize| if self.solid[a] { self.pressure[at] } else { self.pressure[a] };
-                next[at] = (p(at - 1) + p(at + 1) + p(at - nx) + p(at + nx) + p(at - nx * ny) + p(at + nx * ny) - divergence[at]) / 6.0;
-            }
+            });
             std::mem::swap(&mut self.pressure, &mut next);
         }
         for &(i, j, k) in cells {
@@ -428,6 +457,9 @@ impl SmokeState {
         self.origin + sum / weight.max(1e-6)
     }
 }
+
+/// Cells a job takes at least: what splits a sweep across the cores.
+const CELLS_A_JOB: usize = 2048;
 
 /// Every smoke on by `seconds`, round `obstacles`.
 pub fn run_smokes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {

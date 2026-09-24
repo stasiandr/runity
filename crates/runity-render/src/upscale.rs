@@ -600,6 +600,12 @@ mod metal {
         temporal: Option<(Sizes, Retained<ProtocolObject<dyn MTLFXTemporalScaler>>)>,
     }
 
+    // SAFETY: the scalers are plain Metal objects with no tie to a thread
+    // (no UI, no run loop); they are only reached through `&mut Renderer`,
+    // so one thread at a time, and a render thread hands the renderer back
+    // by joining — which orders everything it did before the next use.
+    unsafe impl Send for MetalFx {}
+
     fn raw(texture: &wgpu::Texture) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
         // SAFETY: the handle is only read, and only while wgpu keeps the
         // texture alive for the frame.

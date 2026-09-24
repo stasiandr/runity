@@ -29,7 +29,7 @@ use runity::hecs::World;
 use runity::party::{Event, Party};
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
-use runity::shell::{self, run, Context, WindowConfig};
+use runity::shell::{self, run, Context, StepContext, WindowConfig};
 use runity::ui::{TextRun, Ui};
 use runity::widgets::Widgets;
 use runity::{Actions, Components, LiveScene, Tuned};
@@ -288,7 +288,7 @@ impl shell::Game for Game {
     }
 
     /// Fixed-step game logic: [`tick`].
-    fn step(&mut self, ctx: &mut Context) {
+    fn step(&mut self, ctx: &mut StepContext) {
         // The menu is a picture of the kitchen: nothing runs behind it.
         // Paused alone, the kitchen waits; together, it cannot.
         if self.front.phase != front::Phase::Kitchen || (self.front.paused && self.party.is_alone()) {
@@ -449,7 +449,10 @@ impl shell::Game for Game {
             self.show_profile = !self.show_profile;
         }
         if self.show_profile {
-            for (i, line) in self.profile.lines().into_iter().enumerate() {
+            // The game's parts, then the loop's own: steps, frame, drawing and
+            // the wait for the screen.
+            let lines = self.profile.lines().into_iter().chain(ctx.loop_times.lines().into_iter().map(|l| format!("loop {l}")));
+            for (i, line) in lines.enumerate() {
                 let at = 60.0 + 20.0 * i as f32;
                 self.ui.text(TextRun::new(20.0, at, 16.0, runity::glam::Vec4::ONE, line));
             }
@@ -462,6 +465,9 @@ impl shell::Game for Game {
         runity::world::follow_cameras(&mut self.world, ctx.time.delta());
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
+        // What the fixed steps move is drawn between the last two of
+        // them, by how far this frame is into the next.
+        runity::world::interpolate(&mut self.world, ctx.time.interpolation());
         let camera = runity::world::camera_of(&self.world)
             .unwrap_or_else(|| runity::scene_camera(&scene.view()));
         // While players gather — joining, or in the kitchen before the doors
@@ -550,6 +556,7 @@ fn main() -> anyhow::Result<()> {
             fixed_delta: settings.fixed_delta(),
             ..Default::default()
         },
+        ..Default::default()
     };
     let (motions, problems) = runity::motion::Motions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), ""));
     for problem in &problems {

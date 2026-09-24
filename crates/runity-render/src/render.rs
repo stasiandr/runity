@@ -3322,9 +3322,24 @@ impl Renderer {
         vertices: &[crate::asset::Vertex],
         indices: &[u32],
     ) -> MeshHandle {
-        let mesh = self.gpu_mesh(gpu, vertices, indices, true);
-        // A slot given back by `release_mesh` first.
-        let handle = match self.free_meshes.pop() {
+        let mesh = self.gpu_mesh(gpu, vertices, indices, true, false);
+        let handle = self.take_slot(mesh);
+        self.make_lods(gpu, handle, vertices, indices);
+        handle
+    }
+
+    /// A mesh the game rewrites as it goes ([`LiveMeshDraw`]): no
+    /// clusters, no coarser levels — both are of a shape it will not keep
+    /// — and, where rays are traced, a structure quick to build, built
+    /// again in place as it changes ([`Renderer::update_mesh`]).
+    fn upload_live(&mut self, gpu: &Gpu, vertices: &[crate::asset::Vertex], indices: &[u32]) -> MeshHandle {
+        let mesh = self.gpu_mesh(gpu, vertices, indices, true, true);
+        self.take_slot(mesh)
+    }
+
+    /// A slot for `mesh`: one given back by `release_mesh` first.
+    fn take_slot(&mut self, mesh: GpuMesh) -> MeshHandle {
+        match self.free_meshes.pop() {
             Some(slot) => {
                 self.meshes[slot as usize] = mesh;
                 MeshHandle(slot)
@@ -3333,9 +3348,7 @@ impl Renderer {
                 self.meshes.push(mesh);
                 MeshHandle(self.meshes.len() as u32 - 1)
             }
-        };
-        self.make_lods(gpu, handle, vertices, indices);
-        handle
+        }
     }
 
     /// Give back a mesh's GPU memory — its buffers, its coarser levels,
@@ -3353,12 +3366,12 @@ impl Renderer {
             normal: [0.0, 1.0, 0.0],
             uv: [0.0; 2],
         };
-        self.meshes[slot] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false);
+        self.meshes[slot] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false, true);
         if let Some(levels) = self.lods.remove(&handle.0) {
             for (level, _) in levels {
                 let at = (level.0 & !LOD_HANDLE) as usize;
                 if at < self.lod_meshes.len() {
-                    self.lod_meshes[at] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false);
+                    self.lod_meshes[at] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false, true);
                 }
             }
         }
@@ -3390,7 +3403,7 @@ impl Renderer {
             let Some((v, i)) = crate::lod::simplify(vertices, indices, diagonal * share) else {
                 break;
             };
-            let mesh = self.gpu_mesh(gpu, &v, &i, false);
+            let mesh = self.gpu_mesh(gpu, &v, &i, false, false);
             self.lod_meshes.push(mesh);
             levels.push((MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1)), below));
         }
@@ -3400,12 +3413,15 @@ impl Renderer {
     }
 
     /// A mesh on the GPU; a structure for rays too when `traced`.
+    /// `live`: rewritten as it goes — never cut into clusters, and its
+    /// rays' structure made to be built again quickly.
     fn gpu_mesh(
         &self,
         gpu: &Gpu,
         vertices: &[crate::asset::Vertex],
         indices: &[u32],
         traced: bool,
+        live: bool,
     ) -> GpuMesh {
         let bounds = crate::asset::Bounds::of(vertices);
         use wgpu::util::DeviceExt;
@@ -3418,9 +3434,7 @@ impl Renderer {
         };
         // Dense: cut into clusters, its triangles in their order, its
         // buffers readable by the vertex shader that pulls from them.
-        let clustered = self
-            .clusters
-            .can
+        let clustered = (self.clusters.can && !live)
             .then(|| crate::cluster::build(vertices, indices))
             .flatten();
         if clustered.is_some() {
@@ -3448,6 +3462,7 @@ impl Renderer {
                 vertices.len() as u32,
                 &index_buffer,
                 indices.len() as u32,
+                live,
             )
         });
         GpuMesh {
@@ -4225,7 +4240,7 @@ impl Renderer {
                     self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
                     mesh
                 }
-                None => self.upload(gpu, &live.vertices, &live.indices),
+                None => self.upload_live(gpu, &live.vertices, &live.indices),
             };
             self.live.insert(live.key, (mesh, live.version));
             frame.draws.push(Draw {
@@ -4394,7 +4409,10 @@ impl Renderer {
         };
         // What moves every frame is drawn as it is: its old levels are stale.
         self.lods.remove(&mesh.0);
-        let same = old.blas.is_none()
+        // The same sizes, and triangles in the order given (not a dense
+        // mesh's, sorted into clusters): written over in place, and its
+        // rays' structure built again from them.
+        let same = old.clusters.is_none()
             && old.vertices.size() == std::mem::size_of_val(vertices) as u64
             && old.indices.size() == std::mem::size_of_val(indices) as u64;
         if same {
@@ -4402,14 +4420,13 @@ impl Renderer {
                 .write_buffer(&old.vertices, 0, bytemuck::cast_slice(vertices));
             gpu.queue
                 .write_buffer(&old.indices, 0, bytemuck::cast_slice(indices));
+            if let Some(blas) = &old.blas {
+                crate::ray::rebuild(gpu, blas, &old.vertices, vertices.len() as u32, &old.indices, indices.len() as u32);
+            }
             self.meshes[mesh.0 as usize].bounds = crate::asset::Bounds::of(vertices);
             return;
         }
-        let fresh = self.upload(gpu, vertices, indices);
-        let made = self.meshes.pop().expect("just uploaded");
-        self.lods.remove(&fresh.0);
-        debug_assert_eq!(fresh.0 as usize, self.meshes.len());
-        self.meshes[mesh.0 as usize] = made;
+        self.meshes[mesh.0 as usize] = self.gpu_mesh(gpu, vertices, indices, true, true);
     }
 
     /// The probes' pictures, when the probes are not the ones they are of:

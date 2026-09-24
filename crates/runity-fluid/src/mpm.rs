@@ -261,7 +261,13 @@ impl MpmState {
         ((STEP * sound / (self.dx * 0.3)).ceil() as usize).clamp(4, 400)
     }
 
+    /// One substep: particles to the grid, the grid moved, the grid back to
+    /// the particles. What each particle and each slice of the grid does
+    /// alone is spread over the cores (`runity_core::jobs`); only the
+    /// scatter onto the grid, where particles share nodes, runs in order —
+    /// so the result is the same on any number of them.
     fn substep(&mut self, dt: f32) {
+        use runity_core::jobs;
         let dx = self.dx;
         let inv = 1.0 / dx;
         let vol = (dx * 0.5).powi(3);
@@ -273,49 +279,63 @@ impl MpmState {
         self.grid_v.fill(Vec3::ZERO);
         self.grid_m.fill(0.0);
         let material = self.mpm.material;
-        // Particles to grid.
-        for g in &mut self.grains {
+        let [nx, ny, nz] = self.n;
+        // Each particle's stress, and from it what it hands its nodes: the
+        // costly part (a decomposition of its deformation), and its own.
+        let affine: Vec<Mat3> = jobs::map(&self.grains, 256, |g| {
+            stress_of(g, material, mu0, lambda0) * (-dt * vol * 4.0 * inv * inv) + g.c * mass
+        });
+        // Particles to grid, in order: they share nodes.
+        for (g, affine) in self.grains.iter().zip(&affine) {
             let base = (g.x - self.origin) * inv - Vec3::splat(0.5);
             let base = base.floor();
             let fx = (g.x - self.origin) * inv - base;
-            let w = [
-                (Vec3::splat(1.5) - fx) * (Vec3::splat(1.5) - fx) * 0.5,
-                Vec3::splat(0.75) - (fx - Vec3::ONE) * (fx - Vec3::ONE),
-                (fx - Vec3::splat(0.5)) * (fx - Vec3::splat(0.5)) * 0.5,
-            ];
-            let stress = stress_of(g, material, mu0, lambda0);
-            let affine = stress * (-dt * vol * 4.0 * inv * inv) + g.c * mass;
+            let w = weights(fx);
             let (bi, bj, bk) = (base.x as i64, base.y as i64, base.z as i64);
             for a in 0..3 {
                 for b in 0..3 {
                     for c in 0..3 {
                         let (i, j, k) = (bi + a as i64, bj + b as i64, bk + c as i64);
-                        if i < 0 || j < 0 || k < 0 || i as usize >= self.n[0] || j as usize >= self.n[1] || k as usize >= self.n[2] {
+                        if i < 0 || j < 0 || k < 0 || i as usize >= nx || j as usize >= ny || k as usize >= nz {
                             continue;
                         }
                         let weight = w[a].x * w[b].y * w[c].z;
                         let dpos = (Vec3::new(a as f32, b as f32, c as f32) - fx) * dx;
-                        let at = (k as usize * self.n[1] + j as usize) * self.n[0] + i as usize;
-                        self.grid_v[at] += (g.v * mass + affine * dpos) * weight;
+                        let at = (k as usize * ny + j as usize) * nx + i as usize;
+                        self.grid_v[at] += (g.v * mass + *affine * dpos) * weight;
                         self.grid_m[at] += mass * weight;
                     }
                 }
             }
         }
-        // The grid: momentum to speed, gravity, and what is solid.
-        let [nx, ny, nz] = self.n;
+        // The grid: momentum to speed, gravity, and what is solid — a
+        // slice of it to a core.
         // Snow and sand grip the floor; water and jelly slide on it.
         let sticky = matches!(material, MpmMaterial::Snow | MpmMaterial::Sand);
-        for k in 0..nz {
-            for j in 0..ny {
-                for i in 0..nx {
-                    let at = (k * ny + j) * nx + i;
-                    let m = self.grid_m[at];
+        let slice = nx * ny;
+        {
+            let (grid_m, grid_v) = (&self.grid_m, &self.grid_v);
+            jobs::for_each_chunk_mut(&mut self.grid_was, slice, |first, was| {
+                for (o, w) in was.iter_mut().enumerate() {
+                    let m = grid_m[first + o];
+                    if m > 0.0 {
+                        *w = grid_v[first + o] / m;
+                    }
+                }
+            });
+        }
+        {
+            let (grid_m, solid) = (&self.grid_m, &self.solid);
+            jobs::for_each_chunk_mut(&mut self.grid_v, slice, |first, nodes| {
+                let k = first / slice;
+                for (o, node) in nodes.iter_mut().enumerate() {
+                    let at = first + o;
+                    let m = grid_m[at];
                     if m <= 0.0 {
                         continue;
                     }
-                    let mut v = self.grid_v[at] / m;
-                    self.grid_was[at] = v;
+                    let (i, j) = (o % nx, o / nx);
+                    let mut v = *node / m;
                     v.y -= 9.81 * dt;
                     // The room's walls: nothing leaves.
                     if (i < 2 && v.x < 0.0) || (i + 3 > nx && v.x > 0.0) {
@@ -337,30 +357,27 @@ impl MpmState {
                         v.z = 0.0;
                     }
                     // What is solid: no going in, and a little grip along.
-                    if let Some(out) = self.solid[at] {
+                    if let Some(out) = solid[at] {
                         let into = v.dot(out);
                         if into < 0.0 {
                             v -= out * into;
                             v *= if sticky { 0.0 } else { 0.9 };
                         }
                     }
-                    self.grid_v[at] = v;
+                    *node = v;
                 }
-            }
+            });
         }
-        // Grid to particles.
+        // Grid to particles: each reads the nodes round it and moves itself.
         let flip = match self.mpm.transfer {
             Transfer::Flip(share) => Some(share.clamp(0.0, 1.0)),
             Transfer::Apic => None,
         };
-        for g in &mut self.grains {
-            let base = ((g.x - self.origin) * inv - Vec3::splat(0.5)).floor();
-            let fx = (g.x - self.origin) * inv - base;
-            let w = [
-                (Vec3::splat(1.5) - fx) * (Vec3::splat(1.5) - fx) * 0.5,
-                Vec3::splat(0.75) - (fx - Vec3::ONE) * (fx - Vec3::ONE),
-                (fx - Vec3::splat(0.5)) * (fx - Vec3::splat(0.5)) * 0.5,
-            ];
+        let (grid_v, grid_was, origin) = (&self.grid_v, &self.grid_was, self.origin);
+        jobs::for_each_mut(&mut self.grains, 256, |g| {
+            let base = ((g.x - origin) * inv - Vec3::splat(0.5)).floor();
+            let fx = (g.x - origin) * inv - base;
+            let w = weights(fx);
             let mut v = Vec3::ZERO;
             let mut change = Vec3::ZERO;
             let mut c = Mat3::ZERO;
@@ -374,10 +391,10 @@ impl MpmState {
                         }
                         let weight = w[a].x * w[b].y * w[cc].z;
                         let at = (k as usize * ny + j as usize) * nx + i as usize;
-                        let gv = self.grid_v[at];
+                        let gv = grid_v[at];
                         let dpos = Vec3::new(a as f32, b as f32, cc as f32) - fx;
                         v += gv * weight;
-                        change += (gv - self.grid_was[at]) * weight;
+                        change += (gv - grid_was[at]) * weight;
                         c += outer(gv * weight, dpos) * (4.0 * inv);
                     }
                 }
@@ -389,12 +406,12 @@ impl MpmState {
             g.c = if flip.is_some() { c * 0.0 } else { c };
             g.x += g.v * dt;
             // Kept inside the room.
-            let low = self.origin + Vec3::splat(dx);
-            let high = self.origin + Vec3::new(nx as f32 - 2.0, ny as f32 - 2.0, nz as f32 - 2.0) * dx;
+            let low = origin + Vec3::splat(dx);
+            let high = origin + Vec3::new(nx as f32 - 2.0, ny as f32 - 2.0, nz as f32 - 2.0) * dx;
             g.x = g.x.clamp(low, high);
             let f = (Mat3::IDENTITY + c * dt) * g.f;
             g.f = plastic(f, material, &mut g.jp);
-        }
+        });
     }
 
     /// A small box at each particle, in the world: how snow and sand are
@@ -435,6 +452,16 @@ impl MpmState {
         }
         (vertices, indices)
     }
+}
+
+/// The quadratic B-spline's weights along each axis for the three nodes
+/// round a particle `fx` cells past the first.
+fn weights(fx: Vec3) -> [Vec3; 3] {
+    [
+        (Vec3::splat(1.5) - fx) * (Vec3::splat(1.5) - fx) * 0.5,
+        Vec3::splat(0.75) - (fx - Vec3::ONE) * (fx - Vec3::ONE),
+        (fx - Vec3::splat(0.5)) * (fx - Vec3::splat(0.5)) * 0.5,
+    ]
 }
 
 fn outer(a: Vec3, b: Vec3) -> Mat3 {
@@ -523,6 +550,13 @@ fn svd(f: Mat3) -> (Mat3, Vec3, Mat3) {
     let mut m = [[a.x_axis.x, a.y_axis.x, a.z_axis.x], [a.x_axis.y, a.y_axis.y, a.z_axis.y], [a.x_axis.z, a.y_axis.z, a.z_axis.z]];
     let mut v = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..8 {
+        // Done once what is off the diagonal is nothing beside it: a
+        // deformation is mostly a turn, and most need a sweep or two.
+        let off = m[0][1] * m[0][1] + m[0][2] * m[0][2] + m[1][2] * m[1][2];
+        let diagonal = m[0][0] * m[0][0] + m[1][1] * m[1][1] + m[2][2] * m[2][2];
+        if off <= diagonal * 1e-12 {
+            break;
+        }
         for (p, q) in [(0, 1), (0, 2), (1, 2)] {
             if m[p][q].abs() < 1e-12 {
                 continue;

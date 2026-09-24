@@ -21,6 +21,7 @@ pub mod data;
 #[doc(hidden)]
 pub mod defaults;
 pub mod edit;
+pub mod hash;
 pub mod id;
 pub mod input;
 pub mod jobs;

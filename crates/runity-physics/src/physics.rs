@@ -953,7 +953,7 @@ impl PhysicsWorld {
     /// writing rapier's copy back over it would let rounding walk the world
     /// a fraction at a time.
     pub fn sync_to_world(&self, world: &mut World) {
-        let mut moved: Vec<(hecs::Entity, glam::Mat4, Option<hecs::Entity>)> = Vec::new();
+        let mut moved: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, Option<hecs::Entity>)> = Vec::new();
         for (entity, handle, physics, placed, parent, replica) in world
             .query::<(
                 hecs::Entity,
@@ -991,11 +991,12 @@ impl PhysicsWorld {
             let (scale, _, _) = placed.0.to_scale_rotation_translation();
             moved.push((
                 entity,
+                placed.0,
                 glam::Mat4::from_scale_rotation_translation(scale, rotation, translation),
                 parent.map(|p| p.0),
             ));
         }
-        for (entity, matrix, parent) in moved {
+        for (entity, was, matrix, parent) in moved {
             // The local transform too, relative to the parent: it is what
             // the hierarchy is recomputed from, and what a reload compares
             // with the file. Writing only the world one would let the next
@@ -1012,6 +1013,9 @@ impl PhysicsWorld {
             };
             local.set_rotation(rotation);
             let _ = world.insert_one(entity, WorldTransform(matrix));
+            // Where the step took it from and to: a frame between steps
+            // draws it between them (`world::interpolate`).
+            let _ = world.insert_one(entity, crate::world::Stepped { from: was, to: matrix });
             let _ = world.insert_one(entity, local);
             if let Ok(mut built) = world.get::<&mut Built>(entity) {
                 built.local = local;
@@ -1871,6 +1875,10 @@ mod tests {
             physics.step();
         }
         physics.sync_to_world(&mut world);
+        // Where the last sync took it from and to, for a frame between
+        // steps to draw it between them.
+        let stepped = *world.get::<&crate::world::Stepped>(ball).unwrap();
+        assert_eq!(stepped.to, world.get::<&WorldTransform>(ball).unwrap().0);
 
         let y = world.get::<&WorldTransform>(ball).unwrap().0.w_axis.y;
         // Floor's top is 0.1, ball's radius 0.5, so it rests at 0.6.

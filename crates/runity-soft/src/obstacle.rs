@@ -36,7 +36,7 @@ pub struct Sheet {
     pub low: Vec3,
     pub high: Vec3,
     cell: f32,
-    cells: std::collections::HashMap<[i32; 3], Vec<u32>>,
+    cells: runity_core::hash::FastMap<[i32; 3], Vec<u32>>,
 }
 
 impl Sheet {
@@ -55,7 +55,7 @@ impl Sheet {
             let c = (p / cell).floor();
             [c.x as i32, c.y as i32, c.z as i32]
         };
-        let mut cells: std::collections::HashMap<[i32; 3], Vec<u32>> = Default::default();
+        let mut cells: runity_core::hash::FastMap<[i32; 3], Vec<u32>> = Default::default();
         for (i, t) in triangles.iter().enumerate() {
             let (a, b) = (key(t[0].min(t[1]).min(t[2])), key(t[0].max(t[1]).max(t[2])));
             // A torn or thrown triangle is left out.
@@ -228,7 +228,7 @@ pub struct Obstacles {
     all: Vec<Obstacle>,
     /// Those too big for the grid — the ground — tried by everything.
     everywhere: Vec<u32>,
-    cells: std::collections::HashMap<[i32; 3], Vec<u32>>,
+    cells: runity_core::hash::FastMap<[i32; 3], Vec<u32>>,
 }
 
 /// Metres a side of a grid cell.
