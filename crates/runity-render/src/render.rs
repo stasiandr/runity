@@ -6104,7 +6104,10 @@ impl Renderer {
                     ambient: extend(sky_light, 0.0),
                     shape,
                     drift,
-                    size: [0.0; 4],
+                    // With TAA, where the march's steps fall turns each
+                    // frame and the history averages it: fewer steps band
+                    // no more than many.
+                    size: [0.0, 0.0, if taa_run && self.taa.frames() > 0 { (self.taa.frames() as f32 * 0.618_034).fract().max(1e-3) } else { 0.0 }, 0.0],
                     dust: [
                         w.dust_wall.clamp(0.0, 1.0),
                         w.dust_front(&frame.wind, time),
