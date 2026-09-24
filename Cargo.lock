@@ -3047,6 +3047,8 @@ dependencies = [
  "rkyv",
  "ron",
  "runity-core",
+ "runity-geometry",
+ "runity-physics",
  "serde",
  "serde_json",
  "sha2",
@@ -3095,6 +3097,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-geometry"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "rkyv",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
 name = "runity-import"
 version = "0.1.0"
 dependencies = [
@@ -3123,6 +3136,20 @@ dependencies = [
  "runity-editor",
  "runity-import",
  "serde_json",
+]
+
+[[package]]
+name = "runity-physics"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "rapier3d",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

@@ -359,6 +359,15 @@ fn bracket(times: &[f32], t: f32) -> (usize, usize, f32) {
     (i, i + 1, blend)
 }
 
+/// An entity's current pose, as skinning matrices.
+///
+/// The animation system writes it; the frame builder reads it. Keeping the
+/// matrices here rather than a clip and a time means the renderer never has
+/// to know what a clip is, and two entities playing the same animation at
+/// different times are simply two poses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Posed(pub Vec<glam::Mat4>);
+
 #[cfg(test)]
 mod tests {
     use super::*;

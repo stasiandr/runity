@@ -231,7 +231,7 @@ pub fn attach_collision_meshes<'a>(
 }
 
 /// [`attach_collision_meshes`] for the entities a scene spawned, found by
-/// their [`crate::SceneId`].
+/// their [`crate::world::SceneId`].
 pub fn attach_scene_collision_meshes(
     world: &mut World,
     scene: &crate::Scene,
@@ -243,7 +243,7 @@ pub fn attach_scene_collision_meshes(
         .map(|(d, _)| (d.id, d))
         .collect();
     let pairs: Vec<(hecs::Entity, &crate::EntityDesc)> = world
-        .query::<(hecs::Entity, &crate::SceneId)>()
+        .query::<(hecs::Entity, &crate::world::SceneId)>()
         .iter()
         .filter_map(|(entity, id)| lines.get(&id.0).map(|d| (entity, *d)))
         .collect();
@@ -255,7 +255,7 @@ pub struct PhysicsWorld {
     pub gravity: Vec3,
     /// The scene's wind: what carries bodies that say `blown` — a
     /// tumbleweed, a plastic bag, a hat. Still air until the game says.
-    pub wind: crate::foliage::Wind,
+    pub wind: runity_core::wind::Wind,
     /// Steps taken: the clock gusts and hops are read from, so a replay
     /// blows the same way.
     steps: u64,
@@ -331,7 +331,7 @@ impl PhysicsWorld {
         };
         Self {
             gravity: Vec3::new(0.0, -9.81, 0.0),
-            wind: crate::foliage::Wind {
+            wind: runity_core::wind::Wind {
                 direction: Vec3::X,
                 strength: 0.0,
             },
@@ -406,7 +406,7 @@ impl PhysicsWorld {
                     Option<&CollisionMesh>,
                     Option<&Props>,
                     Option<&Layer>,
-                    Option<&crate::net::Replica>,
+                    Option<&crate::world::Replica>,
                 )>()
                 .iter()
         {
@@ -529,7 +529,7 @@ impl PhysicsWorld {
                 Option<&CollisionMesh>,
                 Option<&Props>,
                 Option<&Layer>,
-                Option<&crate::net::Replica>,
+                Option<&crate::world::Replica>,
             )>()
             .iter()
         {
@@ -605,8 +605,8 @@ impl PhysicsWorld {
         }
         // Last, so a body rebuilt above has it too.
         // Taken over from another peer: on at the speed it had there.
-        let taken: Vec<(hecs::Entity, crate::net::Takeover)> = world
-            .query::<(hecs::Entity, &crate::net::Takeover)>()
+        let taken: Vec<(hecs::Entity, crate::world::Takeover)> = world
+            .query::<(hecs::Entity, &crate::world::Takeover)>()
             .iter()
             .map(|(e, t)| (e, *t))
             .collect();
@@ -620,7 +620,7 @@ impl PhysicsWorld {
                 body.set_linvel(vector![v.x, v.y, v.z], true);
                 body.set_angvel(vector![w.x, w.y, w.z], true);
             }
-            let _ = world.remove_one::<crate::net::Takeover>(entity);
+            let _ = world.remove_one::<crate::world::Takeover>(entity);
         }
         self.sync_joints(world);
     }
@@ -961,7 +961,7 @@ impl PhysicsWorld {
                 &Physics,
                 &WorldTransform,
                 Option<&Parent>,
-                Option<&crate::net::Replica>,
+                Option<&crate::world::Replica>,
             )>()
             .iter()
         {
@@ -1662,7 +1662,12 @@ fn build_collider(
 mod tests {
     use super::*;
     use crate::scene::{Body, Collider as ColliderShape, EntityDesc, Scene, Transform};
-    use crate::MeshHandle;
+
+    /// Put a scene into a world with this module dressing it: all a test of
+    /// physics needs, with no look to resolve.
+    fn spawn(scene: &Scene, world: &mut World) -> Vec<crate::world::Unresolved> {
+        crate::world::spawn_scene_dressed(scene, world, &mut [Box::new(PhysicsDress)])
+    }
 
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
@@ -1708,7 +1713,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
 
@@ -1755,9 +1760,9 @@ mod tests {
         };
         let run = || {
             let mut world = World::new();
-            crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+            spawn(&scene, &mut world);
             let mut physics = PhysicsWorld::new(1.0 / 60.0);
-            physics.wind = crate::foliage::Wind {
+            physics.wind = runity_core::wind::Wind {
                 direction: Vec3::new(0.0, 0.0, 1.0),
                 strength: 1.5,
             };
@@ -1831,7 +1836,7 @@ mod tests {
                 id: Default::default(),
                 name: "boulder".into(),
                 prefab: Default::default(),
-                transform: crate::Transform {
+                transform: crate::scene::Transform {
                     position: Vec3::new(0.0, 4.0, 0.0),
                     scale: Vec3::splat(3.0),
                     ..Default::default()
@@ -1844,7 +1849,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
         for _ in 0..30 {
@@ -1902,7 +1907,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
         assert_eq!(physics.body_count(), 0);
@@ -1965,7 +1970,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
         // The query pipeline is built by the step, so a world that has never
@@ -2114,7 +2119,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let physics = PhysicsWorld::new(1.0 / 60.0);
         let thing = world
             .query::<(hecs::Entity, &Physics)>()
@@ -2205,7 +2210,7 @@ mod tests {
         let mut scene = scene;
         scene.assign_ids();
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         run_for(&mut physics, &mut world, 1);
         assert_eq!(
@@ -2233,7 +2238,7 @@ mod tests {
     #[test]
     fn a_body_someone_else_owns_is_moved_by_them_not_by_gravity() {
         let (mut physics, mut world, ball) = dropped(3.0);
-        let _ = world.insert_one(ball, crate::net::Replica);
+        let _ = world.insert_one(ball, crate::world::Replica);
         for _ in 0..30 {
             physics.run(&mut world);
         }
@@ -2257,7 +2262,7 @@ mod tests {
                 < 1e-3
         );
         // Handed to this peer: it is ours to drop.
-        let _ = world.remove_one::<crate::net::Replica>(ball);
+        let _ = world.remove_one::<crate::world::Replica>(ball);
         for _ in 0..30 {
             physics.run(&mut world);
         }
@@ -2272,14 +2277,14 @@ mod tests {
         // Its owner throws it along x at 6 m/s, high above the floor; the
         // poses come in each step. Then it is handed to this peer.
         let (mut physics, mut world, ball) = dropped(10.0);
-        let _ = world.insert_one(ball, crate::net::Replica);
+        let _ = world.insert_one(ball, crate::world::Replica);
         physics.run(&mut world);
         for step in 1..=20 {
             world.get::<&mut Transform>(ball).unwrap().position.x = 0.1 * step as f32;
             crate::world::apply_hierarchy(&mut world);
             physics.run(&mut world);
         }
-        let _ = world.remove_one::<crate::net::Replica>(ball);
+        let _ = world.remove_one::<crate::world::Replica>(ball);
         physics.run(&mut world);
         let speed = physics.velocity(&world, ball).unwrap();
         assert!(
@@ -2291,15 +2296,15 @@ mod tests {
     #[test]
     fn a_body_taken_over_goes_on_from_the_pose_and_speed_it_was_handed() {
         let (mut physics, mut world, ball) = dropped(10.0);
-        let _ = world.insert_one(ball, crate::net::Replica);
+        let _ = world.insert_one(ball, crate::world::Replica);
         physics.run(&mut world);
         physics.run(&mut world);
         // Ours now, from further along than the picture had it.
-        let _ = world.remove_one::<crate::net::Replica>(ball);
+        let _ = world.remove_one::<crate::world::Replica>(ball);
         world.get::<&mut Transform>(ball).unwrap().position = Vec3::new(3.0, 10.0, 0.0);
         let _ = world.insert_one(
             ball,
-            crate::net::Takeover {
+            crate::world::Takeover {
                 velocity: Vec3::new(12.0, 0.0, 0.0),
                 spin: Vec3::ZERO,
             },
@@ -2380,7 +2385,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         let (zone, ball) = (the(&world, Body::Trigger), the(&world, Body::Dynamic));
 
@@ -2450,7 +2455,7 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         let (platform, crate_) = (the(&world, Body::Kinematic), the(&world, Body::Dynamic));
         world.insert_one(crate_, Contacts::default()).unwrap();
@@ -2483,7 +2488,7 @@ mod tests {
         let mut scene: Scene = ron::from_str(text).unwrap();
         scene.assign_ids();
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         (PhysicsWorld::new(1.0 / 60.0), world, scene)
     }
 

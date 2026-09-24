@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 runity-core = { path = "../runity-core" }
+runity-geometry = { path = "../runity-geometry" }
+runity-physics = { path = "../runity-physics", default-features = false }
 anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
@@ -42,7 +44,7 @@ gilrs = { version = "0.11", optional = true }
 default = ["physics"]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
-physics = ["dep:rapier3d"]
+physics = ["dep:rapier3d", "runity-physics/rapier"]
 # Sound. Off by default and not because it is unfinished: the engine is
 # being built on greybox, and a mixer nobody is listening to is a
 # dependency, a device to open and a thing to keep compiling. `--features

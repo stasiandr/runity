@@ -133,11 +133,9 @@ pub struct MeshSkin {
 }
 
 impl ArchivedMeshAsset {
-    /// The skeleton and the clips, as plain values: what an [`Animator`]
-    /// is made from. `None` for a mesh with no skin. A copy, made once when
+    /// The skeleton and the clips, as plain values: what the animation
+    /// module's `Animator` is made from. `None` for a mesh with no skin. A copy, made once when
     /// something starts animating, not in the frame.
-    ///
-    /// [`Animator`]: crate::Animator
     pub fn skin_owned(&self) -> Option<MeshSkin> {
         self.skin
             .as_ref()

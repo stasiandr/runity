@@ -20,14 +20,7 @@ pub struct Model(pub MeshHandle);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Surface(pub Material);
 
-/// An entity's current pose, as skinning matrices.
-///
-/// The animation system writes it; the frame builder reads it. Keeping the
-/// matrices here rather than a clip and a time means the renderer never has
-/// to know what a clip is, and two entities playing the same animation at
-/// different times are simply two poses.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Posed(pub Vec<glam::Mat4>);
+pub use crate::animation::Posed;
 
 /// The image on an entity's surface, already uploaded.
 ///

@@ -14,7 +14,9 @@
 
 use crate::asset::{AssetId, Bounds, MeshAsset, Submesh, Vertex};
 
-pub(crate) fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset {
+/// A mesh of one submesh from its vertices and triangles, with its bounds
+/// and an ID from `name`: how every built-in shape, and the terrain, ends.
+pub fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset {
     MeshAsset {
         id: AssetId::from_source(&format!("builtin:{name}"), 0),
         name: name.to_string(),

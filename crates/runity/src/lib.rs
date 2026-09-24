@@ -21,13 +21,13 @@ pub use ron;
 pub use runity_core::impl_parts;
 
 pub mod actions;
-pub mod animation;
+pub use runity_geometry::animation;
 pub mod appearance;
 pub mod animator;
 pub mod animgraph;
 /// The asset archive as the core has it: its header, its ID.
 pub use runity_core::asset as asset_core;
-pub mod mesh_asset;
+pub use runity_geometry::mesh_asset;
 mod asset_tests;
 
 /// Assets: the core's archive and IDs, and every module's formats, under
@@ -43,7 +43,7 @@ pub mod atmosphere;
 pub mod audio;
 #[cfg(feature = "physics")]
 pub mod bench;
-pub mod builtin;
+pub use runity_geometry::builtin;
 pub mod clouds;
 pub use runity_core::components;
 pub use runity_core::crash;
@@ -80,7 +80,7 @@ pub use runity_core::parts;
 pub mod party;
 pub use runity_core::perf;
 #[cfg(feature = "physics")]
-pub mod physics;
+pub use runity_physics::physics;
 pub use runity_core::player_prefs;
 pub mod post;
 pub use runity_core::prefab;
@@ -119,7 +119,7 @@ pub mod save {
 /// The scene file as the core has it: a line's identity, place and tree,
 /// its modules' fields as parts (docs/modules.md).
 pub use runity_core::scene as scene_core;
-pub mod body;
+pub use runity_physics::body;
 pub use runity_core::defaults;
 pub mod look;
 pub mod sound;
@@ -131,6 +131,7 @@ mod scene_tests;
 pub mod scene {
     pub use crate::body::*;
     pub use crate::look::*;
+    pub use runity_geometry::line::*;
     pub use crate::motion::{AnimatorRef, BoneName};
     pub use crate::routes::{Route, RouteEnds};
     pub use crate::scene_core::*;
@@ -144,6 +145,8 @@ pub mod scene {
         let mut kinds = Vec::new();
         kinds.extend(crate::scene_core::part_kinds());
         kinds.extend(crate::body::part_kinds());
+        kinds.extend(runity_geometry::line::part_kinds());
+        kinds.extend(runity_core::wind::part_kinds());
         kinds.extend(crate::look::part_kinds());
         kinds.extend(crate::motion::part_kinds());
         kinds.extend(crate::routes::part_kinds());
@@ -157,6 +160,7 @@ pub mod scene {
 /// runity::prelude::*` once.
 pub mod prelude {
     pub use crate::body::{PhysicsLine, PhysicsOverride};
+    pub use runity_geometry::line::{GeometryLine, GeometryOverride};
     pub use crate::material::MaterialLibrary;
     pub use crate::mesh_asset::{MeshLibrary, TextureLibrary};
     pub use crate::sound::SoundLibrary;
@@ -190,7 +194,7 @@ pub mod widgets;
 /// The world as the core has it: hierarchy, identity, spawning.
 pub use runity_core::world as world_core;
 pub mod world_look;
-pub mod bodies;
+pub use runity_physics::bodies;
 pub mod spawning;
 mod world_tests;
 #[cfg(test)]

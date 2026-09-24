@@ -29,3 +29,14 @@ pub struct JointBroken;
 /// The shape physics sees, kept from the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape(pub crate::scene::Collider);
+
+/// Just taken over from another peer (the network module puts it on): the speed it had there, for the
+/// physics to give the body as it becomes ours. The pose is already on
+/// its transform — the newest the old owner sent, carried forward — not
+/// the picture a moment behind that it was being shown at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Takeover {
+    pub velocity: glam::Vec3,
+    /// Radians a second about each axis.
+    pub spin: glam::Vec3,
+}

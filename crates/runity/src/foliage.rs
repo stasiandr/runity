@@ -18,30 +18,11 @@
 //!   round a player. Up to [`MAX_BENDERS`] a frame, the nearest the camera.
 
 use glam::Vec3;
-use serde::{Deserialize, Serialize};
 
 /// The most benders a frame bends by.
 pub const MAX_BENDERS: usize = 8;
 
-/// The scene's wind.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Wind {
-    /// Which way it blows; only its level part counts.
-    pub direction: Vec3,
-    /// 0 is still air; 1 a breeze; 3 a gale.
-    pub strength: f32,
-}
-
-impl Default for Wind {
-    /// A breeze from the west: foliage is never quite still.
-    fn default() -> Self {
-        Self {
-            direction: Vec3::new(1.0, 0.0, 0.3),
-            strength: 1.0,
-        }
-    }
-}
+pub use runity_core::wind::Wind;
 
 /// Something that bends grass round it: where, and how far it reaches.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -502,6 +502,19 @@ fn fields_changed(old: Option<&EntityDesc>, new: &EntityDesc, name: &str) -> boo
     old.is_none_or(|old| old.parts.raw(name) != new.parts.raw(name))
 }
 
+// Who simulates an entity. The network module decides and moves it
+// between peers; every module that simulates — physics, routes, the game's
+// own systems — filters on it, which is why it is here and not there.
+
+/// This peer simulates it: what simulating systems filter on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Owned;
+
+/// Someone else simulates it; this peer shows what they say. A body with
+/// this is kinematic; nothing simulates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Replica;
+
 // What the game spawned at run time, by the identity it is known by: the
 // network names it by this, and a save writes it down by it.
 

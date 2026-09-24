@@ -42,6 +42,7 @@ pub mod strings;
 pub mod time;
 pub mod timers;
 pub mod tuned;
+pub mod wind;
 pub mod world;
 
 pub use asset::{AssetError, AssetId};

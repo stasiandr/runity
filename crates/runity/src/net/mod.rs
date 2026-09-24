@@ -62,25 +62,12 @@ impl PeerId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner(pub PeerId);
 
-/// This peer simulates it: what simulating systems filter on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Owned;
+// Who simulates an entity is the core's to say (every simulating module
+// filters on it); which peer, and how it changes hands, is this module's.
+pub use crate::world_core::{Owned, Replica};
 
-/// Someone else simulates it; this peer shows what they say. A body with
-/// this is kinematic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Replica;
-
-/// Just taken over from another peer: the speed it had there, for the
-/// physics to give the body as it becomes ours. The pose is already on
-/// its transform — the newest the old owner sent, carried forward — not
-/// the picture a moment behind that it was being shown at.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Takeover {
-    pub velocity: glam::Vec3,
-    /// Radians a second about each axis.
-    pub spin: glam::Vec3,
-}
+// The speed a body had with its old owner is the physics module's.
+pub use crate::bodies::Takeover;
 
 /// "I want to drive this": put it on an entity, and the next frame takes
 /// it — optimistically, at once — and asks the server.

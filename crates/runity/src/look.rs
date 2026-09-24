@@ -592,11 +592,7 @@ pub fn set_look_field(scene: &mut Scene, field: &str, ron_text: &str) -> Result<
     Ok(())
 }
 
-/// `model: "pine_large"` — a model in `assets/` by file stem, or a builtin
-/// (`builtin:cone`). A group, or a prefab instance, draws nothing itself.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ModelRef(pub crate::AssetLink);
+pub use runity_geometry::line::ModelRef;
 
 
 /// `bends_grass: 0.6` — grass and anything else that sways is pushed aside
@@ -607,7 +603,6 @@ pub struct BendsGrass(pub f32);
 
 
 crate::impl_parts! {
-    ModelRef => "model", default if |m| m.0.is_empty();
     MaterialRef => "material", default if |m| m.is_default();
     BendsGrass => "bends_grass", default if |b| b.0 == 0.0;
     Lens => "camera";
@@ -618,7 +613,6 @@ crate::impl_parts! {
     PostVolume => "post_volume";
     Decal => "decal";
     crate::footprints::Footprints => "footprints";
-    crate::terrain::Terrain => "terrain";
     View => "view";
     Sun => "sun";
     Fog => "fog";
@@ -627,7 +621,6 @@ crate::impl_parts! {
     crate::ssao::AmbientOcclusion => "ambient_occlusion";
     crate::ray::RayTracing => "ray_tracing";
     crate::volume::VolumetricFog => "volumetric_fog";
-    crate::foliage::Wind => "wind";
     crate::weather::Weather => "weather";
     crate::reflections::ScreenSpaceReflections => "screen_space_reflections";
 }
@@ -635,7 +628,6 @@ crate::impl_parts! {
 /// What a line of a scene looks like, read off it: what was `desc.model`
 /// before a line's fields were its modules' (docs/modules.md).
 pub trait LookLine {
-    fn model(&self) -> crate::AssetLink;
     fn material_ref(&self) -> MaterialRef;
     fn camera(&self) -> Option<Lens>;
     fn light(&self) -> Option<Light>;
@@ -645,15 +637,9 @@ pub trait LookLine {
     fn post_volume(&self) -> Option<PostVolume>;
     fn decal(&self) -> Option<Decal>;
     fn footprints(&self) -> Option<crate::footprints::Footprints>;
-    fn terrain(&self) -> Option<crate::terrain::Terrain>;
     fn bends_grass(&self) -> f32;
-    fn set_model(&mut self, model: impl Into<crate::AssetLink>);
     fn set_material(&mut self, material: MaterialRef);
     fn set_bends_grass(&mut self, metres: f32);
-    /// This line with its model: `.with_model("pine")`.
-    fn with_model(self, model: impl Into<crate::AssetLink>) -> Self
-    where
-        Self: Sized;
     /// The material to draw with, using the engine's builtins only.
     ///
     /// What a test and the reference scene want, since neither has a
@@ -688,9 +674,6 @@ pub trait LookLine {
 }
 
 impl LookLine for EntityDesc {
-    fn model(&self) -> crate::AssetLink {
-        self.part::<ModelRef>().map(|m| m.0).unwrap_or_default()
-    }
     fn material_ref(&self) -> MaterialRef {
         self.part_or_default()
     }
@@ -718,14 +701,8 @@ impl LookLine for EntityDesc {
     fn footprints(&self) -> Option<crate::footprints::Footprints> {
         self.part()
     }
-    fn terrain(&self) -> Option<crate::terrain::Terrain> {
-        self.part()
-    }
     fn bends_grass(&self) -> f32 {
         self.part::<BendsGrass>().map_or(0.0, |b| b.0)
-    }
-    fn set_model(&mut self, model: impl Into<crate::AssetLink>) {
-        self.set_part(&ModelRef(model.into()))
     }
     fn set_material(&mut self, material: MaterialRef) {
         self.set_part(&material)
@@ -733,14 +710,10 @@ impl LookLine for EntityDesc {
     fn set_bends_grass(&mut self, metres: f32) {
         self.set_part(&BendsGrass(metres))
     }
-    fn with_model(self, model: impl Into<crate::AssetLink>) -> Self {
-        self.with(ModelRef(model.into()))
-    }
 }
 
 /// What an override of a prefab's part says about its look.
 pub trait LookOverride {
-    fn model(&self) -> Option<crate::AssetLink>;
     fn material(&self) -> Option<MaterialRef>;
     fn camera(&self) -> Option<Lens>;
     fn light(&self) -> Option<Light>;
@@ -748,14 +721,10 @@ pub trait LookOverride {
     fn reflection_probe(&self) -> Option<Probe>;
     fn decal(&self) -> Option<Decal>;
     fn footprints(&self) -> Option<crate::footprints::Footprints>;
-    fn terrain(&self) -> Option<crate::terrain::Terrain>;
     fn bends_grass(&self) -> Option<f32>;
 }
 
 impl LookOverride for Override {
-    fn model(&self) -> Option<crate::AssetLink> {
-        self.part::<ModelRef>().map(|m| m.0)
-    }
     fn material(&self) -> Option<MaterialRef> {
         self.part()
     }
@@ -775,9 +744,6 @@ impl LookOverride for Override {
         self.part()
     }
     fn footprints(&self) -> Option<crate::footprints::Footprints> {
-        self.part()
-    }
-    fn terrain(&self) -> Option<crate::terrain::Terrain> {
         self.part()
     }
     fn bends_grass(&self) -> Option<f32> {
