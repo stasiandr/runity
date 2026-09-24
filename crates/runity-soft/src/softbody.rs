@@ -50,6 +50,10 @@ pub struct SoftBody {
     /// size that is bone, 0 (none: it falls free) to 1.
     pub core: f32,
     pub friction: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 /// A soft body's shape.
@@ -81,6 +85,7 @@ impl Default for SoftBody {
             weight: 5.0,
             core: 0.0,
             friction: 0.6,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

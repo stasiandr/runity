@@ -27,11 +27,15 @@ pub struct Grains {
     pub grain: f32,
     /// How rough they are: 0 ball bearings, 1 crushed stone.
     pub friction: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Grains {
     fn default() -> Self {
-        Self { size: Vec3::new(0.4, 0.8, 0.4), grain: 0.06, friction: 0.7 }
+        Self { size: Vec3::new(0.4, 0.8, 0.4), grain: 0.06, friction: 0.7, net: runity_core::netsim::NetMode::Local }
     }
 }
 
@@ -268,7 +272,7 @@ mod tests {
     /// A column of grains let go on the ground: how high and how wide the
     /// heap it slumps into is.
     fn heap(friction: f32) -> (f32, f32) {
-        let mut state = GrainsState::new(Grains { size: Vec3::new(0.3, 0.9, 0.3), grain: 0.05, friction });
+        let mut state = GrainsState::new(Grains { size: Vec3::new(0.3, 0.9, 0.3), grain: 0.05, friction, ..Default::default() });
         let placed = Mat4::from_translation(Vec3::new(0.0, 0.46, 0.0));
         for _ in 0..150 {
             state.advance(placed, &[Obstacle::ground(0.0)], 1.0 / 60.0);

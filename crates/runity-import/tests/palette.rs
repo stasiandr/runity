@@ -409,3 +409,64 @@ fn a_material_saying_which_faces_and_what_surface_builds() {
     let glass = loaded.material_by_name("glass").expect("it built");
     assert_eq!(glass.render_face, runity::material::RenderFace::Both);
 }
+
+#[test]
+fn a_materials_textures_for_its_shader_survive_the_rmat_and_the_asset() {
+    // A texture by name, found under assets/ as the maps are, and one by
+    // its id; each under the name the shader reads it by.
+    let root = temp("shader-textures");
+    std::fs::remove_dir_all(&root).unwrap();
+    let project = runity::Project::create(&root, "shader-textures").unwrap();
+    let road = project.assets().join("textures").join("T_Road_01.png");
+    std::fs::create_dir_all(road.parent().unwrap()).unwrap();
+    std::fs::write(&road, b"not decoded by a material").unwrap();
+    let road_id =
+        runity_import::ImportSettings::for_source(project.relative(&road).unwrap()).asset_id();
+    let noise_id = runity::asset::AssetId(0x5eed);
+    let source = project.materials().join("landscape.rmat");
+    std::fs::write(
+        &source,
+        format!(
+            r##"(color: "#ffffff", shader: "landscape", textures: {{"_Road": "T_Road_01", "_SampleTexture2D_ab_Texture_1_Texture2D": "{noise_id}"}})"##
+        ),
+    )
+    .unwrap();
+    let written = runity_import::material_source(&source).unwrap();
+    assert_eq!(written.textures.len(), 2, "{:?}", written.textures);
+    runity_import::import_into(&project, &source, None).unwrap();
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    let landscape = library.material_by_name("landscape").expect("it built");
+    let textures = landscape.textures;
+    assert_eq!(textures.get("_Road"), Some(road_id));
+    assert_eq!(
+        textures.get("_SampleTexture2D_ab_Texture_1_Texture2D"),
+        Some(noise_id)
+    );
+    assert!(
+        landscape.maps().any(|id| id == road_id),
+        "what is uploaded for it includes its shader's textures"
+    );
+
+    // And as text, the way a scene spells a material out: a map by name.
+    let text = ron::to_string(&landscape).unwrap();
+    assert!(text.contains("\"_Road\""), "{text}");
+    let back: Material = ron::from_str(&text).unwrap();
+    assert_eq!(back, landscape);
+    // A material without any says nothing about them.
+    let plain = ron::to_string(&Material::default()).unwrap();
+    assert!(!plain.contains("textures"), "{plain}");
+
+    // A name that is no texture is refused, and says which.
+    std::fs::write(
+        &source,
+        r##"(color: "#ffffff", textures: {"_Road": "T_Raod_01"})"##,
+    )
+    .unwrap();
+    let error = format!(
+        "{:#}",
+        runity_import::import_into(&project, &source, None).unwrap_err()
+    );
+    assert!(error.contains("_Road") && error.contains("T_Road_01"), "{error}");
+    let _ = std::fs::remove_dir_all(&root);
+}

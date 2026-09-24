@@ -48,6 +48,10 @@ pub struct Mpm {
     /// How high above the room's floor the block starts, metres: the
     /// entity is the floor's middle.
     pub height: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 /// What an MPM block is made of.
@@ -79,6 +83,7 @@ impl Default for Mpm {
             transfer: Transfer::Apic,
             stiffness: 140.0,
             height: 0.5,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

@@ -58,6 +58,10 @@ pub struct Hair {
     /// crown, rather than straight out: 0 fur standing up, 1 hair lying
     /// flat.
     pub lie: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Hair {
@@ -75,6 +79,7 @@ impl Default for Hair {
             curl: 0.0,
             catch: 0.6,
             lie: 0.7,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }
@@ -407,12 +412,14 @@ pub fn set_wind(world: &mut hecs::World, wind: Wind) {
 
 /// Step all hair by `seconds` in its wind, off the colliders near it.
 pub fn run_hair(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    let clock = runity_core::netsim::session_time(world);
     let mut near = Vec::new();
     for (state, placed) in world.query_mut::<(&mut HairState, &WorldTransform)>() {
         let (scale, _, at) = placed.0.to_scale_rotation_translation();
         let reach = Vec3::splat((state.hair.radius * scale.abs().max_element() + state.hair.length) * 1.2 + 0.5);
         obstacles.near(at - reach, at + reach, &mut near);
         let wind = state.wind;
+        crate::net::keep_time(&mut state.time, clock);
         state.advance(placed.0, &wind, &near, seconds);
     }
 }

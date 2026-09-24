@@ -176,7 +176,11 @@ impl LiveScene {
                 stamps,
                 meshes: HashMap::new(),
                 since_poll: 0.0,
-                components: Components::new(),
+                components: {
+                    let mut components = Components::new();
+                    crate::netsim::register(&mut components);
+                    components
+                },
                 report_to: std::env::var_os(STATE_VAR).map(PathBuf::from),
                 since_report: 0.0,
                 noted: Default::default(),
@@ -499,6 +503,7 @@ impl LiveScene {
         #[cfg(feature = "physics")]
         crate::physics::attach_collision_meshes(world, spawned.iter().copied(), library);
         for (entity, desc) in &spawned {
+            let _ = world.insert_one(*entity, crate::world::SpawnedId(desc.id));
             problems.extend(
                 components
                     .insert_all(desc, *entity, world)

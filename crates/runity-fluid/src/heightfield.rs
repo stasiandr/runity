@@ -40,11 +40,15 @@ pub struct ShallowWater {
     pub dam: f32,
     /// How fast what moves in it loses speed: 0 slick, 1 sluggish.
     pub friction: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for ShallowWater {
     fn default() -> Self {
-        Self { size: Vec2::splat(8.0), cells: 64, depth: 0.2, dam: 0.0, friction: 0.05 }
+        Self { size: Vec2::splat(8.0), cells: 64, depth: 0.2, dam: 0.0, friction: 0.05, net: runity_core::netsim::NetMode::Local }
     }
 }
 
@@ -81,11 +85,15 @@ pub struct SnowCover {
     pub berm: f32,
     /// Seconds for fresh snow to fill a track again; 0 never.
     pub refill: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for SnowCover {
     fn default() -> Self {
-        Self { size: Vec2::splat(8.0), cells: 128, depth: 0.25, berm: 0.5, refill: 0.0 }
+        Self { size: Vec2::splat(8.0), cells: 128, depth: 0.25, berm: 0.5, refill: 0.0, net: runity_core::netsim::NetMode::Local }
     }
 }
 
@@ -739,7 +747,7 @@ mod tests {
 
     #[test]
     fn a_dam_breaks_the_flood_runs_downstream_and_no_water_is_lost() {
-        let water = ShallowWater { size: Vec2::new(6.0, 1.0), cells: 60, depth: 0.1, dam: 0.4, friction: 0.05 };
+        let water = ShallowWater { size: Vec2::new(6.0, 1.0), cells: 60, depth: 0.1, dam: 0.4, friction: 0.05, ..Default::default() };
         let mut state = ShallowState::new(water);
         let floor = [Obstacle::ground(0.0)];
         state.advance(Mat4::IDENTITY, &floor, 0.0);
@@ -761,7 +769,7 @@ mod tests {
 
     #[test]
     fn water_goes_round_a_rock_and_a_body_pushed_in_raises_it() {
-        let water = ShallowWater { size: Vec2::new(4.0, 4.0), cells: 40, depth: 0.3, dam: 0.0, friction: 0.1 };
+        let water = ShallowWater { size: Vec2::new(4.0, 4.0), cells: 40, depth: 0.3, dam: 0.0, friction: 0.1, ..Default::default() };
         let mut state = ShallowState::new(water);
         let rock = Obstacle::Box { center: Vec3::new(0.0, 0.5, 0.0), rotation: glam::Quat::IDENTITY, half: Vec3::splat(0.5) };
         state.advance(Mat4::IDENTITY, &[Obstacle::ground(0.0), rock.clone()], 1.0 / 60.0);
@@ -780,7 +788,7 @@ mod tests {
 
     #[test]
     fn a_ball_rolled_through_snow_leaves_a_track_with_berms_that_stays() {
-        let mut state = SnowState::new(SnowCover { size: Vec2::new(4.0, 2.0), cells: 80, depth: 0.2, berm: 0.5, refill: 0.0 });
+        let mut state = SnowState::new(SnowCover { size: Vec2::new(4.0, 2.0), cells: 80, depth: 0.2, berm: 0.5, refill: 0.0, ..Default::default() });
         // A ball of 0.3 m sunk to 0.1 over the ground, rolled along x.
         for step in 0..60 {
             let x = -1.5 + step as f32 * 0.05;

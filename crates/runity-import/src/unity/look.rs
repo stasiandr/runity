@@ -41,6 +41,29 @@ pub fn fog(text: &str) -> Option<runity::scene::Fog> {
     Some(fog)
 }
 
+/// The light from all round a scene says itself: Unity's gradient
+/// (Trilight) as its three colours, a flat colour as one colour three
+/// times. A skybox's light is left to runity's sky.
+pub fn ambient(text: &str) -> Option<runity::scene::Ambient> {
+    let docs = yaml::documents(text);
+    let b = &docs.iter().find(|d| d.kind == "RenderSettings")?.body;
+    let intensity = b.f32("m_AmbientIntensity").unwrap_or(1.0);
+    let colour = |key: &str| {
+        let c = b.color(key)?;
+        Some([c[0], c[1], c[2]].map(|v| v * intensity))
+    };
+    let sky = colour("m_AmbientSkyColor")?;
+    match b.i64("m_AmbientMode") {
+        Some(1) => Some(runity::scene::Ambient {
+            sky,
+            equator: colour("m_AmbientEquatorColor")?,
+            ground: colour("m_AmbientGroundColor")?,
+        }),
+        Some(3) => Some(runity::scene::Ambient { sky, equator: sky, ground: sky }),
+        _ => None,
+    }
+}
+
 /// The value of an override that is on, from a profile's component.
 fn value<'a>(component: &'a yaml_rust2::Yaml, key: &str) -> Option<&'a yaml_rust2::Yaml> {
     let field = &component[key];

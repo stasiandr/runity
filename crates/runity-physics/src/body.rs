@@ -1,5 +1,5 @@
 //! How a line of a scene is solid: the physics module's fields — `body`,
-//! `collider`, `physics`, `joint`, `joint_break`, `layer` — as types, and
+//! `collider`, `physics`, `joint`, `joint_break`, `collision_model`, `layer` — as types, and
 //! the reading of them off a line ([`PhysicsLine`]). See docs/modules.md.
 
 use glam::Vec3;
@@ -147,6 +147,17 @@ pub struct Motor {
     /// How hard: the spring's stiffness, or how firmly the speed is kept.
     #[serde(default = "motor_strength")]
     pub strength: f32,
+    /// How fast a spring's bounce dies (Unity's damper); a fifth of the
+    /// strength when not said.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub damping: Option<f32>,
+}
+
+impl Motor {
+    /// The damping a spring pulls with.
+    pub fn damping(&self) -> f32 {
+        self.damping.unwrap_or(self.strength.max(0.0) * 0.2).max(0.0)
+    }
 }
 
 fn motor_strength() -> f32 {
@@ -213,6 +224,10 @@ pub struct BodyProps {
     /// 8 is a crate of iron that a wooden one does not push aside.
     #[serde(default = "unit", skip_serializing_if = "is_one")]
     pub density: f32,
+    /// Its mass in kilograms, when said: a shovel of 2 kg is 2 kg whatever
+    /// its collider's size. Wins over `density`. Unity's Rigidbody mass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mass: Option<f32>,
     /// How fast it slows by itself, per second: air, water, a sled on snow.
     /// Unity's drag.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -297,6 +312,7 @@ impl Default for BodyProps {
             friction: 0.5,
             bounce: 0.0,
             density: 1.0,
+            mass: None,
             drag: 0.0,
             spin_drag: 0.0,
             gravity: 1.0,
@@ -334,9 +350,33 @@ pub enum Body {
     /// left each step. Follows its transform like a kinematic body. Unity's
     /// `isTrigger`.
     Trigger,
+    /// One of the colliders of the nearest ancestor with a body of its own:
+    /// a shovel's blade and handle are two parts of one shovel, moving and
+    /// weighing as one — Unity's colliders under a Rigidbody, which make one
+    /// compound body. With no such ancestor it stands still, as a collider
+    /// with no Rigidbody anywhere above it does in Unity.
+    Part,
+    /// A zone that is part of an ancestor's body: it moves with it, is
+    /// solid to nothing and, with [`Contacts`](crate::physics::Contacts) on
+    /// it, knows what is inside — a shovel's head, a bucket's mouth.
+    TriggerPart,
+}
+
+impl Body {
+    /// A collider of an ancestor's body rather than a body of its own.
+    pub fn is_part(self) -> bool {
+        matches!(self, Body::Part | Body::TriggerPart)
+    }
 }
 
 
+
+/// `collision_model: "rock_lod2"` — the model a `Model` collider is made
+/// of, where it is not the one drawn: Unity's MeshCollider names its own
+/// mesh, and a thing can be solid by a mesh it does not show.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CollisionModel(pub crate::AssetLink);
 
 /// `joint_break: 400.0` — the joint breaks when pulled harder than this
 /// many newtons: Unity's Break Force (`PhysicsWorld::broken`).
@@ -351,6 +391,7 @@ crate::impl_parts! {
     BodyProps => "physics", default if |p| p.is_default();
     Joint => "joint", default if |j| j.is_none();
     JointBreak => "joint_break";
+    CollisionModel => "collision_model", default if |m| m.0.is_empty();
 }
 
 /// How a line of a scene is solid, read off it: what was `desc.body` before

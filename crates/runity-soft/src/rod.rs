@@ -58,6 +58,11 @@ pub struct Rod {
     held_stretch: Vec<Vec3>,
     held_bend: Vec<Vec3>,
     held_length: Vec<f32>,
+    /// Ends held by bodies, which do not meet obstacles.
+    pub held_ends: [bool; 2],
+    /// The long-range attachments' pull on a pinned start, last substep,
+    /// newtons.
+    held_reach: Vec3,
 }
 
 impl Rod {
@@ -99,6 +104,59 @@ impl Rod {
             held_stretch: vec![Vec3::ZERO; links],
             held_bend: vec![Vec3::ZERO; links.saturating_sub(1)],
             held_length: vec![0.0; links],
+            held_ends: [false; 2],
+            held_reach: Vec3::ZERO,
+        }
+    }
+
+    /// How hard the rod pulls on each of its ends along its first and last
+    /// links, newtons, from the last substep of `h` seconds: the tension a
+    /// hand holding it feels. Nothing when a link is slack.
+    pub fn end_pulls(&self, h: f32) -> [Vec3; 2] {
+        let n = self.particles.len();
+        let links = self.links();
+        if links == 0 || h <= 0.0 {
+            return [Vec3::ZERO; 2];
+        }
+        let pull = |end: usize, next: usize, k: usize| {
+            let d = self.particles.x[next] - self.particles.x[end];
+            let stretched = d.length() >= self.rest[k] * 0.999;
+            if !stretched {
+                return Vec3::ZERO;
+            }
+            d.normalize_or_zero() * (self.held_length[k].abs() / (h * h))
+        };
+        [pull(0, 1, 0) + self.held_reach, pull(n - 1, n - 2, links - 1)]
+    }
+
+    /// Every link put back to its length along the rod, from the start,
+    /// and — when the end is held too — back from the end, the start and
+    /// the end staying where they are: a shape made by hand (blended,
+    /// carried forward) made into one the rod could have.
+    pub fn restore_lengths(&mut self, end_held: bool) {
+        let last = self.particles.len() - 1;
+        let target = self.particles.x[last];
+        for _ in 0..3 {
+            for k in 0..last {
+                let (a, b) = (self.particles.x[k], self.particles.x[k + 1]);
+                let d = b - a;
+                let len = d.length();
+                if len > 1e-6 {
+                    self.particles.x[k + 1] = a + d * (self.rest[k] / len);
+                }
+            }
+            if !end_held {
+                break;
+            }
+            self.particles.x[last] = target;
+            for k in (1..last).rev() {
+                let (a, b) = (self.particles.x[k + 1], self.particles.x[k]);
+                let d = b - a;
+                let len = d.length();
+                if len > 1e-6 {
+                    self.particles.x[k] = a + d * (self.rest[k] / len);
+                }
+            }
         }
     }
 
@@ -167,7 +225,77 @@ impl Rod {
                 );
             }
         }
-        self.particles.collide(self.radius, self.friction, obstacles);
+        // Long-range attachments (Kim, Chentanez, Müller 2012): from a
+        // pinned start no particle is further than the rod's length to it.
+        // A heavy load on a light chain otherwise stretches it — the links
+        // alone cannot hold ten kilograms in a few passes.
+        self.held_reach = Vec3::ZERO;
+        if self.particles.w[0] <= 0.0 {
+            let origin = self.particles.x[0];
+            let mut reach = 0.0;
+            for i in 1..self.particles.len() {
+                reach += self.rest[i - 1];
+                if self.particles.w[i] <= 0.0 {
+                    continue;
+                }
+                let d = self.particles.x[i] - origin;
+                let far = d.length();
+                if far > reach {
+                    self.particles.x[i] = origin + d * (reach / far);
+                    // What holding it back took, as a pull on the start.
+                    let moved = far - reach;
+                    self.held_reach += (d / far) * (moved / (self.particles.w[i] * h * h));
+                }
+            }
+        }
+        // The same from a pinned end, when the start is free.
+        let last = self.particles.len() - 1;
+        if self.particles.w[0] > 0.0 && self.particles.w[last] <= 0.0 {
+            let origin = self.particles.x[last];
+            let mut reach = 0.0;
+            for i in (0..last).rev() {
+                reach += self.rest[i];
+                if self.particles.w[i] <= 0.0 {
+                    continue;
+                }
+                let d = self.particles.x[i] - origin;
+                let far = d.length();
+                if far > reach {
+                    self.particles.x[i] = origin + d * (reach / far);
+                }
+            }
+        }
+        // And the ends never further apart than the rod is long, each moved
+        // by its weight: two bodies pulling a rope between them stretch it
+        // no more than a rope stretches — with nothing pinned, the links'
+        // passes alone let two heavy ends pull it half as long again.
+        let (w0, w1) = (self.particles.w[0], self.particles.w[last]);
+        if w0 + w1 > 0.0 {
+            let total = self.length();
+            let d = self.particles.x[last] - self.particles.x[0];
+            let far = d.length();
+            if far > total && far > 1e-9 {
+                let n = d / far;
+                let excess = far - total;
+                self.particles.x[0] += n * (excess * w0 / (w0 + w1));
+                self.particles.x[last] -= n * (excess * w1 / (w0 + w1));
+            }
+        }
+        // An end held by a body is inside that body: it is the body that
+        // meets things, not the end.
+        let held = self.held_ends;
+        let last = self.particles.len() - 1;
+        if held == [false; 2] {
+            self.particles.collide(self.radius, self.friction, obstacles);
+        } else if !obstacles.is_empty() {
+            for i in 0..=last {
+                if (i == 0 && held[0]) || (i == last && held[1]) || self.particles.w[i] <= 0.0 {
+                    continue;
+                }
+                let was = self.particles.was[i];
+                crate::obstacle::collide(&mut self.particles.x[i], was, self.radius, self.friction, obstacles);
+            }
+        }
         self.particles.finish(h, self.damping);
         let keep = 1.0 / (1.0 + self.damping.max(0.0) * 4.0 * h);
         for k in 0..self.links() {

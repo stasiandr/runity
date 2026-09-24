@@ -31,6 +31,10 @@ pub struct Report {
     pub models: usize,
     pub animators: usize,
     pub motions: usize,
+    /// ScriptableObjects, as data files under `data/`.
+    pub data: usize,
+    /// Words from string tables, over every language.
+    pub strings: usize,
     /// What was left behind, by kind, with how many times: a component
     /// with no counterpart, a modification it could not carry.
     pub skipped: BTreeMap<String, usize>,
@@ -48,7 +52,7 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators, {} clips",
+            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators, {} clips, {} data, {} strings",
             self.scenes,
             self.prefabs,
             self.materials,
@@ -56,7 +60,9 @@ impl std::fmt::Display for Report {
             self.sounds,
             self.models,
             self.animators,
-            self.motions
+            self.motions,
+            self.data,
+            self.strings
         )?;
         if !self.skipped.is_empty() {
             writeln!(f, "left behind:")?;
@@ -95,6 +101,10 @@ pub struct Unity {
     pub names: HashMap<String, String>,
     /// Unity's layer numbers → runity's layer names (from TagManager).
     pub layers: HashMap<i64, String>,
+    /// A model's meshes each on its own, by the object they are on in it:
+    /// `assets/models/<model>@<object>.glb`, in that object's own frame —
+    /// what a MeshFilter that names one mesh of a model draws.
+    pub pieces: HashMap<String, Vec<String>>,
 }
 
 /// The kind a Unity file becomes in runity, by its extension.
@@ -130,6 +140,7 @@ pub fn kind_of(path: &Path) -> Option<&'static str> {
         "controller" => "animator",
         "anim" => "motion",
         "cs" => "script",
+        "asset" => "data",
         _ => return None,
     })
 }
@@ -186,6 +197,7 @@ impl Unity {
             guids,
             names,
             layers,
+            pieces: HashMap::new(),
         })
     }
 
@@ -267,8 +279,23 @@ pub fn unity_layers(root: &Path) -> Option<(runity::layers::Layers, HashMap<i64,
 
 /// Bring a Unity project's content into a runity project.
 pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) -> Result<Report> {
-    let unity = Unity::open(unity)?;
+    let mut unity = Unity::open(unity)?;
     let mut report = Report::default();
+
+    // Models first: a scene's renderer names one mesh of a model, and
+    // which ones there are is known once they are converted.
+    if options.models {
+        models(&unity, project, options, &mut report);
+    } else {
+        let n = unity.of_kind("model").len();
+        if n > 0 {
+            report.skip(format!(
+                "{n} models: pass --models to convert them through Blender"
+            ));
+        }
+    }
+    unity.pieces = pieces(&project.assets().join("models"));
+    keep_origins(&project.assets().join("models"))?;
 
     if let Some((layers, _)) = unity_layers(&unity.root) {
         let text = ron::ser::to_string_pretty(&layers, ron::ser::PrettyConfig::new())?;
@@ -430,8 +457,12 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             entities,
             ..Default::default()
         };
-        if let Some(sun) = scene::sun(&text) {
+        let ambient = look::ambient(&text);
+        if let Some(mut sun) = scene::sun(&text) {
+            sun.ambient = ambient;
             scene.set_part(&sun);
+        } else if ambient.is_some() {
+            scene.set_part(&runity::scene::Sun { ambient, ..Default::default() });
         }
         // How it looks: its fog, and its global Volume's grade.
         if let Some(fog) = look::fog(&text) {
@@ -443,6 +474,45 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             .save(project.scenes().join(format!("{name}.ron")))
             .with_context(|| format!("scene {name}"))?;
         report.scenes += 1;
+    }
+
+    // ScriptableObjects: a game's configs and graphs, its own fields as
+    // RON under `data/`, named as Unity names the asset. Other `.asset`
+    // files (lighting, terrain, settings) are not a MonoBehaviour and pass.
+    // String tables: a CSV of `key,<language>,<language>…` rows, as
+    // `strings/<language>.ron`, merged into what is there.
+    let mut tables: Vec<&PathBuf> = unity
+        .guids
+        .values()
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")))
+        .collect();
+    tables.sort();
+    for path in tables {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        for (language, words) in string_table(&text) {
+            let file = project.root().join("strings").join(format!("{language}.ron"));
+            let mut all: BTreeMap<String, String> = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|t| runity::ron::from_str(&t).ok())
+                .unwrap_or_default();
+            report.strings += words.len();
+            all.extend(words);
+            let body = runity::ron::ser::to_string_pretty(&all, Default::default())?;
+            write(&file, &format!("// The game's words in `{language}`.\n{body}\n"))?;
+        }
+    }
+
+    for (guid, path) in unity.of_kind("data") {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Some((script, body)) = scene::data_asset(&unity, &text) else {
+            continue;
+        };
+        let name = &unity.names[guid];
+        let text = format!("// {script}, from {}\n{body}\n", path.display());
+        write(&project.root().join("data").join(format!("{name}.ron")), &text)?;
+        report.data += 1;
     }
 
     for (guid, path) in unity.of_kind("animator") {
@@ -469,17 +539,65 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         }
     }
 
-    if options.models {
-        models(&unity, project, options, &mut report);
-    } else {
-        let n = unity.of_kind("model").len();
-        if n > 0 {
-            report.skip(format!(
-                "{n} models: pass --models to convert them through Blender"
-            ));
+    Ok(report)
+}
+
+/// A Unity model's origin is where its scenes put it: its mesh is not
+/// moved down to stand on y = 0, as a model dropped into a runity project
+/// is; and it is one mesh, not a scene of its nodes. Every converted model's sidecar says so — a new one, or an old one
+/// set right and made to import again.
+fn keep_origins(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "glb") {
+            continue;
+        }
+        let sidecar = crate::sidecar_for(&path);
+        let mut settings = match crate::ImportSettings::load(&sidecar) {
+            Ok(settings) => settings,
+            Err(_) => crate::ImportSettings::for_source(format!(
+                "assets/models/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        };
+        // One mesh, whatever its nodes: a scene names a model as one
+        // thing — its pieces are there for a renderer that names one.
+        if settings.origin_to_base || settings.scene || !sidecar.is_file() {
+            settings.origin_to_base = false;
+            settings.scene = false;
+            settings.hash = String::new();
+            settings.save(&sidecar)?;
         }
     }
-    Ok(report)
+    Ok(())
+}
+
+/// The pieces converted models have, from the files: `<model>@<object>.glb`.
+fn pieces(dir: &Path) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "glb") {
+            continue;
+        }
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        if let Some((model, piece)) = stem.split_once('@') {
+            out.entry(model.to_string()).or_default().push(piece.to_string());
+        }
+    }
+    for list in out.values_mut() {
+        list.sort();
+    }
+    out
+}
+
+/// A piece's file name for a Blender object's name: what a file name
+/// can hold.
+pub(crate) fn piece_name(object: &str) -> String {
+    object
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect()
 }
 
 /// FBX (and friends) to GLB through Blender, into `assets/models/`.
@@ -512,10 +630,42 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
         // mirroring Z (docs/unity-import.md). Between the two the model is
         // turned half a turn about up: done here, under a parent the
         // glTF importer bakes into the mesh.
+        //
+        // Each mesh also on its own, in its object's own frame: a Unity
+        // renderer that names one mesh of a model draws it there, the
+        // object's turn and place being the GameObject's. Blender keeps an
+        // FBX mesh's vertices as the file has them — Unity's, but for its
+        // mirror — so the piece is those vertices turned half about up,
+        // put through the matrix that undoes glTF's own Z-up to Y-up, and
+        // in metres as Unity reads the file's units (its UnitScaleFactor,
+        // centimetres to the unit).
+        let pieces_dir = to.with_file_name("");
         let script = format!(
-            "import bpy, math\n\
+            "import bpy, math, mathutils, re\n\
              bpy.ops.wm.read_factory_settings(use_empty=True)\n\
              bpy.ops.import_scene.fbx(filepath={:?})\n\
+             scene = bpy.context.scene\n\
+             import struct\n\
+             data = open({:?}, 'rb').read()\n\
+             unit = 100.0\n\
+             at = data.find(b'UnitScaleFactor')\n\
+             if at >= 0:\n\
+             \x20   for k in range(at + 15, at + 120):\n\
+             \x20       if data[k:k+1] == b'D':\n\
+             \x20           unit = struct.unpack('<d', data[k+1:k+9])[0]\n\
+             \x20           break\n\
+             frame = mathutils.Matrix(((-1,0,0,0),(0,0,1,0),(0,1,0,0),(0,0,0,1))) @ mathutils.Matrix.Scale(unit / 100.0, 4)\n\
+             for o in [o for o in scene.objects if o.type == 'MESH']:\n\
+             \x20   parent, placed = o.parent, o.matrix_world.copy()\n\
+             \x20   for x in scene.objects: x.select_set(False)\n\
+             \x20   o.select_set(True)\n\
+             \x20   o.parent = None\n\
+             \x20   o.matrix_world = frame\n\
+             \x20   piece = re.sub(r'[^A-Za-z0-9_-]', '_', o.name)\n\
+             \x20   bpy.ops.export_scene.gltf(filepath={:?} + '/' + {:?} + '@' + piece + '.glb', export_format='GLB', use_selection=True, export_animations=False, export_skins=False)\n\
+             \x20   o.parent = parent\n\
+             \x20   o.matrix_world = placed\n\
+             for x in scene.objects: x.select_set(False)\n\
              roots = [o for o in bpy.context.scene.objects if o.parent is None]\n\
              turn = bpy.data.objects.new('unity_turn', None)\n\
              bpy.context.scene.collection.objects.link(turn)\n\
@@ -523,6 +673,9 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
              turn.rotation_euler[2] = math.pi\n\
              bpy.ops.export_scene.gltf(filepath={:?}, export_format='GLB', export_animations=True)\n",
             path.to_string_lossy(),
+            path.to_string_lossy(),
+            pieces_dir.to_string_lossy().trim_end_matches('/'),
+            name,
             to.to_string_lossy()
         );
         let result = std::process::Command::new(&blender)
@@ -574,6 +727,52 @@ fn write(path: &Path, text: &str) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(path, text).with_context(|| format!("{}", path.display()))
+}
+
+/// A string table's words by language: a CSV whose header is `key,en,ru…`,
+/// `#` lines and blank ones passed over, fields quoted as CSV quotes them.
+/// Anything else is not a string table and gives nothing.
+pub fn string_table(text: &str) -> Vec<(String, BTreeMap<String, String>)> {
+    let mut rows = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(csv_row);
+    let Some(header) = rows.next() else { return Vec::new() };
+    if header.first().map(String::as_str) != Some("key") || header.len() < 2 {
+        return Vec::new();
+    }
+    let mut out: Vec<(String, BTreeMap<String, String>)> =
+        header[1..].iter().map(|l| (l.clone(), BTreeMap::new())).collect();
+    for row in rows {
+        let Some(key) = row.first().filter(|k| !k.is_empty()) else { continue };
+        for (i, (_, words)) in out.iter_mut().enumerate() {
+            if let Some(text) = row.get(i + 1).filter(|t| !t.is_empty()) {
+                words.insert(key.clone(), text.clone());
+            }
+        }
+    }
+    out
+}
+
+/// One CSV line's fields.
+fn csv_row(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut field)),
+            _ => field.push(c),
+        }
+    }
+    out.push(field);
+    out
 }
 
 /// A Unity asset's `.meta` file.
@@ -654,6 +853,19 @@ fn walk_all(root: &Path, visit: &mut impl FnMut(&Path)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_csv_string_table_is_words_by_language() {
+        let text = "key,en,ru\n# a note\n\nmenu.play,Play,Играть\ntutorial.b1,\"Wake up, crew! Say \"\"hi\"\".\",Подъём\nonly.en,Only,\n";
+        let tables = string_table(text);
+        assert_eq!(tables.len(), 2);
+        let (en, words) = &tables[0];
+        assert_eq!(en, "en");
+        assert_eq!(words["tutorial.b1"], "Wake up, crew! Say \"hi\".");
+        assert_eq!(tables[1].1["menu.play"], "Играть");
+        assert!(!tables[1].1.contains_key("only.en"), "an empty cell is no word");
+        assert!(string_table("name,age\nbob,3\n").is_empty());
+    }
 
     #[test]
     fn names_are_what_a_runity_file_can_be_called() {

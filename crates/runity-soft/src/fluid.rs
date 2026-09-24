@@ -40,6 +40,10 @@ pub struct Fluid {
     /// How thick it is: 0.01 water, 0.3 honey.
     pub viscosity: f32,
     pub look: FluidLook,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 /// How a fluid is solved.
@@ -66,6 +70,7 @@ impl Default for Fluid {
             method: FluidMethod::Pbf,
             viscosity: 0.02,
             look: FluidLook::Surface,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

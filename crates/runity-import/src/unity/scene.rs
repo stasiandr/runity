@@ -21,6 +21,10 @@ const RECT_TRANSFORM: u32 = 224;
 const PREFAB_INSTANCE: u32 = 1001;
 /// The fileID Unity gives a model's root GameObject, in every model.
 const MODEL_ROOT: i64 = 919132149155446097;
+/// And its root's Transform: what a placed model's move, turn and scale
+/// name. Any other of a model's transforms is a node inside it, which a
+/// model brought over whole has no part for.
+const MODEL_ROOT_TRANSFORM: i64 = -8679921383154817045;
 
 /// An entity's ID from a Unity fileID: the same object, the same ID, every
 /// time the file is imported (docs/unity-import.md).
@@ -148,6 +152,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
             })
             .collect(),
         body_object,
+        scoped: HashMap::new(),
     };
 
     // A stripped object stands for a part of a prefab instance: which
@@ -188,6 +193,24 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 }
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
+                }
+                // A switched-off renderer draws nothing: its mesh is not
+                // brought over to be drawn.
+                let hidden = components.get(&d.file_id).into_iter().flatten().any(|c| {
+                    matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
+                        && c.body.i64("m_Enabled") == Some(0)
+                });
+                // A mesh collider keeps its mesh as its collision model.
+                if hidden {
+                    if desc.part::<Collider>() == Some(Collider::Model)
+                        && desc.part::<runity::scene::CollisionModel>().is_none()
+                    {
+                        if let Some(drawn) = desc.part::<runity::scene::ModelRef>() {
+                            desc.set_part(&runity::scene::CollisionModel(drawn.0));
+                        }
+                    }
+                    desc.clear_part::<runity::scene::ModelRef>();
+                    desc.clear_part::<MaterialRef>();
                 }
                 entities.insert(d.file_id, desc);
             }
@@ -230,7 +253,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         }
     }
     // Transforms come to entities last: a GameObject's position is its
-    // transform's.
+    // transform's — a RectTransform's from its anchors in its parent's.
+    let rect_docs: HashMap<i64, Yaml> = docs
+        .iter()
+        .filter(|d| d.class == RECT_TRANSFORM && !d.stripped)
+        .map(|d| (d.file_id, d.body.clone()))
+        .collect();
+    let rects = |id: i64| rect_docs.get(&id).cloned();
     for d in docs
         .iter()
         .filter(|d| matches!(d.class, TRANSFORM | RECT_TRANSFORM) && !d.stripped)
@@ -240,6 +269,9 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         };
         if let Some(desc) = entities.get_mut(go) {
             desc.transform = transform(&d.body);
+            if d.class == RECT_TRANSFORM {
+                desc.transform.position = position(rect_position(&d.body, &rects));
+            }
         }
     }
     // Components added to a prefab instance's parts in this file land on
@@ -325,10 +357,30 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         }
         Some(desc)
     }
-    roots
+    let mut roots: Vec<EntityDesc> = roots
         .into_iter()
         .filter_map(|r| build(r, &mut entities, &children))
-        .collect()
+        .collect();
+    parts_under_bodies(&mut roots, false);
+    roots
+}
+
+/// Colliders under a Rigidbody are parts of its body, as in Unity: a
+/// collider with no Rigidbody of its own, below one that has it, becomes a
+/// `Part` (a trigger a `TriggerPart`) rather than standing still on its own.
+fn parts_under_bodies(lines: &mut [EntityDesc], under_body: bool) {
+    for line in lines {
+        let body = line.body();
+        if under_body {
+            match body {
+                Body::Static => line.set_part(&Body::Part),
+                Body::Trigger => line.set_part(&Body::TriggerPart),
+                _ => {}
+            }
+        }
+        let below = under_body || matches!(body, Body::Dynamic | Body::Kinematic);
+        parts_under_bodies(&mut line.children, below);
+    }
 }
 
 /// What a component's references resolve to.
@@ -337,6 +389,50 @@ struct Refs<'a> {
     /// Any object of the file → the entity it is on.
     entity_of: HashMap<i64, i64>,
     body_object: HashMap<i64, i64>,
+    /// Objects of another file (a prefab whose component an instance
+    /// changes) → the id its part has here, looked up first.
+    scoped: HashMap<i64, EntityId>,
+}
+
+/// A RectTransform's local position, Unity's hand: its anchored position
+/// from the point its anchors pick in its parent's rectangle (the anchors'
+/// span taken at its pivot), and its z. `rects` finds a RectTransform by
+/// its fileID; a parent that is not one has no size.
+fn rect_position(t: &Yaml, rects: &dyn Fn(i64) -> Option<Yaml>) -> [f32; 3] {
+    let v2 = |y: &Yaml, key: &str, or: [f32; 2]| -> [f32; 2] {
+        let v = &y[key];
+        [v.f32("x").unwrap_or(or[0]), v.f32("y").unwrap_or(or[1])]
+    };
+    // A rectangle's size: its size delta plus its anchors' share of its
+    // parent's.
+    fn size(t: &Yaml, rects: &dyn Fn(i64) -> Option<Yaml>, depth: usize) -> [f32; 2] {
+        let v2 = |key: &str, or: f32| -> [f32; 2] {
+            let v = &t[key];
+            [v.f32("x").unwrap_or(or), v.f32("y").unwrap_or(or)]
+        };
+        let (delta, lo, hi) = (v2("m_SizeDelta", 0.0), v2("m_AnchorMin", 0.5), v2("m_AnchorMax", 0.5));
+        let parent = (depth < 32)
+            .then(|| t.reference("m_Father").filter(|r| r.file_id != 0))
+            .flatten()
+            .and_then(|r| rects(r.file_id))
+            .map(|p| size(&p, rects, depth + 1))
+            .unwrap_or([0.0, 0.0]);
+        [delta[0] + (hi[0] - lo[0]) * parent[0], delta[1] + (hi[1] - lo[1]) * parent[1]]
+    }
+    let parent = t.reference("m_Father").filter(|r| r.file_id != 0).and_then(|r| rects(r.file_id));
+    let (parent_size, parent_pivot) = match &parent {
+        Some(p) => (size(p, rects, 0), v2(p, "m_Pivot", [0.5, 0.5])),
+        None => ([0.0, 0.0], [0.5, 0.5]),
+    };
+    let (lo, hi, pivot) = (v2(t, "m_AnchorMin", [0.5, 0.5]), v2(t, "m_AnchorMax", [0.5, 0.5]), v2(t, "m_Pivot", [0.5, 0.5]));
+    let anchored = v2(t, "m_AnchoredPosition", [0.0, 0.0]);
+    let at = |i: usize| {
+        let min = -parent_pivot[i] * parent_size[i];
+        let anchor = lo[i] + (hi[i] - lo[i]) * pivot[i];
+        min + parent_size[i] * anchor + anchored[i]
+    };
+    let z = t.vec3("m_LocalPosition").map_or(0.0, |p| p[2]);
+    [at(0), at(1), z]
 }
 
 fn transform(t: &Yaml) -> Transform {
@@ -401,6 +497,14 @@ fn instance(
     let of = source.guid.as_deref().map(|g| parts.of(unity, g, 0));
     let key_of = |t: Option<i64>| of.as_ref().and_then(|o| o.keys.get(&t?).copied());
     let root_key = of.as_ref().and_then(|o| o.root);
+    // What the modifications leave out is as the prefab has its root —
+    // Unity writes a scale only where it differs from the prefab's.
+    if let Some(base) = root_key.and_then(|k| of.as_ref()?.places.get(&k).copied()) {
+        let (bp, bq) = (base.position, base.rotation());
+        p = [bp.x, bp.y, -bp.z];
+        q = [-bq.x, -bq.y, bq.z, bq.w];
+        s = base.scale.to_array();
+    }
     let mut root_target = modification
         .list("m_Modifications")
         .iter()
@@ -409,19 +513,38 @@ fn instance(
     // A part moved, turned or scaled: its axes as Unity says them.
     type Axes = ([Option<f32>; 3], [Option<f32>; 4], [Option<f32>; 3]);
     let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
+    // A component's fields changed: the prefab's component, changed.
+    let mut behaviours: BTreeMap<i64, Behaviour> = BTreeMap::new();
+    // Whether an anchored position is said: then it, not the local
+    // position's x and y, is where a RectTransform stands.
+    let anchored_too = modification
+        .list("m_Modifications")
+        .iter()
+        .any(|m| m.str("propertyPath").is_some_and(|p| p.starts_with("m_AnchoredPosition")));
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
         };
         let target = m.reference("target").map(|r| r.file_id);
+        let behaviour = target.and_then(|t| Some((t, of.as_ref()?.behaviours.get(&t)?)));
+        if let Some((t, b)) = behaviour.filter(|_| kind == "prefab" && !path.starts_with("m_")) {
+            let b = behaviours.entry(t).or_insert_with(|| b.clone());
+            modify(&mut b.body, path, m);
+            continue;
+        }
         let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
         let axis = |name: &str| -> Option<usize> {
             let rest = path.strip_prefix(name)?.strip_prefix('.')?;
             ["x", "y", "z", "w"].iter().position(|a| *a == rest)
         };
-        let transforming = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+        // A RectTransform's place is its anchored position (x, y) and its
+        // local z: taken as the position, as it is under a parent that is
+        // not a rectangle.
+        let transforming = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale", "m_AnchoredPosition"]
             .iter()
-            .find_map(|f| Some((*f, axis(f)?)));
+            .find_map(|f| Some((*f, axis(f)?)))
+            .map(|(f, i)| if f == "m_AnchoredPosition" { ("m_LocalPosition", i) } else { (f, i) })
+            .filter(|(f, i)| !(path.starts_with("m_LocalPosition") && *f == "m_LocalPosition" && *i < 2 && anchored_too));
         if let Some((field, i)) = transforming {
             if field == "m_LocalPosition" {
                 root_target = root_target.or(target);
@@ -471,6 +594,25 @@ fn instance(
         } else if path == "m_Name" {
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
+            }
+        } else if path == "m_Enabled" && value == 0.0 && kind == "model" {
+            // A placed model's renderer or collider switched off: drawn
+            // not at all, solid by its mesh still if its collider is on.
+            desc.set_part(&runity::scene::CollisionModel(AssetLink::named(name)));
+            desc.clear_part::<runity::scene::ModelRef>();
+            report.skip("a placed model's renderer switched off (drawn not at all)");
+        } else if path == "m_Enabled" && value == 0.0 {
+            // A part's renderer or collider switched off in this instance:
+            // taken off it.
+            let found = target.and_then(|t| of.as_ref()?.components.get(&t).cloned());
+            match found {
+                Some((part, what)) if what == "collider" || what == "model" => {
+                    let change = desc.overrides.entry(part).or_default();
+                    if !change.removed.contains(&what) {
+                        change.removed.push(what);
+                    }
+                }
+                _ => report.skip(format!("a prefab modification of `{path}`")),
             }
         } else if path == "m_IsActive" || path == "m_Layer" {
             // On the part it names — the prefab's root being the instance
@@ -534,6 +676,28 @@ fn instance(
         t.set_rotation(rotation(q));
         desc.overrides.entry(part).or_default().transform = Some(t);
     }
+    // Each component changed, whole, on its part, naming the parts of this
+    // instance as this file has them.
+    for b in behaviours.into_values() {
+        let refs = Refs {
+            unity,
+            entity_of: HashMap::new(),
+            body_object: HashMap::new(),
+            scoped: b.links.iter().map(|(k, e)| (*k, desc.id.within(*e))).collect(),
+        };
+        let value = mono_behaviour(&b.body, &refs);
+        let Ok(raw) = runity::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) else {
+            report.skip(format!("component `{}` changed in an instance, whose fields did not make RON", b.name));
+            continue;
+        };
+        // The root's too: the engine applies an override of the root to
+        // the instance itself.
+        desc.overrides
+            .entry(b.part)
+            .or_default()
+            .components
+            .insert(b.name, raw);
+    }
     // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
         let found =
@@ -572,6 +736,20 @@ struct PrefabParts {
     /// Its components by the id a `m_RemovedComponents` names them: the
     /// part they are on, and what a removal takes off it.
     components: HashMap<i64, (EntityId, String)>,
+    /// Its MonoBehaviours by the id a modification's `target` names them:
+    /// what an instance changes a field of.
+    behaviours: HashMap<i64, Behaviour>,
+}
+
+/// A prefab's MonoBehaviour as it stands in the prefab: the part it is on,
+/// its component name, its fields, and what the objects its fields name
+/// are as parts of the prefab.
+#[derive(Clone)]
+struct Behaviour {
+    part: EntityId,
+    name: String,
+    body: Yaml,
+    links: std::rc::Rc<HashMap<i64, EntityId>>,
 }
 
 /// What taking a component away takes off a line: the field, or the
@@ -649,6 +827,7 @@ impl Parts {
         if unity.named(guid).is_some_and(|(kind, _)| kind == "model") {
             let root = entity_id(MODEL_ROOT);
             out.keys.insert(MODEL_ROOT, root);
+            out.keys.insert(MODEL_ROOT_TRANSFORM, root);
             out.root = Some(root);
         }
         let text = unity
@@ -656,7 +835,28 @@ impl Parts {
             .filter(|(kind, _)| *kind == "prefab" && depth < 16)
             .and_then(|_| unity.guids.get(guid))
             .and_then(|path| std::fs::read_to_string(path).ok());
-        for d in text.as_deref().map(yaml::documents).unwrap_or_default() {
+        let docs = text.as_deref().map(yaml::documents).unwrap_or_default();
+        let rect_docs: HashMap<i64, Yaml> = docs
+            .iter()
+            .filter(|d| d.class == RECT_TRANSFORM && !d.stripped)
+            .map(|d| (d.file_id, d.body.clone()))
+            .collect();
+        let rects = |id: i64| rect_docs.get(&id).cloned();
+        // What each object of the file is a part of: a GameObject itself,
+        // a component its GameObject, a placeholder its prefab instance.
+        let links: std::rc::Rc<HashMap<i64, EntityId>> = std::rc::Rc::new(
+            docs.iter()
+                .filter_map(|d| {
+                    let of = match d.class {
+                        _ if d.stripped => d.body.reference("m_PrefabInstance")?.file_id,
+                        GAME_OBJECT | PREFAB_INSTANCE => d.file_id,
+                        _ => d.body.reference("m_GameObject")?.file_id,
+                    };
+                    Some((d.file_id, entity_id(of)))
+                })
+                .collect(),
+        );
+        for d in docs {
             match d.class {
                 GAME_OBJECT if !d.stripped => {
                     out.keys.insert(d.file_id, entity_id(d.file_id));
@@ -671,7 +871,11 @@ impl Parts {
                         out.root = go;
                     }
                     if let Some(go) = go {
-                        out.places.insert(go, transform(&d.body));
+                        let mut place = transform(&d.body);
+                        if d.class == RECT_TRANSFORM {
+                            place.position = position(rect_position(&d.body, &rects));
+                        }
+                        out.places.insert(go, place);
                         // A move names the transform: the same part.
                         out.keys.insert(d.file_id, go);
                     }
@@ -714,10 +918,46 @@ impl Parts {
                         out.components
                             .insert((d.file_id ^ x) & i64::MAX, (key_of(*e), what.clone()));
                     }
+                    // Its behaviours as this file sees them: with what this
+                    // instance changes in them, and their links as parts
+                    // here.
+                    let mut changed: HashMap<i64, Behaviour> = inner.behaviours.clone();
+                    for m in d.body["m_Modification"].list("m_Modifications") {
+                        let (Some(path), Some(target)) =
+                            (m.str("propertyPath"), m.reference("target"))
+                        else {
+                            continue;
+                        };
+                        if let Some(b) = changed.get_mut(&target.file_id) {
+                            modify(&mut b.body, path, m);
+                        }
+                    }
+                    for (x, b) in changed {
+                        let links = b.links.iter().map(|(k, e)| (*k, key_of(*e))).collect();
+                        out.behaviours.insert(
+                            (d.file_id ^ x) & i64::MAX,
+                            Behaviour {
+                                part: key_of(b.part),
+                                links: std::rc::Rc::new(links),
+                                ..b
+                            },
+                        );
+                    }
                 }
                 _ if !d.stripped => {
                     let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
                     if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
+                        if d.kind == "MonoBehaviour" {
+                            out.behaviours.insert(
+                                d.file_id,
+                                Behaviour {
+                                    part: entity_id(go.file_id),
+                                    name: what.clone(),
+                                    body: d.body.clone(),
+                                    links: links.clone(),
+                                },
+                            );
+                        }
                         out.components
                             .insert(d.file_id, (entity_id(go.file_id), what));
                     }
@@ -790,15 +1030,26 @@ fn field_of(path: &str) -> &str {
 /// One component of a GameObject, onto its entity.
 fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     let b = &c.body;
+    let collider = matches!(
+        c.kind.as_str(),
+        "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider"
+    );
+    if collider && b.i64("m_Enabled") == Some(0) {
+        // Switched off, it touches nothing.
+        report.skip("a switched-off collider");
+        return;
+    }
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                let model = piece(refs.unity, model, &desc.name);
                 desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                    let model = piece(refs.unity, model, &desc.name);
                     desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
                 }
             }
@@ -844,6 +1095,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         }
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
+            // Its own mesh, which need not be the one drawn.
+            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                let model = piece(refs.unity, model, &desc.name);
+                desc.set_part(&runity::scene::CollisionModel(AssetLink::named(model)));
+            }
             solid(desc, b);
         }
         "Rigidbody" => {
@@ -863,6 +1119,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 } else {
                     1.0
                 },
+                // Unity's own default is a kilogram.
+                mass: Some(b.f32("m_Mass").unwrap_or(1.0)),
+                // Continuous, speculative or dynamic: checked between steps.
+                fast: b.i64("m_CollisionDetection").is_some_and(|m| m != 0),
                 ..BodyProps::default()
             });
         }
@@ -906,10 +1166,12 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     axis: b.vec3("m_Axis").map(axis).unwrap_or(Vec3::X),
                     limits_deg: (b.i64("m_UseLimits") == Some(1)).then(|| {
                         let l = &b["m_Limits"];
-                        // Mirrored: a turn one way is now the other.
-                        (-l.f32("max").unwrap_or(0.0), -l.f32("min").unwrap_or(0.0))
+                        // The axis is mirrored as a pseudo-vector, which
+                        // keeps the sense of a turn about it: the angles
+                        // are Unity's.
+                        (l.f32("min").unwrap_or(0.0), l.f32("max").unwrap_or(0.0))
                     }),
-                    motor: None,
+                    motor: hinge_drive(b),
                 },
                 "SpringJoint" => Joint::Spring {
                     to,
@@ -1152,6 +1414,28 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
     (kind == "model").then(|| name.to_string())
 }
 
+/// Which mesh of a model a renderer on `object` draws, in that object's
+/// frame: the piece named as the object is (Unity's "(1)" copies aside),
+/// or a model's only piece. The whole model, in its root's frame, when it
+/// cannot tell — or has no pieces converted.
+fn piece(unity: &Unity, model: String, object: &str) -> String {
+    let Some(pieces) = unity.pieces.get(&model) else {
+        return model;
+    };
+    let bare = object.trim_end_matches(|c: char| c == ')' || c.is_ascii_digit());
+    let bare = bare.strip_suffix(" (").unwrap_or(object).trim();
+    for name in [object, bare] {
+        let wanted = super::piece_name(name);
+        if pieces.iter().any(|p| *p == wanted) {
+            return format!("{model}@{wanted}");
+        }
+    }
+    match pieces.as_slice() {
+        [only] => format!("{model}@{only}"),
+        _ => model,
+    }
+}
+
 /// Fields a MonoBehaviour's document has that are Unity's, not the game's.
 const UNITY_FIELDS: [&str; 10] = [
     "m_ObjectHideFlags",
@@ -1165,6 +1449,129 @@ const UNITY_FIELDS: [&str; 10] = [
     "m_Name",
     "m_EditorClassIdentifier",
 ];
+
+/// A HingeJoint's spring (held at an angle) or motor (turning at a
+/// speed), in Unity's angles as its limits are. The spring wins when both are on,
+/// as a lever that springs back is what the two together usually mean.
+fn hinge_drive(b: &Yaml) -> Option<runity::scene::Motor> {
+    if b.i64("m_UseSpring") == Some(1) {
+        let s = &b["m_Spring"];
+        return Some(runity::scene::Motor {
+            speed: 0.0,
+            hold: Some(s.f32("targetPosition").unwrap_or(0.0)),
+            strength: s.f32("spring").unwrap_or(0.0),
+            damping: Some(s.f32("damper").unwrap_or(0.0)),
+        });
+    }
+    if b.i64("m_UseMotor") == Some(1) {
+        let m = &b["m_Motor"];
+        return Some(runity::scene::Motor {
+            speed: m.f32("targetVelocity").unwrap_or(0.0),
+            hold: None,
+            strength: m.f32("force").unwrap_or(0.0),
+            damping: None,
+        });
+    }
+    None
+}
+
+/// Change one field of a MonoBehaviour's YAML as a prefab modification
+/// says: `a.b`, `list.Array.size`, `list.Array.data[2].count`. The value
+/// takes the type the field had (a number stays a number); an object
+/// field takes the modification's `objectReference`.
+fn modify(body: &mut Yaml, path: &str, m: &Yaml) {
+    let mut steps: Vec<&str> = path.split('.').collect();
+    let mut at = body;
+    while let Some(step) = (!steps.is_empty()).then(|| steps.remove(0)) {
+        if step == "Array" {
+            continue;
+        }
+        if step == "size" {
+            // `list.Array.size`: longer copies the last item, shorter cuts.
+            let n = yaml::number(&m["value"]).unwrap_or(0.0).max(0.0) as usize;
+            if !matches!(at, Yaml::Array(_)) {
+                *at = Yaml::Array(Vec::new());
+            }
+            if let Yaml::Array(items) = at {
+                let fill = items.last().cloned().unwrap_or(Yaml::Hash(Default::default()));
+                items.resize(n, fill);
+            }
+            return;
+        }
+        if let Some(i) = step
+            .strip_prefix("data[")
+            .and_then(|r| r.strip_suffix(']'))
+            .and_then(|i| i.parse::<usize>().ok())
+        {
+            let Yaml::Array(items) = at else { return };
+            if i >= items.len() {
+                let fill = items.last().cloned().unwrap_or(Yaml::Hash(Default::default()));
+                items.resize(i + 1, fill);
+            }
+            at = &mut items[i];
+        } else {
+            if !matches!(at, Yaml::Hash(_)) {
+                *at = Yaml::Hash(Default::default());
+            }
+            let Yaml::Hash(h) = at else { return };
+            at = h
+                .entry(Yaml::String(step.to_string()))
+                .or_insert(Yaml::Null);
+        }
+    }
+    let reference = m["objectReference"].clone();
+    let is_reference = yaml::reference(at).is_some()
+        || yaml::reference(&reference).is_some_and(|r| !r.is_none());
+    *at = if is_reference {
+        reference
+    } else {
+        let text = match &m["value"] {
+            Yaml::String(t) => t.clone(),
+            Yaml::Integer(i) => i.to_string(),
+            Yaml::Real(r) => r.clone(),
+            Yaml::Boolean(b) => (*b as i64).to_string(),
+            _ => String::new(),
+        };
+        match at {
+            Yaml::Integer(_) | Yaml::Boolean(_) => text
+                .parse::<i64>()
+                .map(Yaml::Integer)
+                .unwrap_or(Yaml::Real(text)),
+            Yaml::Real(_) => Yaml::Real(text),
+            Yaml::String(_) => Yaml::String(text),
+            _ => {
+                if let Ok(i) = text.parse::<i64>() {
+                    Yaml::Integer(i)
+                } else if text.parse::<f64>().is_ok() {
+                    Yaml::Real(text)
+                } else {
+                    Yaml::String(text)
+                }
+            }
+        }
+    };
+}
+
+/// A ScriptableObject `.asset` as data: the script it is an instance of,
+/// and its own fields as a RON struct. `None` when the file is not one, or
+/// its script is not the project's (a package's: fonts, render settings).
+pub fn data_asset(unity: &Unity, text: &str) -> Option<(String, String)> {
+    let docs = yaml::documents(text);
+    let doc = docs.iter().find(|d| d.kind == "MonoBehaviour")?;
+    let script = doc
+        .body
+        .reference("m_Script")
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))
+        .map(|p| super::stem(p))?;
+    let refs = Refs {
+        unity,
+        entity_of: HashMap::new(),
+        body_object: HashMap::new(),
+        scoped: HashMap::new(),
+    };
+    Some((script, mono_behaviour(&doc.body, &refs)))
+}
 
 /// A MonoBehaviour's own fields as a RON struct.
 fn mono_behaviour(b: &Yaml, refs: &Refs) -> String {
@@ -1273,6 +1680,9 @@ fn link(r: &Ref, refs: &Refs) -> Option<String> {
     }
     match r.guid.as_deref() {
         None => {
+            if let Some(id) = refs.scoped.get(&r.file_id) {
+                return Some(format!("EntityRef(\"{id}\")"));
+            }
             let entity = refs.entity_of.get(&r.file_id)?;
             Some(format!("EntityRef(\"{}\")", entity_id(*entity)))
         }
@@ -1298,6 +1708,7 @@ mod tests {
 
     fn unity() -> Unity {
         Unity {
+            pieces: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
@@ -1464,6 +1875,59 @@ ParticleSystemRenderer:
   m_Materials:
   - {fileID: 2100000, guid: mmm, type: 2}
 ";
+
+    #[test]
+    fn a_hinge_springs_to_its_target_in_unitys_angles() {
+        let text = "a: 1\nm_UseSpring: 1\nm_Spring:\n  spring: 20\n  damper: 5\n  targetPosition: 90\nm_UseMotor: 0\n";
+        let b = &yaml_rust2::YamlLoader::load_from_str(text).unwrap()[0];
+        let motor = hinge_drive(b).unwrap();
+        assert_eq!(motor.hold, Some(90.0));
+        assert_eq!((motor.strength, motor.damping()), (20.0, 5.0));
+        let off = &yaml_rust2::YamlLoader::load_from_str("m_UseSpring: 0\nm_UseMotor: 0\n").unwrap()[0];
+        assert!(hinge_drive(off).is_none());
+    }
+
+    #[test]
+    fn an_instance_changes_a_components_fields_as_its_modifications_say() {
+        let load = |t: &str| yaml_rust2::YamlLoader::load_from_str(t).unwrap().remove(0);
+        let mut body = load("required:\n- tag: plank\n  count: 3\n- tag: scrap\n  count: 2\nrideSeconds: 31\nvolume: {fileID: 5}\n");
+        let change = |path: &str, value: &str| load(&format!("propertyPath: {path}\nvalue: {value}\nobjectReference: {{fileID: 0}}\n"));
+        modify(&mut body, "required.Array.size", &change("required.Array.size", "1"));
+        modify(&mut body, "required.Array.data[0].tag", &change("", "sponge"));
+        modify(&mut body, "required.Array.data[0].count", &change("", "4"));
+        modify(&mut body, "rideSeconds", &change("", "12.5"));
+        modify(&mut body, "volume", &load("value: \nobjectReference: {fileID: 9}\n"));
+        let items = body["required"].as_vec().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tag"].as_str(), Some("sponge"));
+        assert_eq!(items[0]["count"].as_i64(), Some(4));
+        assert_eq!(yaml::number(&body["rideSeconds"]), Some(12.5));
+        assert_eq!(body["volume"]["fileID"].as_i64(), Some(9));
+    }
+
+    #[test]
+    fn a_renderer_draws_the_piece_of_a_model_named_as_its_object() {
+        let mut unity = unity();
+        unity.pieces.insert("level".into(), vec!["Sand".into(), "Rock_2".into()]);
+        unity.pieces.insert("sheet".into(), vec!["Cube_054".into()]);
+        assert_eq!(piece(&unity, "level".into(), "Sand (3)"), "level@Sand");
+        assert_eq!(piece(&unity, "level".into(), "Rock.2"), "level@Rock_2");
+        assert_eq!(piece(&unity, "level".into(), "Tree"), "level", "not one of its pieces: the whole");
+        assert_eq!(piece(&unity, "sheet".into(), "SM_Sheet_01 (7)"), "sheet@Cube_054", "its only piece");
+        assert_eq!(piece(&unity, "crate".into(), "Crate"), "crate", "no pieces converted");
+    }
+
+    #[test]
+    fn a_scriptable_object_becomes_data() {
+        let text = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_Script: {fileID: 11500000, guid: sss, type: 3}\n  m_Name: GardenSoil\n  graphName: garden_soil\n  nodes:\n  - prefab: {fileID: 100, guid: ppp, type: 3}\n    branches:\n    - condition: 2\n      requires: [seeds]\n";
+        let (script, body) = data_asset(&unity(), text).unwrap();
+        assert_eq!(script, "Door");
+        assert!(body.contains("graphName: \"garden_soil\""), "{body}");
+        assert!(body.contains("PrefabLink(\"Lamp\")"), "{body}");
+        assert!(body.contains("condition: 2"), "{body}");
+        assert!(!body.contains("m_Name"), "{body}");
+        assert!(data_asset(&unity(), "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n  m_ObjectHideFlags: 0\n").is_none());
+    }
 
     #[test]
     fn an_instance_moves_a_part_and_takes_its_light_away() {

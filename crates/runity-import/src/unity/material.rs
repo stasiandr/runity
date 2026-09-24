@@ -75,9 +75,22 @@ pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
                     used.insert(guid);
                 }
             }
-            if !base && own_shader(unity, &doc.body).is_some() {
+            let own = own_shader(unity, &doc.body);
+            if !base && own.is_some() {
                 if let Some(guid) = own_texture(unity, &doc.body) {
                     colour.insert(guid.clone());
+                    used.insert(guid);
+                }
+            }
+            // What it hands its own shader: colour, unless its name says
+            // it is a normal map (Unity's import settings may still say
+            // it is data).
+            if let Some((_, shader)) = &own {
+                for (property, guid) in shader_textures(unity, &doc.body, shader) {
+                    let lower = property.to_lowercase();
+                    if !lower.contains("normal") && !lower.contains("bump") {
+                        colour.insert(guid.clone());
+                    }
                     used.insert(guid);
                 }
             }
@@ -108,6 +121,49 @@ fn own_texture(unity: &Unity, m: &Yaml) -> Option<String> {
             let guid = v.reference("m_Texture")?.guid?;
             matches!(unity.named(&guid), Some(("texture", _))).then_some(guid)
         })
+}
+
+/// The textures a custom shader's material sets that the shader reads:
+/// each property's name and its texture's GUID, in the `.mat`'s order.
+///
+/// A material keeps the properties of every shader it ever had — a stale
+/// `_BaseMap`, a Sample Texture 2D node since deleted — so only those the
+/// shader's file still mentions come over: an exposed property by its
+/// name, a texture set in a node (`_SampleTexture2D_<node>_Texture_1_…`,
+/// as Unity saves it on the material) by the node's id. A shader that
+/// cannot be read keeps them all. A picture the import does not copy (a
+/// `.psd`) is left out rather than named: the material would not build.
+pub fn shader_textures(unity: &Unity, m: &Yaml, shader: &Path) -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(shader).ok();
+    let copied = |guid: &str| {
+        unity.guids.get(guid).is_some_and(|p| {
+            p.extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .is_some_and(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp"))
+        })
+    };
+    let read = |property: &str| {
+        let Some(text) = &text else { return true };
+        match property
+            .strip_prefix("_SampleTexture2D_")
+            .and_then(|rest| rest.split('_').next())
+        {
+            Some(node) => text.contains(node),
+            None => text.contains(property),
+        }
+    };
+    m["m_SavedProperties"]
+        .list("m_TexEnvs")
+        .iter()
+        .filter_map(|item| {
+            let Yaml::Hash(h) = item else { return None };
+            let (k, v) = h.iter().next()?;
+            let property = k.as_str()?;
+            let guid = v.reference("m_Texture")?.guid?;
+            (matches!(unity.named(&guid), Some(("texture", _))) && copied(&guid) && read(property))
+                .then(|| (property.to_string(), guid))
+        })
+        .collect()
 }
 
 /// A picture the shader graph holds itself — a Sample Texture 2D with its
@@ -459,6 +515,19 @@ pub fn convert_with(
         if let Some(how) = declared(&written, "screen_map") {
             fields.push(format!("screen_map: {how}"));
         }
+        // Every texture it sets that the shader reads, by the name the
+        // shader reads it by; the written shader's `// runity:textures`
+        // line picks which go in its slots.
+        let textures: Vec<String> = shader_textures(unity, m, path)
+            .into_iter()
+            .filter_map(|(property, guid)| {
+                let (_, texture) = unity.named(&guid)?;
+                Some(format!("{property:?}: {texture:?}"))
+            })
+            .collect();
+        if !textures.is_empty() {
+            fields.push(format!("textures: {{{}}}", textures.join(", ")));
+        }
         if !names.is_empty() {
             let values: Vec<String> = param_values(m, &names)
                 .into_iter()
@@ -585,12 +654,110 @@ Material:
     }
 
     #[test]
+    fn a_shader_graphs_material_hands_it_the_textures_the_graph_reads() {
+        let dir = std::env::temp_dir().join(format!("runity-unity-textures-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The graph exposes `_Road` and `_Normal` and holds a texture in
+        // the node 5f1339acdb164c14b236042c20de1ef1; `_Stale` is from a
+        // shader the material had before, and `_Empty` is set to nothing.
+        let graph = dir.join("Landscape_Shader.shadergraph");
+        std::fs::write(
+            &graph,
+            "{\n    \"m_DefaultReferenceName\": \"_Road\"\n}\n\n{\n    \"m_DefaultReferenceName\": \"_Normal\"\n}\n\n{\n    \"m_ObjectId\": \"5f1339acdb164c14b236042c20de1ef1\"\n}\n",
+        )
+        .unwrap();
+        let mat = dir.join("M_Landscape.mat");
+        std::fs::write(
+            &mat,
+            "%YAML 1.1
+--- !u!21 &2100000
+Material:
+  m_Name: M_Landscape
+  m_Shader: {fileID: -6465566751694194690, guid: ggg, type: 3}
+  m_SavedProperties:
+    m_TexEnvs:
+    - _Empty:
+        m_Texture: {fileID: 0}
+    - _Road:
+        m_Texture: {fileID: 2800000, guid: road, type: 3}
+    - _SampleTexture2D_5f1339acdb164c14b236042c20de1ef1_Texture_1_Texture2D:
+        m_Texture: {fileID: 2800000, guid: noise, type: 3}
+    - _Stale:
+        m_Texture: {fileID: 2800000, guid: fridge, type: 3}
+    - _Normal:
+        m_Texture: {fileID: 2800000, guid: bumps, type: 3}
+    m_Colors:
+    - _Color: {r: 1, g: 1, b: 1, a: 1}
+",
+        )
+        .unwrap();
+        let file = |name: &str| dir.join(name);
+        let unity = Unity {
+            layers: Default::default(),
+            pieces: Default::default(),
+            root: dir.clone(),
+            guids: [
+                ("ggg", file("Landscape_Shader.shadergraph")),
+                ("mmm", mat.clone()),
+                ("road", file("T_Road.tga")),
+                ("noise", file("T_Noise.tga")),
+                ("fridge", file("T_Fridge.png")),
+                ("bumps", file("T_Bumps.png")),
+            ]
+            .into_iter()
+            .map(|(g, p)| (g.to_string(), p))
+            .collect(),
+            names: [
+                ("road", "T_Road"),
+                ("noise", "T_Noise"),
+                ("fridge", "T_Fridge"),
+                ("bumps", "T_Bumps"),
+            ]
+            .into_iter()
+            .map(|(g, n)| (g.to_string(), n.to_string()))
+            .collect(),
+        };
+        let text = convert(&unity, &mat).unwrap();
+        assert!(text.contains(r#"shader: "landscape_shader""#), "{text}");
+        let source: crate::MaterialSource = ron::from_str(
+            text.lines()
+                .filter(|l| !l.starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .as_str(),
+        )
+        .unwrap();
+        let textures: Vec<(&str, &str)> = source
+            .textures
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            textures,
+            [
+                ("_Normal", "T_Bumps"),
+                ("_Road", "T_Road"),
+                ("_SampleTexture2D_5f1339acdb164c14b236042c20de1ef1_Texture_1_Texture2D", "T_Noise"),
+            ],
+            "{text}"
+        );
+        // And they are copied over: the colour ones as colour, the normal
+        // map as data; the stale one not at all.
+        let (used, data) = textures_used(&unity);
+        assert!(["road", "noise", "bumps"].iter().all(|g| used.contains(*g)), "{used:?}");
+        assert!(!used.contains("fridge"), "{used:?}");
+        assert_eq!(data.into_iter().collect::<Vec<_>>(), ["bumps"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_urp_lit_material_becomes_an_rmat_that_builds() {
         let dir = std::env::temp_dir().join(format!("runity-unity-mat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Wet Stone.mat");
         std::fs::write(&path, MAT).unwrap();
         let unity = Unity {
+            pieces: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("ttt".to_string(), dir.join("stone_albedo.png"))]

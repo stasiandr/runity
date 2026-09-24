@@ -315,8 +315,12 @@ impl OceanState {
 
 /// Every ocean on by `seconds` in its scene's wind.
 pub fn run_oceans(world: &mut hecs::World, seconds: f32) {
+    // The same sea on every peer (docs/netsim.md): its waves are the same
+    // spectrum drawn at the session's time.
+    let clock = runity_core::netsim::session_time(world);
     for (state, placed) in world.query_mut::<(&mut OceanState, &WorldTransform)>() {
         let wind = state.blowing;
+        runity_soft::net::keep_time(&mut state.time, clock);
         state.advance(placed.0, wind, seconds);
     }
 }

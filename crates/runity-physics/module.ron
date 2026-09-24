@@ -8,7 +8,7 @@
     depends: ["geometry"],
     runtime: true,
     editor: false,
-    parts: ["body", "collider", "physics", "joint", "joint_break"],
+    parts: ["body", "collider", "physics", "joint", "joint_break", "collision_model"],
     assets: [],
     feature: Some("physics"),
 )

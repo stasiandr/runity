@@ -32,6 +32,13 @@ pub struct WorldTransform(pub glam::Mat4);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SceneId(pub crate::id::EntityId);
 
+/// Which line of a prefab a run-time entity was spawned from, in that
+/// spawn's scope: what the links in its components — a machine's lever, a
+/// hole's volume — name it by. Not a [`SceneId`], which a reload of the
+/// scene would take for one of its own lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpawnedId(pub crate::id::EntityId);
+
 /// What an entity is attached to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parent(pub hecs::Entity);
@@ -534,6 +541,7 @@ pub struct NetPrefab(pub String);
 pub fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
     let mut out: HashMap<EntityId, hecs::Entity> = world
         .query::<(hecs::Entity, &SceneId)>()
+        .without::<&crate::netsim::Unshared>()
         .iter()
         .map(|(entity, id)| (id.0, entity))
         .collect();

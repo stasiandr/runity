@@ -52,6 +52,10 @@ pub struct Ragdoll {
     /// What its left hand reaches for.
     #[serde(skip_serializing_if = "unlinked")]
     pub reach: EntityRef,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 fn unlinked(r: &EntityRef) -> bool {
@@ -77,7 +81,7 @@ pub enum Drive {
 
 impl Default for Ragdoll {
     fn default() -> Self {
-        Self { mode: Mode::Active, drive: Drive::Stand, height: 1.8, strength: 1.0, toughness: 5.0, recover: 3.0, reach: EntityRef::default() }
+        Self { mode: Mode::Active, drive: Drive::Stand, height: 1.8, strength: 1.0, toughness: 5.0, recover: 3.0, reach: EntityRef::default(), net: runity_core::netsim::NetMode::Local }
     }
 }
 
@@ -227,6 +231,18 @@ pub fn targets(world: &mut hecs::World, seconds: f32) -> Vec<Targets> {
         .collect();
     for (owner, id, placed, scale) in fresh {
         let parts = spawn_parts(world, owner, id, placed, scale);
+        // Over the network (docs/netsim.md): a `Full` ragdoll's parts are
+        // bodies of the network's, driven by whoever drives it and taken
+        // with it; any other's are every peer's own.
+        let full = world.get::<&RagdollState>(owner).is_ok_and(|s| s.ragdoll.net == runity_core::netsim::NetMode::Full);
+        if full {
+            let ids = (0..parts.len()).map(|i| part_id(id, i)).collect();
+            let _ = world.insert_one(owner, runity_core::netsim::Tied(ids));
+        } else {
+            for part in &parts {
+                let _ = world.insert_one(*part, runity_core::netsim::Unshared);
+            }
+        }
         if let Ok(mut s) = world.get::<&mut RagdollState>(owner) {
             s.parts = parts;
         }
@@ -384,6 +400,26 @@ impl runity_core::world::Dress for CrawlerDress {
                 let _ = world.remove_one::<CrawlerState>(entity);
             }
         }
+    }
+}
+
+
+/// A ragdoll's state for the network (`Components::register_state`): how
+/// much its muscles pull — knocked limp or back on its feet — from its
+/// owner, when it is `Full`. Its parts go as the bodies they are.
+pub fn gather_net(world: &hecs::World, entity: hecs::Entity) -> Option<Vec<u8>> {
+    let state = world.get::<&RagdollState>(entity).ok()?;
+    if state.ragdoll.net != runity_core::netsim::NetMode::Full || world.get::<&runity_core::world::Replica>(entity).is_ok() {
+        return None;
+    }
+    // In tenths: a figure that changes while it recovers, not every step.
+    Some(vec![(state.active.clamp(0.0, 1.0) * 10.0).round() as u8])
+}
+
+/// The owner's figure onto everyone else's.
+pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, _sender: u32, _tick: u64, bytes: &[u8]) {
+    if let (Ok(mut state), Some(b)) = (world.get::<&mut RagdollState>(entity), bytes.first()) {
+        state.active = *b as f32 / 10.0;
     }
 }
 

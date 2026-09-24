@@ -18,6 +18,10 @@ pub fn collider_color(body: crate::scene::Body) -> Material {
         Body::Dynamic => [0.25, 0.5, 1.0],
         Body::Kinematic => [1.0, 0.55, 0.15],
         Body::Trigger => [1.0, 0.9, 0.2],
+        // A part is drawn in its body's colour by whoever knows the body;
+        // alone it is a solid shape: green, and a zone yellow.
+        Body::Part => [0.35, 0.8, 0.55],
+        Body::TriggerPart => [1.0, 0.8, 0.3],
     };
     Material::new(r, g, b).unlit()
 }

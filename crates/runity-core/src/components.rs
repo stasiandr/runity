@@ -44,6 +44,13 @@ type Remove = fn(&mut World, hecs::Entity);
 /// A component's value on an entity, as RON — for the ones that go over the
 /// network.
 type Write = fn(&World, hecs::Entity) -> Option<String>;
+/// A simulation's state on an entity, as the bytes it goes over the
+/// network in; `None` when it has nothing to say (not simulated here, or
+/// not in a mode that sends it).
+pub type GatherState = fn(&World, hecs::Entity) -> Option<Vec<u8>>;
+/// The owner's state put onto a replica: the sender's peer number and its
+/// tick, and the bytes.
+pub type TakeState = fn(&mut World, hecs::Entity, u32, u64, &[u8]);
 
 /// The component types a game has, by the names scenes use for them.
 #[derive(Default, Clone)]
@@ -55,6 +62,12 @@ pub struct Components {
     saved: BTreeMap<String, Write>,
     /// What each looks like, read off its `Deserialize`.
     shapes: BTreeMap<String, fn() -> crate::shape::Shape>,
+    /// Simulations' states that go over the network as their own bytes
+    /// rather than a component's RON (docs/netsim.md): a rope's particles.
+    states: BTreeMap<String, (GatherState, TakeState)>,
+    /// [`Components::networked_names`], kept: what a blob's number is the
+    /// place in.
+    order: Vec<String>,
 }
 
 /// A component a scene names that could not be put on its entity.
@@ -149,7 +162,23 @@ impl Components {
     {
         self.register::<T>(name);
         self.networked.insert(name.to_string(), write::<T>);
+        self.reorder();
         self
+    }
+
+    fn reorder(&mut self) {
+        self.order = self.networked_names().map(str::to_string).collect();
+    }
+
+    /// A networked component's or state's number on the wire: one past its
+    /// place among the names sorted (nought is the transform's).
+    pub fn networked_id(&self, name: &str) -> Option<u16> {
+        self.order.binary_search_by(|n| n.as_str().cmp(name)).ok().map(|i| i as u16 + 1)
+    }
+
+    /// The name a number on the wire stands for.
+    pub fn networked_name(&self, id: u16) -> Option<&str> {
+        self.order.get((id as usize).checked_sub(1)?).map(String::as_str)
     }
 
     /// Say that `name` means `T`, and that a save game keeps it: its value
@@ -179,6 +208,40 @@ impl Components {
 
     pub fn is_networked(&self, name: &str) -> bool {
         self.networked.contains_key(name)
+    }
+
+    /// Say that `name` is a simulation's state: written by `gather` on the
+    /// owner, taken by `take` on everyone else, as bytes the module chooses
+    /// (docs/netsim.md, `NetState`). Not a component: nothing in a scene
+    /// names it, and it is not saved.
+    pub fn register_state(&mut self, name: &str, gather: GatherState, take: TakeState) -> &mut Self {
+        self.states.insert(name.to_string(), (gather, take));
+        self.reorder();
+        self
+    }
+
+    pub fn is_state(&self, name: &str) -> bool {
+        self.states.contains_key(name)
+    }
+
+    /// Every simulation's state on an entity, as `(name, bytes)`.
+    pub fn gather_states(&self, world: &World, entity: hecs::Entity) -> Vec<(String, Vec<u8>)> {
+        self.states
+            .iter()
+            .filter_map(|(name, (gather, _))| gather(world, entity).map(|bytes| (name.clone(), bytes)))
+            .collect()
+    }
+
+    /// The owner's state `name` onto a replica; false for a name that is
+    /// not a state.
+    pub fn take_state(&self, name: &str, world: &mut World, entity: hecs::Entity, sender: u32, tick: u64, bytes: &[u8]) -> bool {
+        match self.states.get(name) {
+            Some((_, take)) => {
+                take(world, entity, sender, tick, bytes);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Every networked component on an entity, as `(name, RON)`.
@@ -217,9 +280,12 @@ impl Components {
         }
     }
 
-    /// The networked components' names, sorted.
+    /// The networked components' and states' names, sorted: what two
+    /// builds must agree on.
     pub fn networked_names(&self) -> impl Iterator<Item = &str> {
-        self.networked.keys().map(String::as_str)
+        let mut names: Vec<&str> = self.networked.keys().chain(self.states.keys()).map(String::as_str).collect();
+        names.sort_unstable();
+        names.into_iter()
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {

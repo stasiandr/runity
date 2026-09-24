@@ -29,7 +29,7 @@ use web_time::Instant;
 
 use glam::{Quat, Vec3};
 
-use super::protocol::{Blob, Entry, Record, ToClient, ToServer, TRANSFORM};
+use super::protocol::{self, Blob, Entry, Record, ToClient, ToServer, TRANSFORM};
 use super::{
     addressable, despawn_tree, owner_of, DespawnWithOwner, NetId, NetPrefab, NetTick, Owned, Owner,
     OwnershipPending, PeerId, Replica, RequestOwnership,
@@ -91,7 +91,27 @@ pub struct Sync {
     /// pose from someone else is by the time it is here. What a takeover
     /// carries it forward by.
     pub one_way_ticks: f64,
+    /// Bytes of changes a network tick this peer sends at most
+    /// ([`BUDGET`] unless the game says).
+    pub budget: usize,
+    /// How long each changed thing not yet sent has waited, ticks.
+    waiting: HashMap<EntityId, f32>,
+    /// The server's short numbers for entities ([`ToClient::Shorts`]),
+    /// both ways.
+    shorts: HashMap<EntityId, u32>,
+    by_short: HashMap<u32, EntityId>,
+    /// Bytes of changes sent, all told.
+    pub sent_bytes: u64,
 }
+
+/// Bytes of changes a network tick a peer sends at most: 30 KB a second
+/// at the default 30 ticks (the author's decision of 2026-09-24).
+pub const BUDGET: usize = 1000;
+
+/// What a network tick's snapshot costs beyond its entries, bytes: the
+/// message's head (epoch, tick, counts) and the datagram's — charged to
+/// the budget first, so what goes on the wire keeps within it.
+const OVERHEAD: usize = 40;
 
 /// Something the world end noticed that the game may want to know.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +136,20 @@ impl Sync {
             welcoming: None,
             tally: Tally::default(),
             one_way_ticks: 0.0,
+            budget: BUDGET,
+            waiting: HashMap::new(),
+            sent_bytes: 0,
+            shorts: HashMap::new(),
+            by_short: HashMap::new(),
+        }
+    }
+
+    /// An entry of ours, named short when the server has given a number.
+    fn entry(&self, id: EntityId, blobs: Vec<Blob>) -> Entry {
+        let entry = Entry::new(id, blobs);
+        match self.shorts.get(&id) {
+            Some(&short) => entry.shortened(short),
+            None => entry,
         }
     }
 
@@ -130,6 +164,9 @@ impl Sync {
             .iter()
         {
             if world.get::<&SceneId>(entity).is_err() && world.get::<&NetId>(entity).is_err() {
+                continue;
+            }
+            if world.get::<&runity_core::netsim::Unshared>(entity).is_ok() {
                 continue;
             }
             let mine = owner_of(world, entity) == self.me;
@@ -210,6 +247,34 @@ impl Sync {
                 links.entry(*other).or_default().push(entity);
             }
         }
+        // What a simulation ties together: a rope and its load.
+        let spawned = addressable(world);
+        for (entity, tied) in world.query::<(hecs::Entity, &runity_core::netsim::Tied)>().iter() {
+            for id in &tied.0 {
+                if let Some(other) = by_id.get(id).or_else(|| spawned.get(id)) {
+                    links.entry(entity).or_default().push(*other);
+                    links.entry(*other).or_default().push(entity);
+                }
+            }
+        }
+        // A player's body is its player's: nothing gathers it along — a
+        // rope two players hold does not drag one of them to the other's
+        // machine. What it ties to itself (its ragdoll's parts) goes with
+        // it; what it is merely tied to by something else does not.
+        let pawn = |e: hecs::Entity| world.get::<&runity_core::netsim::Pawn>(e).is_ok();
+        let own: HashMap<hecs::Entity, Vec<hecs::Entity>> = world
+            .query::<(hecs::Entity, &runity_core::netsim::Tied)>()
+            .with::<&runity_core::netsim::Pawn>()
+            .iter()
+            .map(|(e, tied)| (e, tied.0.iter().filter_map(|id| by_id.get(id).or_else(|| spawned.get(id)).copied()).collect()))
+            .collect();
+        for (entity, near) in links.iter_mut() {
+            near.retain(|e| !pawn(*e));
+            if pawn(*entity) {
+                let mine = own.get(entity).cloned().unwrap_or_default();
+                near.retain(|e| mine.contains(e));
+            }
+        }
         let mut groups: HashMap<super::NetGroup, Vec<hecs::Entity>> = HashMap::new();
         for (entity, group) in world.query::<(hecs::Entity, &super::NetGroup)>().iter() {
             groups.entry(*group).or_default().push(entity);
@@ -238,12 +303,16 @@ impl Sync {
             .get::<&Transform>(entity)
             .map(|t| *t)
             .unwrap_or_default();
-        let mut blobs = vec![(
-            TRANSFORM.to_string(),
-            postcard::to_stdvec(&transform).unwrap_or_default(),
-        )];
+        let mut blobs = vec![(TRANSFORM, protocol::encode_transform(&transform))];
         for (name, text) in components.write_networked(world, entity) {
-            blobs.push((name, text.into_bytes()));
+            if let Some(id) = components.networked_id(&name) {
+                blobs.push((id, text.into_bytes()));
+            }
+        }
+        for (name, bytes) in components.gather_states(world, entity) {
+            if let Some(id) = components.networked_id(&name) {
+                blobs.push((id, bytes));
+            }
         }
         blobs
     }
@@ -298,22 +367,49 @@ impl Sync {
                     base.quiet += 1;
                     if base.quiet >= SETTLE_TICKS && !base.settled {
                         base.settled = true;
-                        settling.push(Entry { id, blobs });
+                        settling.push(self.entry(id, blobs));
                     }
                 }
                 _ => {
-                    self.baselines.insert(
-                        id,
-                        Baseline {
-                            bytes,
-                            quiet: 0,
-                            settled: false,
-                        },
-                    );
-                    changed.push(Entry { id, blobs });
+                    changed.push((id, self.entry(id, blobs), bytes));
                 }
             }
         }
+        // What changed goes by how long it has waited, within the budget
+        // (docs/netsim.md, bad links: Fiedler's priority accumulator):
+        // each thing waiting gains a point a tick, the most waited go
+        // first, and what does not fit waits — still changed, so it goes
+        // next time with more points. Nothing waits for ever.
+        for (id, _, _) in &changed {
+            *self.waiting.entry(*id).or_insert(0.0) += 1.0;
+        }
+        changed.sort_by(|a, b| {
+            let (pa, pb) = (self.waiting.get(&a.0).copied().unwrap_or(0.0), self.waiting.get(&b.0).copied().unwrap_or(0.0));
+            pb.total_cmp(&pa).then(a.0.cmp(&b.0))
+        });
+        let mut spent = OVERHEAD;
+        let mut sending = Vec::new();
+        for (id, entry, bytes) in changed {
+            let size = bytes.len() + 12;
+            if spent > OVERHEAD && spent + size > self.budget {
+                continue;
+            }
+            spent += size;
+            self.waiting.remove(&id);
+            self.baselines.insert(
+                id,
+                Baseline {
+                    bytes,
+                    quiet: 0,
+                    settled: false,
+                },
+            );
+            sending.push(entry);
+        }
+        if !sending.is_empty() {
+            self.sent_bytes += spent as u64;
+        }
+        let changed = sending;
         for entries in chunks(changed) {
             unreliable.push(ToServer::Snapshot {
                 epoch: self.epoch,
@@ -443,8 +539,14 @@ impl Sync {
                 let owner = owner_of(world, entity);
                 let gate = self.gates.entry(id).or_insert((owner, 0));
                 gate.1 = gate.1.max(tick);
-                for name in names {
-                    components.remove_by_name(&name, world, entity);
+                for name in names.into_iter().filter_map(|id| components.networked_name(id)) {
+                    components.remove_by_name(name, world, entity);
+                }
+            }
+            ToClient::Shorts { pairs } => {
+                for (id, short) in pairs {
+                    self.shorts.insert(id, short);
+                    self.by_short.insert(short, id);
                 }
             }
             ToClient::Snapshot {
@@ -511,7 +613,7 @@ impl Sync {
             (NetId(id), NetPrefab(prefab.to_string()), Owner(owner)),
         );
         let _ = world.insert_one(entity, transform);
-        write_components(world, components, entity, blobs);
+        write_components(world, components, entity, blobs, owner, 0);
         if owner == self.me {
             self.announced.insert(id);
         } else {
@@ -556,7 +658,7 @@ impl Sync {
                         let _ = world.insert_one(entity, transform);
                         let _ = world.remove_one::<Presented>(entity);
                     }
-                    write_components(world, components, entity, &record.blobs);
+                    write_components(world, components, entity, &record.blobs, record.owner, 0);
                 }
             }
         }
@@ -570,8 +672,17 @@ impl Sync {
         sender: PeerId,
         tick: u64,
         settle: bool,
-        entry: Entry,
+        mut entry: Entry,
     ) {
+        if entry.short != 0 {
+            // A number not yet heard of: its word is on the way, and the
+            // next entry will do.
+            let Some(&id) = self.by_short.get(&entry.short) else {
+                self.tally.unknown += 1;
+                return;
+            };
+            entry.id = id;
+        }
         let Some(&entity) = addressable(world).get(&entry.id) else {
             self.tally.unknown += 1;
             return;
@@ -606,7 +717,7 @@ impl Sync {
                 let _ = world.insert_one(entity, presented);
             }
         }
-        write_components(world, components, entity, &entry.blobs);
+        write_components(world, components, entity, &entry.blobs, sender, tick);
         let _ = world.insert_one(
             entity,
             NetTick {
@@ -622,8 +733,8 @@ impl Sync {
 fn transform_of(blobs: &[Blob]) -> Option<Transform> {
     blobs
         .iter()
-        .find(|(name, _)| name == TRANSFORM)
-        .and_then(|(_, bytes)| postcard::from_bytes(bytes).ok())
+        .find(|(name, _)| *name == TRANSFORM)
+        .and_then(|(_, bytes)| protocol::decode_transform(bytes))
 }
 
 fn write_components(
@@ -631,9 +742,17 @@ fn write_components(
     components: &Components,
     entity: hecs::Entity,
     blobs: &[Blob],
+    sender: PeerId,
+    tick: u64,
 ) {
-    for (name, bytes) in blobs {
-        if name == TRANSFORM || !components.is_networked(name) {
+    for (id, bytes) in blobs {
+        let Some(name) = components.networked_name(*id) else {
+            continue;
+        };
+        if components.take_state(name, world, entity, sender.0, tick, bytes) {
+            continue;
+        }
+        if !components.is_networked(name) {
             continue;
         }
         if let Ok(text) = std::str::from_utf8(bytes) {
@@ -650,7 +769,7 @@ fn chunks(entries: Vec<Entry>) -> Vec<Vec<Entry>> {
         let one = entry
             .blobs
             .iter()
-            .map(|(n, b)| n.len() + b.len() + 4)
+            .map(|(_, b)| b.len() + 4)
             .sum::<usize>()
             + 12;
         if out.is_empty() || size + one > ENTRY_BUDGET {
@@ -666,6 +785,17 @@ fn chunks(entries: Vec<Entry>) -> Vec<Vec<Entry>> {
 /// How far behind a replica is shown, in network ticks: far enough that
 /// the next pose is usually in hand already.
 pub const DELAY: f64 = 2.0;
+/// The most a replica is shown behind, however bad the link: past this
+/// it is late enough to feel.
+pub const MOST_DELAY: f64 = 6.0;
+
+/// How far behind to show, network ticks, for a link whose samples come
+/// `spread` ticks off their beat on the mean: two ticks, and twice the
+/// spread more — so the next sample is nearly always in hand even when
+/// the link stutters or drops one (docs/netsim.md, bad links).
+pub fn delay_for(spread: f64) -> f64 {
+    (DELAY + 2.0 * spread).clamp(DELAY, MOST_DELAY)
+}
 /// A pair of samples further apart than this in speed is a teleport, not
 /// motion, and is jumped rather than slid through the air.
 pub const SNAP_SPEED: f32 = 35.0;
@@ -690,37 +820,71 @@ pub struct Presented {
     offset: f64,
     /// Where the clock stands, in timeline ticks.
     render: f64,
-    /// A handover being hidden: the gap at the join, and seconds since.
-    blend: Option<(Vec3, Quat, f32)>,
+    /// When the first sample of this sender came, how late the earliest
+    /// came, and how far off their beat samples come on the mean, ticks:
+    /// what the delay is chosen by.
+    origin: Option<Instant>,
+    base: Option<f64>,
+    spread: f64,
+    /// A handover being hidden: the gap at the join, seconds since the
+    /// picture reached it, the join's tick and the old stream's newest —
+    /// between the two the gap grows in as the picture slides from one
+    /// owner's pose to the other's, so it never jumps.
+    blend: Option<(Vec3, Quat, f32, f64, f64)>,
 }
 
 impl Presented {
+    /// An arrival, against the beat it was sent on: how late it came
+    /// beyond the earliest any came (the link's own delay aside) is how
+    /// far off the beat the link is.
+    fn hear(&mut self, tick: f64) {
+        let now = Instant::now();
+        let origin = *self.origin.get_or_insert(now);
+        let late = now.duration_since(origin).as_secs_f64() * NET_HZ as f64 - tick;
+        // The earliest, let rise a little each time so a link that got
+        // slower for good is not held against it for ever.
+        let base = self.base.map_or(late, |b: f64| (b + 0.02).min(late));
+        self.base = Some(base);
+        self.spread += ((late - base).min(8.0) - self.spread) * 0.05;
+    }
+
+    /// How far behind it is shown now, network ticks.
+    pub fn delay(&self) -> f64 {
+        delay_for(self.spread)
+    }
+
     /// A pose from `sender`, at its tick.
     pub fn push(&mut self, sender: PeerId, tick: u64, pose: Transform) {
         let tick = tick as f64;
         match self.sender {
             None => {
                 self.offset = 0.0;
-                self.render = tick - DELAY;
+                self.render = tick - self.delay();
             }
             Some(old) if old != sender => {
+                // A new clock: its beat is measured afresh.
+                self.origin = None;
+                self.base = None;
                 // A new owner is a new clock: their first sample goes a
                 // delay ahead of where the picture stands, and the gap
                 // between where the old stream was heading and where the
                 // new owner has it is hidden over a moment.
                 let newest = self.samples.back().map_or(self.render, |(t, _)| *t);
-                let join = (self.render + DELAY).ceil().max(newest + 1.0);
+                let join = (self.render + self.delay()).ceil().max(newest + 1.0);
                 self.offset = join - tick;
                 let heading = self.pose_at(join);
                 self.blend = Some((
                     heading.position - pose.position,
                     heading.rotation() * pose.rotation().inverse(),
                     0.0,
+                    join,
+                    newest,
                 ));
             }
             _ => {}
         }
         self.sender = Some(sender);
+        self.hear(tick);
         let at = tick + self.offset;
         if let Some((newest, last)) = self.samples.back() {
             if at <= *newest {
@@ -729,7 +893,7 @@ impl Presented {
             let seconds = ((at - newest) / NET_HZ as f64) as f32;
             if last.position.distance(pose.position) / seconds.max(1e-3) > SNAP_SPEED {
                 self.samples.clear();
-                self.render = at - DELAY;
+                self.render = at - self.delay();
                 self.blend = None;
             }
         }
@@ -768,7 +932,7 @@ impl Presented {
             per_tick += accel * (0.5 * ticks) as f32;
         }
         let velocity = per_tick * NET_HZ;
-        let lead = ((self.render + DELAY - newest_at).max(0.0) + 1.0 + one_way.max(0.0)) as f32;
+        let lead = ((self.render + self.delay() - newest_at).max(0.0) + 1.0 + one_way.max(0.0)) as f32;
         // The turn between the last two, the short way round.
         let mut turn = newest.rotation() * before.rotation().inverse();
         if turn.w < 0.0 {
@@ -815,7 +979,7 @@ impl Presented {
     /// the newest pose, and say what to show.
     pub fn advance(&mut self, seconds: f32) -> Option<Transform> {
         let newest = self.samples.back()?.0;
-        let target = newest - DELAY;
+        let target = newest - self.delay();
         let ticks = seconds as f64 * NET_HZ as f64;
         self.render += ticks;
         let off = target - self.render;
@@ -831,13 +995,17 @@ impl Presented {
             self.samples.pop_front();
         }
         let mut pose = self.pose_at(self.render);
-        if let Some((gap, turn, age)) = &mut self.blend {
-            *age += seconds;
-            let x = (*age / HANDOVER_BLEND).clamp(0.0, 1.0);
-            let weight = 1.0 - x * x * (3.0 - 2.0 * x);
+        if let Some((gap, turn, age, join, from)) = &mut self.blend {
+            let weight = if self.render >= *join {
+                *age += seconds;
+                let x = (*age / HANDOVER_BLEND).clamp(0.0, 1.0);
+                1.0 - x * x * (3.0 - 2.0 * x)
+            } else {
+                ((self.render - *from) / (*join - *from).max(1e-6)).clamp(0.0, 1.0) as f32
+            };
             pose.position += *gap * weight;
             pose.set_rotation(Quat::IDENTITY.slerp(*turn, weight) * pose.rotation());
-            if x >= 1.0 {
+            if self.render >= *join && *age >= HANDOVER_BLEND {
                 self.blend = None;
             }
         }

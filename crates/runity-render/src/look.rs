@@ -362,6 +362,21 @@ pub struct Sun {
     /// hour's: white overhead, orange low.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint: Option<[f32; 3]>,
+    /// The light from all round, when a scene says it rather than the
+    /// sky working it out: what a face turned up, one turned sideways and
+    /// one turned down each see — Unity's gradient ambient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient: Option<Ambient>,
+}
+
+/// Light from all round as three colours (sRGB, as a picker says them,
+/// and as bright as they are meant): above, at the horizon, below. A face
+/// sees a blend of the two it turns between.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Ambient {
+    pub sky: [f32; 3],
+    pub equator: [f32; 3],
+    pub ground: [f32; 3],
 }
 
 fn default_ground() -> [f32; 3] {
@@ -380,6 +395,7 @@ impl Default for Sun {
             intensity: 1.15,
             toward: None,
             tint: None,
+            ambient: None,
         }
     }
 }

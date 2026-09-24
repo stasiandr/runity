@@ -23,11 +23,15 @@ pub struct Dents {
     pub radius: f32,
     /// Metres a second: a blow slower than a tenth of this leaves no mark.
     pub strength: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Dents {
     fn default() -> Self {
-        Self { depth: 0.08, radius: 0.3, strength: 6.0 }
+        Self { depth: 0.08, radius: 0.3, strength: 6.0, net: runity_core::netsim::NetMode::Local }
     }
 }
 
@@ -62,11 +66,14 @@ pub struct Dented {
     pub fresh: bool,
     /// How many blows it has taken.
     pub blows: u32,
+    /// Every blow it has taken, in its own space: what an `Event` dent
+    /// tells everyone else, and what someone joining late is dented by.
+    pub history: Vec<(Vec3, Vec3, f32)>,
 }
 
 impl Dented {
     pub fn new(dents: Dents, vertices: Vec<Vertex>, indices: Vec<u32>) -> Self {
-        Self { dents, vertices, indices, fresh: true, blows: 0 }
+        Self { dents, vertices, indices, fresh: true, blows: 0, history: Vec::new() }
     }
 
     /// A blow at `at` going `way` (in its own space), at `speed`.
@@ -103,12 +110,21 @@ impl Dented {
         }
         self.fresh = true;
         self.blows += 1;
+        if self.history.len() < MOST_TOLD {
+            self.history.push((at, way, speed));
+        }
     }
 }
 
 /// Dent what `blows` struck.
 pub fn run_dents(world: &mut hecs::World, blows: &[Blow]) {
     for blow in blows {
+        // Someone else's `Event` dents: told by its owner, not struck here.
+        let told = world.get::<&runity_core::world::Replica>(blow.entity).is_ok()
+            && world.get::<&Dented>(blow.entity).is_ok_and(|d| d.dents.net == runity_core::netsim::NetMode::Event);
+        if told {
+            continue;
+        }
         let Ok(placed) = world.get::<&WorldTransform>(blow.entity).map(|p| p.0) else { continue };
         let Ok(mut dented) = world.get::<&mut Dented>(blow.entity) else { continue };
         let back: Mat4 = placed.inverse();
@@ -182,6 +198,38 @@ impl runity_core::world::Dress for DentsDress {
                 let _ = world.remove_one::<Dented>(entity);
             }
         }
+    }
+}
+
+
+/// The most blows a dented thing tells: past this it has been dented
+/// enough, and the list would outgrow a datagram.
+pub const MOST_TOLD: usize = 48;
+
+/// Dents' state for the network (`Components::register_state`): every
+/// blow taken, from the owner, when it is `Event`.
+pub fn gather_net(world: &hecs::World, entity: hecs::Entity) -> Option<Vec<u8>> {
+    let dented = world.get::<&Dented>(entity).ok()?;
+    if dented.dents.net != runity_core::netsim::NetMode::Event || world.get::<&runity_core::world::Replica>(entity).is_ok() || dented.history.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(dented.history.len() * 28);
+    for (at, way, speed) in &dented.history {
+        for x in [at.x, at.y, at.z, way.x, way.y, way.z, *speed] {
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+    }
+    Some(out)
+}
+
+/// The owner's blows onto everyone else's: those not taken here yet.
+pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, _sender: u32, _tick: u64, bytes: &[u8]) {
+    let Ok(mut dented) = world.get::<&mut Dented>(entity) else { return };
+    let f = |i: usize| f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap_or_default());
+    let told = bytes.len() / 28;
+    for k in dented.history.len()..told {
+        let b = k * 7;
+        dented.strike(Vec3::new(f(b), f(b + 1), f(b + 2)), Vec3::new(f(b + 3), f(b + 4), f(b + 5)), f(b + 6));
     }
 }
 

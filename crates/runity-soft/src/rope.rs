@@ -52,6 +52,10 @@ pub struct Rope {
     pub stiffness: Option<f32>,
     /// How much the wind takes it: a thin cord more, a hawser less.
     pub catch: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 fn unlinked(end: &EntityRef) -> bool {
@@ -92,6 +96,7 @@ impl Default for Rope {
             thickness: 0.025,
             stiffness: None,
             catch: 0.4,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }
@@ -184,6 +189,46 @@ pub struct RopeState {
     near: Vec<Obstacle>,
     time: f32,
     owed: f32,
+    /// Its ends held by bodies that move and are pulled back — a load on
+    /// a crane's cable, a player's hand — rather than pinned where their
+    /// entities are. The facade fills them from the physics before a step
+    /// and takes their impulses after ([`Anchor`]).
+    pub anchors: [Option<Anchor>; 2],
+    /// How hard it pulled on each end over the last step, newtons: the
+    /// tension at a hand (docs/netsim.md, the tug of war).
+    pub pulls: [Vec3; 2],
+    /// Obstacles it passes through, by their tags: the bodies that hold
+    /// its ends, which it is tied into, not lying on.
+    pub ignores: Vec<u64>,
+    /// Where an end is held when that is not where its entity is shown:
+    /// a hand on another peer's machine, predicted to where its owner has
+    /// it now rather than where the picture of it is (docs/netsim.md, the
+    /// tug of war). World space; the facade sets them each step.
+    pub pins: [Option<Vec3>; 2],
+    /// The pull on each end as its owner last said, smoothed: what a hand
+    /// here feels of a rope simulated elsewhere.
+    pub felt: [Vec3; 2],
+    /// How long it is, stretched, at its owner's: what a hand here holds
+    /// it to.
+    pub owner_length: Option<f32>,
+}
+
+/// An end of a rope held by a body that moves: the body's weight and how
+/// fast the point it holds goes, in; what the rope did to it, out.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Anchor {
+    /// Kilograms: the body's.
+    pub mass: f32,
+    /// Metres a second, of the point it holds the rope at.
+    pub velocity: Vec3,
+    /// Newton-seconds the rope gave the body since the facade last took
+    /// them; it clears it when it hands them to the physics.
+    pub impulse: Vec3,
+    /// Just set from the body: the next step starts the end where the body
+    /// is. Steps after it in the same frame carry the end on themselves —
+    /// the body has not moved yet, and starting it there again would pull
+    /// the body twice for one stretch.
+    pub fresh: bool,
 }
 
 impl RopeState {
@@ -203,6 +248,95 @@ impl RopeState {
             near: Vec::new(),
             time: 0.0,
             owed: 0.0,
+            anchors: [None; 2],
+            pulls: [Vec3::ZERO; 2],
+            ignores: Vec::new(),
+            pins: [None; 2],
+            felt: [Vec3::ZERO; 2],
+            owner_length: None,
+        }
+    }
+
+    /// As it is now, for the network (docs/netsim.md): its particles, its
+    /// links' turns, and how hard it pulls on each end. A rope's turns stay
+    /// home (docs/netsim.md, «Трафик»): round, it shows no twist, and the
+    /// other end sets its links along where they lie ([`Self::show_frame`])
+    /// — a third of its frame saved. A chain's links and a cable's clamped
+    /// ends show theirs, and send them.
+    pub fn frame(&self) -> Option<crate::net::Frame> {
+        let rod = self.rod.as_ref()?;
+        let [a, b] = self.pulls;
+        let stretched: f32 = rod.particles.x.windows(2).map(|w| w[0].distance(w[1])).sum();
+        Some(crate::net::Frame {
+            points: rod.particles.x.clone(),
+            turns: if self.rope.kind == RopeKind::Rope { Vec::new() } else { rod.turn.clone() },
+            // How hard it pulls each end — along itself, as a rope does,
+            // so the size says it all — and how long it is drawn out.
+            extra: vec![a.length(), b.length(), stretched],
+        })
+    }
+
+    /// Shown as the owner has it: a replica's particles and turns put
+    /// where the frame says, nothing simulated.
+    pub fn show_frame(&mut self, frame: &crate::net::Frame) {
+        let Some(rod) = self.rod.as_mut() else { return };
+        if frame.points.len() != rod.particles.len() {
+            return;
+        }
+        for (i, p) in frame.points.iter().enumerate() {
+            rod.particles.place(i, *p);
+        }
+        // Two shapes blended at a handover, or two frames between, are a
+        // little shorter than either: the links are put back to length.
+        let tied_end = self.rope.ends == Ends::Both;
+        rod.restore_lengths(tied_end);
+        let last = rod.particles.len() - 1;
+        for i in 0..=last {
+            rod.particles.was[i] = rod.particles.x[i];
+        }
+        if frame.turns.len() == rod.turn.len() {
+            for (k, q) in frame.turns.iter().enumerate() {
+                rod.set_turn(k, *q);
+            }
+        } else {
+            align_turns(rod);
+        }
+    }
+
+    /// Taken over from another peer: the solver starts where the old
+    /// owner has it now, at the speeds it had.
+    pub fn take_over(&mut self, t: &crate::net::Takeover) {
+        let Some(rod) = self.rod.as_mut() else { return };
+        if t.points.len() != rod.particles.len() {
+            return;
+        }
+        for (i, p) in t.points.iter().enumerate() {
+            rod.particles.x[i] = *p;
+            rod.particles.was[i] = *p;
+            rod.particles.v[i] = t.velocities[i];
+        }
+        if t.turns.len() == rod.turn.len() {
+            for (k, q) in t.turns.iter().enumerate() {
+                rod.set_turn(k, *q);
+            }
+        } else {
+            align_turns(rod);
+        }
+        self.owed = 0.0;
+    }
+
+    /// Bent so its start is at `a` and its end at `b` (when tied there):
+    /// each end's gap spread along it, fading to nothing at the other end.
+    pub fn fit_ends(&mut self, a: Vec3, b: Option<Vec3>) {
+        let Some(rod) = self.rod.as_mut() else { return };
+        let last = rod.particles.len() - 1;
+        let gap_a = a - rod.particles.x[0];
+        let gap_b = b.map_or(Vec3::ZERO, |b| b - rod.particles.x[last]);
+        for i in 0..=last {
+            let t = i as f32 / last.max(1) as f32;
+            let shift = gap_a * (1.0 - t) + gap_b * t;
+            rod.particles.x[i] += shift;
+            rod.particles.was[i] += shift;
         }
     }
 
@@ -287,6 +421,19 @@ impl RopeState {
             self.owed -= STEP;
             self.step(start, end, wind, obstacles);
         }
+        // An end held by a body is drawn where the body is: the solver took
+        // it on to where the body will be after its next step, and the next
+        // step starts it from the body again.
+        let r = self.rope;
+        if let Some(rod) = self.rod.as_mut() {
+            let last = rod.particles.len() - 1;
+            if self.anchors[0].is_some_and(|a| a.mass > 0.0) {
+                rod.particles.x[0] = start.transform_point3(Vec3::ZERO);
+            }
+            if r.ends == Ends::Both && self.anchors[1].is_some_and(|a| a.mass > 0.0) {
+                rod.particles.x[last] = end.transform_point3(r.to);
+            }
+        }
     }
 
     fn step(&mut self, start: Mat4, end: Mat4, wind: &Wind, obstacles: &[Obstacle]) {
@@ -316,13 +463,61 @@ impl RopeState {
         let clamp_turns = r.kind == RopeKind::Cable;
         let (turn_a, turn_b) = (turn_of(start), turn_of(end));
         let (rest_a, rest_b) = self.clamps;
+        // Ends held by bodies that move: free particles as heavy as the
+        // body, starting where the body holds them at its speed.
+        let tied = [true, r.ends == Ends::Both];
+        let ends = [0, last];
+        let mut held_from = [Vec3::ZERO; 2];
+        for k in 0..2 {
+            match self.anchors[k].as_mut().filter(|a| tied[k] && a.mass > 0.0) {
+                Some(anchor) => {
+                    let i = ends[k];
+                    rod.pin(i, false, anchor.mass);
+                    let fresh = anchor.fresh;
+                    if fresh {
+                        rod.particles.x[i] = if k == 0 { a } else { b };
+                        rod.particles.v[i] = anchor.velocity;
+                        anchor.fresh = false;
+                        // Held further from a pinned start than the rope
+                        // reaches — a body carried on at a handover, a
+                        // shove — the end starts on the reach, not the
+                        // body; putting it back inside one substep would be
+                        // a speed of hundreds of metres a second, and the
+                        // body is drawn back over a few steps instead.
+                        let other = if i == 0 { rod.particles.len() - 1 } else { 0 };
+                        if rod.particles.w[other] <= 0.0 {
+                            let origin = rod.particles.x[other];
+                            let reach = rod.length();
+                            let d = rod.particles.x[i] - origin;
+                            let far = d.length();
+                            if far > reach {
+                                let out = d / far;
+                                rod.particles.x[i] = origin + out * reach;
+                                rod.particles.was[i] = rod.particles.x[i];
+                                let outward = rod.particles.v[i].dot(out).max(0.0);
+                                rod.particles.v[i] -= out * (outward + (far - reach) * 0.3 / STEP);
+                            }
+                        }
+                    }
+                    // The body's own speed: what it would have done alone.
+                    held_from[k] = if fresh { anchor.velocity } else { rod.particles.v[i] };
+                }
+                None if tied[k] => rod.pin(ends[k], true, 1.0),
+                None => {}
+            }
+        }
+        let anchored = [self.anchors[0].is_some_and(|a| a.mass > 0.0), tied[1] && self.anchors[1].is_some_and(|a| a.mass > 0.0)];
+        rod.held_ends = anchored;
+        let mut pulls = [Vec3::ZERO; 2];
         for s in 0..SUBSTEPS {
             let t = (s + 1) as f32 / SUBSTEPS as f32;
             self.time += h;
             // The tied ends go where the entities are going, a share each
             // substep, so a swung post drags its rope smoothly.
-            rod.particles.x[0] = a_was.lerp(a, t);
-            if r.ends == Ends::Both {
+            if !anchored[0] {
+                rod.particles.x[0] = a_was.lerp(a, t);
+            }
+            if r.ends == Ends::Both && !anchored[1] {
                 rod.particles.x[last] = b_was.lerp(b, t);
             }
             if clamp_turns {
@@ -344,8 +539,39 @@ impl RopeState {
                 Vec3::new(0.0, -9.81, 0.0) + across * catch
             }));
             let pull = &self.pull;
-            rod.substep(h, |i| pull[i], obstacles);
+            rod.substep(h, |i| if (i == 0 && anchored[0]) || (i == last && anchored[1]) { Vec3::new(0.0, -9.81, 0.0) } else { pull[i] }, obstacles);
+            let [p0, p1] = rod.end_pulls(h);
+            pulls[0] += p0 / SUBSTEPS as f32;
+            pulls[1] += p1 / SUBSTEPS as f32;
         }
+        // What the rope did to a holding body: its end's speed now against
+        // where the body alone (falling) would have taken it.
+        for k in 0..2 {
+            if !anchored[k] {
+                continue;
+            }
+            if let Some(anchor) = self.anchors[k].as_mut() {
+                let i = ends[k];
+                let alone = held_from[k] + Vec3::new(0.0, -9.81, 0.0) * STEP;
+                let impulse = (rod.particles.v[i] - alone) * anchor.mass;
+                anchor.impulse += impulse;
+                // The pull on a held end is what the rope did to its body.
+                pulls[k] = impulse / STEP;
+            }
+        }
+        // A pinned end opposite a held one feels the same tension, along
+        // its own link: the rope passes it on (its weight aside). The
+        // multipliers alone say less than the rope pulls, a stiff rope's
+        // being spread over its passes and substeps.
+        for k in 0..2 {
+            let other = 1 - k;
+            if !anchored[k] && tied[k] && anchored[other] {
+                let (i, next) = if k == 0 { (0, 1) } else { (last, last - 1) };
+                let along = (rod.particles.x[next] - rod.particles.x[i]).normalize_or_zero();
+                pulls[k] = along * pulls[other].length();
+            }
+        }
+        self.pulls = pulls;
     }
 
     /// A tube along it through a smooth curve through its particles, in
@@ -434,6 +660,19 @@ impl RopeState {
     }
 }
 
+/// Each link's turn brought the shortest way round to lie along its link:
+/// what a frame without turns leaves (a rope's), so the solver starts
+/// from turns that agree with the particles and nothing kicks.
+fn align_turns(rod: &mut Rod) {
+    for k in 0..rod.links() {
+        let along = rod.particles.x[k + 1] - rod.particles.x[k];
+        if let Some(along) = along.try_normalize() {
+            let q = rod.turn[k];
+            rod.set_turn(k, (Quat::from_rotation_arc((q * Vec3::Z).normalize(), along) * q).normalize());
+        }
+    }
+}
+
 /// The turn of a placed matrix, without its scale.
 fn turn_of(placed: Mat4) -> Quat {
     placed.to_scale_rotation_translation().1
@@ -467,11 +706,17 @@ pub fn set_wind(world: &mut hecs::World, wind: Wind) {
 /// Step every rope by `seconds` in its wind, lying on `obstacles`. Its far
 /// end found where it is tied.
 pub fn run_ropes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    use runity_core::netsim::NetMode;
+    use runity_core::world::Replica;
+    let one_way = runity_core::netsim::link_delay(world);
+    let clock = runity_core::netsim::session_time(world);
     let mut todo = Vec::new();
     for (entity, state, placed) in world.query::<(hecs::Entity, &RopeState, &WorldTransform)>().iter() {
         todo.push((entity, placed.0, state.rope.end, state.end));
     }
     let mut near = Vec::new();
+    let mut taken = Vec::new();
+    let mut seeded = Vec::new();
     for (entity, start, link, found) in todo {
         let end = if link.0.is_some() {
             let known = found.filter(|e| world.contains(*e)).or_else(|| link.get(world));
@@ -484,23 +729,150 @@ pub fn run_ropes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
         } else {
             start
         };
-        if let Ok(mut state) = world.get::<&mut RopeState>(entity) {
-            // What is near where it is and where it is tied: a rope not
-            // yet hung may reach anywhere between its ends and its length
-            // below them.
-            let (a, b) = (start.w_axis.truncate(), end.transform_point3(state.rope.to));
-            let reach = a.distance(b) * (1.0 + state.rope.slack.max(0.0)) + state.rope.to.length() + 1.0;
-            let (mut low, mut high) = (a.min(b), a.max(b));
-            for p in state.points() {
-                low = low.min(*p);
-                high = high.max(*p);
+        let replica = world.get::<&Replica>(entity).is_ok();
+        // Ends held where their entities are not shown: moved there.
+        let (start, end) = match world.get::<&RopeState>(entity).map(|s| (s.pins, s.rope.to)) {
+            Ok((pins, to)) => {
+                let mut start = start;
+                let mut end = end;
+                if let Some(p) = pins[0] {
+                    start.w_axis = p.extend(1.0);
+                }
+                if let Some(p) = pins[1] {
+                    let shift = p - end.transform_point3(to);
+                    end.w_axis += shift.extend(0.0);
+                }
+                (start, end)
             }
-            let room = if state.points().is_empty() { reach } else { 1.0 + seconds * 20.0 };
-            obstacles.near(low - Vec3::splat(room), high + Vec3::splat(room), &mut near);
-            let wind = state.wind;
-            state.advance(start, end, &wind, &near, seconds);
+            Err(_) => (start, end),
+        };
+        let mut query = world.query_one::<(&mut RopeState, Option<&mut crate::net::PresentedParticles>)>(entity);
+        let Ok((state, presented)) = query.get() else { continue };
+        if state.rope.net == NetMode::Full {
+            if replica {
+                // Someone else's: shown as they have it, a moment late.
+                if state.rod.is_none() {
+                    state.hang(start, end, &[]);
+                }
+                let tied_end = state.rope.ends == Ends::Both;
+                let (a, b) = (start.transform_point3(Vec3::ZERO), tied_end.then(|| end.transform_point3(state.rope.to)));
+                match presented {
+                    Some(presented) => {
+                        if let Some(frame) = presented.advance(seconds) {
+                            state.show_frame(&frame);
+                            // Its ends where what holds them is shown — the
+                            // two are shown by two buffers, and a load a
+                            // hand's breadth off its chain is worse than a
+                            // chain bent a little to meet it.
+                            state.fit_ends(a, b);
+                            if let Some(rod) = state.rod.as_mut() {
+                                rod.restore_lengths(tied_end);
+                            }
+                        }
+                    }
+                    // Just given away: shown from here until the new
+                    // owner's frames come.
+                    None => {
+                        if let Some(frame) = state.frame() {
+                            // On the clock at once, as the bodies' buffer
+                            // is the frame it is seeded.
+                            let mut presented = crate::net::PresentedParticles::seeded(frame);
+                            if let Some(frame) = presented.advance(seconds) {
+                                state.show_frame(&frame);
+                            }
+                            seeded.push((entity, presented));
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Some(presented) = presented {
+                // Just taken over: from where the old owner has it now.
+                if state.rod.is_none() {
+                    state.hang(start, end, &[]);
+                }
+                presented.shape_held = true;
+                if let Some(t) = presented.takeover(one_way) {
+                    state.take_over(&t);
+                    // Carried forward on its own, it and what holds its
+                    // ends (taken over too, each by its own buffer) come
+                    // out a little apart: bent to meet them, the gap shared
+                    // along it rather than put into one link.
+                    let tied_end = state.rope.ends == Ends::Both;
+                    state.fit_ends(start.transform_point3(Vec3::ZERO), tied_end.then(|| end.transform_point3(state.rope.to)));
+                    // Each particle carried forward on its own line does
+                    // not keep the links' lengths: put back.
+                    if let Some(rod) = state.rod.as_mut() {
+                        rod.restore_lengths(tied_end);
+                        for i in 0..rod.particles.len() {
+                            rod.particles.was[i] = rod.particles.x[i];
+                        }
+                    }
+                }
+                taken.push(entity);
+            }
         }
+        // What is near where it is and where it is tied: a rope not yet
+        // hung may reach anywhere between its ends and its length below
+        // them.
+        let (a, b) = (start.w_axis.truncate(), end.transform_point3(state.rope.to));
+        let reach = a.distance(b) * (1.0 + state.rope.slack.max(0.0)) + state.rope.to.length() + 1.0;
+        let (mut low, mut high) = (a.min(b), a.max(b));
+        for p in state.points() {
+            low = low.min(*p);
+            high = high.max(*p);
+        }
+        let room = if state.points().is_empty() { reach } else { 1.0 + seconds * 20.0 };
+        obstacles.near_except(low - Vec3::splat(room), high + Vec3::splat(room), &state.ignores, &mut near);
+        let wind = state.wind;
+        crate::net::keep_time(&mut state.time, clock);
+        state.advance(start, end, &wind, &near, seconds);
     }
+    for entity in taken {
+        let _ = world.remove_one::<crate::net::PresentedParticles>(entity);
+    }
+    for (entity, presented) in seeded {
+        let _ = world.insert_one(entity, presented);
+    }
+}
+
+/// A rope's state for the network (`Components::register_state`): its
+/// frame, from the peer that simulates it, when it is `Full`.
+pub fn gather_net(world: &hecs::World, entity: hecs::Entity) -> Option<Vec<u8>> {
+    let state = world.get::<&RopeState>(entity).ok()?;
+    if state.rope.net != runity_core::netsim::NetMode::Full || world.get::<&runity_core::world::Replica>(entity).is_ok() {
+        return None;
+    }
+    state.frame().map(|f| f.encode())
+}
+
+/// The owner's frame of a rope into its replica's buffer.
+pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, sender: u32, tick: u64, bytes: &[u8]) {
+    let Some(frame) = crate::net::Frame::decode(bytes) else { return };
+    // The pulls on its ends as the owner has them now, not as the picture
+    // a couple of ticks behind has them: a hand here feels them as soon
+    // as they come.
+    if let (Ok(mut state), Some(e)) = (world.get::<&mut RopeState>(entity), frame.extra.get(0..3)) {
+        // Each end pulled toward the rope's next particle.
+        let p = &frame.points;
+        let toward = |from: usize, to: usize| match (p.get(from), p.get(to)) {
+            (Some(a), Some(b)) => (*b - *a).normalize_or_zero(),
+            _ => Vec3::ZERO,
+        };
+        let n = p.len();
+        state.pulls = [toward(0, 1) * e[0], toward(n.saturating_sub(1), n.saturating_sub(2)) * e[1]];
+        state.owner_length = Some(e[2]);
+    }
+    if let Ok(mut presented) = world.get::<&mut crate::net::PresentedParticles>(entity) {
+        presented.push(sender, tick, frame);
+        return;
+    }
+    // The first frame after this peer let it go: joined from what it
+    // shows now.
+    let here = world.get::<&RopeState>(entity).ok().and_then(|s| s.frame());
+    let mut presented = here.map(crate::net::PresentedParticles::seeded).unwrap_or_default();
+    presented.push(sender, tick, frame);
+    let _ = world.insert_one(entity, presented);
 }
 
 /// The soft module's dresser for ropes ([`runity_core::world::Dress`]): a
@@ -523,9 +895,21 @@ impl runity_core::world::Dress for RopeDress {
         match line.rope() {
             Some(rope) => {
                 let _ = world.insert_one(entity, RopeState::new(rope));
+                // A rope simulated by one peer takes what hangs on it along
+                // (docs/netsim.md): two machines solving one rope pull it
+                // apart. A player's own body is not taken (`Pawn`).
+                match rope.end.0.filter(|_| rope.net == runity_core::netsim::NetMode::Full) {
+                    Some(id) => {
+                        let _ = world.insert_one(entity, runity_core::netsim::Tied(vec![id]));
+                    }
+                    None => {
+                        let _ = world.remove_one::<runity_core::netsim::Tied>(entity);
+                    }
+                }
             }
             None => {
                 let _ = world.remove_one::<RopeState>(entity);
+                let _ = world.remove_one::<runity_core::netsim::Tied>(entity);
             }
         }
     }
@@ -703,5 +1087,31 @@ mod tests {
         assert_eq!(rope.segments, Rope::default().segments);
         let text = ron::to_string(&Rope::default()).unwrap();
         assert!(!text.contains("end:"), "no end written when tied to nothing: {text}");
+    }
+
+    #[test]
+    fn a_load_held_by_its_end_swings_on_the_rope_as_a_pendulum_and_pulls_it_taut() {
+        let line = Rope { to: Vec3::ZERO, slack: 0.0, segments: 16, kind: RopeKind::Chain, ..Rope::default() };
+        let top = Mat4::from_translation(Vec3::new(0.0, 3.0, 0.0));
+        // The load, a body the test moves: let go level with the top.
+        let mass = 10.0;
+        for dt in [1.0 / 60.0, 1.0 / 30.0] {
+        let (mut p, mut v) = (Vec3::new(1.5, 3.0, 0.0), Vec3::ZERO);
+        let mut state = RopeState::new(line);
+        let mut lowest = f32::MAX;
+        for _ in 0..(3.0 / dt) as usize {
+            state.anchors[1] = Some(Anchor { mass, velocity: v, impulse: Vec3::ZERO, fresh: true });
+            state.advance(top, Mat4::from_translation(p), &still(), &[], dt);
+            let impulse = state.anchors[1].unwrap().impulse;
+            v += Vec3::new(0.0, -9.81, 0.0) * dt + impulse / mass;
+            p += v * dt;
+            lowest = lowest.min(p.y);
+            let reach = p.distance(Vec3::new(0.0, 3.0, 0.0));
+            assert!(reach < 1.5 * 1.06, "held on the rope: {reach}");
+        }
+        assert!(lowest < 1.7, "swung down under the top: {lowest}");
+        assert!(v.length() < (2.0f32 * 9.81 * 1.5).sqrt() + 0.5, "no energy from nowhere: {v}");
+        assert!(state.pulls[0].y > mass * 5.0 * 0.5 || state.pulls[0].length() > 20.0, "the top feels the load: {}", state.pulls[0]);
+        }
     }
 }

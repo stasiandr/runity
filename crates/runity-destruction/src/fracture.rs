@@ -45,6 +45,10 @@ pub struct Fracture {
     pub levels: u32,
     /// Which pieces: another number, other pieces.
     pub seed: u32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 /// When a fracture is cut.
@@ -66,6 +70,7 @@ impl Default for Fracture {
             pattern: Pattern::Ahead,
             levels: 1,
             seed: 1,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }
@@ -102,12 +107,18 @@ pub struct Breakable {
     pub age: f32,
     /// Broken, and gone.
     pub broken: bool,
+    /// The blow it broke by, where, which way and how hard (in the
+    /// world): what an `Event` fracture tells everyone else.
+    pub struck: Option<(Vec3, Vec3, f32)>,
+    /// A blow it is to break by, told by the peer that broke it: broken so
+    /// at the next step whatever this peer's own blows say.
+    pub told: Option<(Vec3, Vec3, f32)>,
 }
 
 impl Breakable {
     pub fn new(fracture: Fracture, solid: Solid) -> Self {
         let cut = (fracture.pattern == Pattern::Ahead).then(|| cut(&solid, fracture, None));
-        Self { fracture, solid, cut, age: 0.0, broken: false }
+        Self { fracture, solid, cut, age: 0.0, broken: false, struck: None, told: None }
     }
 
     /// The pieces it breaks into, struck at `blow` (in its own space).
@@ -148,6 +159,9 @@ pub struct Piece {
     pub indices: Vec<u32>,
     /// What it broke off.
     pub from: hecs::Entity,
+    /// Which piece of it: the same number for the same piece on every
+    /// peer.
+    pub index: u32,
     /// It has been given its look.
     pub dressed: bool,
 }
@@ -175,8 +189,20 @@ pub struct Broken {
 pub fn run_fracture(world: &mut hecs::World, seconds: f32, blows: &[Blow]) -> Broken {
     let mut out = Broken::default();
     let mut due = Vec::new();
-    for (entity, breakable, placed) in world.query_mut::<(hecs::Entity, &mut Breakable, &WorldTransform)>() {
+    for (entity, breakable, placed, replica) in world.query_mut::<(hecs::Entity, &mut Breakable, &WorldTransform, Option<&runity_core::world::Replica>)>() {
         if breakable.broken {
+            continue;
+        }
+        // Told by the peer that broke it: broken the same way here.
+        if let Some(blow) = breakable.told.take() {
+            breakable.broken = true;
+            breakable.struck = Some(blow);
+            due.push((entity, placed.0, blow));
+            continue;
+        }
+        // An `Event` fracture of someone else's waits to be told: its
+        // owner's blows, not this peer's picture of them, break it.
+        if replica.is_some() && breakable.fracture.net == runity_core::netsim::NetMode::Event {
             continue;
         }
         breakable.age += seconds;
@@ -195,6 +221,7 @@ pub fn run_fracture(world: &mut hecs::World, seconds: f32, blows: &[Blow]) -> Br
             let middle = placed.0.transform_point3(Vec3::ZERO);
             (from, (middle - from).normalize_or(Vec3::NEG_Z), breakable.fracture.knock)
         });
+        breakable.struck = Some(blow);
         due.push((entity, placed.0, blow));
     }
     for (entity, placed, (at, way, speed)) in due {
@@ -203,7 +230,7 @@ pub fn run_fracture(world: &mut hecs::World, seconds: f32, blows: &[Blow]) -> Br
         let pieces = breakable.pieces(Some(local_blow));
         let (scale, turn, _) = placed.to_scale_rotation_translation();
         let knock = breakable.fracture.knock;
-        for solid in pieces {
+        for (index, solid) in pieces.into_iter().enumerate() {
             let (volume, centre) = solid.volume_and_centre();
             if volume <= 1e-6 {
                 continue;
@@ -233,7 +260,7 @@ pub fn run_fracture(world: &mut hecs::World, seconds: f32, blows: &[Blow]) -> Br
                 WorldTransform(Mat4::from_scale_rotation_translation(scale, turn, world_centre)),
                 Physics(Body::Dynamic),
                 shape,
-                Piece { vertices, indices, from: entity, dressed: false },
+                Piece { vertices, indices, from: entity, index: index as u32, dressed: false },
             ));
             if breakable.fracture.levels > 1 {
                 let again = Fracture {
@@ -241,7 +268,9 @@ pub fn run_fracture(world: &mut hecs::World, seconds: f32, blows: &[Blow]) -> Br
                     levels: breakable.fracture.levels - 1,
                     at: None,
                     pattern: Pattern::AtBlow,
-                    seed: breakable.fracture.seed.wrapping_add(piece.id()),
+                    // By its number, not its entity: the same pieces of the
+                    // same piece on every peer.
+                    seed: breakable.fracture.seed.wrapping_add(index as u32 + 1),
                     ..breakable.fracture
                 };
                 let _ = world.insert_one(piece, Breakable::new(again, piece_solid));
@@ -277,6 +306,36 @@ impl runity_core::world::Dress for FractureDress {
             None => {
                 let _ = world.remove_one::<Breakable>(entity);
             }
+        }
+    }
+}
+
+
+/// A fracture's state for the network (`Components::register_state`):
+/// the blow it broke by, from its owner, when it is `Event`.
+pub fn gather_net(world: &hecs::World, entity: hecs::Entity) -> Option<Vec<u8>> {
+    let breakable = world.get::<&Breakable>(entity).ok()?;
+    if breakable.fracture.net != runity_core::netsim::NetMode::Event || world.get::<&runity_core::world::Replica>(entity).is_ok() {
+        return None;
+    }
+    let (at, way, speed) = breakable.struck?;
+    let mut out = Vec::with_capacity(28);
+    for x in [at.x, at.y, at.z, way.x, way.y, way.z, speed] {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    Some(out)
+}
+
+/// The blow its owner broke it by: broken so here at the next step.
+pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, _sender: u32, _tick: u64, bytes: &[u8]) {
+    if bytes.len() < 28 {
+        return;
+    }
+    let f = |i: usize| f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap_or_default());
+    let blow = (Vec3::new(f(0), f(1), f(2)), Vec3::new(f(3), f(4), f(5)), f(6));
+    if let Ok(mut breakable) = world.get::<&mut Breakable>(entity) {
+        if !breakable.broken && breakable.told.is_none() {
+            breakable.told = Some(blow);
         }
     }
 }

@@ -1,0 +1,894 @@
+//! Soft things over the network (docs/netsim.md): a simulation's state as
+//! a compact frame of bytes, and the buffer a replica is shown from.
+//!
+//! * [`Frame`] — particles, the turns of a rod's links and a few numbers
+//!   more (the pull on each end), quantized: the points on a
+//!   quarter-millimetre lattice, sent as how each step bends from the one
+//!   before; a link's turn as its twist about the link; both Rice-coded.
+//!   A chain of forty links, turns and all, is under 250 bytes.
+//! * [`PresentedParticles`] — the owner's frames as they came, shown a
+//!   couple of network ticks in the past between the two around the clock,
+//!   the dacha simulator's interpolation buffer for bodies made to hold a
+//!   shape. A change of owner is bent into the new owner's stream; a
+//!   takeover starts the solver where the old owner has it *now*, carried
+//!   forward by the delay.
+//!
+//! Headless and free of the network module: the facade registers
+//! [`Frame`]'s bytes as a state (`Components::register_state`) and the
+//! network carries them as it carries any other.
+
+use std::collections::VecDeque;
+
+use glam::{Quat, Vec3};
+
+/// Network ticks a second: the network module's `NET_HZ`.
+pub const NET_HZ: f32 = 30.0;
+/// How far behind a replica is shown, network ticks: the network module's
+/// `DELAY`.
+pub const DELAY: f64 = 2.0;
+/// The most a replica is shown behind, network ticks.
+pub const MOST_DELAY: f64 = 6.0;
+
+/// How far behind to show for a link whose frames come `spread` ticks off
+/// their beat on the mean: the bodies' rule (`net::sync::delay_for`).
+pub fn delay_for(spread: f64) -> f64 {
+    (DELAY + 2.0 * spread).clamp(DELAY, MOST_DELAY)
+}
+
+/// Seconds over which a change of owner is bent into the new stream.
+pub const HANDOVER_BLEND: f32 = 0.5;
+/// The most change of speed a takeover carries forward, metres a second
+/// a second: the bodies' `TAKEOVER_ACCEL`.
+pub const TAKEOVER_ACCEL: f32 = 12.0;
+/// Frames further apart than this, metres a second at some particle, are
+/// a teleport: jumped, not slid through.
+pub const SNAP_SPEED: f32 = 35.0;
+
+/// One moment of a soft thing, as its owner sends it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Frame {
+    pub points: Vec<Vec3>,
+    /// A rod's links' turns; empty for what has none.
+    pub turns: Vec<Quat>,
+    /// A few numbers more, the thing's own: a rope's pull on each end.
+    pub extra: Vec<f32>,
+}
+
+impl Frame {
+    /// The frame as bytes: counts, the first point whole, then the others
+    /// on a lattice of [`POINT_STEP`]s from it — the first step, then how
+    /// each step differs from the one before, Rice-coded
+    /// ([`pack_signed`]; docs/netsim.md, «Трафик»); each point within half
+    /// a step, never adding up along the rope; a rod's links' turns as
+    /// their twists (the first whole), other turns at four bytes; the
+    /// extras whole. A chain of forty links, turns and all, is about 250
+    /// bytes; a rope of twenty-four, which sends no turns, about 130.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + self.points.len() * 5 + self.turns.len() * 4 + self.extra.len() * 4);
+        varint(&mut out, self.points.len() as u32);
+        varint(&mut out, self.turns.len() as u32);
+        out.push(self.extra.len().min(255) as u8);
+        let mut read_points = Vec::with_capacity(self.points.len());
+        if let Some(first) = self.points.first() {
+            for c in first.to_array() {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+            // Each point on a lattice of steps from the first; the first
+            // step whole, then how each step differs from the one before
+            // — along a rope, which bends a little from link to link,
+            // a few bits.
+            let lattice: Vec<[i32; 3]> = self
+                .points
+                .iter()
+                .map(|p| ((*p - *first) / POINT_STEP).round().clamp(Vec3::splat(-(1 << 29) as f32), Vec3::splat((1 << 29) as f32)).to_array().map(|c| c as i32))
+                .collect();
+            read_points.extend(lattice.iter().map(|l| on_lattice(*first, *l)));
+            let mut firsts = Vec::new();
+            let mut bends = Vec::with_capacity(lattice.len() * 3);
+            for i in 1..lattice.len() {
+                for c in 0..3 {
+                    let step = lattice[i][c] - lattice[i - 1][c];
+                    if i == 1 {
+                        firsts.push(step);
+                    } else {
+                        bends.push(step - (lattice[i - 1][c] - lattice[i - 2][c]));
+                    }
+                }
+            }
+            pack_signed(&mut out, &firsts);
+            pack_signed(&mut out, &bends);
+        }
+        if twisted(read_points.len(), self.turns.len()) {
+            // A rod's links: the first turn whole, then each as its twist
+            // about its link from the one before carried along — all the
+            // rest of a link's turn is where it lies, which the points say.
+            let first = along(&read_points, 0, self.turns[0]);
+            out.extend_from_slice(&pack_quat(first).to_le_bytes());
+            let mut before = unpack_quat(pack_quat(first));
+            let mut twists = Vec::with_capacity(self.turns.len());
+            for k in 1..self.turns.len() {
+                let carried = along(&read_points, k, before);
+                let lying = along(&read_points, k, self.turns[k]);
+                let d = carried.inverse() * lying;
+                let angle = 2.0 * d.z.atan2(d.w);
+                let angle = (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                let q = (angle / TWIST_STEP).round() as i32;
+                twists.push(q);
+                before = carried * Quat::from_rotation_z(q as f32 * TWIST_STEP);
+            }
+            pack_signed(&mut out, &twists);
+        } else {
+            for q in &self.turns {
+                out.extend_from_slice(&pack_quat(*q).to_le_bytes());
+            }
+        }
+        for e in self.extra.iter().take(255) {
+            out.extend_from_slice(&e.to_le_bytes());
+        }
+        out
+    }
+
+    /// A frame back from its bytes; `None` for bytes that do not read —
+    /// an old build, a truncated datagram: expected, never fatal.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let mut r = Reader { bytes, at: 0 };
+        let n = r.varint()? as usize;
+        let m = r.varint()? as usize;
+        let e = r.take(1)?[0] as usize;
+        let mut points = Vec::with_capacity(n.min(bytes.len()));
+        if n > 0 {
+            let first = r.vec3()?;
+            points.push(first);
+            let firsts = unpack_signed(&mut r, if n > 1 { 3 } else { 0 })?;
+            let bends = unpack_signed(&mut r, n.saturating_sub(2) * 3)?;
+            let (mut at, mut step) = ([0i32; 3], [0i32; 3]);
+            for i in 1..n {
+                for c in 0..3 {
+                    step[c] = if i == 1 { firsts[c] } else { step[c].wrapping_add(bends[(i - 2) * 3 + c]) };
+                    at[c] = at[c].wrapping_add(step[c]);
+                }
+                points.push(on_lattice(first, at));
+            }
+        }
+        let mut turns = Vec::with_capacity(m.min(bytes.len()));
+        if twisted(n, m) {
+            let mut before = unpack_quat(u32::from_le_bytes(r.take(4)?.try_into().ok()?));
+            turns.push(before);
+            for q in unpack_signed(&mut r, m - 1)? {
+                let carried = along(&points, turns.len(), before);
+                before = carried * Quat::from_rotation_z(q as f32 * TWIST_STEP);
+                turns.push(before);
+            }
+        } else {
+            for _ in 0..m {
+                turns.push(unpack_quat(u32::from_le_bytes(r.take(4)?.try_into().ok()?)));
+            }
+        }
+        let mut extra = Vec::with_capacity(e);
+        for _ in 0..e {
+            extra.push(r.f32()?);
+        }
+        Some(Self { points, turns, extra })
+    }
+
+    /// Between this and `other`, `t` of the way: points in a line, turns
+    /// the short way round. Where the two differ in shape, this one.
+    pub fn lerp(&self, other: &Frame, t: f32) -> Frame {
+        if self.points.len() != other.points.len() || self.turns.len() != other.turns.len() {
+            return if t < 0.5 { self.clone() } else { other.clone() };
+        }
+        Frame {
+            points: self.points.iter().zip(&other.points).map(|(a, b)| a.lerp(*b, t)).collect(),
+            turns: self.turns.iter().zip(&other.turns).map(|(a, b)| a.slerp(*b, t)).collect(),
+            extra: if t < 0.5 { self.extra.clone() } else { other.extra.clone() },
+        }
+    }
+}
+
+/// Of a metre, the step a frame's points go in: a quarter millimetre.
+pub const POINT_STEP: f32 = 1.0 / 4096.0;
+
+/// A point `l` steps from `first`.
+fn on_lattice(first: Vec3, l: [i32; 3]) -> Vec3 {
+    first + Vec3::new(l[0] as f32, l[1] as f32, l[2] as f32) * POINT_STEP
+}
+
+/// Of a turn, the step a link's twist goes in: about a tenth of a degree.
+pub const TWIST_STEP: f32 = std::f32::consts::TAU / 4096.0;
+
+/// A frame's turns are a rod's links' — one a link between its points —
+/// and go as twists.
+fn twisted(points: usize, turns: usize) -> bool {
+    points >= 2 && turns + 1 == points
+}
+
+/// `turn` brought the shortest way round to lie along link `k` of
+/// `points`: its own axis (Z) along the link.
+fn along(points: &[Vec3], k: usize, turn: Quat) -> Quat {
+    match (points[k + 1] - points[k]).try_normalize() {
+        Some(dir) => (Quat::from_rotation_arc((turn * Vec3::Z).normalize(), dir) * turn).normalize(),
+        None => turn,
+    }
+}
+
+/// Past this many ones of a quotient, the number goes whole: one far off
+/// the rest costs 64 bits, not hundreds.
+const ESCAPE: u32 = 24;
+
+/// Whole numbers, mostly small, a few not: Rice-coded — each folded to be
+/// positive (zigzag), its low `k` bits as they are and the rest as that
+/// many ones and a nought, `k` the frame's own, whichever makes it
+/// shortest. A rope bent sharply at one link costs that link, not every
+/// link the bits the sharp one needs.
+fn pack_signed(out: &mut Vec<u8>, values: &[i32]) {
+    let folded: Vec<u32> = values.iter().map(|v| ((v << 1) ^ (v >> 31)) as u32).collect();
+    let cost = |k: u32| -> u64 {
+        folded.iter().map(|z| {
+            let q = z >> k;
+            if q >= ESCAPE { (ESCAPE + 32) as u64 } else { (q + 1 + k) as u64 }
+        }).sum()
+    };
+    let k = (0..20).min_by_key(|k| cost(*k)).unwrap_or(0);
+    out.push(k as u8);
+    let mut w = Bits::default();
+    for z in folded {
+        let q = z >> k;
+        if q >= ESCAPE {
+            w.put((1u64 << ESCAPE) - 1, ESCAPE);
+            w.put(z as u64, 32);
+        } else {
+            w.put((1u64 << q) - 1, q);
+            w.put(0, 1);
+            w.put(z as u64 & ((1u64 << k) - 1), k);
+        }
+    }
+    out.extend(w.finish());
+}
+
+/// [`pack_signed`]'s `count` numbers back.
+fn unpack_signed(r: &mut Reader, count: usize) -> Option<Vec<i32>> {
+    let k = r.take(1)?[0] as u32;
+    if k >= 20 {
+        return None;
+    }
+    let mut b = BitReader { bytes: &r.bytes[r.at..], at: 0 };
+    let mut values = Vec::with_capacity(count.min(r.bytes.len() * 8));
+    for _ in 0..count {
+        let mut q = 0;
+        while q < ESCAPE && b.get(1)? == 1 {
+            q += 1;
+        }
+        let z = if q == ESCAPE { b.get(32)? as u32 } else { (q << k) | b.get(k)? as u32 };
+        values.push(((z >> 1) as i32) ^ -((z & 1) as i32));
+    }
+    r.at += b.at.div_ceil(8);
+    Some(values)
+}
+
+fn varint(out: &mut Vec<u8>, mut v: u32) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+/// Numbers of a few bits each, packed end to end.
+#[derive(Default)]
+struct Bits {
+    out: Vec<u8>,
+    word: u64,
+    filled: u32,
+}
+
+impl Bits {
+    fn put(&mut self, v: u64, bits: u32) {
+        if bits == 0 {
+            return;
+        }
+        self.word |= (v & ((1u64 << bits) - 1)) << self.filled;
+        self.filled += bits;
+        while self.filled >= 8 {
+            self.out.push(self.word as u8);
+            self.word >>= 8;
+            self.filled -= 8;
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.filled > 0 {
+            self.out.push(self.word as u8);
+        }
+        self.out
+    }
+}
+
+/// [`Bits`] read back.
+struct BitReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl BitReader<'_> {
+    fn get(&mut self, bits: u32) -> Option<u64> {
+        let mut v = 0u64;
+        for i in 0..bits as usize {
+            let bit = self.at + i;
+            v |= (((*self.bytes.get(bit / 8)? >> (bit % 8)) & 1) as u64) << i;
+        }
+        self.at += bits as usize;
+        Some(v)
+    }
+}
+
+/// Bytes read in order; `None` past the end.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let s = self.bytes.get(self.at..self.at + n)?;
+        self.at += n;
+        Some(s)
+    }
+
+    fn varint(&mut self) -> Option<u32> {
+        let mut v = 0u32;
+        for i in 0..5 {
+            let b = self.take(1)?[0];
+            v |= ((b & 0x7f) as u32) << (7 * i);
+            if b & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    fn f32(&mut self) -> Option<f32> {
+        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn vec3(&mut self) -> Option<Vec3> {
+        Some(Vec3::new(self.f32()?, self.f32()?, self.f32()?))
+    }
+}
+
+/// A unit quaternion in four bytes: the largest component dropped (its
+/// index in two bits, its sign made positive), the other three in ten bits
+/// each over ±1/√2 — the dacha simulator's packing, about a tenth of a
+/// degree.
+pub fn pack_quat(q: Quat) -> u32 {
+    let q = q.normalize();
+    let a = q.to_array();
+    let (largest, _) = a.iter().enumerate().fold((0, 0.0f32), |(i, m), (j, v)| if v.abs() > m { (j, v.abs()) } else { (i, m) });
+    let sign = if a[largest] < 0.0 { -1.0 } else { 1.0 };
+    let mut out = largest as u32;
+    let mut shift = 2;
+    for (j, v) in a.iter().enumerate() {
+        if j == largest {
+            continue;
+        }
+        let x = (v * sign * std::f32::consts::SQRT_2 * 0.5 + 0.5).clamp(0.0, 1.0);
+        out |= ((x * 1023.0).round() as u32) << shift;
+        shift += 10;
+    }
+    out
+}
+
+pub fn unpack_quat(bits: u32) -> Quat {
+    let largest = (bits & 3) as usize;
+    let mut a = [0.0f32; 4];
+    let mut shift = 2;
+    let mut sum = 0.0;
+    for (j, slot) in a.iter_mut().enumerate() {
+        if j == largest {
+            continue;
+        }
+        let x = ((bits >> shift) & 1023) as f32 / 1023.0;
+        *slot = (x - 0.5) * 2.0 / std::f32::consts::SQRT_2;
+        sum += *slot * *slot;
+        shift += 10;
+    }
+    a[largest] = (1.0 - sum).max(0.0).sqrt();
+    Quat::from_array(a).normalize()
+}
+
+/// What a takeover starts the solver from: where the old owner has the
+/// thing now, how fast each particle goes, and the turns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Takeover {
+    pub points: Vec<Vec3>,
+    pub velocities: Vec<Vec3>,
+    pub turns: Vec<Quat>,
+}
+
+/// A replica's frames as its owners sent them, and the clock it is shown
+/// by.
+#[derive(Debug, Clone, Default)]
+pub struct PresentedParticles {
+    /// (tick on this buffer's timeline, frame), oldest first.
+    samples: VecDeque<(f64, Frame)>,
+    sender: Option<u32>,
+    /// Added to the current sender's ticks to put them on the timeline.
+    offset: f64,
+    /// Where the clock stands, timeline ticks.
+    render: f64,
+    /// When the first frame of this sender came, how late the earliest
+    /// came, and how far off their beat frames come on the mean, ticks.
+    origin: Option<std::time::Instant>,
+    base: Option<f64>,
+    spread: f64,
+    /// A handover being hidden: each point's gap at the join, seconds
+    /// since the picture reached it, the join's tick and the old stream's
+    /// newest — between the two the gap grows in as the picture slides
+    /// from one owner's frame to the other's, so it never jumps.
+    blend: Option<(Vec<Vec3>, f32, f64, f64)>,
+    /// Frames taken, for a test to count.
+    pub taken: u64,
+    /// Its particles keep a shape (a rope's links): a takeover starts from
+    /// the newest frame as it is, and the ends are carried by what holds
+    /// them.
+    pub shape_held: bool,
+}
+
+/// Seconds a simulation's own clock (what its gusts are drawn from) is
+/// kept to the session's: wrapped, so an f32 keeps its precision.
+pub const CLOCK_WRAP: f64 = 3600.0;
+
+/// A simulation's clock brought to the session's (docs/netsim.md, Rough:
+/// everyone's flag flaps alike): jumped when far off — the first time,
+/// after a stall — otherwise slewed a tenth of the way a step, so a
+/// correction of the session's clock is not a jerk in the wind.
+pub fn keep_time(time: &mut f32, session: Option<f64>) {
+    let Some(session) = session else { return };
+    let target = (session % CLOCK_WRAP) as f32;
+    let off = target - *time;
+    if off.abs() > 0.25 {
+        *time = target;
+    } else {
+        *time += off * 0.1;
+    }
+}
+
+/// Summaries of a `Rough` thing a second.
+pub const ROUGH_HZ: f32 = 5.0;
+/// The most points a summary carries.
+pub const ROUGH_POINTS: usize = 24;
+/// Of the way to its summary a particle is pulled each step, past the
+/// slack.
+pub const ROUGH_PULL: f32 = 0.08;
+/// How far a cloth's particle may be from its summary before it is
+/// pulled, metres (each kind says its own, by its scale): the same
+/// simulation from the same inputs comes out the same on every peer, and
+/// pulling that toward a summary a fifth of a second old only shakes it —
+/// what is pulled is drift, from inputs that differed.
+pub const ROUGH_SLACK: f32 = 0.1;
+
+/// A `Rough` thing's summary (docs/netsim.md): everyone simulates it, and
+/// a few times a second its owner says where a handful of its particles
+/// are, in the space of what it hangs on — so a cape shown on a body that
+/// is itself shown late is pulled toward the owner's shape, not toward
+/// where the owner's body was. The others pull those particles a little
+/// of the way each step, where they are, not how fast: the rest follow by
+/// their constraints, and nothing jumps.
+#[derive(Debug, Clone, Default)]
+pub struct Rough {
+    since: f32,
+    /// The latest summary as bytes, for the network to send (unchanged
+    /// bytes are not sent again).
+    pub bytes: Option<Vec<u8>>,
+    /// The owner's summary, in the space it is placed in, and when it
+    /// came; the one before it, for how fast it goes.
+    target: Option<Vec<Vec3>>,
+    came: Option<std::time::Instant>,
+    before: Option<(Vec<Vec3>, std::time::Instant)>,
+}
+
+fn every(n: usize) -> usize {
+    n.div_ceil(ROUGH_POINTS).max(1)
+}
+
+impl Rough {
+    /// On the owner: on by `seconds`, and a fresh summary of `points` (in
+    /// the world) in `placed`'s space when one is due.
+    pub fn record(&mut self, points: &[Vec3], placed: glam::Mat4, seconds: f32) {
+        self.since += seconds;
+        if self.bytes.is_some() && self.since < 1.0 / ROUGH_HZ {
+            return;
+        }
+        self.since = 0.0;
+        let back = placed.inverse();
+        let frame = Frame {
+            points: points.iter().step_by(every(points.len())).map(|p| back.transform_point3(*p)).collect(),
+            ..Default::default()
+        };
+        self.bytes = Some(frame.encode());
+    }
+
+    /// On everyone else: the owner's summary.
+    pub fn take(&mut self, bytes: &[u8]) {
+        if let Some(frame) = Frame::decode(bytes) {
+            let now = std::time::Instant::now();
+            if let (Some(old), Some(came)) = (self.target.take(), self.came) {
+                if old.len() == frame.points.len() {
+                    self.before = Some((old, came));
+                }
+            }
+            self.target = Some(frame.points);
+            self.came = Some(now);
+        }
+    }
+
+    /// On everyone else: `points` pulled toward the summary, which is in
+    /// `placed`'s space.
+    ///
+    /// The summary is a moment old when it comes and older each step
+    /// after: it is carried forward by how fast it went between the last
+    /// two, for its age and `late` seconds more (the way here), so a thing
+    /// on the move is pulled toward where the owner has it now, not where
+    /// it was.
+    pub fn pull(&self, points: &mut [Vec3], placed: glam::Mat4, slack: f32, late: f32) {
+        let Some(target) = &self.target else { return };
+        let step = every(points.len());
+        if points.len().div_ceil(step) != target.len() {
+            return;
+        }
+        let ahead = match (&self.before, self.came) {
+            (Some((before, then)), Some(came)) => {
+                let gap = came.duration_since(*then).as_secs_f32().max(1.0 / ROUGH_HZ * 0.5);
+                let age = (came.elapsed().as_secs_f32() + late).min(0.5);
+                Some((before, age / gap))
+            }
+            _ => None,
+        };
+        for (k, t) in target.iter().enumerate() {
+            let i = k * step;
+            let t = match ahead {
+                Some((before, share)) => *t + (*t - before[k]) * share,
+                None => *t,
+            };
+            let there = placed.transform_point3(t);
+            let off = there - points[i];
+            let far = off.length();
+            if far > slack {
+                points[i] += off * ((far - slack) / far * ROUGH_PULL);
+            }
+        }
+    }
+
+    /// Whether a summary has come.
+    pub fn has_target(&self) -> bool {
+        self.target.is_some()
+    }
+}
+
+/// Who a buffer is seeded as: this peer, showing what it had.
+pub const HERE: u32 = u32::MAX;
+
+impl PresentedParticles {
+    /// A buffer that starts from what this peer shows now — a thing it
+    /// has just stopped simulating — so the new owner's stream is joined
+    /// from here, not jumped to (the bodies' buffer does the same).
+    pub fn seeded(frame: Frame) -> Self {
+        let mut out = Self::default();
+        out.push(HERE, 0, frame.clone());
+        out.push(HERE, 1, frame);
+        out.render = 1.0;
+        out
+    }
+
+    /// An arrival, against the beat it was sent on: how late it came
+    /// beyond the earliest any came (the link's own delay aside) is how
+    /// far off the beat the link is.
+    fn hear(&mut self, tick: f64) {
+        let now = std::time::Instant::now();
+        let origin = *self.origin.get_or_insert(now);
+        let late = now.duration_since(origin).as_secs_f64() * NET_HZ as f64 - tick;
+        // The earliest, let rise a little each time so a link that got
+        // slower for good is not held against it for ever.
+        let base = self.base.map_or(late, |b: f64| (b + 0.02).min(late));
+        self.base = Some(base);
+        self.spread += ((late - base).min(8.0) - self.spread) * 0.05;
+    }
+
+    /// How far behind it is shown now, network ticks.
+    pub fn delay(&self) -> f64 {
+        delay_for(self.spread)
+    }
+
+    /// A frame from `sender`, at its tick.
+    pub fn push(&mut self, sender: u32, tick: u64, frame: Frame) {
+        let tick = tick as f64;
+        match self.sender {
+            None => {
+                self.offset = 0.0;
+                self.render = tick - self.delay();
+            }
+            Some(old) if old != sender => {
+                // A new clock: its beat is measured afresh.
+                self.origin = None;
+                self.base = None;
+                // A new owner is a new clock: its first frame goes a delay
+                // ahead of the picture, and the gap between where the old
+                // stream was heading and where the new owner has it is
+                // hidden over a moment.
+                let newest = self.samples.back().map_or(self.render, |(t, _)| *t);
+                let join = (self.render + self.delay()).ceil().max(newest + 1.0);
+                self.offset = join - tick;
+                if let Some(heading) = self.frame_at(join) {
+                    if heading.points.len() == frame.points.len() {
+                        let gap = heading.points.iter().zip(&frame.points).map(|(h, p)| *h - *p).collect();
+                        self.blend = Some((gap, 0.0, join, newest));
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.sender = Some(sender);
+        if sender != HERE {
+            self.hear(tick);
+        }
+        let at = tick + self.offset;
+        if let Some((newest, last)) = self.samples.back() {
+            if at <= *newest {
+                return;
+            }
+            let seconds = ((at - newest) / NET_HZ as f64) as f32;
+            let fastest = last.points.iter().zip(&frame.points).map(|(a, b)| a.distance(*b)).fold(0.0, f32::max);
+            if last.points.len() != frame.points.len() || fastest / seconds.max(1e-3) > SNAP_SPEED {
+                self.samples.clear();
+                self.render = at - self.delay();
+                self.blend = None;
+            }
+        }
+        self.taken += 1;
+        self.samples.push_back((at, frame));
+        while self.samples.len() > 8 {
+            self.samples.pop_front();
+        }
+    }
+
+    /// Whether anything has come in.
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// The frame at a timeline tick, between the two around it; held at
+    /// the ends — never guessed past the newest.
+    fn frame_at(&self, at: f64) -> Option<Frame> {
+        let (first_at, first) = self.samples.front()?;
+        if at <= *first_at {
+            return Some(first.clone());
+        }
+        for pair in self.samples.iter().collect::<Vec<_>>().windows(2) {
+            let ((a_at, a), (b_at, b)) = (pair[0], pair[1]);
+            if at <= *b_at {
+                let t = ((at - a_at) / (b_at - a_at).max(1e-6)) as f32;
+                return Some(a.lerp(b, t));
+            }
+        }
+        self.samples.back().map(|(_, f)| f.clone())
+    }
+
+    /// On by `seconds`: the frame to show now, with any handover's gap
+    /// fading out. The clock keeps the delay behind the newest, catching
+    /// up gently when it falls behind and waiting when it runs ahead.
+    pub fn advance(&mut self, seconds: f32) -> Option<Frame> {
+        let newest = self.samples.back()?.0;
+        let target = newest - self.delay();
+        let ticks = seconds as f64 * NET_HZ as f64;
+        self.render += ticks;
+        let off = target - self.render;
+        if off.abs() > 4.0 {
+            self.render = target;
+        } else {
+            // Steered, not assigned, as the bodies' buffer: a tenth of the
+            // way a tick.
+            self.render += off * (0.1 * ticks).min(1.0);
+        }
+        self.render = self.render.min(newest);
+        while self.samples.len() > 2 && self.samples[1].0 < self.render - 1.0 {
+            self.samples.pop_front();
+        }
+        let mut frame = self.frame_at(self.render)?;
+        if let Some((gap, since, join, from)) = &mut self.blend {
+            let weight = if self.render >= *join {
+                *since += seconds;
+                let x = (*since / HANDOVER_BLEND).min(1.0);
+                1.0 - x * x * (3.0 - 2.0 * x)
+            } else {
+                ((self.render - *from) / (*join - *from).max(1e-6)).clamp(0.0, 1.0) as f32
+            };
+            if gap.len() == frame.points.len() {
+                for (p, g) in frame.points.iter_mut().zip(gap.iter()) {
+                    *p += *g * weight;
+                }
+            }
+            if self.render >= *join && *since >= HANDOVER_BLEND {
+                self.blend = None;
+            }
+        }
+        Some(frame)
+    }
+
+    /// Where the owner has it now and how fast each particle goes: the
+    /// newest frame carried forward over the ticks since it was sent —
+    /// `one_way` on the way here and one more — by the speed between the
+    /// newest two. `None` with fewer than two.
+    pub fn takeover(&self, one_way: f64) -> Option<Takeover> {
+        let n = self.samples.len();
+        if n < 2 {
+            return None;
+        }
+        let (newest_at, newest) = &self.samples[n - 1];
+        let (before_at, before) = &self.samples[n - 2];
+        if newest.points.len() != before.points.len() {
+            return None;
+        }
+        let ticks = (newest_at - before_at).max(1e-6) as f32;
+        let lead = ((self.render + self.delay() - newest_at).max(0.0) + 1.0 + one_way.max(0.0)) as f32;
+        // As the bodies' takeover: speed from the newest two, and how it
+        // was changing from a third (falling, swinging), clamped so that a
+        // knock is not carried on — then a thing held by a body and the
+        // body are carried forward alike.
+        let older = (n >= 3).then(|| &self.samples[n - 3]).filter(|(_, f)| f.points.len() == newest.points.len());
+        let most = TAKEOVER_ACCEL / (NET_HZ * NET_HZ);
+        let mut points = Vec::with_capacity(newest.points.len());
+        let mut velocities = Vec::with_capacity(newest.points.len());
+        for i in 0..newest.points.len() {
+            let mut per_tick = (newest.points[i] - before.points[i]) / ticks;
+            let mut accel = Vec3::ZERO;
+            if let Some((older_at, older)) = older {
+                let earlier_ticks = (before_at - older_at).max(1e-6) as f32;
+                let earlier = (before.points[i] - older.points[i]) / earlier_ticks;
+                accel = ((per_tick - earlier) / (0.5 * (ticks + earlier_ticks))).clamp_length_max(most);
+                per_tick += accel * (0.5 * ticks);
+            }
+            if self.shape_held {
+                // A thing held in a shape (a chain) is not carried on
+                // particle by particle — each on its own line it comes out
+                // longer and zigzag; what holds its ends carries it.
+                points.push(newest.points[i]);
+                velocities.push(per_tick * NET_HZ);
+            } else {
+                points.push(newest.points[i] + per_tick * lead + accel * (0.5 * lead * lead));
+                velocities.push((per_tick + accel * lead) * NET_HZ);
+            }
+        }
+        Some(Takeover { points, velocities, turns: newest.turns.clone() })
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rough_summary_pulls_the_particles_it_names_toward_the_owners_shape() {
+        let placed = glam::Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0));
+        let owner: Vec<Vec3> = (0..48).map(|i| Vec3::new(5.0, -(i as f32) * 0.05, 0.3)).collect();
+        let mut sent = Rough::default();
+        sent.record(&owner, placed, 1.0 / 60.0);
+        let bytes = sent.bytes.clone().unwrap();
+        assert!(bytes.len() < 200, "{} bytes", bytes.len());
+        // Not due again for a fifth of a second: the same bytes.
+        sent.record(&owner.iter().map(|p| *p + Vec3::X).collect::<Vec<_>>(), placed, 1.0 / 60.0);
+        assert_eq!(sent.bytes.as_ref().unwrap(), &bytes);
+        let mut here = Rough::default();
+        here.take(&bytes);
+        // Here the thing hangs on a body shown a metre behind, and its
+        // particles are off to the side: pulled toward the shape, in the
+        // body's space here.
+        let behind = glam::Mat4::from_translation(Vec3::new(4.0, 0.0, 0.0));
+        let mut points: Vec<Vec3> = owner.iter().map(|p| *p - Vec3::X + Vec3::Z).collect();
+        for _ in 0..60 {
+            here.pull(&mut points, behind, ROUGH_SLACK, 0.0);
+        }
+        assert!(points[0].distance(Vec3::new(4.0, 0.0, 0.3)) < ROUGH_SLACK + 0.01, "{}", points[0]);
+        assert!(points[1].distance(Vec3::new(4.0, -0.05, 1.3)) < 1e-6, "unnamed ones left to the constraints");
+    }
+
+    #[test]
+    fn a_simulations_clock_is_brought_to_the_sessions_without_a_jerk() {
+        let mut t = 0.0;
+        keep_time(&mut t, Some(100.0));
+        assert_eq!(t, 100.0, "far off: jumped");
+        keep_time(&mut t, Some(100.05));
+        assert!((t - 100.005).abs() < 1e-3, "near: slewed, {t}");
+        keep_time(&mut t, None);
+        assert!((t - 100.005).abs() < 1e-3, "no session: its own");
+    }
+
+    #[test]
+    fn small_numbers_go_in_few_bits_and_a_far_one_costs_only_itself() {
+        let mut values: Vec<i32> = (0..300).map(|i| (i % 7) - 3).collect();
+        values[100] = 1 << 28;
+        values[200] = -(1 << 30);
+        values.push(i32::MAX);
+        values.push(i32::MIN);
+        let mut out = Vec::new();
+        pack_signed(&mut out, &values);
+        assert!(out.len() < 300 * 4 / 8 + 40, "{} bytes", out.len());
+        out.push(0xAB);
+        let mut r = Reader { bytes: &out, at: 0 };
+        assert_eq!(unpack_signed(&mut r, values.len()), Some(values));
+        assert_eq!(r.take(1), Some(&[0xAB][..]), "read to its end and no further");
+        let mut empty = Vec::new();
+        pack_signed(&mut empty, &[]);
+        assert_eq!(unpack_signed(&mut Reader { bytes: &empty, at: 0 }, 0), Some(vec![]));
+        assert_eq!(unpack_signed(&mut Reader { bytes: &out[..5], at: 0 }, 302), None);
+    }
+
+    #[test]
+    fn a_frame_round_trips_within_a_fraction_of_a_millimetre_and_a_tenth_of_a_degree() {
+        let frame = Frame {
+            points: (0..41).map(|i| Vec3::new(i as f32 * 0.1, (i as f32 * 0.3).sin() * 0.5 + 2.0, -1.0)).collect(),
+            turns: (0..40).map(|i| Quat::from_rotation_y(i as f32 * 0.2) * Quat::from_rotation_x(0.3)).collect(),
+            extra: vec![12.5, -3.0],
+        };
+        let bytes = frame.encode();
+        assert!(bytes.len() < 260, "{} bytes", bytes.len());
+        let back = Frame::decode(&bytes).unwrap();
+        // The rounding does not add up along the rope.
+        for (a, b) in frame.points.iter().zip(&back.points) {
+            assert!(a.distance(*b) < POINT_STEP, "{a} {b}");
+        }
+        let still = Frame { points: vec![Vec3::new(1.0, 2.0, 3.0); 3], ..Default::default() };
+        assert_eq!(Frame::decode(&still.encode()).unwrap().points, still.points);
+        assert_eq!(Frame::decode(&Frame::default().encode()).unwrap(), Frame::default());
+        // A link's turn comes back lying along its link as read, twisted
+        // as it was.
+        for (k, (a, b)) in frame.turns.iter().zip(&back.turns).enumerate() {
+            let link = (back.points[k + 1] - back.points[k]).normalize();
+            assert!((*b * Vec3::Z).dot(link) > 0.99999, "{k}: along its link");
+            let lying = along(&frame.points, k, *a);
+            assert!(lying.angle_between(*b) < 0.004, "{k}: {lying} {b}");
+        }
+        assert_eq!(back.extra, frame.extra);
+        assert!(Frame::decode(&bytes[..10]).is_none());
+    }
+
+    fn frame(x: f32) -> Frame {
+        Frame { points: vec![Vec3::new(x, 0.0, 0.0), Vec3::new(x, -1.0, 0.0)], ..Default::default() }
+    }
+
+    #[test]
+    fn a_replica_is_shown_between_frames_a_delay_behind_and_taken_over_ahead() {
+        let mut p = PresentedParticles::default();
+        // Moving at 0.1 m a tick, shown a frame at a time.
+        let mut shown = Frame::default();
+        for tick in 0..10u64 {
+            p.push(1, tick, frame(tick as f32 * 0.1));
+            shown = p.advance(1.0 / NET_HZ).unwrap();
+        }
+        assert!((shown.points[0].x - 0.7).abs() < 0.06, "a delay behind the newest: {}", shown.points[0].x);
+        let t = p.takeover(1.0).unwrap();
+        assert!(t.points[0].x > 0.9, "carried past the newest: {}", t.points[0].x);
+        // Steady: nothing speeding up, so nothing carried as such.
+        assert!((t.velocities[0].x - 3.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_new_owner_is_joined_not_jumped_to() {
+        let mut p = PresentedParticles::default();
+        for tick in 0..6u64 {
+            p.push(1, tick, frame(0.0));
+            p.advance(1.0 / NET_HZ);
+        }
+        // The new owner has it 0.3 m over, on its own clock.
+        p.push(2, 500, frame(0.3));
+        p.push(2, 501, frame(0.3));
+        let mut last = p.advance(1.0 / NET_HZ).unwrap().points[0].x;
+        let mut biggest = 0.0f32;
+        for _ in 0..30 {
+            let x = p.advance(1.0 / NET_HZ).unwrap().points[0].x;
+            biggest = biggest.max((x - last).abs());
+            last = x;
+        }
+        assert!(biggest < 0.05, "no jump: {biggest}");
+        assert!((last - 0.3).abs() < 1e-3, "arrived: {last}");
+    }
+}

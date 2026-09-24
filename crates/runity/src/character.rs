@@ -49,6 +49,10 @@ pub fn step(world: &mut World, physics: &mut crate::PhysicsWorld, seconds: f32) 
         if t.pull <= 0.0 || t.parts.len() != 11 {
             continue;
         }
+        // Someone else's: its parts are shown as their owner has them.
+        if t.parts.iter().any(|p| world.get::<&crate::world::Replica>(*p).is_ok()) {
+            continue;
+        }
         let mut total = 0.0;
         for (i, part) in t.parts.iter().enumerate() {
             let Ok(current) = world.get::<&WorldTransform>(*part).map(|p| p.0.to_scale_rotation_translation().1) else { continue };
@@ -104,14 +108,23 @@ pub fn step(world: &mut World, physics: &mut crate::PhysicsWorld, seconds: f32) 
             physics.add_force(world, pelvis, force);
         }
     }
-    // What each part is doing now, for the next step's blows.
-    let now: Vec<(hecs::Entity, Vec3)> = world
-        .query::<(hecs::Entity, &RagdollPart)>()
+    // What each part is doing now, for the next step's blows — only of
+    // parts simulated here: one just taken over from another peer starts
+    // at the speed it had there, which is no blow.
+    let now: Vec<(hecs::Entity, Option<Vec3>)> = world
+        .query::<(hecs::Entity, &RagdollPart, Option<&crate::world::Replica>)>()
         .iter()
-        .filter_map(|(e, _)| physics.velocity(world, e).map(|v| (e, v)))
+        .map(|(e, _, replica)| (e, if replica.is_some() { None } else { physics.velocity(world, e) }))
         .collect();
     for (e, v) in now {
-        let _ = world.insert_one(e, PartWas(v));
+        match v {
+            Some(v) => {
+                let _ = world.insert_one(e, PartWas(v));
+            }
+            None => {
+                let _ = world.remove_one::<PartWas>(e);
+            }
+        }
     }
 }
 

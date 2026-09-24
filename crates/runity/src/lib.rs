@@ -506,6 +506,7 @@ pub mod prelude {
     pub use runity_geometry::line::{GeometryLine, GeometryOverride};
 }
 pub use runity_core::shape;
+pub mod netsim;
 pub use runity_overlay::screen;
 #[cfg(feature = "character")]
 pub mod character;
