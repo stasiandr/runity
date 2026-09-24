@@ -100,6 +100,7 @@ pub mod strings;
 pub mod surface;
 pub mod taa;
 pub mod upscale;
+pub mod cluster;
 pub mod terrain;
 pub mod time;
 pub mod timers;
