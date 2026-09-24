@@ -2367,6 +2367,12 @@ fn fs_prepassed(in: VertexOutput, @builtin(front_facing) front: bool) -> @locati
     return shade(in, front, false);
 }
 
+/// Whether the side seen is the surface's front: what the GPU says, the
+/// other way round for a thing placed mirrored.
+fn seen_front(in: VertexOutput, front: bool) -> bool {
+    return front != ((u32(in.emission.w + 0.5) & 128u) != 0u);
+}
+
 /// A see-through surface lit by nothing — smoke, dust, a glow: its
 /// picture, what it emits and its own shader's say, and none of what
 /// `shade` does for the light (normal maps, decals, weather). A sky of
@@ -2383,7 +2389,7 @@ fn fs_unlit(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     }
     let sampled = surface_at(in.maps, base_uv);
     let emitted = emission_at(in.maps, in.uv).rgb;
-    let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, seen_front(in, front));
     var alpha = in.surface.z * sampled.a;
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
@@ -2426,7 +2432,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let mask = mask_at(in.maps, in.uv);
     let emitted = emission_at(in.maps, in.uv).rgb;
     // A face seen from behind — a two-sided leaf — is lit from its own side.
-    let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, seen_front(in, front));
     var normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
     // How the position changes across the pixel: what a decal's picture is
     // filtered by, worked out here where every pixel still runs together.
@@ -2784,7 +2790,7 @@ fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
     }
-    return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, front), 1.0);
+    return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, seen_front(in, front)), 1.0);
 }
 
 struct Sand {

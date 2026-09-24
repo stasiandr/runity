@@ -215,3 +215,39 @@ fn a_mesh_drawn_without_a_pose_stands_in_its_bind_position() {
         "rest pose and no pose should agree, got {a:.2} and {b:.2}"
     );
 }
+
+/// At rest a skin is where it was bound: every joint's matrix times its
+/// inverse bind is nothing at all — also for a skeleton that hangs under a
+/// node of its own (Blender's `Armature` at a hundredth scale), which is
+/// part of where each joint is. `SKIN_GLB=path` checks another file.
+#[test]
+fn at_rest_a_skin_stands_where_it_was_bound() {
+    let source = std::env::var("SKIN_GLB").map(PathBuf::from).unwrap_or_else(|_| fixture("skinned_banner.gltf"));
+    let out_dir = std::env::temp_dir().join(format!("scrap-skin-rest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let name = source.file_name().unwrap().to_string_lossy().into_owned();
+    scrap_import::import_to(
+        &source,
+        &out_dir.join("library"),
+        &out_dir.join(format!("{name}.scrimport")),
+        ImportSettings {
+            origin_to_base: false,
+            keep_uvs: true,
+            ..ImportSettings::for_source(name.clone())
+        },
+    )
+    .expect("importing");
+    let (library, _) = Library::open(out_dir.join("library")).expect("the library");
+    let stem = source.file_stem().unwrap().to_string_lossy().into_owned();
+    let archived = library.mesh_by_name(&stem).expect("the mesh");
+    let mesh: MeshAsset = rkyv::deserialize::<MeshAsset, rkyv::rancor::Error>(archived).unwrap();
+    let skin = mesh.skin.as_ref().expect("skinned");
+    for (i, m) in skin.skeleton.skinning_matrices(&skin.skeleton.rest_pose()).iter().enumerate() {
+        assert!(
+            m.abs_diff_eq(glam::Mat4::IDENTITY, 1e-3),
+            "joint {i} `{}` moves its vertices at rest: {m:?}",
+            skin.skeleton.joints[i].name
+        );
+    }
+    let _ = std::fs::remove_dir_all(&out_dir);
+}

@@ -920,6 +920,9 @@ const FLAG_SCREEN: u32 = 16;
 const FLAG_MIRROR: u32 = 32;
 /// Clay: mud when wet, cracking as it dries ([`Material::clay`]).
 const FLAG_CLAY: u32 = 64;
+/// Placed mirrored (a scale of -1): its faces wind the other way, so the
+/// side the GPU calls front is its back.
+const FLAG_INSIDE_OUT: u32 = 128;
 
 /// What the GPU is told about one draw.
 fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
@@ -942,6 +945,9 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
     }
     if material.clay {
         flags |= FLAG_CLAY;
+    }
+    if transform.determinant() < 0.0 {
+        flags |= FLAG_INSIDE_OUT;
     }
     if material.is_transparent() && material.blend == Blend::Premultiply {
         flags |= FLAG_PREMULTIPLY;
@@ -2416,12 +2422,17 @@ impl Renderer {
         } else {
             &self.pipelines.scene
         };
-        map.get(&look).or_else(|| {
-            map.get(&Look {
-                shader: None,
-                ..look
+        // A material's own shader has no `fs_unlit` looks (their shade()
+        // returns early for unlit anyway): its standard one, then the
+        // standard shader's.
+        map.get(&look)
+            .or_else(|| map.get(&Look { unlit: false, ..look }))
+            .or_else(|| {
+                map.get(&Look {
+                    shader: None,
+                    ..look
+                })
             })
-        })
     }
 
     /// Whether a look's own shader cuts its surface out (`discard`): the
@@ -2470,8 +2481,11 @@ impl Renderer {
                 label: Some("scrap::material shader"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
+        // Not the `fs_unlit` looks: each is another pipeline to compile
+        // for every material shader, for the few see-through unlit ones.
         let looks: Vec<Look> = Look::all()
             .into_iter()
+            .filter(|look| !look.unlit)
             .map(|look| Look {
                 shader: Some(id),
                 ..look
@@ -5761,7 +5775,16 @@ impl Renderer {
                 continue;
             };
             stats.drawn += 1;
-            let look = Look::of(&draw.material, skinned);
+            let mut look = Look::of(&draw.material, skinned);
+            // Mirrored — a right hand that is a left one scaled by -1 —
+            // its faces wind the other way round: the other side culled.
+            if draw.transform.determinant() < 0.0 {
+                look.face = match look.face {
+                    RenderFace::Front => RenderFace::Back,
+                    RenderFace::Back => RenderFace::Front,
+                    RenderFace::Both => RenderFace::Both,
+                };
+            }
             // The terrain near the camera: its fine grid instead, placed and
             // raised by its own vertex shader. Its mesh still casts shadows.
             if fine_terrain.is_some_and(|t| t.mesh == draw.mesh)
@@ -7295,6 +7318,16 @@ mod tests {
         let shader = "// Road.\n// scrap:params _Speed\n  // scrap:textures _Road _Noise _A _B _Past\nfn surface() {}";
         assert_eq!(declared_textures(shader), ["_Road", "_Noise", "_A", "_B"], "four at most");
         assert!(declared_textures("fn surface() {}").is_empty());
+    }
+
+    #[test]
+    fn a_thing_placed_mirrored_says_its_faces_are_turned() {
+        let flags = |t: Mat4| instance_of(t, &Material::default()).emission[3] as u32;
+        assert_eq!(flags(Mat4::IDENTITY) & FLAG_INSIDE_OUT, 0);
+        let mirrored = Mat4::from_scale(Vec3::new(-1.5, 1.5, 1.5));
+        assert_ne!(flags(mirrored) & FLAG_INSIDE_OUT, 0, "a right hand from a left one");
+        let twice = Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0));
+        assert_eq!(flags(twice) & FLAG_INSIDE_OUT, 0, "mirrored twice is a turn");
     }
 
     #[test]

@@ -720,10 +720,14 @@ impl PhysicsWorld {
             let dynamic = kind == Body::Dynamic;
             let mine = parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]);
             let own = build_collider(shape.0, placed.0, mesh, dynamic);
-            if own.is_none() && mine.is_empty() {
+            if own.is_none() && mine.is_empty() && kind != Body::Kinematic {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
-                // bounds is the kind of default that is wrong quietly.
+                // bounds is the kind of default that is wrong quietly. A
+                // kinematic one is kept, shapeless: it goes only where it
+                // is carried, and is something to hang a joint on, as
+                // Unity's Rigidbody with no collider is — the anchor a
+                // mouse's tail swings from.
                 continue;
             }
             // Its own collider, or — for a body made only of its parts — none.
@@ -3320,6 +3324,33 @@ mod tests {
         run_for(&mut physics, &mut world, 1);
         assert!(world.get::<&JointBuilt>(tail).is_err());
         assert_eq!(physics.impulse_joints.len(), 0);
+    }
+
+    #[test]
+    fn a_rope_hung_on_a_shapeless_anchor_follows_what_carries_it() {
+        // A mouse's tail: a segment on a ball joint to a kinematic anchor
+        // that has no collider, under the mouse, which moves.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000e1", name: "mouse", model: "m", transform: (position: (0.0, 2.0, 0.0)), children: [
+                    (id: "00000000000000e2", name: "anchor", model: "m", body: Kinematic, physics: (gravity: 0.0)),
+                ]),
+                (id: "00000000000000e3", name: "segment", model: "m", body: Dynamic,
+                 collider: Sphere(radius: 0.05), physics: (mass: 0.001),
+                 transform: (position: (0.0, 1.7, 0.0)),
+                 joint: Ball(to: "00000000000000e2")),
+            ])"#,
+        );
+        let mouse = by_id(&world, scene.entities[0].id);
+        let segment = by_id(&world, scene.entities[1].id);
+        run_for(&mut physics, &mut world, 10);
+        assert!(world.get::<&JointBuilt>(segment).is_ok(), "hung on the anchor");
+        for _ in 0..60 {
+            world.get::<&mut Transform>(mouse).unwrap().position.x += 0.05;
+            run_for(&mut physics, &mut world, 1);
+        }
+        let at = world.get::<&WorldTransform>(segment).unwrap().0.w_axis.truncate();
+        assert!(at.x > 2.0 && (at - Vec3::new(3.0, 2.0, 0.0)).length() < 0.6, "dragged along: {at:?}");
     }
 
     #[test]

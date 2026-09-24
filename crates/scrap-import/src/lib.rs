@@ -618,7 +618,7 @@ fn read_skin(
         }
     }
 
-    let skeleton = Skeleton {
+    let mut skeleton = Skeleton {
         joints: gltf_skin
             .joints()
             .enumerate()
@@ -642,6 +642,52 @@ fn read_skin(
             })
             .collect(),
     };
+
+    // What the skeleton hangs under without being part of it — Blender's
+    // `Armature` at a hundredth scale and a quarter turn, the Unity
+    // import's turn — is a joint too, the root's parent, which no clip
+    // moves: else a skeleton in centimetres is posed a hundred times too
+    // big. Put last, so no weight's joint index moves.
+    let mut parent_of = vec![None; document.nodes().len()];
+    for node in document.nodes() {
+        for child in node.children() {
+            parent_of[child.index()] = Some(node.index());
+        }
+    }
+    let above = |node: usize| {
+        let mut matrix = glam::Mat4::IDENTITY;
+        let mut at = parent_of[node];
+        while let Some(n) = at {
+            if node_indices.contains(&n) {
+                return None;
+            }
+            let local = document.nodes().nth(n).map(|n| n.transform().matrix()).unwrap_or(glam::Mat4::IDENTITY.to_cols_array_2d());
+            matrix = glam::Mat4::from_cols_array_2d(&local) * matrix;
+            at = parent_of[n];
+        }
+        Some(matrix)
+    };
+    let roots: Vec<usize> = (0..skeleton.joints.len()).filter(|i| skeleton.joints[*i].parent.is_none()).collect();
+    if let Some(carrier) = roots.first().and_then(|r| above(node_indices[*r])) {
+        if !carrier.abs_diff_eq(glam::Mat4::IDENTITY, 1e-6) && skeleton.joints.len() < u16::MAX as usize {
+            let slot = skeleton.joints.len() as u16;
+            let (scale, rotation, translation) = carrier.to_scale_rotation_translation();
+            skeleton.joints.push(Joint {
+                name: "(skeleton root)".into(),
+                parent: None,
+                // Nothing is weighted to it; bound where it stands.
+                inverse_bind: carrier.inverse().to_cols_array_2d(),
+                rest: PoseTransform {
+                    translation: translation.to_array(),
+                    rotation: rotation.to_array(),
+                    scale: scale.to_array(),
+                },
+            });
+            for r in roots {
+                skeleton.joints[r].parent = Some(slot);
+            }
+        }
+    }
 
     let clips = document
         .animations()
