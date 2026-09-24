@@ -3491,7 +3491,12 @@ impl Session {
         {
             self.preview_target = Some(OffscreenTarget::new(&self.gpu, size.0, size.1));
         }
-        let frame = self.base_frame(camera);
+        // Drawn as the Scene view beside it is, without TAA: its history
+        // would be the other camera's, and the renderer would change how
+        // many samples it draws with twice a frame.
+        let mut frame = self.base_frame(camera);
+        frame.post.taa = false;
+        frame.post.auto_exposure.enabled = false;
         let target = self.preview_target.as_ref().expect("made above");
         self.renderer.render(&self.gpu, target, &frame);
         true

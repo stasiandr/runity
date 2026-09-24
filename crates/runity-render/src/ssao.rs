@@ -95,6 +95,21 @@ pub const SHADER: &str = include_str!("ssao.wgsl");
 pub(crate) const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The prepass's depth: sampled, so single-sample.
 pub(crate) const PREPASS_DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// How many screen pixels across one of the occlusion's is: two, a
+/// quarter of the pixels, on a screen this tall or more. It changes slowly
+/// across a surface, and the blur that brings it back to the whole size
+/// keeps its edges to the depth's. On a small picture the blur's box
+/// would be most of a corner's darkening, and the saving is little.
+const HALF_FROM: u32 = 720;
+
+fn scale_for(size: (u32, u32)) -> u32 {
+    if size.1 >= HALF_FROM {
+        2
+    } else {
+        1
+    }
+}
+
 /// The bounced light in rgb, the occlusion in alpha.
 const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
@@ -152,7 +167,10 @@ fn view(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // Copied from: the prepass's depth is where the scene's starts.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
@@ -167,7 +185,7 @@ pub(crate) struct SsaoRenderer {
     /// none, the frame says so and the shader does not look.)
     pub(crate) result: wgpu::TextureView,
     white: wgpu::TextureView,
-    size: (u32, u32),
+    pub(crate) size: (u32, u32),
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
     occlusion: wgpu::RenderPipeline,
@@ -274,7 +292,10 @@ impl SsaoRenderer {
         self.size = size;
         self.depth = view(gpu, "prepass depth", size, PREPASS_DEPTH);
         self.normals = view(gpu, "prepass normals", size, NORMAL_FORMAT);
-        self.raw = view(gpu, "occlusion", size, AO_FORMAT);
+        // Found at half the size across on a big screen, a pixel for each
+        // two by two; the blur brings it back to the whole.
+        let scale = scale_for(size);
+        self.raw = view(gpu, "occlusion", (size.0.div_ceil(scale), size.1.div_ceil(scale)), AO_FORMAT);
         self.result = view(gpu, "occlusion (blurred)", size, AO_FORMAT);
         true
     }
@@ -314,7 +335,8 @@ impl SsaoRenderer {
                 },
                 settings.bounce_radius.max(0.1),
                 if settings.method == Method::Gtao { 1.0 } else { 0.0 },
-                0.0,
+                // The occlusion's pixel is this many of the screen's across.
+                scale_for(self.size) as f32,
             ],
         };
         let last_frame = last_frame.unwrap_or(&self.white);
