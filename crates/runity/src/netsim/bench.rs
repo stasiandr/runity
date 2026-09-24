@@ -106,6 +106,8 @@ struct Metered<T> {
 pub struct Kinds {
     pub bytes: [AtomicU64; 8],
     pub datagrams: [AtomicU64; 8],
+    /// Every datagram, while a test keeps them (`Some`).
+    pub kept: std::sync::Mutex<Option<Vec<Vec<u8>>>>,
 }
 
 impl Kinds {
@@ -121,6 +123,11 @@ impl<T: Transport> Transport for Metered<T> {
         let kind = (bytes.first().copied().unwrap_or(7) as usize).min(7);
         self.kinds.bytes[kind].fetch_add(bytes.len() as u64, Ordering::Relaxed);
         self.kinds.datagrams[kind].fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut kept) = self.kinds.kept.lock() {
+            if let Some(kept) = kept.as_mut() {
+                kept.push(bytes.clone());
+            }
+        }
         self.inner.send(to, bytes);
     }
 

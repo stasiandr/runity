@@ -105,6 +105,8 @@ desktop-shell = ["dep:runity-shell"]
 wgpu = "30"
 hecs = "0.11.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# The traffic bench asks whether deflating datagrams would pay.
+miniz_oxide = "0.8"
 
 # The reference scene, rendered headlessly. `cargo run --example scene_shot`.
 [[example]]

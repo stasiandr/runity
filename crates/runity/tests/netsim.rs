@@ -752,6 +752,9 @@ fn traffic() {
         }
         let (up, down) = (session.sent.load(Relaxed), session.served.load(Relaxed));
         let (up_kinds, down_kinds) = (session.sent_kinds.read(), session.served_kinds.read());
+        for kinds in [&session.sent_kinds, &session.served_kinds] {
+            *kinds.kept.lock().unwrap() = Some(Vec::new());
+        }
         let seconds = 3.0;
         for t in ticks(0.5)..ticks(0.5 + seconds) {
             session.step_with(|i, p| game(t, i, p));
@@ -769,6 +772,16 @@ fn traffic() {
         println!("TRAFFIC {name:<14} guest up {up:6.2} KB/s  down {down:6.2} KB/s");
         println!("   up:   {}", by(session.sent_kinds.read(), up_kinds));
         println!("   down: {}", by(session.served_kinds.read(), down_kinds));
+        // Would deflating each datagram pay? (Each alone: an unreliable
+        // one cannot lean on the one before, which may not have come.)
+        for (way, kinds) in [("up", &session.sent_kinds), ("down", &session.served_kinds)] {
+            let kept = kinds.kept.lock().unwrap().take().unwrap_or_default();
+            let raw: usize = kept.iter().map(Vec::len).sum();
+            let deflated: usize = kept.iter().map(|d| miniz_oxide::deflate::compress_to_vec(d, 9).len().min(d.len()) + 1).sum();
+            if raw > 0 {
+                println!("   {way} deflated: {:.0}% of {raw} bytes", deflated as f32 * 100.0 / raw as f32);
+            }
+        }
     }
     measure("idle crates", crates(), &[], &[CRATE_B], |_, _, _| {});
     measure("crates", crates(), &[], &[CRATE_B], |t, _, p| {
