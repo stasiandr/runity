@@ -36,7 +36,7 @@ pub struct Commands {
 }
 
 /// The engine's own commands: what `help` lists first.
-const BUILT_IN: [(&str, &str); 3] = [
+const BUILT_IN: [(&str, &str); 4] = [
     ("help", "every command and what it does"),
     (
         "get",
@@ -45,6 +45,10 @@ const BUILT_IN: [(&str, &str); 3] = [
     (
         "set",
         "set FILE.FIELD VALUE: change it in tuning/FILE.ron; the game reloads it (set world.gravity -3)",
+    ),
+    (
+        "time",
+        "time [SCALE]: how fast the world runs — 1 real time, 0.2 slow motion, 0 paused",
     ),
 ];
 
@@ -109,6 +113,7 @@ impl Commands {
                     .ok_or("set FILE.FIELD VALUE, as: set world.gravity -3")?;
                 set(self.tuning()?, target, value.trim())
             }
+            "time" => time(world, rest),
             _ => {
                 let near = crate::spelling::closest(name, self.names());
                 Err(match near {
@@ -187,6 +192,23 @@ fn read(path: &Path) -> Result<String, String> {
 }
 
 /// What the file says at `target`, as it is written.
+/// `time`: the world's scale as the loop last wrote it, or a new one asked
+/// of the loop ([`crate::time::set_scale`]) — from the next frame.
+fn time(world: &mut World, rest: &str) -> Result<String, String> {
+    if rest.is_empty() {
+        let scale = crate::time::clock(world).map_or(1.0, |c| c.scale);
+        return Ok(format!("time {scale}"));
+    }
+    let scale: f32 = rest
+        .parse()
+        .map_err(|_| format!("time SCALE takes a number, as: time 0.2 (not `{rest}`)"))?;
+    if !scale.is_finite() || scale < 0.0 {
+        return Err(format!("time SCALE is 0 or more, not {scale}"));
+    }
+    crate::time::set_scale(world, scale);
+    Ok(format!("time {scale} from the next frame"))
+}
+
 pub fn get(tuning: &Path, what: &str) -> Result<String, String> {
     let (path, fields) = target(tuning, what)?;
     let text = read(&path)?;
@@ -287,6 +309,18 @@ mod tests {
         assert!(wrong.contains("`god`?"), "{wrong}");
         assert_eq!(commands.complete("g"), ["get", "god"]);
         assert_eq!(commands.run(&mut world, "  ").unwrap(), "");
+    }
+
+    #[test]
+    fn time_asks_the_loop_for_a_scale_and_says_the_one_it_has() {
+        let commands = Commands::new();
+        let mut world = World::new();
+        assert_eq!(commands.run(&mut world, "time").unwrap(), "time 1");
+        commands.run(&mut world, "time 0.25").unwrap();
+        let asked = crate::time::clock(&world).unwrap().asked;
+        assert_eq!(asked.scale, Some(0.25));
+        assert!(commands.run(&mut world, "time fast").is_err());
+        assert!(commands.run(&mut world, "time -1").is_err());
     }
 
     #[test]
