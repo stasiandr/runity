@@ -331,6 +331,84 @@ impl Clip {
     }
 }
 
+impl Clip {
+    /// This clip as an offset from its own first frame, laid on the rest
+    /// pose: sampled, it gives the rest pose at its start and, later, rest
+    /// moved by as much as the clip has moved since its start. What an
+    /// additive layer plays — a breath or a lean over whatever the body
+    /// below it does — measured from the first frame as Unity measures it,
+    /// so a clip made as "idle, then lean" adds only the lean.
+    pub fn additive(&self, skeleton: &Skeleton) -> Clip {
+        let mut channels = Vec::with_capacity(self.channels.len());
+        for channel in &self.channels {
+            let Some(joint) = skeleton.joints.get(channel.joint as usize) else {
+                continue;
+            };
+            let rest = joint.rest;
+            let stride = if channel.path == Path::Rotation { 4 } else { 3 };
+            if channel.values.len() < stride {
+                continue;
+            }
+            let first = &channel.values[..stride];
+            let values = channel
+                .values
+                .chunks_exact(stride)
+                .flat_map(|v| match channel.path {
+                    Path::Rotation => {
+                        let q0 = Quat::from_slice(first);
+                        let turn = q0.inverse() * Quat::from_slice(v);
+                        (Quat::from_array(rest.rotation) * turn)
+                            .normalize()
+                            .to_array()
+                            .to_vec()
+                    }
+                    Path::Translation => (Vec3::from_array(rest.translation) + Vec3::from_slice(v)
+                        - Vec3::from_slice(first))
+                    .to_array()
+                    .to_vec(),
+                    Path::Scale => {
+                        let ratio =
+                            Vec3::from_slice(v) / Vec3::from_slice(first).max(Vec3::splat(1e-6));
+                        (Vec3::from_array(rest.scale) * ratio).to_array().to_vec()
+                    }
+                })
+                .collect();
+            channels.push(Channel {
+                joint: channel.joint,
+                path: channel.path,
+                times: channel.times.clone(),
+                values,
+            });
+        }
+        Clip {
+            name: self.name.clone(),
+            duration: self.duration,
+            channels,
+        }
+    }
+}
+
+impl PoseTransform {
+    /// `self` with `layer`'s offset from `rest` laid over it, `weight` of
+    /// it: the turn from rest turned on top, the move from rest added,
+    /// the scale from rest multiplied — what an additive layer does to
+    /// the pose below it.
+    pub fn add(&self, layer: &PoseTransform, rest: &PoseTransform, weight: f32) -> PoseTransform {
+        let turn = Quat::from_array(rest.rotation).inverse() * Quat::from_array(layer.rotation);
+        let turn = Quat::IDENTITY.slerp(if turn.w < 0.0 { -turn } else { turn }, weight);
+        let moved = Vec3::from_array(layer.translation) - Vec3::from_array(rest.translation);
+        let grown =
+            Vec3::from_array(layer.scale) / Vec3::from_array(rest.scale).max(Vec3::splat(1e-6));
+        PoseTransform {
+            translation: (Vec3::from_array(self.translation) + moved * weight).to_array(),
+            rotation: (Quat::from_array(self.rotation) * turn)
+                .normalize()
+                .to_array(),
+            scale: (Vec3::from_array(self.scale) * Vec3::ONE.lerp(grown, weight)).to_array(),
+        }
+    }
+}
+
 /// The two keys a time falls between, and how far along it is.
 ///
 /// Before the first key or after the last, both indices are the same one and
@@ -591,6 +669,59 @@ mod tests {
             values: vec![0.0, 0.0, 0.0, 1.0],
         });
         assert_eq!(clip.sample(&skeleton, 0.5, false).len(), 3);
+    }
+
+    #[test]
+    fn an_additive_clip_is_its_offset_from_its_first_frame_on_rest() {
+        // A lean made on top of a pose: the elbow starts turned (the pose
+        // under the lean) and turns further. Only the further turn is the
+        // lean.
+        let skeleton = arm();
+        let start = Quat::from_rotation_z(0.5);
+        let end = Quat::from_rotation_z(0.8);
+        let clip = Clip {
+            name: "lean".into(),
+            duration: 1.0,
+            channels: vec![
+                Channel {
+                    joint: 1,
+                    path: Path::Rotation,
+                    times: vec![0.0, 1.0],
+                    values: [start.to_array(), end.to_array()].concat(),
+                },
+                Channel {
+                    joint: 0,
+                    path: Path::Translation,
+                    times: vec![0.0, 1.0],
+                    values: vec![0.0, 5.0, 0.0, 0.0, 5.5, 0.0],
+                },
+            ],
+        };
+        let additive = clip.additive(&skeleton);
+        let at_start = additive.sample(&skeleton, 0.0, false);
+        assert_eq!(at_start, skeleton.rest_pose(), "no offset at its start");
+        let at_end = additive.sample(&skeleton, 1.0, false);
+        let turn = Quat::from_array(at_end[1].rotation);
+        assert!(turn.angle_between(Quat::from_rotation_z(0.3)) < 1e-4);
+        assert!((at_end[0].translation[1] - 0.5).abs() < 1e-5);
+
+        // Laid on a pose half-way: half the turn and half the lift on top.
+        let base = PoseTransform {
+            rotation: Quat::from_rotation_x(1.0).to_array(),
+            translation: [0.0, 2.0, 0.0],
+            ..Default::default()
+        };
+        let rest = skeleton.joints[1].rest;
+        let laid = base.add(&at_end[1], &rest, 0.5);
+        let want = Quat::from_rotation_x(1.0) * Quat::from_rotation_z(0.15);
+        assert!(Quat::from_array(laid.rotation).angle_between(want) < 1e-4);
+        let lifted = base.add(&at_end[0], &skeleton.joints[0].rest, 0.5);
+        assert!((lifted.translation[1] - 2.25).abs() < 1e-5);
+        assert_eq!(
+            base.add(&at_end[1], &rest, 0.0),
+            base,
+            "no weight, no change"
+        );
     }
 
     #[test]

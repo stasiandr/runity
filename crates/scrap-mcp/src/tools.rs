@@ -212,7 +212,7 @@ pub fn list() -> Vec<Value> {
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("problems", "What is wrong with the open document right now, unsaved edits included: models, materials and prefabs nothing answers to, stale overrides — each with the entity id and the likely intended name. Empty means clean.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
-        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, the parameters it reads, what is wrong with its shape, and what changed since the last commit.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
+        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, each layer (mask, blend, weight) with its own states and transitions, the parameters it reads, what is wrong with its shape, and what changed since the last commit.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
         tool("graph_connect", "Add a transition to an animator graph, written into the file where it goes (in the state it leaves). `from` is a state, or \"*\" for any state.", json!({
             "name": { "type": "string" },
             "from": { "type": "string" },
@@ -2192,6 +2192,44 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
                     scrap::animgraph::describe(&t.when),
                     t.fade
                 ));
+            }
+            // Each layer: how it lays on the body, then its own graph.
+            for layer in &graph.layers {
+                let mask = if layer.mask.is_empty() {
+                    "the whole body".to_string()
+                } else {
+                    layer.mask.join(", ")
+                };
+                let weight = match &layer.weight_from {
+                    Some(p) => format!("{} × {p}", layer.weight),
+                    None => layer.weight.to_string(),
+                };
+                out.push_str(&format!(
+                    "layer {}: {:?} over {mask}, weight {weight}, start {}\n",
+                    layer.name, layer.blend, layer.graph.start
+                ));
+                for (state_name, state) in &layer.graph.states {
+                    let plays = if state.clip.is_empty()
+                        && state.blend.is_empty()
+                        && state.directional.is_empty()
+                    {
+                        "nothing (the body below shows)".to_string()
+                    } else if state.blend.is_empty() && state.directional.is_empty() {
+                        state.clip.clone()
+                    } else {
+                        format!("blend by {}", state.blend_by)
+                    };
+                    out.push_str(&format!("  state {state_name}: {plays}\n"));
+                }
+                for t in &layer.graph.transitions {
+                    out.push_str(&format!(
+                        "  {} → {} when {} (fade {})\n",
+                        t.from,
+                        t.to,
+                        scrap::animgraph::describe(&t.when),
+                        t.fade
+                    ));
+                }
             }
             let parameters: Vec<String> = graph.parameters().into_iter().collect();
             out.push_str(&format!("parameters: {}\n", parameters.join(", ")));

@@ -220,15 +220,7 @@ impl Motions {
 
 /// Every clip a graph names.
 pub fn clips_of(graph: &Graph) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for state in graph.states.values() {
-        if !state.clip.is_empty() {
-            out.insert(state.clip.clone());
-        }
-        out.extend(state.blend.iter().map(|(_, c)| c.clone()));
-        out.extend(state.directional.iter().map(|(_, _, c)| c.clone()));
-    }
-    out
+    graph.clips()
 }
 
 /// Start every line's graph that is not playing yet. A graph with clips in
@@ -291,6 +283,19 @@ pub fn attach(
                         if let Some(from) = skins(&crate::AssetLink::named(clip.clone())) {
                             animator.take_clips(&clip, &from.skeleton, &from.clips);
                         }
+                    }
+                    // Masks and IK name joints: said once, with the nearest.
+                    let joints: Vec<&str> = animator
+                        .skeleton
+                        .joints
+                        .iter()
+                        .map(|j| j.name.as_str())
+                        .collect();
+                    for problem in graph.mask_problems(&joints) {
+                        problems.push(format!("animator `{}`: {problem}", animates.graph));
+                    }
+                    if let Ok(ik) = world.get::<&crate::ik::Ik>(entity) {
+                        problems.extend(ik.problems(&animator.skeleton));
                     }
                     let _ = world.insert(entity, (animator, Controller::new(graph.clone())));
                 }
@@ -751,7 +756,7 @@ pub struct MotionDress;
 
 impl crate::world::Dress for MotionDress {
     fn parts(&self) -> &[&'static str] {
-        &["animator", "bone", "model"]
+        &["animator", "bone", "model", "ik"]
     }
 
     fn dress(
@@ -779,6 +784,20 @@ impl crate::world::Dress for MotionDress {
                 let _ = world.remove_one::<crate::animator::SkinOf>(entity);
             } else {
                 let _ = world.insert_one(entity, crate::animator::SkinOf(model.clone()));
+            }
+        }
+        if changed.has("ik") {
+            let _ = world.remove_one::<crate::ik::LookingAt>(entity);
+            match line
+                .part::<crate::ik::Ik>()
+                .filter(|i| *i != crate::ik::Ik::default())
+            {
+                Some(ik) => {
+                    let _ = world.insert_one(entity, ik);
+                }
+                None => {
+                    let _ = world.remove_one::<crate::ik::Ik>(entity);
+                }
             }
         }
         if changed.has("bone") {
@@ -812,6 +831,8 @@ crate::impl_parts! {
         scrap_core::shape::Shape::Asset("animator".into())
     };
     BoneName => "bone", default if |b| b.0.is_empty();
+    // Feet on the ground and a look, on the line's animated skeleton.
+    crate::ik::Ik => "ik", default if |i| *i == crate::ik::Ik::default();
 }
 
 /// What moves a line of a scene, read off it: its graph, and the bone of

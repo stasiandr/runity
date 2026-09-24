@@ -2209,6 +2209,54 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
 }
 
 #[test]
+fn the_animator_shows_a_layer_and_edits_it_in_its_own_entry() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("animators/hero.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"(
+    start: "idle",
+    states: {
+        "idle": (clip: "idle"),
+    },
+    layers: [
+        // Waving over whatever the legs do.
+        (name: "arms", mask: ["Spine"], start: "none",
+            states: {
+                "none": (clip: ""),
+            },
+        ),
+    ],
+)
+"#,
+    )
+    .unwrap();
+    click(&mut s, "tab animator");
+    click(&mut s, "animator wide");
+    s.frame();
+    click(&mut s, "animator hero");
+    assert!(s.ui.find("state idle").is_some());
+    click(&mut s, "animator layer arms");
+    assert!(s.ui.find("state none").is_some(), "{}", s.ui.dump());
+    assert!(
+        s.ui.find("state idle").is_none(),
+        "the layer's graph, not the base"
+    );
+    click(&mut s, "animator add state");
+    fill(&mut s, "animator field name", "wave");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let g: scrap::animgraph::Graph = scrap::ron::from_str(&text).unwrap();
+    assert!(g.layers[0].graph.states.contains_key("wave"), "{text}");
+    assert_eq!(g.states.len(), 1, "the base untouched");
+    assert!(text.contains("// Waving"), "{text}");
+    click(&mut s, "animator layer Base");
+    assert!(s.ui.find("state idle").is_some());
+}
+
+#[test]
 fn the_animator_lights_up_the_state_the_running_game_is_in() {
     let Some((mut s, dir)) = studio() else {
         return;

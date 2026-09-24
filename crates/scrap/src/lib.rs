@@ -24,6 +24,9 @@ pub use scrap_core::impl_parts;
 pub use scrap_animation::animator;
 #[cfg(feature = "animation")]
 pub use scrap_animation::animgraph;
+/// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
+#[cfg(feature = "animation")]
+pub use scrap_animation::ik as pose_ik;
 /// The asset archive as the core has it: its header, its ID.
 pub use scrap_core::asset as asset_core;
 pub use scrap_geometry::animation;
@@ -226,7 +229,11 @@ pub mod player_loop {
         player_loop
             .add(Phase::FixedUpdate, "motion", crate::motion::run)
             .add(Phase::FixedUpdate, "tweens", crate::tween::run);
-        #[cfg(feature = "animation")]
+        // Feet of animated skeletons stand on the scene's colliders, as a
+        // crawler's do.
+        #[cfg(all(feature = "animation", feature = "soft"))]
+        scrap_animation::systems_on(&mut player_loop, crate::soft::feet_ground);
+        #[cfg(all(feature = "animation", not(feature = "soft")))]
         scrap_animation::systems(&mut player_loop);
         scrap_core::player_loop::systems(&mut player_loop);
         // Ropes swing once everything they hang from is placed, and are
