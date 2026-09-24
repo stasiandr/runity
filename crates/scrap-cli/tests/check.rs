@@ -252,6 +252,46 @@ fn a_joint_to_nothing_is_named() {
 }
 
 #[test]
+fn a_wire_to_nothing_or_to_a_trigger_the_animator_lacks_is_named() {
+    let project = project("wires");
+    let root = project.root();
+    write(
+        &root.join("animators/door.ron"),
+        r#"(start: "shut", states: {
+            "shut": (clip: "", transitions: [(to: "open", when: [Trigger("open")])]),
+            "open": (clip: "", transitions: [(to: "shut", when: [Trigger("close")])]),
+        })"#,
+    );
+    write(
+        &root.join("scenes/porch.ron"),
+        r#"(entities: [
+            (id: "d1", name: "door", model: "builtin:cube", animator: "door"),
+            (id: "a1", name: "porch", body: Trigger, collider: Box(half: (1.0, 1.0, 1.0)), wires: [
+                (on: Enter, to: "d1", do: Trigger("open")),
+                (on: Empty, only: "playr", to: "d1", do: Trigger("clsoe")),
+                (to: "d9", do: Activate),
+            ]),
+            (id: "a2", name: "mat", wires: [(to: "d1", do: Spawn(prefab: "crate"))]),
+        ])"#,
+    );
+    let findings = check(&project);
+    let errors = errors(&findings);
+    assert_eq!(errors.len(), 5, "{errors:#?}");
+    assert!(one_containing(&errors, "clsoe").contains("did you mean `close`?"));
+    assert!(one_containing(&errors, "`playr`").contains("`porch`"));
+    assert!(one_containing(&errors, "00000000000000d9").contains("not there"));
+    assert!(one_containing(&errors, "no body").contains("`mat`"));
+    assert!(one_containing(&errors, "`crate`").contains("no such prefab"));
+    // `open` is pulled by a wire, not by the game's code: it is set.
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.message.contains("`open` is never set")),
+        "{findings:#?}"
+    );
+}
+
+#[test]
 fn a_layer_no_file_names_is_found() {
     let project = project("layers");
     write(

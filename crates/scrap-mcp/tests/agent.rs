@@ -113,6 +113,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "push_face",
         "paint_foliage",
         "fence",
+        "wire",
         "array",
         "edits",
         "measure",
@@ -360,6 +361,30 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         json!({ "what": "builtin:cylinder", "points": [[0.0, 0.0, 5.0], [6.0, 0.0, 5.0]], "spacing": 2.0 }),
     );
     assert!(said.contains("fence of builtin:cylinder"), "{said}");
+    // A porch wired to a lamp: the lamp goes out when the last one leaves.
+    let porch = agent.text(
+        "add_entity",
+        json!({ "name": "porch", "body": "Trigger", "collider": "Box(half: (1.0, 1.0, 1.0))" }),
+    );
+    let lamp = agent.text(
+        "add_entity",
+        json!({ "name": "lamp", "model": "builtin:sphere" }),
+    );
+    let said = agent.text(
+        "wire",
+        json!({ "from": porch, "to": lamp, "do": "Deactivate", "on": "Empty" }),
+    );
+    assert!(
+        said.contains("on:Empty") && said.contains("do:Deactivate"),
+        "{said}"
+    );
+    let err = agent
+        .call(
+            "wire",
+            json!({ "from": porch, "to": "123", "do": "Activate" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("0000000000000123"), "{err}");
     let err = agent
         .call("render", json!({ "from_game": true }))
         .unwrap_err();

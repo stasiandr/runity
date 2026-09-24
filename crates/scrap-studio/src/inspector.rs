@@ -44,7 +44,7 @@ use crate::theme::*;
 // The material last: written out in full, its parts are many lines.
 const OBJECT: [&str; 6] = ["model", "prefab", "animator", "bone", "bends_grass", "material"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
-const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
+const PHYSICS: [&str; 6] = ["body", "collider", "physics", "joint", "joint_break", "wires"];
 const PARTS: [&str; 32] = [
     "camera",
     "light",
@@ -100,6 +100,8 @@ fn added_value(field: &str) -> Option<&'static str> {
         "collider" => "Box(half: (0.5, 0.5, 0.5))",
         "body" => "Dynamic",
         "joint" => "Ball(anchor: (0.0, 0.0, 0.0))",
+        // A wire to nothing yet: the picker is where it is aimed.
+        "wires" => "[(on: Enter, to: \"0\", do: Activate)]",
         "camera" | "light" | "particles" | "reflection_probe" | "decal" => "()",
         "post_volume" => "(size: (10.0, 10.0, 10.0))",
         "route" => "(points: [(0.0, 0.0, 0.0), (0.0, 2.0, 0.0)])",
@@ -130,13 +132,14 @@ fn added_value(field: &str) -> Option<&'static str> {
 
 /// The parts a line can have besides the game's components, as the Add
 /// Component list names them.
-const ADDABLE: [(&str, &str); 34] = [
+const ADDABLE: [(&str, &str); 35] = [
     ("model", "Model"),
     ("collider", "Collider"),
     ("body", "Body"),
     ("physics", "Physics"),
     ("joint", "Joint"),
     ("joint_break", "Joint Break"),
+    ("wires", "Wires"),
     ("camera", "Camera"),
     ("light", "Light"),
     ("particles", "Particles"),
@@ -168,7 +171,7 @@ const ADDABLE: [(&str, &str); 34] = [
 ];
 
 /// Fields a line can be without: what the trash on a field takes off.
-const REMOVABLE: [&str; 38] = [
+const REMOVABLE: [&str; 39] = [
     "model",
     "footprints",
     "terrain",
@@ -203,6 +206,7 @@ const REMOVABLE: [&str; 38] = [
     "crawler",
     "joint",
     "joint_break",
+    "wires",
     "collider",
     "body",
     "physics",

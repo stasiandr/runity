@@ -64,6 +64,8 @@ struct Names {
     scenes: HashSet<String>,
     /// The graphs in `animators/`, by name.
     animators: HashSet<String>,
+    /// Each graph's parameters, by its name: what a wire may pull.
+    parameters: HashMap<String, std::collections::BTreeSet<String>>,
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
@@ -450,13 +452,27 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             ids.insert(id);
         }
     }
-    let animators = files(&project.root().join(scrap::project::ANIMATORS), "ron")
-        .iter()
+    let graphs: Vec<PathBuf> = files(&project.root().join(scrap::project::ANIMATORS), "ron")
+        .into_iter()
         .filter(|p| !p.to_string_lossy().ends_with(".cases.ron"))
+        .collect();
+    let animators = graphs
+        .iter()
         .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    // Read quietly: `animators` says what does not read.
+    let parameters = graphs
+        .iter()
+        .filter_map(|p| {
+            let name = p.file_stem()?.to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(p).ok()?;
+            let graph: scrap::animgraph::Graph = ron::from_str(&text).ok()?;
+            Some((name, graph.parameters()))
+        })
         .collect();
     Names {
         animators,
+        parameters,
         models,
         materials,
         prefabs,
@@ -483,9 +499,12 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
     // Every id in the file, for joints to be checked against: a joint names
     // a body in the same file.
     let mut all: HashSet<EntityId> = HashSet::new();
+    // And by id, for wires: a wire names a thing in the same file too.
+    let mut by_id: HashMap<EntityId, &EntityDesc> = HashMap::new();
     let mut walk: Vec<&EntityDesc> = entities.iter().collect();
     while let Some(e) = walk.pop() {
         all.insert(e.id);
+        by_id.insert(e.id, e);
         walk.extend(e.children.iter());
     }
     let mut seen: HashSet<EntityId> = HashSet::new();
@@ -607,6 +626,29 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                     format!(
                         "{who}: no layer `{layer}` in layers.ron{}",
                         suggest(layer, names.layers.layers.iter().map(String::as_str))
+                    ),
+                ));
+            }
+        }
+        for problem in scrap::wires::problems(
+            entity,
+            |id| by_id.get(&id).copied(),
+            |graph| names.parameters.get(graph).cloned(),
+            |link| {
+                link.id.is_some_and(|id| names.ids.contains(&id))
+                    || names.prefabs.contains(link.as_str())
+            },
+        ) {
+            out.push(error(file, format!("{who}: {problem}")));
+        }
+        for wire in entity.wires() {
+            if !wire.only.is_empty() && names.layers.index(&wire.only).is_none() {
+                out.push(error(
+                    file,
+                    format!(
+                        "{who}: a wire only for layer `{}`, which is not in layers.ron{}",
+                        wire.only,
+                        suggest(&wire.only, names.layers.layers.iter().map(String::as_str))
                     ),
                 ));
             }
@@ -850,6 +892,8 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
     if graphs.is_empty() {
         return;
     }
+    // What the scenes' and prefabs' wires pull: set, as by the code.
+    let wired = wired_parameters(project);
     // The game's code, as text: a parameter is set by name.
     let code = game_code(project);
     for path in graphs {
@@ -881,12 +925,12 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
             continue;
         }
         for parameter in graph.parameters() {
-            if !code.contains(&format!("\"{parameter}\"")) {
+            if !code.contains(&format!("\"{parameter}\"")) && !wired.contains(&parameter) {
                 out.push(Finding {
                     severity: Severity::Warning,
                     file: file.clone(),
                     message: format!(
-                        "parameter `{parameter}` is never set: no \"{parameter}\" in src/"
+                        "parameter `{parameter}` is never set: no \"{parameter}\" in src/, and no wire pulls it"
                     ),
                 });
             }
@@ -1058,6 +1102,35 @@ fn unused_strings(
             });
         }
     }
+}
+
+/// Every animator parameter a wire in a scene or a prefab pulls.
+fn wired_parameters(project: &Project) -> HashSet<String> {
+    let mut lines: Vec<EntityDesc> = Vec::new();
+    for path in files(&project.scenes(), "ron") {
+        if let Some(scene) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| ron::from_str::<Scene>(&t).ok())
+        {
+            lines.extend(scene.entities);
+        }
+    }
+    for path in files(&project.prefabs(), "prefab") {
+        if let Some(desc) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| ron::from_str::<EntityDesc>(&t).ok())
+        {
+            lines.push(desc);
+        }
+    }
+    let mut out = HashSet::new();
+    while let Some(line) = lines.pop() {
+        for wire in line.wires() {
+            out.extend(wire.act.parameter().map(str::to_string));
+        }
+        lines.extend(line.children);
+    }
+    out
 }
 
 fn error(file: &str, message: impl fmt::Display) -> Finding {

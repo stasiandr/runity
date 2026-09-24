@@ -1,0 +1,22 @@
+[package]
+name = "scrap-wires"
+description = "scrap's wires: a trigger's line says what happens to which entity when something comes in or goes out — an animator's trigger pulled, a thing switched on or off, a prefab spawned — Hammer's outputs and inputs, as data. A closed set of the engine's actions; no conditions, no variables, no sequence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+scrap-physics = { path = "../scrap-physics" }
+scrap-animation = { path = "../scrap-animation", optional = true }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[features]
+# An animator's triggers and switches pulled by a wire. Off, those wires
+# do nothing, and the rest work.
+animation = ["dep:scrap-animation"]

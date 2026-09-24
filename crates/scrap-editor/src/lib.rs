@@ -1538,6 +1538,32 @@ impl Session {
         let models = names_of(scrap::asset::MESH);
         let materials = names_of(scrap::asset::MATERIAL);
         let components = self.project.as_ref().and_then(|p| p.component_names());
+        // An animator's parameters, read from its graph when a wire pulls
+        // one: seldom, so from the file each time.
+        let parameters = |graph: &str| -> Option<std::collections::BTreeSet<String>> {
+            let path = self
+                .project
+                .as_ref()?
+                .root()
+                .join(scrap::project::ANIMATORS)
+                .join(format!("{graph}.ron"));
+            let text = std::fs::read_to_string(path).ok()?;
+            let graph: scrap::animgraph::Graph = scrap::ron::from_str(&text).ok()?;
+            Some(graph.parameters())
+        };
+        for (desc, _) in self.instanced.scene.flatten() {
+            for problem in scrap::wires::problems(
+                desc,
+                |id| self.instanced.scene.get(id),
+                parameters,
+                |prefab| self.prefabs.find(prefab).is_some(),
+            ) {
+                out.push(Diagnostic {
+                    entity: Some(desc.id),
+                    message: format!("`{}` ({}): {problem}", desc.name, desc.id),
+                });
+            }
+        }
         for (desc, _) in self.instanced.scene.flatten() {
             if let Some(to) = desc.joint().to().filter(|to| !to.is_unassigned()) {
                 if self.instanced.scene.get(to).is_none() {
@@ -3481,6 +3507,31 @@ impl Session {
                         gizmo::selection_color(),
                     ));
                 }
+                // What a selected trigger's wires act on: a line to each.
+                let wires = desc
+                    .part::<scrap::scene::Wires>()
+                    .map(|w| w.0)
+                    .unwrap_or_default();
+                if !wires.is_empty() {
+                    let from = placed.w_axis.truncate();
+                    let places: std::collections::HashMap<EntityId, Vec3> = self
+                        .instanced
+                        .scene
+                        .flatten()
+                        .into_iter()
+                        .map(|(d, m)| (d.id, m.w_axis.truncate()))
+                        .collect();
+                    for wire in wires {
+                        if let Some(to) = places.get(&wire.to) {
+                            frame.overlay_draws.extend(gizmo::polyline_draws(
+                                arm,
+                                &[from, *to],
+                                thickness,
+                                gizmo::selection_color(),
+                            ));
+                        }
+                    }
+                }
                 if let Some(route) = &desc.route() {
                     // Where a selected thing travels, as a line.
                     let parent = placed * desc.transform.matrix().inverse();
@@ -4598,6 +4649,19 @@ impl Session {
         // The scene's wind carries what it says is `blown`.
         physics.wind = self.instanced.scene.wind().unwrap_or_default();
         physics.sync_from_world(&mut self.world);
+        // Animators are content, as the physics is: a door a wire opens
+        // swings here, without the game's code.
+        let (motions, mut problems) = self
+            .project
+            .as_ref()
+            .map(|p| scrap::motion::Motions::load(p.root()))
+            .unwrap_or_default();
+        let library = self.library.as_ref();
+        let skins = |model: &scrap::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+        problems.extend(scrap::motion::attach(&mut self.world, &motions, skins));
+        for problem in problems {
+            self.console.say(console::Level::Warning, problem);
+        }
         self.play = Some(Play {
             physics,
             clock: scrap::Time::new(scrap::TimeSettings::default()),
@@ -4629,6 +4693,7 @@ impl Session {
             Self::fixed_step(&mut self.world, &mut play.physics, fixed);
             steps += 1;
         }
+        self.unspawned();
         // Animation runs on the frame rather than the step: a pose
         // interpolates and does not need to be deterministic the way a
         // solver does.
@@ -4636,10 +4701,34 @@ impl Session {
         steps
     }
 
-    /// One fixed step: what travels by itself moves first, and physics
-    /// sees it where it went — a platform carries what stands on it.
+    /// A wire's spawn is the game's to do — it holds the prefabs as the
+    /// game spawns them — so play says so, once per prefab asked for, and
+    /// lets the order go.
+    fn unspawned(&mut self) {
+        let asked: Vec<(hecs::Entity, String)> = self
+            .world
+            .query::<(hecs::Entity, &scrap::wires::SpawnOrder)>()
+            .iter()
+            .map(|(e, o)| (e, o.prefab.to_string()))
+            .collect();
+        for (order, prefab) in asked {
+            let _ = self.world.despawn(order);
+            self.console.say(
+                console::Level::Info,
+                format!(
+                    "a wire spawns `{prefab}`: the game does, with start_game; play here does not"
+                ),
+            );
+        }
+    }
+
+    /// One fixed step: the wires first, on what the last step touched;
+    /// what travels by itself and what animators move, then physics sees
+    /// it where it went — a platform carries what stands on it.
     fn fixed_step(world: &mut hecs::World, physics: &mut scrap::PhysicsWorld, fixed: f32) {
+        scrap::wires::run_wires(world, fixed);
         scrap::routes::run_routes(world, fixed);
+        scrap::motion::run(world, fixed);
         scrap::world::apply_hierarchy(world);
         scrap::fluid::float(world, physics);
         scrap::character::step(world, physics, fixed);
@@ -4676,6 +4765,7 @@ impl Session {
         let fixed = play.clock.settings().fixed_delta;
         Self::fixed_step(&mut self.world, &mut play.physics, fixed);
         scrap::advance_animations(&mut self.world, fixed);
+        self.unspawned();
         true
     }
 
