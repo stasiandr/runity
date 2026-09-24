@@ -184,9 +184,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // a second's worth: its probes settle over it.
     let warm = if !frame.irradiance_volumes.is_empty() {
         90
-    } else if upscale.is_some() || frame.shadows.virtual_maps {
+    } else if upscale.is_some() || frame.shadows.virtual_maps || frame.ray_tracing.restir {
         // Virtual shadow maps draw their pages over a few frames, coarsest
-        // first.
+        // first; ReSTIR's reservoirs build up their history.
         16
     } else {
         2

@@ -229,3 +229,184 @@ fn ray_refraction(position: vec3<f32>, incoming: vec3<f32>, normal: vec3<f32>, i
     }
     return vec4<f32>(probes_and_sky(origin, d, 0.0), 1.0);
 }
+
+// ReSTIR DI (restir.rs): each pixel's reservoir — one lamp, chosen in
+// proportion to its unshadowed light — from candidates, last frame and
+// neighbours, then one ray to it.
+
+@group(3) @binding(10) var restir_depth: texture_depth_2d;
+@group(3) @binding(11) var restir_normals: texture_2d<f32>;
+@group(3) @binding(12) var<storage, read_write> restir_candidates: array<vec4<f32>>;
+@group(3) @binding(13) var<storage, read> restir_before: array<vec4<f32>>;
+@group(3) @binding(14) var<storage, read> restir_before_surface: array<vec4<f32>>;
+@group(3) @binding(15) var<storage, read_write> restir_now: array<vec4<f32>>;
+@group(3) @binding(16) var<storage, read_write> restir_surface: array<vec4<f32>>;
+
+/// How much unshadowed light lamp `i` gives a surface at `p` turned `n`,
+/// as one number: what the lamp is chosen by.
+fn restir_target(i: u32, p: vec3<f32>, n: vec3<f32>) -> f32 {
+    let light = lights[i];
+    let to_light = light.position_range.xyz - p;
+    let distance_to = length(to_light);
+    let toward = to_light / max(distance_to, 1e-4);
+    let reach = clamp(1.0 - distance_to / light.position_range.w, 0.0, 1.0);
+    let facing = max(dot(n, toward), 0.0);
+    let along = dot(-toward, light.spot.xyz);
+    let edge = light.spot.w + (1.0 - light.spot.w) * 0.1;
+    let cone = select(smoothstep(light.spot.w, edge, along), 1.0, light.spot.w < -1.5);
+    let c = light.color_shadow.rgb;
+    return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * facing * reach * reach * cone;
+}
+
+/// A random number in 0..1 from a state, stepped (PCG).
+fn restir_random(state: ptr<function, u32>) -> f32 {
+    *state = *state * 747796405u + 2891336453u;
+    var word = ((*state >> ((*state >> 28u) + 4u)) ^ *state) * 277803737u;
+    word = (word >> 22u) ^ word;
+    return f32(word) / 4294967296.0;
+}
+
+struct RestirSurface {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    distance: f32,
+};
+
+fn restir_surface_at(pixel: vec2<u32>) -> RestirSurface {
+    var out: RestirSurface;
+    let d = textureLoad(restir_depth, pixel, 0);
+    out.distance = -1.0;
+    if d >= 1.0 {
+        return out;
+    }
+    let size = vec2<f32>(frame.restir.yz);
+    let uv = (vec2<f32>(pixel) + 0.5) / size;
+    let seen = frame.inverse_view_projection * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+    out.position = seen.xyz / seen.w;
+    out.normal = normalize(textureLoad(restir_normals, pixel, 0).xyz);
+    out.distance = distance(out.position, frame.camera_position.xyz);
+    return out;
+}
+
+/// The same surface, near enough to lend its reservoir.
+fn restir_alike(a: vec4<f32>, normal: vec3<f32>, distance_to: f32) -> bool {
+    return a.w > 0.0 && abs(a.w - distance_to) < 0.1 * distance_to && dot(a.xyz, normal) > 0.9;
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_restir_initial(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = vec2<u32>(frame.restir.yz);
+    if id.x >= size.x || id.y >= size.y {
+        return;
+    }
+    let at = id.y * size.x + id.x;
+    let surface = restir_surface_at(id.xy);
+    if surface.distance < 0.0 {
+        restir_candidates[at] = vec4<f32>(0.0);
+        restir_surface[at] = vec4<f32>(0.0, 0.0, 0.0, -1.0);
+        return;
+    }
+    restir_surface[at] = vec4<f32>(surface.normal, surface.distance);
+    var state = at * 9781u + u32(frame.restir.w) * 6271u + 1u;
+    let cell = light_cells[light_cell(vec2<f32>(id.xy) + 0.5, surface.position)];
+    let count = cell.y;
+    var chosen = 0u;
+    var sum = 0.0;
+    var m = 0.0;
+    if count > 0u {
+        let candidates = min(count, 8u);
+        for (var k = 0u; k < candidates; k = k + 1u) {
+            let i = light_indices[cell.x + min(u32(restir_random(&state) * f32(count)), count - 1u)];
+            let w = restir_target(i, surface.position, surface.normal) * f32(count);
+            sum += w;
+            if restir_random(&state) * sum < w {
+                chosen = i;
+            }
+        }
+        m = f32(candidates);
+    }
+    // Where it was last frame, if it was this surface: its reservoir, at
+    // most twenty times this frame's.
+    let before = frame.previous_view_projection * vec4<f32>(surface.position, 1.0);
+    if before.w > 1e-4 && frame.restir.w > 0.5 {
+        let ndc = before.xy / before.w;
+        let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        if all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)) {
+            let pixel = vec2<u32>(uv * vec2<f32>(size));
+            let there = pixel.y * size.x + pixel.x;
+            if restir_alike(restir_before_surface[there], surface.normal, surface.distance) {
+                let old = restir_before[there];
+                let light = bitcast<u32>(old.x);
+                let kept = min(old.z, 20.0 * max(m, 1.0));
+                let w = restir_target(light, surface.position, surface.normal) * old.w * kept;
+                sum += w;
+                if restir_random(&state) * sum < w {
+                    chosen = light;
+                }
+                m += kept;
+            }
+        }
+    }
+    let target_now = restir_target(chosen, surface.position, surface.normal);
+    let weight = select(0.0, sum / (m * target_now), target_now > 0.0 && m > 0.0);
+    restir_candidates[at] = vec4<f32>(bitcast<f32>(chosen), sum, m, weight);
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_restir_spatial(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = vec2<u32>(frame.restir.yz);
+    if id.x >= size.x || id.y >= size.y {
+        return;
+    }
+    let at = id.y * size.x + id.x;
+    let here = restir_surface[at];
+    if here.w < 0.0 {
+        restir_now[at] = vec4<f32>(0.0);
+        return;
+    }
+    let surface = restir_surface_at(id.xy);
+    var state = at * 7919u + u32(frame.restir.w) * 104729u + 7u;
+    let own = restir_candidates[at];
+    var chosen = bitcast<u32>(own.x);
+    var sum = restir_target(chosen, surface.position, surface.normal) * own.w * own.z;
+    var m = own.z;
+    for (var k = 0u; k < 3u; k = k + 1u) {
+        let a = restir_random(&state) * 6.2831853;
+        let r = sqrt(restir_random(&state)) * 16.0;
+        let offset = vec2<i32>(i32(cos(a) * r), i32(sin(a) * r));
+        let pixel = vec2<i32>(id.xy) + offset;
+        if any(pixel < vec2<i32>(0)) || any(pixel >= vec2<i32>(size)) {
+            continue;
+        }
+        let there = u32(pixel.y) * size.x + u32(pixel.x);
+        if !restir_alike(restir_surface[there], surface.normal, surface.distance) {
+            continue;
+        }
+        let other = restir_candidates[there];
+        let light = bitcast<u32>(other.x);
+        let w = restir_target(light, surface.position, surface.normal) * other.w * other.z;
+        sum += w;
+        if restir_random(&state) * sum < w {
+            chosen = light;
+        }
+        m += other.z;
+    }
+    let target_now = restir_target(chosen, surface.position, surface.normal);
+    var weight = select(0.0, sum / (m * target_now), target_now > 0.0 && m > 0.0);
+    // The one ray: to the lamp chosen, at a point of its ball.
+    if weight > 0.0 {
+        let light = lights[chosen];
+        var aim = light.position_range.xyz;
+        let size_of = frame.ray_params.w;
+        if size_of > 0.0 {
+            let side = basis_of(normalize(aim - surface.position));
+            let a = restir_random(&state) * 6.2831853;
+            aim = aim + (side.t * cos(a) + side.b * sin(a)) * sqrt(restir_random(&state)) * size_of;
+        }
+        let start = surface.position + surface.normal * 0.02;
+        let to_aim = aim - start;
+        let aim_distance = length(to_aim);
+        weight *= ray_visible(start, to_aim / max(aim_distance, 1e-4), max(aim_distance - size_of - 0.05, 0.0));
+    }
+    restir_now[at] = vec4<f32>(bitcast<f32>(chosen), sum, min(m, 160.0), weight);
+}

@@ -36,6 +36,7 @@ pub mod post;
 pub mod ray;
 pub mod reflections;
 pub mod render;
+pub mod restir;
 pub mod rope;
 pub mod ssao;
 pub mod taa;

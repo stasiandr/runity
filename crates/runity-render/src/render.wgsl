@@ -121,6 +121,8 @@ struct Frame {
     // on, levels, a pixel's metres a metre (negative: anywhere), how far;
     // then each level's window, two levels a vec4.
     vsm: array<vec4<f32>, 8>,
+    // ReSTIR (restir.rs): on, the reservoirs' size, the frame's number.
+    restir: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -728,6 +730,10 @@ fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) ->
 /// From the first cascade whose sphere holds the point — the finest one
 /// that covers it — and fading out over the last tenth of the last one, so
 /// the shadow distance is not a line on the ground.
+// ReSTIR's reservoirs, one a pixel: the lamp chosen, as bits; the weights'
+// sum; how many it stands for; its weight, its shadow in it.
+@group(0) @binding(27) var<storage, read> restir_shade: array<vec4<f32>>;
+
 // Virtual shadow maps (vsm.rs): each level's window of pages, the pool's
 // tile a drawn page is in, plus one; 0 for none.
 @group(0) @binding(26) var<storage, read> vsm_pages: array<u32>;
@@ -2183,7 +2189,27 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Point and spot lights, those listed in this fragment's cell: facing
     // it, and fading to nothing at its range — squared, so the edge of the
     // pool is soft rather than a ring.
-    for (var n = 0u; n < cell.y; n = n + 1u) {
+    // By ReSTIR, where asked: the one lamp this pixel's reservoir chose,
+    // shadowed already, times its weight — all of them on average.
+    let restir_on = frame.restir.x > 0.5 && (flags & 4u) != 0u;
+    if restir_on {
+        let pixel = vec2<u32>(in.clip_position.xy);
+        let reservoir = restir_shade[pixel.y * u32(frame.restir.y) + pixel.x];
+        if reservoir.w > 0.0 {
+            let light = lights[bitcast<u32>(reservoir.x)];
+            let to_light = light.position_range.xyz - in.world_position;
+            let distance_to = length(to_light);
+            let toward = to_light / max(distance_to, 1e-4);
+            let reach = clamp(1.0 - distance_to / light.position_range.w, 0.0, 1.0);
+            let facing = max(dot(normal, toward), 0.0);
+            let along = dot(-toward, light.spot.xyz);
+            let edge = light.spot.w + (1.0 - light.spot.w) * 0.1;
+            let cone = select(smoothstep(light.spot.w, edge, along), 1.0, light.spot.w < -1.5);
+            color = color + direct(b, normal, toward, to_eye, highlights)
+                * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * reservoir.w;
+        }
+    }
+    for (var n = 0u; n < select(cell.y, 0u, restir_on); n = n + 1u) {
         let light = lights[light_indices[cell.x + n]];
         let at = light.position_range;
         let to_light = at.xyz - in.world_position;

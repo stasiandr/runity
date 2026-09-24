@@ -743,6 +743,8 @@ struct FrameUniform {
     /// Virtual shadow maps ([`crate::vsm`]): the light's frame, the levels'
     /// windows.
     vsm: [[f32; 4]; 8],
+    /// ReSTIR ([`crate::restir`]): on, the reservoirs' size, the frame.
+    restir: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1111,6 +1113,8 @@ pub struct Renderer {
     ddgi: crate::ddgi::Ddgi,
     /// The sun's virtual shadow maps ([`crate::vsm`]).
     vsm: crate::vsm::VirtualShadows,
+    /// The lamps by ReSTIR ([`crate::restir`]).
+    restir: crate::restir::Restir,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -2117,12 +2121,14 @@ impl Renderer {
         );
         let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
         let ddgi_pipelines = self.ddgi.make_pipelines(gpu, &shader, self.ray.is_some());
+        let restir_pipelines = self.restir.make_pipelines(gpu, &shader, self.ray.is_some());
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
         self.clusters.pipelines = cluster_pipelines;
         (self.ddgi.trace, self.ddgi.update) = ddgi_pipelines;
+        (self.restir.initial, self.restir.spatial) = restir_pipelines;
         self.base_shader = original.to_string();
         // The materials' own shaders are the standard one with their
         // surface in: built again on the new one.
@@ -2449,6 +2455,17 @@ impl Renderer {
                 count: None,
             },
         ]);
+        // ReSTIR's reservoirs, for the lit shader.
+        frame_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 27,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
         // The virtual shadow maps' page table.
         frame_entries.push(wgpu::BindGroupLayoutEntry {
             binding: 26,
@@ -2562,12 +2579,14 @@ impl Renderer {
         let terrain_heights = terrain_height_view(gpu, 1, &[0.0]);
         let mut ddgi = crate::ddgi::Ddgi::new(gpu, &layout);
         let vsm_table = crate::vsm::table_buffer(gpu);
+        let mut restir = crate::restir::Restir::new(gpu, &layout);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
                 ddgi: &ddgi.probes,
                 vsm_pages: &vsm_table,
+                restir: &restir.shade,
                 terrain_heights: &terrain_heights,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
@@ -2838,6 +2857,7 @@ impl Renderer {
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
         clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
         (ddgi.trace, ddgi.update) = ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing);
+        (restir.initial, restir.spatial) = restir.make_pipelines(gpu, &shader, gpu.ray_tracing);
 
         let fog_bind_group = bind_group.clone();
         let mut renderer = Self {
@@ -2845,6 +2865,7 @@ impl Renderer {
             clusters,
             ddgi,
             vsm,
+            restir,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
             layout,
@@ -2976,6 +2997,7 @@ impl Renderer {
             &FrameInputs {
                 ddgi: &self.ddgi.probes,
                 vsm_pages: &self.vsm.table,
+                restir: &self.restir.shade,
                 terrain_heights: &self.terrain_heights,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
@@ -4383,6 +4405,17 @@ impl Renderer {
             && view.is_some()
             && !self.picturing
             && sun.length_squared() > 0.5;
+        // The lamps by ReSTIR, for the screen's frame on a device that
+        // traces: its reservoirs the size of the frame.
+        let restir_on = self.ray.is_some()
+            && frame.ray_tracing.restir
+            && self.restir.initial.is_some()
+            && probe.is_none()
+            && view.is_some()
+            && !self.picturing;
+        if restir_on && self.restir.resize(gpu, (width, height)) {
+            self.rebind(gpu);
+        }
         let cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
             self.cascades(frame, sun, aspect)
         } else {
@@ -4804,6 +4837,7 @@ impl Renderer {
             },
             ddgi: if probe.is_none() { self.ddgi.uniform() } else { [[0.0; 4]; 4] },
             vsm: if virtual_on { self.vsm.uniform } else { crate::vsm::OFF },
+            restir: self.restir.uniform(restir_on),
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {
@@ -5484,8 +5518,15 @@ impl Renderer {
         let bounce_on = ssao_on && frame.ambient_occlusion.bounce > 0.0 && probe.is_none();
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
-        let prepass_drawn =
-            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust || contact_on;
+        let prepass_drawn = ssao_on
+            || lens_on
+            || water_on
+            || ssr_on
+            || wall_on
+            || taa_on
+            || local_dust
+            || contact_on
+            || restir_on;
         if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -5607,6 +5648,11 @@ impl Renderer {
                 },
                 &self.ssao.depth,
             );
+        }
+
+        // The lamps' reservoirs, from the prepass's depth and normals.
+        if restir_on {
+            self.restir.run(gpu, &mut encoder, &self.bind_group, &self.ssao.depth, &self.ssao.normals);
         }
 
         // Particles on the GPU given off and stepped, for the colour pass.
@@ -5979,6 +6025,8 @@ struct FrameInputs<'a> {
     ddgi: &'a wgpu::Buffer,
     /// The virtual shadow maps' page table.
     vsm_pages: &'a wgpu::Buffer,
+    /// ReSTIR's reservoirs.
+    restir: &'a wgpu::Buffer,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -6043,6 +6091,7 @@ fn frame_bind_group(
         buffer(6, inputs.lights),
         buffer(25, inputs.ddgi),
         buffer(26, inputs.vsm_pages),
+        buffer(27, inputs.restir),
         buffer(7, inputs.cells),
         buffer(8, inputs.indices),
         view(9, inputs.light_shadow_map),
