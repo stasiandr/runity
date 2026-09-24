@@ -174,11 +174,34 @@
 <div id="turn"><div>📱</div><p>Turn your phone sideways to cook.</p></div>
 <div id="toast"></div>
 
+<script>
+  // What went wrong, on the screen: a phone has no console to look in.
+  // Before everything else, so even a script that does not load is told.
+  window.runityStage = "Heating up the stoves";
+  window.runityShowError = (why) => {
+    const cover = document.getElementById("cover");
+    const text = document.getElementById("cover-text");
+    cover.classList.remove("gone");
+    cover.classList.add("failed");
+    text.innerHTML = "Something went wrong while: " + window.runityStage + "<br><small>" +
+      String(why).replace(/</g, "&lt;").slice(0, 600) + "</small><br><small>" + navigator.userAgent + "</small>";
+  };
+  addEventListener("error", (e) => runityShowError(e.message || (e.target && e.target.src) || e), true);
+  addEventListener("unhandledrejection", (e) => runityShowError(e.reason && (e.reason.stack || e.reason.message) || e.reason));
+  // Rust's panics are console.error first: said on the screen too.
+  const consoleError = console.error.bind(console);
+  console.error = (...args) => {
+    consoleError(...args);
+    const text = args.map(String).join(" ");
+    if (/panicked|RuntimeError|unreachable/.test(text)) runityShowError(text);
+  };
+</script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="runity-net.js"></script>
 <script src="pad.js"></script>
 <script type="module">
-  import init, * as wasm from "./kitchen.js";
+  // Loaded in main, so a module that does not load is said, not silent.
+  let init = null, wasm = null;
 
   const cover = document.getElementById("cover");
   const coverText = document.getElementById("cover-text");
@@ -189,6 +212,11 @@
     cover.classList.add("failed");
     coverText.innerHTML = why;
   }
+  function stage(text) {
+    window.runityStage = text;
+    coverText.textContent = text + "…";
+  }
+  let framing = false;
   window.runityFailed = (why) => fail("Something went wrong: " + String(why).replace(/</g, "&lt;"));
 
   const toast = document.getElementById("toast");
@@ -246,6 +274,12 @@
       } catch (_) {}
     },
     phase(name) {
+      // The first word from the game is its first frame: the cover goes.
+      if (!framing) {
+        framing = true;
+        data = null;
+        cover.classList.add("gone");
+      }
       document.body.classList.toggle("kitchen", name === "kitchen" || name === "lobby");
       document.body.classList.toggle("lobby", name === "lobby");
       window.runityPad && window.runityPad.reset();
@@ -316,25 +350,42 @@
       fail("This browser has no WebGPU, which the kitchen is drawn with.<br>Try a recent Chrome or Edge, Safari on iOS&nbsp;26 / macOS&nbsp;26, or Chrome on Android.");
       return;
     }
-    const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+    stage("Asking for the GPU");
+    const adapter = await Promise.race([
+      navigator.gpu.requestAdapter().catch(() => null),
+      new Promise((r) => setTimeout(() => r("timeout"), 10000)),
+    ]);
+    if (adapter === "timeout") {
+      fail("The GPU did not answer in 10 seconds. Try reloading the page.");
+      return;
+    }
     if (!adapter) {
       fail("WebGPU is here but gave no adapter. It may be switched off in this browser's settings.");
       return;
     }
-    coverText.textContent = "Fetching the kitchen…";
+    stage("Fetching the kitchen");
     // The data first: the game's `main` runs as soon as it is loaded, and
     // reads it at once.
     data = await fetchData("data.bin.gz");
-    coverText.textContent = "Lighting the stoves…";
+    stage("Loading the game");
     bar.style.width = "100%";
+    wasm = await import("./kitchen.js");
+    init = wasm.default;
+    stage("Lighting the stoves");
+    // Still here after a while: say where it waits.
+    setTimeout(() => {
+      if (!framing && !cover.classList.contains("failed")) {
+        coverText.innerHTML = window.runityStage + "… still.<br><small>The game started but has not drawn a frame: the GPU may be refusing it. " +
+          navigator.userAgent + "</small>";
+      }
+    }, 15000);
     await init();
     runityNet.wasm = wasm;
     // A link with a room in it: straight to the friend's kitchen.
     const join = /join=([A-Za-z0-9]+)/.exec(location.hash);
     if (join) runityNet.join(join[1]);
     document.body.classList.add("started");
-    // Gone once the first frames are up.
-    setTimeout(() => cover.classList.add("gone"), 900);
+    stage("Setting up the kitchen");
   }
   main().catch((e) => fail("Could not start: " + String(e && e.message || e).replace(/</g, "&lt;")));
 </script>

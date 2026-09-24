@@ -64,13 +64,36 @@ fn unpack(mut bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// [`unpack`] straight out of the page's array: each file copied into
+/// the game once, never the whole pack first — on a phone the pack is a
+/// good part of what memory the tab has.
+#[cfg(target_arch = "wasm32")]
+fn unpack_page(array: &js_sys::Uint8Array) -> Vec<(String, Vec<u8>)> {
+    let length = array.length();
+    let bytes = |from: u32, n: u32| (from.checked_add(n)? <= length).then(|| array.subarray(from, from + n).to_vec());
+    let number = |from: u32| bytes(from, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let mut out = Vec::new();
+    let Some(count) = number(0) else { return out };
+    let mut at = 4;
+    for _ in 0..count {
+        let Some(n) = number(at) else { break };
+        let Some(path) = bytes(at + 4, n) else { break };
+        at += 4 + n;
+        let Some(n) = number(at) else { break };
+        let Some(body) = bytes(at + 4, n) else { break };
+        at += 4 + n;
+        out.push((String::from_utf8_lossy(&path).into_owned(), body));
+    }
+    out
+}
+
 /// The page's data under `root`, its randomness in fresh ids, a panic
 /// said in the console.
 pub fn start(root: &str) {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
-        runity::files::mount(root, unpack(&page::data().to_vec()));
+        runity::files::mount(root, unpack_page(&page::data()));
         runity::files::mount("/", unpack(&page::saved().to_vec()));
         runity::files::on_write(|path, bytes| page::save(&path.to_string_lossy(), bytes));
         let random = || (js_sys::Math::random() * u32::MAX as f64) as u64;
