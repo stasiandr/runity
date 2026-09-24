@@ -117,6 +117,7 @@ pub mod motion {
 pub use runity_navigation::navigation;
 pub use runity_net::net;
 pub use runity_render::particles;
+pub use runity_render::passes;
 pub use runity_core::parts;
 pub use runity_net::party;
 pub use runity_core::perf;
@@ -169,8 +170,9 @@ pub mod player_loop {
 pub mod modules {
     pub use runity_core::module::{features, list_problems, with_depends, Manifest};
 
-    /// The features `runity` builds with when a game does not say
-    /// `default-features = false`: `default` in its Cargo.toml.
+    /// The modules' features `runity` builds with when a game does not say
+    /// `default-features = false`: `default` in its Cargo.toml, less what
+    /// is not a module's (a render pass's, as `ray-tracing`).
     pub const DEFAULT_FEATURES: &[&str] = &["navigation", "physics"];
 
     /// The sets `runity new` offers (DNA, postulate 8), by name: `bare`,

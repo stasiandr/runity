@@ -36,12 +36,33 @@ pub fn cargo_features(cargo: &str) -> Option<Vec<String>> {
     if !line.contains("default-features = false") {
         out.extend(modules::DEFAULT_FEATURES.iter().map(|f| f.to_string()));
     }
+    // A module's features only: one of a pass (`ray-tracing`) is the game's
+    // to keep, and no module's list says it.
+    let of_modules: Vec<String> = modules::official().into_iter().filter_map(|m| m.feature).collect();
+    out.retain(|f| of_modules.contains(f));
     out.sort();
     out.dedup();
     Some(out)
 }
 
-/// `cargo` with its `runity` line building exactly `features`.
+/// The features a `runity` line names, as written.
+fn listed_features(line: &str) -> Vec<String> {
+    let Some(at) = line.find("features = [").filter(|at| !line[..*at].ends_with("default-")) else {
+        return Vec::new();
+    };
+    let rest = &line[at + "features = [".len()..];
+    let Some(end) = rest.find(']') else {
+        return Vec::new();
+    };
+    rest[..end]
+        .split(',')
+        .map(|f| f.trim().trim_matches('"').to_string())
+        .filter(|f| !f.is_empty())
+        .collect()
+}
+
+/// `cargo` with its `runity` line building exactly `features` of the
+/// modules, and whatever else it asked for.
 pub fn with_features(cargo: &str, features: &[String]) -> Result<String> {
     let line = runity_line(cargo).context("Cargo.toml has no `runity = { ... }` line")?;
     let open = line.find('{').context("the runity line is not an inline table")?;
@@ -51,7 +72,16 @@ pub fn with_features(cargo: &str, features: &[String]) -> Result<String> {
         .map(str::trim)
         .filter(|f| !f.is_empty() && !f.starts_with("features") && !f.starts_with("default-features"))
         .collect();
-    let list: Vec<String> = features.iter().map(|f| format!("\"{f}\"")).collect();
+    // Features that are no module's — a render pass's — stay as they were.
+    let of_modules: Vec<String> = modules::official().into_iter().filter_map(|m| m.feature).collect();
+    let others: Vec<String> = listed_features(line)
+        .into_iter()
+        .filter(|f| !of_modules.contains(f))
+        .collect();
+    let mut all: Vec<String> = features.iter().cloned().chain(others).collect();
+    all.sort();
+    all.dedup();
+    let list: Vec<String> = all.iter().map(|f| format!("\"{f}\"")).collect();
     let new = format!(
         "runity = {{ {}, default-features = false, features = [{}] }}",
         kept.join(", "),
@@ -154,9 +184,10 @@ mod tests {
             cargo_features(&cargo).unwrap(),
             ["audio", "desktop-shell", "navigation", "physics"]
         );
+        let cargo = cargo.replace("\"audio\"]", "\"audio\", \"ray-tracing\"]");
         let written = with_features(&cargo, &["audio".into()]).unwrap();
         assert!(
-            written.contains("runity = { path = \"../../crates/runity\", default-features = false, features = [\"audio\"] }"),
+            written.contains("runity = { path = \"../../crates/runity\", default-features = false, features = [\"audio\", \"ray-tracing\"] }"),
             "{written}"
         );
         assert_eq!(cargo_features(&written).unwrap(), ["audio"]);

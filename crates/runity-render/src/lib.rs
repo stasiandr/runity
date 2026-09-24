@@ -24,6 +24,7 @@ pub mod look;
 pub mod material;
 pub mod moods;
 pub mod particles;
+pub mod passes;
 pub mod post;
 pub mod ray;
 pub mod reflections;
@@ -40,6 +41,7 @@ pub use material::{Material, Shading};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
+pub use passes::Passes;
 pub use world_look::build_frame;
 
 /// This module's systems in the loop: cameras that follow keep after their

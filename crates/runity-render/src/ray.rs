@@ -117,14 +117,18 @@ impl RayTracing {
 
 /// The traced half of the lit shader: `ray_clear`, and the binding it
 /// reads. Put in place of the stub in `render.wgsl` on a device that traces.
+#[cfg(feature = "ray-tracing")]
 pub const SHADER: &str = include_str!("ray.wgsl");
 
 /// Where the stub is in `render.wgsl`.
+#[cfg(feature = "ray-tracing")]
 const STUB_BEGIN: &str = "// ray: stub begin";
+#[cfg(feature = "ray-tracing")]
 const STUB_END: &str = "// ray: stub end";
 
 /// The lit shader for a device that traces: the stub replaced by the real
 /// thing, and the extension enabled at the top.
+#[cfg(feature = "ray-tracing")]
 pub(crate) fn traced(source: &str) -> String {
     let (Some(begin), Some(end)) = (source.find(STUB_BEGIN), source.find(STUB_END)) else {
         return source.to_string();
@@ -138,6 +142,7 @@ pub(crate) fn traced(source: &str) -> String {
 }
 
 /// A mesh as the rays see it.
+#[cfg(feature = "ray-tracing")]
 pub(crate) fn blas(
     gpu: &Gpu,
     vertices: &wgpu::Buffer,
@@ -215,6 +220,7 @@ impl RayMaterial {
 }
 
 /// The scene as the rays see it: every solid draw of the frame, placed.
+#[cfg(feature = "ray-tracing")]
 pub(crate) struct RayScene {
     pub(crate) tlas: wgpu::Tlas,
     /// Each instance's material, by its slot: what a reflection ray that
@@ -226,13 +232,20 @@ pub(crate) struct RayScene {
     _placeholder_buffers: (wgpu::Buffer, wgpu::Buffer),
 }
 
+#[cfg(feature = "ray-tracing")]
 fn rows(m: glam::Mat4) -> [f32; 12] {
     let r = |i| m.row(i);
     let (a, b, c) = (r(0), r(1), r(2));
     [a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w, c.x, c.y, c.z, c.w]
 }
 
+#[cfg(feature = "ray-tracing")]
 impl RayScene {
+    /// What the lit pass binds of it: the structure and the materials.
+    pub(crate) fn bindings(&self) -> (&wgpu::Tlas, &wgpu::Buffer) {
+        (&self.tlas, &self.materials)
+    }
+
     pub(crate) fn new(gpu: &Gpu) -> Self {
         use wgpu::util::DeviceExt;
         let vertices: [crate::asset::Vertex; 3] = std::array::from_fn(|i| crate::asset::Vertex {
@@ -336,7 +349,51 @@ impl RayScene {
     }
 }
 
-#[cfg(test)]
+/// The rays' scene for a device that traces them; `None` where it does
+/// not, or in a build without the `ray-tracing` feature.
+pub(crate) fn scene(gpu: &Gpu) -> Option<RayScene> {
+    #[cfg(feature = "ray-tracing")]
+    return gpu.ray_tracing.then(|| RayScene::new(gpu));
+    #[cfg(not(feature = "ray-tracing"))]
+    {
+        let _ = gpu;
+        None
+    }
+}
+
+// Built without the `ray-tracing` feature: no rays' scene can be made, so
+// nothing below is ever called — what stands in for it is so the lit pass
+// compiles unchanged.
+#[cfg(not(feature = "ray-tracing"))]
+pub(crate) enum RayScene {}
+
+#[cfg(not(feature = "ray-tracing"))]
+impl RayScene {
+    pub(crate) fn bindings(&self) -> (&wgpu::Tlas, &wgpu::Buffer) {
+        match *self {}
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        _: &Gpu,
+        _: &mut wgpu::CommandEncoder,
+        _: &[(&wgpu::Blas, glam::Mat4, u8, RayMaterial)],
+    ) -> bool {
+        match *self {}
+    }
+}
+
+#[cfg(not(feature = "ray-tracing"))]
+pub(crate) fn traced(source: &str) -> String {
+    source.to_string()
+}
+
+#[cfg(not(feature = "ray-tracing"))]
+pub(crate) fn blas(_: &Gpu, _: &wgpu::Buffer, _: u32, _: &wgpu::Buffer, _: u32) -> wgpu::Blas {
+    unreachable!("built without ray tracing: there is no rays' scene to build for")
+}
+
+#[cfg(all(test, feature = "ray-tracing"))]
 mod tests {
     use super::*;
 

@@ -989,6 +989,9 @@ pub struct Renderer {
     terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
+    /// Which passes run, whatever the frame asks for: the game's graphics
+    /// settings ([`crate::passes`]).
+    passes: crate::passes::Passes,
     /// The frame's lights ([`crate::lights`]), each cell's run of them, and
     /// the runs themselves.
     light_buffer: wgpu::Buffer,
@@ -2407,7 +2410,7 @@ impl Renderer {
                 entries: &frame_entries,
             });
         let ssao = crate::ssao::SsaoRenderer::new(gpu);
-        let ray = gpu.ray_tracing.then(|| crate::ray::RayScene::new(gpu));
+        let ray = crate::ray::scene(gpu);
         let shadow_resolution = ShadowSettings::default().resolution;
         let (shadow_map, shadow_layers) = shadow_view(gpu, shadow_resolution);
         let shadow_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2483,7 +2486,7 @@ impl Renderer {
                 shadow_map: &shadow_map,
                 shadow_sampler: &shadow_sampler,
                 occlusion: &ssao.result,
-                rays: ray.as_ref().map(|r| (&r.tlas, &r.materials)),
+                rays: ray.as_ref().map(|r| r.bindings()),
                 lights: &light_buffer,
                 cells: &cell_buffer,
                 indices: &index_buffer,
@@ -2758,6 +2761,7 @@ impl Renderer {
             clipmap: None,
             terrain_made: None,
             ray,
+            passes: crate::passes::Passes::MAX,
             light_buffer,
             cell_buffer,
             index_buffer,
@@ -2880,7 +2884,7 @@ impl Renderer {
                 shadow_map: &self.shadow_map,
                 shadow_sampler: &self.shadow_sampler,
                 occlusion: &self.ssao.result,
-                rays: self.ray.as_ref().map(|r| (&r.tlas, &r.materials)),
+                rays: self.ray.as_ref().map(|r| r.bindings()),
                 lights: &self.light_buffer,
                 cells: &self.cell_buffer,
                 indices: &self.index_buffer,
@@ -3592,6 +3596,18 @@ impl Renderer {
         self.render_view(gpu, Some(view), width, height, &frame, None);
     }
 
+    /// Which passes run: the game's graphics settings. [`Passes::MAX`]
+    /// (the default) runs whatever each frame asks for.
+    ///
+    /// [`Passes::MAX`]: crate::passes::Passes::MAX
+    pub fn set_passes(&mut self, passes: crate::passes::Passes) {
+        self.passes = passes;
+    }
+
+    pub fn passes(&self) -> crate::passes::Passes {
+        self.passes
+    }
+
     /// Draw a frame's world screens into their pictures with the UI
     /// module's renderer: call before the frame is rendered, so the things
     /// showing them show this frame's.
@@ -3810,6 +3826,14 @@ impl Renderer {
         frame: &Frame,
         probe: Option<u32>,
     ) {
+        // Graphics settings: what is switched off is taken out of the frame.
+        let masked;
+        let frame = if self.passes == crate::passes::Passes::MAX {
+            frame
+        } else {
+            masked = self.passes.apply(frame);
+            &masked
+        };
         let aspect = width as f32 / height.max(1) as f32;
         if self.depth_size != (width, height) {
             self.depth = depth_view(gpu, width, height, self.samples);

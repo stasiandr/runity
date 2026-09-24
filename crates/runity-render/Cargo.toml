@@ -20,3 +20,10 @@ rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
 wgpu = "30"
+
+[features]
+default = ["ray-tracing"]
+# Hardware ray tracing, where the device has it: an experiment. Off, the
+# code and the shader are not in the build, and the lit pass runs as on a
+# device without rays.
+ray-tracing = []

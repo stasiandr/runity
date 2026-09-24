@@ -11,7 +11,7 @@ runity-animation = { path = "../runity-animation" }
 runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
 runity-shell = { path = "../runity-shell", optional = true }
-runity-render = { path = "../runity-render" }
+runity-render = { path = "../runity-render", default-features = false }
 runity-steam = { path = "../runity-steam", optional = true }
 runity-net = { path = "../runity-net" }
 runity-navigation = { path = "../runity-navigation", optional = true }
@@ -38,10 +38,13 @@ tracing = "0.1.44"
 # dependencies out of the build with it (DNA, postulate 3); a module's
 # manifest (`module.ron`) names its feature.
 [features]
-default = ["physics", "navigation"]
+default = ["physics", "navigation", "ray-tracing"]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
 physics = ["runity-physics/rapier", "runity-net/physics"]
+# Hardware ray tracing in the render, where the device has it: an
+# experiment the scene asks for. Off, it is not in the build.
+ray-tracing = ["runity-render/ray-tracing"]
 # Where things can walk: a grid baked from the physics world.
 navigation = ["physics", "dep:runity-navigation"]
 # Sound. Off by default and not because it is unfinished: the engine is
