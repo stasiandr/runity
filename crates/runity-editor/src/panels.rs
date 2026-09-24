@@ -172,6 +172,26 @@ fn part_kind(field: &str) -> Option<runity::parts::PartKind> {
         .find(|k| k.name == field)
 }
 
+/// A value written as the scene file writes it: one field a line down to
+/// `depth`, the rest on one line.
+fn pretty<T: serde::Serialize>(value: &T, depth: usize) -> EditResult<String> {
+    let config = runity::ron::ser::PrettyConfig::new().depth_limit(depth);
+    runity::ron::ser::to_string_pretty(value, config).map_err(|e| EditError::Scene(e.to_string()))
+}
+
+/// Every field a module of this build reads, checked against its type: the
+/// first that does not fit, in words. A field no module reads is kept, as
+/// loading a scene keeps it.
+fn check_parts<'a>(parts: impl Iterator<Item = (&'a str, &'a str)>) -> EditResult<()> {
+    let kinds = runity::scene::part_kinds();
+    for (name, text) in parts {
+        if let Some(kind) = kinds.iter().find(|k| k.name == name) {
+            (kind.check)(text).map_err(|e| EditError::Scene(format!("{name}: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 fn ron<T: serde::Serialize>(value: &T) -> String {
     runity::ron::to_string(value).unwrap_or_default()
 }
@@ -601,6 +621,74 @@ impl Session {
         let kind = part_kind(field)
             .ok_or_else(|| EditError::Scene(format!("no module reads `{field}`")))?;
         (kind.normal)(text).map_err(|e| EditError::Scene(format!("{field}: {e}")))
+    }
+
+    /// An entity as the scene file writes its block — id, name, transform,
+    /// every part, components, overrides — without its children, which are
+    /// lines of their own. What the Inspector's Debug mode shows, and what
+    /// an agent reads to see a line whole.
+    pub fn entity_ron(&self, id: EntityId) -> EditResult<String> {
+        let mut desc = self.line(id).ok_or(EditError::NoEntity(id))?.clone();
+        desc.children.clear();
+        let text = pretty(&desc, 1)?;
+        Ok(runity::ron_edit::set_field(&text, "children", None).unwrap_or(text))
+    }
+
+    /// Replace an entity with `text`, as [`Session::entity_ron`] writes it,
+    /// as one undo step. Its id, its children and its place in the tree
+    /// stay what they are; a part of a prefab instance takes the change as
+    /// an override, as any edit of it does. Text that does not read — or a
+    /// field whose module says it does not fit — changes nothing and says
+    /// where (`3:12: …`). The text as it was given back is no step at all.
+    pub fn set_entity_ron(&mut self, id: EntityId, text: &str) -> EditResult<()> {
+        let current = self.line(id).ok_or(EditError::NoEntity(id))?.clone();
+        let mut next: EntityDesc =
+            runity::ron::from_str(text).map_err(|e| EditError::Scene(e.to_string()))?;
+        if !next.children.is_empty() {
+            return Err(EditError::Scene(
+                "children are lines of their own: edit them in the Hierarchy, not here".into(),
+            ));
+        }
+        check_parts(next.parts.iter())?;
+        next.id = id;
+        next.children = current.children.clone();
+        if next == current {
+            return Ok(());
+        }
+        self.update(id, |desc| *desc = next)
+    }
+
+    /// The scene's own settings — `view`, `sun`, `fog`, `sky`, `post`… —
+    /// as one struct, the way the file writes them above its entities.
+    pub fn scene_settings_ron(&self) -> EditResult<String> {
+        let settings = runity::scene::Scene {
+            parts: self.history.scene().parts.clone(),
+            entities: Vec::new(),
+        };
+        let text = pretty(&settings, 1)?;
+        Ok(runity::ron_edit::set_field(&text, "entities", None).unwrap_or(text))
+    }
+
+    /// Replace the scene's settings with `text`, as
+    /// [`Session::scene_settings_ron`] writes them, as one undo step; the
+    /// entities stay. Text that does not read changes nothing and says
+    /// where.
+    pub fn set_scene_settings_ron(&mut self, text: &str) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let next: runity::scene::Scene =
+            runity::ron::from_str(text).map_err(|e| EditError::Scene(e.to_string()))?;
+        if !next.entities.is_empty() {
+            return Err(EditError::Scene(
+                "entities are edited in the Hierarchy, not with the scene's settings".into(),
+            ));
+        }
+        check_parts(next.parts.iter())?;
+        if next.parts == self.history.scene().parts {
+            return Ok(());
+        }
+        self.history.edit().parts = next.parts;
+        self.respawn();
+        Ok(())
     }
 
     /// Add a component the game has with a value of its shape to start

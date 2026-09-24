@@ -4915,3 +4915,71 @@ fn a_field_says_what_it_looks_like_what_it_starts_as_and_what_it_means() {
     assert!(!normal.contains("mode"), "{normal}");
     assert!(session.field_normal("fog", "(colour: 1.0)").is_err());
 }
+
+#[test]
+fn an_entity_and_the_scene_settings_are_edited_as_the_ron_the_file_holds() {
+    let Some((mut session, path)) = open("entity-ron") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let lid = id(&session, "lid");
+    session.set_field(crate_id, "body", "Static").unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+
+    // The block as the file writes it, without its children.
+    let text = session.entity_ron(crate_id).unwrap();
+    assert!(text.contains("name: \"crate\""), "{text}");
+    assert!(text.contains("body: Static"), "{text}");
+    assert!(!text.contains("children"), "{text}");
+    assert!(!text.contains("lid"), "{text}");
+
+    // Given back as it is: no step, and saving is a zero diff.
+    let steps = session.undo_steps().len();
+    session.set_entity_ron(crate_id, &text).unwrap();
+    assert_eq!(session.undo_steps().len(), steps, "nothing changed");
+    session.save_scene(None).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+
+    // An edit: one step, its id and children kept.
+    let edited = text.replace("\"crate\"", "\"box\"");
+    session.set_entity_ron(crate_id, &edited).unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(session.find("box"), Some(crate_id));
+    assert_eq!(session.find("lid"), Some(lid), "the child is still there");
+    assert!(session
+        .hierarchy()
+        .iter()
+        .any(|r| r.id == lid && r.depth == 1));
+    session.undo().unwrap();
+    assert_eq!(session.find("crate"), Some(crate_id));
+
+    // What does not read changes nothing, and says where.
+    let err = session
+        .set_entity_ron(crate_id, "(name: \"x\", transform: (position: (1.0, 2.0)))")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(':'), "{err}");
+    let err = session
+        .set_entity_ron(crate_id, &text.replace("body: Static", "body: Floaty"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("body"), "{err}");
+    assert_eq!(session.undo_steps().len(), steps, "no step for either");
+    assert_eq!(session.entity_ron(crate_id).unwrap(), text);
+
+    // The scene's settings, the same way; the entities stay.
+    let settings = session.scene_settings_ron().unwrap();
+    assert!(!settings.contains("entities"), "{settings}");
+    session.set_scene_settings_ron(&settings).unwrap();
+    assert_eq!(session.undo_steps().len(), steps);
+    session
+        .set_scene_settings_ron("(sun: (hour: 18.0, intensity: 1.0))")
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1);
+    assert!(session.environment()[0].1.contains("hour:18.0"));
+    assert_eq!(session.find("lid"), Some(lid));
+    assert!(session.set_scene_settings_ron("(sun: (hour: \"late\"))").is_err());
+    session.undo().unwrap();
+    assert_eq!(session.scene_settings_ron().unwrap(), settings);
+}
