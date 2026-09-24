@@ -1,0 +1,8 @@
+// The head chef talking (dialogues/chef.ron): shown while there is a line.
+(
+    elements: [
+        (id: "card", anchor: Bottom, at: (0, -104), size: (780, 84), kind: Panel),
+        (id: "speaker", anchor: Bottom, at: (-260, -150), size: (220, 22), kind: Text(""), text_size: 16),
+        (id: "line", anchor: Bottom, at: (0, -118), size: (740, 30), kind: Text(""), text_size: 20),
+    ],
+)

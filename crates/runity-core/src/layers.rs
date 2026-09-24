@@ -46,7 +46,8 @@ impl Layers {
     /// in words.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text =
+            crate::files::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut layers: Layers =
             ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
         if !layers.layers.iter().any(|l| l == "default") {
@@ -62,7 +63,7 @@ impl Layers {
     /// A project's layers: its `layers.ron`, or just `default` without one.
     pub fn of(project: &crate::Project) -> Result<Self, String> {
         let path = project.root().join(FILE);
-        if path.is_file() {
+        if crate::files::is_file(&path) {
             Self::load(path)
         } else {
             Ok(Self::default())

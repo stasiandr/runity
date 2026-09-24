@@ -68,7 +68,7 @@ pub struct Reloaded {
 }
 
 fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
+    crate::files::modified(path)
 }
 
 /// Everything imported, indexed by id and by name.
@@ -101,7 +101,7 @@ impl Library {
     ) -> Result<(Self, Vec<(PathBuf, AssetError)>), AssetError> {
         let mut library = Self::new();
         let mut problems = Vec::new();
-        for entry in std::fs::read_dir(directory.as_ref())? {
+        for entry in crate::files::read_dir(directory.as_ref())? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some("rasset") {
                 continue;
@@ -116,7 +116,10 @@ impl Library {
     /// Every `.rasset` in `folder` of a game's [`crate::data::Data`]:
     /// [`Library::open`] through the seam, for the web, where the host
     /// fetched them. Such assets are not polled for changes.
-    pub fn open_from(data: &dyn crate::data::Data, folder: &str) -> (Self, Vec<(String, AssetError)>) {
+    pub fn open_from(
+        data: &dyn crate::data::Data,
+        folder: &str,
+    ) -> (Self, Vec<(String, AssetError)>) {
         let mut library = Self::new();
         let mut problems = Vec::new();
         for path in data.list(folder).unwrap_or_default() {
@@ -141,10 +144,12 @@ impl Library {
     /// than holding every one in memory from the start. A body that turns
     /// out corrupt reads as missing, where [`Library::open`] would have
     /// named it at once.
-    pub fn open_lazy(directory: impl AsRef<Path>) -> Result<(Self, Vec<(PathBuf, AssetError)>), AssetError> {
+    pub fn open_lazy(
+        directory: impl AsRef<Path>,
+    ) -> Result<(Self, Vec<(PathBuf, AssetError)>), AssetError> {
         let mut library = Self::new();
         let mut problems = Vec::new();
-        for entry in std::fs::read_dir(directory.as_ref())? {
+        for entry in crate::files::read_dir(directory.as_ref())? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some("rasset") {
                 continue;
@@ -201,7 +206,11 @@ impl Library {
 
     /// Bytes of assets held in memory now.
     pub fn resident_bytes(&self) -> usize {
-        self.entries.iter().filter_map(|e| e.bytes.get()).map(Vec::len).sum()
+        self.entries
+            .iter()
+            .filter_map(|e| e.bytes.get())
+            .map(Vec::len)
+            .sum()
     }
 
     /// Add one asset file.
@@ -226,7 +235,7 @@ impl Library {
         let name = name_of(&bytes, kind).unwrap_or_default();
 
         let index = self.entries.len();
-        let on_disk = path.is_file();
+        let on_disk = crate::files::is_file(&path);
         self.entries.push(Entry {
             bytes: std::sync::OnceLock::from(bytes),
             on_disk,
@@ -248,7 +257,7 @@ impl Library {
     /// has never heard of. Unreadable files are skipped, as in
     /// [`Library::open`]; the next call tries them again.
     pub fn add_new(&mut self, directory: impl AsRef<Path>) -> Vec<Reloaded> {
-        let Ok(entries) = std::fs::read_dir(directory.as_ref()) else {
+        let Ok(entries) = crate::files::read_dir(directory.as_ref()) else {
             return Vec::new();
         };
         let known: std::collections::HashSet<PathBuf> =
@@ -283,9 +292,6 @@ impl Library {
         self.entries.is_empty()
     }
 
-
-
-
     /// An asset's archive, when it is of this kind: what a module reads
     /// its format from (`MeshLibrary::mesh`…).
     pub fn bytes_of(&self, id: AssetId, kind: AssetKind) -> Option<&[u8]> {
@@ -315,14 +321,6 @@ impl Library {
             .filter_map(|i| self.entries.get(*i))
             .find(|e| e.kind == kind)
     }
-
-
-
-
-
-
-
-
 
     /// What a link names, as the library has it now: the ID and the name
     /// inside the asset. By ID first, then by name — only when the name is

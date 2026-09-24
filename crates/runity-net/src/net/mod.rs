@@ -34,11 +34,13 @@
 //! game made is its own business, on its own machine.
 
 pub mod link;
+/// The wire in the browser: the page's data channels.
+#[cfg(target_arch = "wasm32")]
+pub mod page;
 pub mod protocol;
 pub mod server;
 pub mod sync;
 pub mod wire;
-
 
 use serde::{Deserialize, Serialize};
 
@@ -159,8 +161,6 @@ pub struct OwnershipPending;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DespawnWithOwner;
 
-
-
 /// The newest snapshot applied to a replica: whose, at what tick of
 /// theirs, when it came, and whether it was the owner's last word before
 /// going quiet.
@@ -169,15 +169,13 @@ pub struct NetTick {
     pub sender: PeerId,
     pub tick: u64,
     pub settled: bool,
-    pub at: std::time::Instant,
+    pub at: web_time::Instant,
 }
 
 /// Who owns an entity: its [`Owner`], or the host.
 pub fn owner_of(world: &hecs::World, entity: hecs::Entity) -> PeerId {
     world.get::<&Owner>(entity).map_or(PeerId::HOST, |o| o.0)
 }
-
-
 
 /// Mark an entity the game just spawned as networked and `me`'s: a fresh
 /// [`NetId`], the prefab it came from, and the owner. The next frame
@@ -195,8 +193,6 @@ pub fn announce(
     );
     id
 }
-
-
 
 /// The network's view of every networked entity, for a report.
 pub fn net_lines(world: &hecs::World) -> Vec<crate::save_core::NetLine> {
@@ -218,4 +214,3 @@ pub fn net_lines(world: &hecs::World) -> Vec<crate::save_core::NetLine> {
     out.sort_by_key(|l| l.id);
     out
 }
-

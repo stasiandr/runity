@@ -40,7 +40,7 @@
 //! `RUNITY_NET` the game plays alone.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

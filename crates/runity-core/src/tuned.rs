@@ -35,11 +35,12 @@ pub struct Tuned<T> {
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    crate::files::modified(path)
 }
 
 fn read<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text =
+        crate::files::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))
 }
 

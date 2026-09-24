@@ -143,7 +143,7 @@ impl AssetId {
 /// prefab's or a scene's identity is (docs/refs.md). `None` when the file
 /// is missing, does not parse, or has no ID yet.
 pub fn sidecar_id(sidecar: impl AsRef<std::path::Path>) -> Option<AssetId> {
-    sidecar_id_of(&std::fs::read_to_string(sidecar).ok()?)
+    sidecar_id_of(&crate::files::read_to_string(sidecar).ok()?)
 }
 
 /// The ID a sidecar's text records.
@@ -313,7 +313,11 @@ where
 pub fn head_of(bytes: &[u8]) -> Result<(AssetKind, AssetId, String), AssetError> {
     let kind = kind_of(bytes)?;
     split_header(bytes)?;
-    let id = u128::from_le_bytes(bytes[HEADER..HEADER + 16].try_into().expect("sixteen bytes"));
+    let id = u128::from_le_bytes(
+        bytes[HEADER..HEADER + 16]
+            .try_into()
+            .expect("sixteen bytes"),
+    );
     let n = u16::from_le_bytes([bytes[HEADER + 16], bytes[HEADER + 17]]) as usize;
     let name = std::str::from_utf8(&bytes[HEADER + 18..HEADER + 18 + n])
         .map_err(|e| AssetError::Corrupt(e.to_string()))?;
@@ -353,6 +357,9 @@ pub fn kind_of(bytes: &[u8]) -> Result<AssetKind, AssetError> {
 /// sixteen header bytes alone are read. A library built before a format
 /// change is out of date even though no source changed.
 pub fn is_current(path: impl AsRef<Path>) -> bool {
+    if cfg!(target_arch = "wasm32") {
+        return crate::files::read(path.as_ref()).is_ok_and(|b| split_header(&b).is_ok());
+    }
     use std::io::Read;
     let mut header = [0u8; HEADER];
     std::fs::File::open(path.as_ref())
@@ -395,7 +402,7 @@ pub fn split_header(bytes: &[u8]) -> Result<&[u8], AssetError> {
 /// is already in the layout the GPU wants, so the load path ends here and the
 /// next step is an upload.
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, AssetError> {
-    let bytes = std::fs::read(path.as_ref())?;
+    let bytes = crate::files::read(path.as_ref())?;
     split_header(&bytes)?;
     Ok(bytes)
 }
@@ -404,6 +411,10 @@ pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, AssetError> {
 /// the body where it is: what a library opened lazily knows of an asset
 /// before it is first used.
 pub fn read_head(path: impl AsRef<Path>) -> Result<(AssetKind, AssetId, String), AssetError> {
+    // In the browser the file is already in memory, whole.
+    if cfg!(target_arch = "wasm32") {
+        return head_of_prefix(&crate::files::read(path.as_ref())?);
+    }
     use std::io::Read;
     let mut file = std::fs::File::open(path.as_ref())?;
     let mut head = vec![0u8; HEADER + 18];
@@ -434,9 +445,14 @@ fn split_header_prefix(bytes: &[u8]) -> Result<(), AssetError> {
 fn head_of_prefix(bytes: &[u8]) -> Result<(AssetKind, AssetId, String), AssetError> {
     let kind = kind_of(bytes)?;
     split_header_prefix(bytes)?;
-    let id = u128::from_le_bytes(bytes[HEADER..HEADER + 16].try_into().expect("sixteen bytes"));
+    let id = u128::from_le_bytes(
+        bytes[HEADER..HEADER + 16]
+            .try_into()
+            .expect("sixteen bytes"),
+    );
     let n = u16::from_le_bytes([bytes[HEADER + 16], bytes[HEADER + 17]]) as usize;
-    let name = std::str::from_utf8(&bytes[HEADER + 18..HEADER + 18 + n]).map_err(|e| AssetError::Corrupt(e.to_string()))?;
+    let name = std::str::from_utf8(&bytes[HEADER + 18..HEADER + 18 + n])
+        .map_err(|e| AssetError::Corrupt(e.to_string()))?;
     Ok((kind, AssetId(id), name.to_string()))
 }
 

@@ -13,6 +13,10 @@ tracing = "0.1.44"
 wgpu = "30"
 winit = { version = "0.30.13", optional = true }
 
+# In the browser: WebGPU, its objects shareable on the one thread there is.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", features = ["fragile-send-sync-non-atomic-wasm"] }
+
 [features]
 # A surface from a winit window, for the plain desktop shell.
 winit = ["dep:winit"]

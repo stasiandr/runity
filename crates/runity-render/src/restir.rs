@@ -40,7 +40,10 @@ pub(crate) struct Restir {
     now: usize,
     frames: u32,
     layout: wgpu::BindGroupLayout,
-    pub(crate) pipeline_layout: wgpu::PipelineLayout,
+    /// Only where the device traces rays: ReSTIR runs nowhere else, and
+    /// the layout asks for more storage buffers a stage than a device
+    /// without rays may have (a browser's WebGPU gives ten).
+    pub(crate) pipeline_layout: Option<wgpu::PipelineLayout>,
     pub(crate) initial: Option<wgpu::ComputePipeline>,
     pub(crate) spatial: Option<wgpu::ComputePipeline>,
 }
@@ -67,47 +70,58 @@ impl Restir {
             },
             count: None,
         };
-        let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("restir"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 10,
-                    visibility: compute,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("restir"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 10,
+                        visibility: compute,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 11,
-                    visibility: compute,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 11,
+                        visibility: compute,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                storage(12, false),
-                storage(13, true),
-                storage(14, true),
-                storage(15, false),
-                storage(16, false),
-            ],
-        });
-        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("runity::restir"),
-            bind_group_layouts: &[Some(frame_layout), None, None, Some(&layout)],
-            immediate_size: 0,
+                    storage(12, false),
+                    storage(13, true),
+                    storage(14, true),
+                    storage(15, false),
+                    storage(16, false),
+                ],
+            });
+        let pipeline_layout = gpu.ray_tracing.then(|| {
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("runity::restir"),
+                    bind_group_layouts: &[Some(frame_layout), None, None, Some(&layout)],
+                    immediate_size: 0,
+                })
         });
         let empty = wgpu::BufferUsages::empty();
         Self {
             size: (0, 0),
             temporary: buffer(gpu, "restir candidates", 1, empty),
-            finals: [buffer(gpu, "restir", 1, wgpu::BufferUsages::COPY_SRC), buffer(gpu, "restir", 1, wgpu::BufferUsages::COPY_SRC)],
-            geometry: [buffer(gpu, "restir surface", 1, empty), buffer(gpu, "restir surface", 1, empty)],
+            finals: [
+                buffer(gpu, "restir", 1, wgpu::BufferUsages::COPY_SRC),
+                buffer(gpu, "restir", 1, wgpu::BufferUsages::COPY_SRC),
+            ],
+            geometry: [
+                buffer(gpu, "restir surface", 1, empty),
+                buffer(gpu, "restir surface", 1, empty),
+            ],
             shade: buffer(gpu, "restir shade", 1, wgpu::BufferUsages::COPY_DST),
             now: 0,
             frames: 0,
@@ -125,20 +139,24 @@ impl Restir {
         shader: &wgpu::ShaderModule,
         traced: bool,
     ) -> (Option<wgpu::ComputePipeline>, Option<wgpu::ComputePipeline>) {
-        if !traced {
+        let Some(pipeline_layout) = self.pipeline_layout.as_ref().filter(|_| traced) else {
             return (None, None);
-        }
-        let make = |entry| {
-            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("runity::restir"),
-                layout: Some(&self.pipeline_layout),
-                module: shader,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
         };
-        (Some(make("cs_restir_initial")), Some(make("cs_restir_spatial")))
+        let make = |entry| {
+            gpu.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("runity::restir"),
+                    layout: Some(pipeline_layout),
+                    module: shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+        };
+        (
+            Some(make("cs_restir_initial")),
+            Some(make("cs_restir_spatial")),
+        )
     }
 
     /// Sized to the frame: `true` when the buffer the lit shader reads was
@@ -156,7 +174,10 @@ impl Restir {
             buffer(gpu, "restir", pixels, wgpu::BufferUsages::COPY_SRC),
             buffer(gpu, "restir", pixels, wgpu::BufferUsages::COPY_SRC),
         ];
-        self.geometry = [buffer(gpu, "restir surface", pixels, empty), buffer(gpu, "restir surface", pixels, empty)];
+        self.geometry = [
+            buffer(gpu, "restir surface", pixels, empty),
+            buffer(gpu, "restir surface", pixels, empty),
+        ];
         self.shade = buffer(gpu, "restir shade", pixels, wgpu::BufferUsages::COPY_DST);
         self.frames = 0;
         true
@@ -167,7 +188,12 @@ impl Restir {
         if !on {
             return [0.0; 4];
         }
-        [1.0, self.size.0 as f32, self.size.1 as f32, self.frames as f32]
+        [
+            1.0,
+            self.size.0 as f32,
+            self.size.1 as f32,
+            self.frames as f32,
+        ]
     }
 
     /// Both passes, and this frame's reservoirs where the lit shader reads
@@ -222,7 +248,11 @@ impl Restir {
         for (pipeline, label) in [(initial, "restir"), (spatial, "restir spatial")] {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(label),
-                timestamp_writes: crate::gpu_timer::compute(if label == "restir" { "restir" } else { "restir spatial" }),
+                timestamp_writes: crate::gpu_timer::compute(if label == "restir" {
+                    "restir"
+                } else {
+                    "restir spatial"
+                }),
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, frame_group, &[]);

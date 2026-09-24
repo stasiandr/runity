@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "prefabs/tomato.prefab",
+    id: Some("b8d9838cff4bad8957c49da4ba64db09"),
+)

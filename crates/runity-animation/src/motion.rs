@@ -36,8 +36,8 @@ use hecs::World;
 use serde::{Deserialize, Serialize};
 
 use crate::animation::{Channel, Clip, Joint, Path as Part, PoseTransform, Skeleton};
-use crate::animgraph::{Controller, Graph};
 use crate::animator::Animator;
+use crate::animgraph::{Controller, Graph};
 use crate::id::EntityId;
 
 /// The folder motion clips are in.
@@ -84,7 +84,8 @@ pub struct Motion {
 impl Motion {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = runity_core::files::read_to_string(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         ron::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
@@ -98,7 +99,11 @@ pub fn sample(keys: &[(f32, f32)], time: f32) -> Option<f32> {
     for pair in keys.windows(2) {
         let ((t0, v0), (t1, v1)) = (pair[0], pair[1]);
         if time <= t1 {
-            let f = if t1 > t0 { (time - t0) / (t1 - t0) } else { 1.0 };
+            let f = if t1 > t0 {
+                (time - t0) / (t1 - t0)
+            } else {
+                1.0
+            };
             return Some(v0 + (v1 - v0) * f);
         }
     }
@@ -163,7 +168,7 @@ impl Motions {
         let mut out = Self::default();
         let mut problems = Vec::new();
         let files = |dir: &Path| -> Vec<std::path::PathBuf> {
-            let mut paths: Vec<_> = std::fs::read_dir(dir)
+            let mut paths: Vec<_> = runity_core::files::read_dir(dir)
                 .map(|r| {
                     r.flatten()
                         .map(|e| e.path())
@@ -179,7 +184,7 @@ impl Motions {
         };
         let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned());
         for path in files(&root.join(crate::project::ANIMATORS)) {
-            let read = std::fs::read_to_string(&path).map_err(|e| e.to_string());
+            let read = runity_core::files::read_to_string(&path).map_err(|e| e.to_string());
             match read.and_then(|t| ron::from_str::<Graph>(&t).map_err(|e| e.to_string())) {
                 Ok(graph) => {
                     out.graphs.insert(stem(&path).unwrap_or_default(), graph);
@@ -239,7 +244,10 @@ pub fn attach(
     let mut problems = Vec::new();
     for (entity, animates) in waiting {
         let Some(graph) = motions.graphs.get(&animates.graph) else {
-            problems.push(format!("animator `{}`: no such graph in animators/", animates.graph));
+            problems.push(format!(
+                "animator `{}`: no such graph in animators/",
+                animates.graph
+            ));
             // Not asked again every frame.
             let _ = world.remove_one::<Animates>(entity);
             continue;
@@ -365,8 +373,14 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
     let mut out = Vec::new();
     for (axes, path) in [
         ([Property::X, Property::Y, Property::Z], Part::Translation),
-        ([Property::TurnX, Property::TurnY, Property::TurnZ], Part::Rotation),
-        ([Property::ScaleX, Property::ScaleY, Property::ScaleZ], Part::Scale),
+        (
+            [Property::TurnX, Property::TurnY, Property::TurnZ],
+            Part::Rotation,
+        ),
+        (
+            [Property::ScaleX, Property::ScaleY, Property::ScaleZ],
+            Part::Scale,
+        ),
     ] {
         let keyed: Vec<Option<&Vec<(f32, f32)>>> = axes.iter().map(|a| find(*a)).collect();
         if keyed.iter().all(Option::is_none) {
@@ -418,7 +432,11 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
 /// rate — is handed to `set`: this module reads the clip, the module that
 /// owns the component writes it. The engine's `runity::motion::run` passes
 /// the sound and particle modules' setter.
-pub fn run_with(world: &mut World, dt: f32, set: &mut dyn FnMut(&mut World, hecs::Entity, Property, f32)) {
+pub fn run_with(
+    world: &mut World,
+    dt: f32,
+    set: &mut dyn FnMut(&mut World, hecs::Entity, Property, f32),
+) {
     let mut places: Vec<(hecs::Entity, PoseTransform)> = Vec::new();
     let mut others: Vec<(hecs::Entity, Property, f32)> = Vec::new();
     for moving in world.query_mut::<&mut Moving>() {
@@ -537,7 +555,10 @@ mod tests {
             _ => None,
         };
         let said = attach(&mut world, &motions, skins);
-        assert!(said.iter().any(|p| p.contains("`rock` has no skeleton")), "{said:?}");
+        assert!(
+            said.iter().any(|p| p.contains("`rock` has no skeleton")),
+            "{said:?}"
+        );
         let mouse = crate::world::addressable(&world)[&EntityId::from_raw(1)];
         let names: Vec<String> = world
             .get::<&Animator>(mouse)
@@ -550,7 +571,10 @@ mod tests {
         crate::animgraph::run_controllers(&mut world);
         world.get::<&mut Controller>(mouse).unwrap().trigger("wave");
         crate::animgraph::run_controllers(&mut world);
-        assert_eq!(world.get::<&Controller>(mouse).unwrap().state(), Some("wave"));
+        assert_eq!(
+            world.get::<&Controller>(mouse).unwrap().state(),
+            Some("wave")
+        );
     }
 
     #[test]
@@ -609,14 +633,22 @@ mod tests {
         }
         let t = *world.get::<&crate::Transform>(lid).unwrap();
         assert!((t.rotation_deg.x + 90.0).abs() < 0.5, "{t:?}");
-        assert_eq!(t.position, Vec3::new(0.0, 2.0, 0.0), "where the scene put it");
+        assert_eq!(
+            t.position,
+            Vec3::new(0.0, 2.0, 0.0),
+            "where the scene put it"
+        );
         assert!(crate::world::is_active(&world, glow), "lit halfway through");
     }
 }
 
 /// A line's `animator`, with every thing under it by its path of names.
 pub(crate) fn animates(desc: &crate::scene::EntityDesc) -> crate::motion::Animates {
-    fn walk(desc: &crate::scene::EntityDesc, path: &str, out: &mut Vec<(String, crate::id::EntityId)>) {
+    fn walk(
+        desc: &crate::scene::EntityDesc,
+        path: &str,
+        out: &mut Vec<(String, crate::id::EntityId)>,
+    ) {
         for child in &desc.children {
             let at = if path.is_empty() {
                 child.name.clone()
@@ -680,14 +712,12 @@ impl crate::world::Dress for MotionDress {
 #[serde(transparent)]
 pub struct AnimatorRef(pub String);
 
-
 /// `bone: "hand.R"` — held by this joint of the parent's skeleton, not by
 /// the parent itself: a spade in a hand, a hat on a head. `transform` is
 /// then relative to the bone.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BoneName(pub String);
-
 
 crate::impl_parts! {
     AnimatorRef => "animator", default if |a| a.0.is_empty();

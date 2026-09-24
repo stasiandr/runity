@@ -1,0 +1,75 @@
+name: Pages
+
+# Kitchen Rush in the browser (examples/kitchen-web): the engine built for
+# WebGPU, the kitchen's library built from its sources, and the page around
+# it, published to GitHub Pages.
+#
+# Only from the `pages` branch: the site changes when main is merged into
+# it, not with every commit to main.
+#
+#     git push origin main:pages
+
+on:
+  push:
+    branches: [pages]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # What runity-cli links to build the library (cpal, gilrs).
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libasound2-dev libdbus-1-dev libudev-dev
+
+      - name: Rust for the browser
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            examples/kitchen-web
+
+      # wasm-bindgen's CLI has to be the version the game links.
+      - name: wasm-bindgen
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' examples/kitchen-web/Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')
+          curl -sSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          echo "$PWD/wasm-bindgen-${version}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+
+      - name: Build the kitchen's library
+        run: cargo run --release -p runity-cli -- sync examples/kitchen-web
+
+      - name: Build the site
+        run: examples/kitchen-web/web/build.sh "$GITHUB_WORKSPACE/site"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

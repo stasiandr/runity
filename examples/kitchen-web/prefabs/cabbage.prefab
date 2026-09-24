@@ -1,0 +1,4 @@
+// A cabbage (Kenney's): from its crate, to the board, onto a plate — for a salad or a burger.
+(id: "403533ec41db7b70", name: "cabbage", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Food(Cabbage)) }, children: [
+(id: "2d2c78f0fb302944", name: "leaves", model: "cabbage", transform: (position: (0.000, -0.160, 0.000), scale: (1.100, 1.100, 1.100))),
+])

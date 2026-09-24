@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/food/frying-pan.glb",
+    hash: "02265b90ecf7ab0af39c6fbacb57aa66",
+    id: Some("73a2084f3df32a5cc81d4c6e2dfb1c6b"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

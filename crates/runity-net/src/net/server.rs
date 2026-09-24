@@ -88,7 +88,7 @@ pub struct Server {
     /// What it did that someone may want to read: joins, refusals.
     pub log: Vec<String>,
     /// When the session began: the clock everyone agrees on.
-    began: std::time::Instant,
+    began: web_time::Instant,
 }
 
 impl Server {
@@ -109,7 +109,7 @@ impl Server {
             fingerprint,
             outboxes: BTreeMap::new(),
             log: Vec::new(),
-            began: std::time::Instant::now(),
+            began: web_time::Instant::now(),
         }
     }
 
@@ -643,7 +643,7 @@ impl ServerThread {
             .name("runity-server".into())
             .spawn(move || {
                 while !flag.load(Ordering::Acquire) {
-                    let started = std::time::Instant::now();
+                    let started = web_time::Instant::now();
                     server.tick();
                     for line in server.log.drain(..) {
                         eprintln!("server: {line}");

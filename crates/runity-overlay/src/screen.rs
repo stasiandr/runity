@@ -4,8 +4,10 @@
 //! Unity builds a menu out of a Canvas, RectTransforms with anchors and a
 //! Canvas Scaler; here a screen is one RON file in `ui/`, every element
 //! anchored to a corner, an edge or the middle, sized in pixels of a
-//! 1280×720 screen and scaled with the window's height — so a menu laid out
-//! once is laid out at every resolution:
+//! 1280×720 screen and scaled with the window's height — or its width, on
+//! a window narrower than 16:9 (a tablet, a phone held upright), so nothing
+//! runs off the side — and a menu laid out once is laid out at every
+//! resolution:
 //!
 //! ```text
 //! (
@@ -161,6 +163,14 @@ pub struct Layout {
 
 /// The height a screen is laid out for; a taller window scales it up.
 pub const REFERENCE_HEIGHT: f32 = 720.0;
+/// The width it is laid out for: a window narrower than 16:9 scales by
+/// this instead, as Unity's Canvas Scaler does in its "shrink" mode.
+pub const REFERENCE_WIDTH: f32 = 1280.0;
+
+/// How much a screen of `size` scales what was laid out at 1280×720.
+pub fn scale_of(size: Vec2) -> f32 {
+    (size.y / REFERENCE_HEIGHT).min(size.x / REFERENCE_WIDTH)
+}
 
 impl Layout {
     /// What cannot mean anything: two elements with one id.
@@ -184,7 +194,7 @@ impl Layout {
 }
 
 fn place(e: &Element, screen: Vec2) -> Rect {
-    let scale = screen.y / REFERENCE_HEIGHT;
+    let scale = scale_of(screen);
     let size = Vec2::new(e.size.0, e.size.1) * scale;
     let f = e.anchor.fraction();
     let top_left = screen * f + Vec2::new(e.at.0, e.at.1) * scale - size * f;
@@ -381,8 +391,12 @@ impl Screen {
         strings: Option<&crate::strings::Strings>,
     ) -> Done {
         let mut done = Done::default();
-        let style = widgets.style;
-        let scale = size.y / REFERENCE_HEIGHT;
+        let scale = scale_of(size);
+        // The widgets' look grows with the screen, as the layout does, and
+        // is theirs again after.
+        let base = widgets.style;
+        let style = base.scaled(scale);
+        widgets.style = style;
         let elements = self.layout.elements.clone();
         for e in elements.iter().filter(|e| !self.hidden.contains(&e.id)) {
             let rect = place(e, size);
@@ -502,6 +516,7 @@ impl Screen {
                 }
             }
         }
+        widgets.style = base;
         done
     }
 }
@@ -519,7 +534,12 @@ mod tests {
         let mut screen = Screen::from_layout(layout);
         let drawn = |screen: &mut Screen| {
             let mut ui = Ui::new();
-            screen.draw(&mut Widgets::new(), &mut ui, &Input::default(), Vec2::new(1280.0, 720.0));
+            screen.draw(
+                &mut Widgets::new(),
+                &mut ui,
+                &Input::default(),
+                Vec2::new(1280.0, 720.0),
+            );
             ui.texts.len()
         };
         screen.set_hidden("start", true);
@@ -601,6 +621,12 @@ mod tests {
         assert_eq!(play.x + play.width * 0.5, 1720.0);
         let mute = layout.rect("mute", big).unwrap();
         assert_eq!(mute.x + mute.width, 3440.0 - 40.0);
+
+        // Narrower than 16:9 — 4:3 — scaled by width: the corner still in
+        // the window.
+        let square = Vec2::new(1024.0, 768.0);
+        let mute = layout.rect("mute", square).unwrap();
+        assert_eq!(mute.x + mute.width, 1024.0 - 20.0 * 0.8);
     }
 
     #[test]
