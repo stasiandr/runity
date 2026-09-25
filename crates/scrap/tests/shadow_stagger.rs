@@ -42,10 +42,9 @@ fn a_still_scene_looks_the_same_with_its_far_cascades_drawn_in_turn() {
                 target.read_rgba(&gpu)
             })
             .collect::<Vec<_>>();
-        // How many cascades the next frame draws, by the Frame Debugger.
-        renderer.debug_frame(None);
+        // How many cascades the next frame draws.
         renderer.render(&gpu, &target, &frame);
-        let drawn = renderer.frame_capture().unwrap().passes().iter().filter(|p| p.0 == "shadows").count();
+        let drawn = renderer.stats().cascades_drawn;
         (pictures, drawn)
     };
     let (every, all_drawn) = shots(false);

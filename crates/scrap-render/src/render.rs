@@ -432,6 +432,9 @@ pub struct FrameStats {
     pub shadow_casters: u32,
     /// Triangles the colour pass draws, at the levels of detail picked.
     pub triangles: u64,
+    /// The sun's shadow cascades drawn this frame: fewer than the frame
+    /// has when the far ones are drawn in turn.
+    pub cascades_drawn: u32,
     /// Batches of the colour pass: draws that share mesh, look (and,
     /// without bindless, maps) go in one.
     pub batches: u32,
@@ -5703,7 +5706,9 @@ impl Renderer {
         // same layers, and then everything is drawn again.
         let mut kept_cascades = [false; MAX_CASCADES];
         if !cascades.is_empty() {
-            let own = screen && self.shadow_stagger;
+            // Not while the Frame Debugger takes the frame apart: the
+            // same frame drawn again must list the same passes.
+            let own = screen && self.shadow_stagger && self.debugger.wanted.is_none();
             let fits = self.cascade_cache.as_ref().is_some_and(|c| {
                 c.settings == frame.shadows
                     && c.resolution == self.shadow_resolution
@@ -6862,6 +6867,9 @@ impl Renderer {
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
             if kept_cascades[cascade] {
                 continue;
+            }
+            if screen {
+                self.stats.cascades_drawn += 1;
             }
             let mark = crate::frame_debugger::mark();
             {
