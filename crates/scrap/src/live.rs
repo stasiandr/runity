@@ -490,7 +490,14 @@ impl LiveScene {
             .iter()
             .map(|(e, p)| (e, p.0.clone()))
             .collect();
-        if pending.is_empty() {
+        // Emitters too: an effect put down in a step (a Booooom) has no
+        // model of its own, only its particles' mesh and materials.
+        let emitters: Vec<(hecs::Entity, crate::AssetLink)> = world
+            .query::<(hecs::Entity, &crate::appearance::EmitterMeshPending)>()
+            .iter()
+            .map(|(e, p)| (e, p.0.clone()))
+            .collect();
+        if pending.is_empty() && emitters.is_empty() {
             return;
         }
         let library = self.library.as_ref();
@@ -502,6 +509,14 @@ impl LiveScene {
                 }
             }
             let _ = world.remove_one::<crate::appearance::MeshPending>(*entity);
+        }
+        for (entity, link) in &emitters {
+            if let Some(mesh) = resolve(link) {
+                if let Ok(mut emitting) = world.get::<&mut crate::particles::Emitting>(*entity) {
+                    emitting.mesh = mesh;
+                }
+            }
+            let _ = world.remove_one::<crate::appearance::EmitterMeshPending>(*entity);
         }
         drop(resolve);
         for problem in crate::world::upload_material_maps(world, self.library.as_ref(), gpu, renderer) {
