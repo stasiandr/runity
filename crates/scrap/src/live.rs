@@ -555,9 +555,17 @@ impl LiveScene {
                 .unwrap_or_default();
             return Err(format!("no prefab named `{name}` in prefabs/{hint}"));
         }
+        // Named as its prefab's root is, as Unity names what it
+        // instantiates: a prefab's file may be called apart from others
+        // (`Organic_MouseDefault`) while the thing is a `MouseDefault`.
+        let root_name = prefabs
+            .get(name)
+            .map(|p| p.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| name.to_string());
         let instance = crate::EntityDesc {
             id: crate::EntityId::fresh(),
-            name: name.to_string(),
+            name: root_name,
             prefab: name.into(),
             transform,
             ..crate::EntityDesc::default()
