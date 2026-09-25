@@ -291,6 +291,11 @@ pub struct Emitter {
     /// Unity's Stretched Billboard. Extra length per metre a second.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stretch: f32,
+    /// A streak left behind each as it goes, as long as it goes in this
+    /// many seconds of its own time, `size` wide: a spark's line of light.
+    /// Unity's Trails, the trail's lifetime times the particle's.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub trail: f32,
     /// They move with the emitter — a torch's flame follows the torch —
     /// instead of staying where they were given off. Unity's Simulation
     /// Space: Local.
@@ -356,8 +361,10 @@ pub struct Emitter {
     pub frames: (f32, f32),
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frames_random: bool,
-    /// Sizes times the entity's own scale in the world: a small emitter's
-    /// puffs are small. Unity's Scaling Mode Local and Hierarchy.
+    /// Sizes times the entity's own scale in the world — a small emitter's
+    /// puffs are small — and its speeds too, as its shape is: a small
+    /// emitter's sparks fly as far as it is big. Unity's Scaling Mode Local
+    /// and Hierarchy.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scaled: bool,
     /// Where they are born, in the entity's own axes: its origin when not

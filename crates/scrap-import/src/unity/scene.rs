@@ -177,6 +177,16 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
     // What hangs on a part of an instance rather than on the instance.
     let mut on_part: HashMap<i64, (i64, String)> = HashMap::new();
     // Every entity, and its parent entity.
+    // Each GameObject's RectTransform's size: a TextMeshPro's box.
+    let rect_size: HashMap<i64, [f32; 2]> = docs
+        .iter()
+        .filter(|d| d.class == RECT_TRANSFORM && !d.stripped)
+        .filter_map(|d| {
+            let go = d.body.reference("m_GameObject")?.file_id;
+            let s = &d.body["m_SizeDelta"];
+            Some((go, [s.f32("x")?, s.f32("y")?]))
+        })
+        .collect();
     let mut entities: BTreeMap<i64, EntityDesc> = BTreeMap::new();
     let mut parent: HashMap<i64, i64> = HashMap::new();
     let mut order: HashMap<i64, usize> = HashMap::new();
@@ -200,6 +210,10 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     desc.inactive = true;
                 }
                 for c in components.get(&d.file_id).into_iter().flatten() {
+                    if is_text_mesh_pro(c) {
+                        text_mesh_pro(&mut desc, &c.body, rect_size.get(&d.file_id).copied(), report);
+                        continue;
+                    }
                     component(&mut desc, c, &refs, report);
                 }
                 // A switched-off renderer draws nothing, and a mesh with no
@@ -291,7 +305,33 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         let Some(instance) = d.body.reference("m_PrefabInstance") else {
             continue;
         };
-        let added = components.get(&d.file_id).into_iter().flatten();
+        // What the prefab's part has already: a script added again beside
+        // its own is not the one that counts — Dacha's providers contribute
+        // only what is absent, and the prefab's comes first — so the
+        // prefab's stays (a heap's own drops, its burst of scrap with them).
+        let had: HashSet<String> = part_of_stripped(d.file_id)
+            .map(|(fid, guid)| {
+                let of = parts.of(unity, &guid, 0);
+                let key = of.keys.get(&fid).copied();
+                of.components
+                    .values()
+                    .filter(|(on, _)| Some(*on) == key)
+                    .map(|(_, name)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let added = components
+            .get(&d.file_id)
+            .into_iter()
+            .flatten()
+            .filter(|c| {
+                let again = c.kind == "MonoBehaviour" && removal(c, unity).is_some_and(|name| had.contains(&name));
+                if again {
+                    report.skip("a script added to a prefab's part that has one already (the prefab's kept)");
+                }
+                !again
+            })
+            .collect::<Vec<_>>();
         let part = part_of_stripped(d.file_id).and_then(|(fid, guid)| {
             let of = parts.of(unity, &guid, 0);
             of.keys.get(&fid).copied().filter(|k| Some(*k) != of.root)
@@ -1439,6 +1479,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             let Some(script) = b.reference("m_Script") else {
                 return;
             };
+            if is_text_mesh_pro(c) {
+                text_mesh_pro(desc, b, None, report);
+                return;
+            }
             let Some(path) = script.guid.as_deref().and_then(|g| refs.unity.guids.get(g)) else {
                 report.skip("a MonoBehaviour whose script is not in Assets/ (a package's)");
                 return;
@@ -1509,6 +1553,69 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             bind_custom(desc, refs.unity);
         }
         other => report.skip(other.to_string()),
+    }
+}
+
+/// TextMeshPro's world-space text component (the package's `TMPro.TextMeshPro`;
+/// not `TextMeshProUGUI`, a canvas's, which a game's own screens draw).
+const TEXT_MESH_PRO: &str = "9541d86e2fd84c1d9990edf0852d74ab";
+
+fn is_text_mesh_pro(c: &Doc) -> bool {
+    c.kind == "MonoBehaviour"
+        && c.body.reference("m_Script").and_then(|r| r.guid).as_deref() == Some(TEXT_MESH_PRO)
+}
+
+/// Words a TextMeshPro puts in the world, as a `text_mesh_pro` component:
+/// its text as written (rich-text tags and all), its font size (TMP's
+/// last fitted one when it sizes itself), its colour and — when its
+/// vertex gradient is on — the four corners' tints over it (top left,
+/// top right, bottom left, bottom right), its RectTransform's box (`None`
+/// when the line changes only the component, in an instance), its
+/// alignments as TMP numbers them and its margins (left, top, right,
+/// bottom). The package's code draws it in Unity, so the game draws it
+/// here; a switched-off one is not brought.
+fn text_mesh_pro(desc: &mut EntityDesc, b: &Yaml, size: Option<[f32; 2]>, report: &mut Report) {
+    if b.i64("m_Enabled") == Some(0) {
+        report.skip("a switched-off TextMeshPro");
+        return;
+    }
+    let text = match &b["m_text"] {
+        Yaml::String(s) | Yaml::Real(s) => s.clone(),
+        Yaml::Integer(i) => i.to_string(),
+        Yaml::Boolean(v) => v.to_string(),
+        _ => String::new(),
+    };
+    let color = b.color("m_fontColor").unwrap_or([1.0; 4]);
+    let gradient: Vec<[f32; 4]> = if b.i64("m_enableVertexGradient") == Some(1) {
+        let g = &b["m_fontColorGradient"];
+        ["topLeft", "topRight", "bottomLeft", "bottomRight"]
+            .iter()
+            .map(|k| g.color(k).unwrap_or([1.0; 4]))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let m = &b["m_margin"];
+    let margin = [m.f32("x"), m.f32("y"), m.f32("z"), m.f32("w")].map(|v| v.unwrap_or(0.0));
+    let f = |v: f32| format!("{v:?}");
+    let c4 = |c: [f32; 4]| format!("({}, {}, {}, {})", f(c[0]), f(c[1]), f(c[2]), f(c[3]));
+    let value = format!(
+        "(text: {}, fontSize: {}, color: {}, gradient: [{}], size: {}, horizontal: {}, vertical: {}, margin: {}, style: {})",
+        ron::to_string(&text).unwrap_or_else(|_| "\"\"".into()),
+        f(b.f32("m_fontSize").unwrap_or(36.0)),
+        c4(color),
+        gradient.into_iter().map(c4).collect::<Vec<_>>().join(", "),
+        size.map_or("None".into(), |s| format!("Some(({}, {}))", f(s[0]), f(s[1]))),
+        b.i64("m_HorizontalAlignment").unwrap_or(1),
+        b.i64("m_VerticalAlignment").unwrap_or(256),
+        c4(margin),
+        b.i64("m_fontStyle").unwrap_or(0),
+    );
+    match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
+        Ok(raw) => {
+            desc.components.insert("text_mesh_pro".into(), raw);
+        }
+        Err(_) => report.skip("a TextMeshPro whose text did not make RON"),
     }
 }
 
@@ -1910,10 +2017,22 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
         e.frames = (start + from, start + to);
         e.frames_random = random;
     }
+    // Trails, of particles: a streak behind each, as long as it goes in
+    // the trail's lifetime (a share of the particle's).
+    let trails = &b["TrailModule"];
+    if trails.i64("enabled") == Some(1) {
+        if trails.i64("mode").unwrap_or(0) == 0 {
+            e.trail = min_max_mean(&trails["lifetime"]).unwrap_or(1.0) * e.life;
+            if trails.f32("ratio").unwrap_or(1.0) < 0.5 {
+                report.skip("a ParticleSystem's trails on only some of its particles (brought on all)");
+            }
+        } else {
+            report.skip("a ParticleSystem's ribbon trails");
+        }
+    }
     for module in [
         "NoiseModule",
         "CollisionModule",
-        "TrailModule",
         "SubModule",
         "VelocityModule",
         "ForceModule",
@@ -2498,6 +2617,78 @@ ParticleSystemRenderer:
     }
 
     #[test]
+    fn a_models_root_draws_the_piece_its_mesh_is_elsewhere() {
+        // Dacha's multitool: the object `SM_Multitool_01` draws the mesh
+        // its art prefab `SM_Multitool_Body_01` draws — its body alone,
+        // not the whole model with every tool head in it.
+        let mut unity = unity();
+        unity.pieces.insert("tool".into(), vec!["Body".into(), "Fan".into(), "Head".into()]);
+        unity.mesh_pieces.insert(("g".into(), 868), "Body".into());
+        let mesh = |id| Ref { file_id: id, guid: Some("g".into()) };
+        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(868)), "tool@Body");
+        assert_eq!(piece_of(&unity, "tool".into(), "Fan (1)", &mesh(868)), "tool@Fan", "its own name first");
+        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(5)), "tool", "a mesh no prefab names: the whole");
+    }
+
+    #[test]
+    fn a_textmeshpro_in_the_world_keeps_its_words_box_and_colour() {
+        let text = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Label
+  m_IsActive: 1
+--- !u!224 &11
+RectTransform:
+  m_GameObject: {fileID: 10}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_AnchoredPosition: {x: 0, y: 0}
+  m_SizeDelta: {x: 20, y: 5}
+--- !u!114 &12
+MonoBehaviour:
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: 9541d86e2fd84c1d9990edf0852d74ab, type: 3}
+  m_Name: 
+  m_text: \"\\u041F\\u0438\\u043B\\u0430\"
+  m_fontColor: {r: 0, g: 1, b: 0.5, a: 1}
+  m_enableVertexGradient: 0
+  m_fontSize: 37.5
+  m_HorizontalAlignment: 2
+  m_VerticalAlignment: 512
+  m_margin: {x: 0, y: 0, z: 0, w: 0}
+--- !u!1 &20
+GameObject:
+  m_Name: Count
+  m_IsActive: 1
+--- !u!224 &21
+RectTransform:
+  m_GameObject: {fileID: 20}
+  m_Father: {fileID: 0}
+  m_SizeDelta: {x: 4, y: 2}
+--- !u!114 &22
+MonoBehaviour:
+  m_GameObject: {fileID: 20}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: 9541d86e2fd84c1d9990edf0852d74ab, type: 3}
+  m_text: 321
+  m_fontSize: 10
+";
+        let mut report = Report::default();
+        let lines = convert_file(&unity(), text, &mut report);
+        let label = lines.iter().find(|l| l.name == "Label").unwrap();
+        let tmp = label.components.get("text_mesh_pro").expect("the text brought").get_ron().to_string();
+        assert!(tmp.contains("text: \"Пила\""), "{tmp}");
+        assert!(tmp.contains("fontSize: 37.5") && tmp.contains("size: Some((20.0, 5.0))"), "{tmp}");
+        assert!(tmp.contains("color: (0.0, 1.0, 0.5, 1.0)") && tmp.contains("horizontal: 2"), "{tmp}");
+        let count = lines.iter().find(|l| l.name == "Count").unwrap();
+        let tmp = count.components.get("text_mesh_pro").unwrap().get_ron().to_string();
+        assert!(tmp.contains("text: \"321\""), "a number's words are words: {tmp}");
+    }
+
+    #[test]
     fn a_scriptable_object_becomes_data() {
         let text = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_Script: {fileID: 11500000, guid: sss, type: 3}\n  m_Name: GardenSoil\n  graphName: garden_soil\n  nodes:\n  - prefab: {fileID: 100, guid: ppp, type: 3}\n    branches:\n    - condition: 2\n      requires: [seeds]\n";
         let (script, body) = data_asset(&unity(), text).unwrap();
@@ -2507,6 +2698,65 @@ ParticleSystemRenderer:
         assert!(body.contains("condition: 2"), "{body}");
         assert!(!body.contains("m_Name"), "{body}");
         assert!(data_asset(&unity(), "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n  m_ObjectHideFlags: 0\n").is_none());
+    }
+
+    #[test]
+    fn a_script_added_again_to_an_instance_leaves_the_prefabs_own() {
+        let dir = std::env::temp_dir().join(format!("scrap-again-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heap = dir.join("Heap.prefab");
+        std::fs::write(
+            &heap,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Heap
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!114 &102
+MonoBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 2
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("hhh".into(), heap);
+        unity.names.insert("hhh".into(), "Heap".into());
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 100, guid: hhh, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 903}
+  m_SourcePrefab: {fileID: 100100000, guid: hhh, type: 3}
+--- !u!1 &902 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 100, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &903
+MonoBehaviour:
+  m_GameObject: {fileID: 902}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 1
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(roots[0].components.get("door").is_none(), "the prefab's own door counts: {:?}", roots[0].components);
     }
 
     #[test]
@@ -2600,20 +2850,6 @@ Transform:
             }
             other => panic!("{other:?}"),
         }
-    }
-
-    #[test]
-    fn a_models_root_draws_the_piece_its_mesh_is_elsewhere() {
-        // Dacha's multitool: the object `SM_Multitool_01` draws the mesh
-        // its art prefab `SM_Multitool_Body_01` draws — its body alone,
-        // not the whole model with every tool head in it.
-        let mut unity = unity();
-        unity.pieces.insert("tool".into(), vec!["Body".into(), "Fan".into(), "Head".into()]);
-        unity.mesh_pieces.insert(("g".into(), 868), "Body".into());
-        let mesh = |id| Ref { file_id: id, guid: Some("g".into()) };
-        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(868)), "tool@Body");
-        assert_eq!(piece_of(&unity, "tool".into(), "Fan (1)", &mesh(868)), "tool@Fan", "its own name first");
-        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(5)), "tool", "a mesh no prefab names: the whole");
     }
 
     #[test]
