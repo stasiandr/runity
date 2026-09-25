@@ -96,10 +96,8 @@ fn condition(c: &Yaml, kinds: &HashMap<String, i64>) -> Option<Condition> {
         2 => Condition::Not(parameter),
         3 => Condition::Above(parameter, threshold),
         4 => Condition::Below(parameter, threshold),
-        6 => {
-            // Equal to an integer: between it and the next one.
-            return Some(Condition::Above(parameter, threshold - 0.5));
-        }
+        6 => Condition::Equals(parameter, threshold),
+        7 => Condition::NotEquals(parameter, threshold),
         _ => return None,
     })
 }
