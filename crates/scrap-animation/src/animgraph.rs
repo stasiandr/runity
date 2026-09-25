@@ -867,7 +867,7 @@ impl Controller {
     /// the parameter's value now: below the first is all the first, above
     /// the last all the last.
     fn mix(&self, state: &State, animator: &Animator) -> Option<(usize, usize, f32)> {
-        let index = |name: &str| animator.clips.iter().position(|c| c.name == name);
+        let index = |name: &str| animator.clip_named(name);
         let value = self.param(&state.blend_by);
         let points = &state.blend;
         let (first, last) = (points.first()?, points.last()?);
@@ -893,7 +893,7 @@ impl Controller {
         state: &State,
         animator: &Animator,
     ) -> Option<(usize, usize, f32, Option<(usize, f32)>)> {
-        let index = |clip: &str| animator.clips.iter().position(|c| c.name == clip);
+        let index = |clip: &str| animator.clip_named(clip);
         let q = glam::Vec2::new(self.param(&state.blend_by), self.param(&state.blend_by_y));
         let points: Vec<(glam::Vec2, usize)> = state
             .directional
@@ -1027,12 +1027,18 @@ impl Controller {
             {
                 animator.stop(*fade);
             } else if let Some(state) = self.graph.states.get(name) {
-                if let Some(clip) = animator.clips.iter().position(|c| c.name == state.clip) {
+                if let Some(clip) = animator.clip_named(&state.clip) {
                     if state.looping {
                         animator.play(clip, *fade);
                     } else {
                         animator.play_once(clip, *fade);
                     }
+                } else if !self.is_layer {
+                    // A state with nothing to play: Unity's with no motion,
+                    // which gives nothing to the blend — the pose before it
+                    // holds through the fade, then the joints are back at
+                    // their defaults (Write Defaults).
+                    animator.stop(*fade);
                 }
             }
             self.state = Some(name.clone());

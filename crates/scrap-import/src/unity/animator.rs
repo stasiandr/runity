@@ -79,9 +79,150 @@ fn clip_name(
                 pending = None;
             }
         }
+        // A take the `.meta` does not name — no `clipAnimations`, an empty
+        // table: Unity names it by the take and gives it the fileID its
+        // name hashes to.
+        for take in fbx_takes(path) {
+            let id = unity_file_id("AnimationClip", &take);
+            let name = if take == "mixamo.com" { model.clone() } else { take };
+            out.entry(id).or_insert(name);
+        }
         out
     });
     table.get(&r.file_id).cloned()
+}
+
+/// Whether a model's clip loops: its `clipAnimations` entry's Loop Time.
+/// A take the `.meta` does not list plays once, as Unity imports it.
+fn model_clip_loops(unity: &Unity, r: &yaml::Ref) -> bool {
+    let Some(path) = r.guid.as_ref().and_then(|g| unity.guids.get(g)) else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(super::meta_of(path)) else {
+        return false;
+    };
+    let mut this = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(id) = line.strip_prefix("internalID:") {
+            this = id.trim().parse::<i64>().ok() == Some(r.file_id);
+        } else if let Some(v) = line.strip_prefix("loopTime:").filter(|_| this) {
+            return v.trim() == "1";
+        }
+    }
+    false
+}
+
+/// The takes (animation stacks) an FBX file holds, by name: a binary file's
+/// `Name\0\x01AnimStack` strings, an ASCII one's `"AnimStack::Name"`.
+fn fbx_takes(path: &Path) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let mut takes: Vec<String> = Vec::new();
+    let mut add = |name: &[u8]| {
+        if let Ok(name) = std::str::from_utf8(name) {
+            if !name.is_empty() && !takes.iter().any(|t| t == name) {
+                takes.push(name.to_string());
+            }
+        }
+    };
+    let binary_tail = b"\x00\x01AnimStack";
+    let ascii_head = b"\"AnimStack::";
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(binary_tail) {
+            // Back to the string's `S` and length: the name is what lies
+            // between them and here.
+            let end = i + binary_tail.len();
+            let start = (0..i.saturating_sub(4)).rev().take(1024).find(|&j| {
+                bytes[j] == b'S'
+                    && u32::from_le_bytes([bytes[j + 1], bytes[j + 2], bytes[j + 3], bytes[j + 4]])
+                        as usize
+                        == end - (j + 5)
+            });
+            if let Some(j) = start {
+                add(&bytes[j + 5..i]);
+            }
+            i = end;
+        } else if bytes[i..].starts_with(ascii_head) {
+            let from = i + ascii_head.len();
+            if let Some(len) = bytes[from..].iter().position(|b| *b == b'"') {
+                add(&bytes[from..from + len]);
+            }
+            i = from;
+        } else {
+            i += 1;
+        }
+    }
+    takes
+}
+
+/// The fileID Unity gives an object a model importer makes of a class and
+/// a name it does not list: xxHash64 of `Type:<class>-><name>0`.
+fn unity_file_id(class: &str, name: &str) -> i64 {
+    xxh64(format!("Type:{class}->{name}0").as_bytes()) as i64
+}
+
+/// xxHash64, seed 0.
+fn xxh64(input: &[u8]) -> u64 {
+    const P1: u64 = 11400714785074694791;
+    const P2: u64 = 14029467366897019727;
+    const P3: u64 = 1609587929392839161;
+    const P4: u64 = 9650029242287828579;
+    const P5: u64 = 2870177450012600261;
+    let round = |acc: u64, lane: u64| {
+        acc.wrapping_add(lane.wrapping_mul(P2))
+            .rotate_left(31)
+            .wrapping_mul(P1)
+    };
+    let merge = |acc: u64, v: u64| (acc ^ round(0, v)).wrapping_mul(P1).wrapping_add(P4);
+    let u64_at = |i: usize| u64::from_le_bytes(input[i..i + 8].try_into().unwrap());
+    let n = input.len();
+    let mut i = 0;
+    let mut h = if n >= 32 {
+        let mut v = [
+            P1.wrapping_add(P2),
+            P2,
+            0,
+            0u64.wrapping_sub(P1),
+        ];
+        while i + 32 <= n {
+            for (k, lane) in v.iter_mut().enumerate() {
+                *lane = round(*lane, u64_at(i + 8 * k));
+            }
+            i += 32;
+        }
+        let mut h = v[0]
+            .rotate_left(1)
+            .wrapping_add(v[1].rotate_left(7))
+            .wrapping_add(v[2].rotate_left(12))
+            .wrapping_add(v[3].rotate_left(18));
+        for lane in v {
+            h = merge(h, lane);
+        }
+        h
+    } else {
+        P5
+    };
+    h = h.wrapping_add(n as u64);
+    while i + 8 <= n {
+        h = (h ^ round(0, u64_at(i))).rotate_left(27).wrapping_mul(P1).wrapping_add(P4);
+        i += 8;
+    }
+    if i + 4 <= n {
+        let w = u32::from_le_bytes(input[i..i + 4].try_into().unwrap()) as u64;
+        h = (h ^ w.wrapping_mul(P1)).rotate_left(23).wrapping_mul(P2).wrapping_add(P3);
+        i += 4;
+    }
+    while i < n {
+        h = (h ^ (input[i] as u64).wrapping_mul(P5)).rotate_left(11).wrapping_mul(P1);
+        i += 1;
+    }
+    h ^= h >> 33;
+    h = h.wrapping_mul(P2);
+    h ^= h >> 29;
+    h = h.wrapping_mul(P3);
+    h ^ (h >> 32)
 }
 
 fn condition(c: &Yaml, kinds: &HashMap<String, i64>) -> Option<Condition> {
@@ -205,6 +346,9 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
                     .filter(|p| p.extension().is_some_and(|e| e == "anim"));
                 if let Some(text) = anim.and_then(|p| std::fs::read_to_string(p).ok()) {
                     out.looping = !text.contains("m_LoopTime: 0");
+                } else if anim.is_none() {
+                    // A model's clip: its import settings' Loop Time.
+                    out.looping = model_clip_loops(unity, &m);
                 }
             }
         }
@@ -369,6 +513,69 @@ AnimatorStateTransition:
             clip_name(&unity, &clip(7), &mut cache).as_deref(),
             Some("Wave")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A model whose `.meta` lists no clips: each take is named by itself
+    /// and found by the fileID Unity hashes its name to (Dacha's hand,
+    /// `SKM_Hand_01_Grab`, whose Grab state plays -4673120959766696371);
+    /// and it plays once, as Unity imports a take it is told nothing of.
+    #[test]
+    fn a_models_unlisted_take_is_found_by_unitys_hash_of_its_name() {
+        assert_eq!(unity_file_id("AnimationClip", "Armature|Armature|Grab|BaseLayer"), -4673120959766696371);
+        assert_eq!(unity_file_id("AnimationClip", "Armature|Armature|Point|BaseLayer"), -2317691810437224117);
+        let dir = std::env::temp_dir().join(format!("scrap-unity-take-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A binary FBX's stack: `S`, the length, `Name\0\x01AnimStack`.
+        let mut fbx = b"Kaydara FBX Binary  \0junk".to_vec();
+        for take in ["Armature|Armature|Grab|BaseLayer", "Armature|Armature|Point|BaseLayer"] {
+            let name = format!("{take}\0\x01AnimStack");
+            fbx.push(b'S');
+            fbx.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            fbx.extend_from_slice(name.as_bytes());
+            fbx.extend_from_slice(b"S\x09\0\0\0AnimStack");
+        }
+        std::fs::write(dir.join("Hand.fbx"), &fbx).unwrap();
+        std::fs::write(dir.join("Hand.fbx.meta"), "ModelImporter:\n  internalIDToNameTable: []\n  animations:\n    clipAnimations: []\n").unwrap();
+        let unity = Unity {
+            pieces: Default::default(),
+            mesh_pieces: Default::default(),
+            declared_params: Default::default(),
+            layers: Default::default(),
+            root: dir.clone(),
+            guids: [("hand".to_string(), dir.join("Hand.fbx"))].into_iter().collect(),
+            names: Default::default(),
+        };
+        let mut cache = HashMap::new();
+        let clip = |id| yaml::Ref { file_id: id, guid: Some("hand".into()) };
+        assert_eq!(clip_name(&unity, &clip(-4673120959766696371), &mut cache).as_deref(), Some("Armature|Armature|Grab|BaseLayer"));
+        assert_eq!(clip_name(&unity, &clip(-2317691810437224117), &mut cache).as_deref(), Some("Armature|Armature|Point|BaseLayer"));
+        assert!(!model_clip_loops(&unity, &clip(-4673120959766696371)), "a take plays once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A clip the model's `.meta` lists loops as its Loop Time says.
+    #[test]
+    fn a_listed_model_clip_loops_as_its_loop_time_says() {
+        let dir = std::env::temp_dir().join(format!("scrap-unity-loop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Run.fbx.meta"),
+            "ModelImporter:\n  animations:\n    clipAnimations:\n    - name: Run\n      internalID: 5\n      loopTime: 1\n    - name: Jump\n      internalID: 6\n      loopTime: 0\n",
+        )
+        .unwrap();
+        let unity = Unity {
+            pieces: Default::default(),
+            mesh_pieces: Default::default(),
+            declared_params: Default::default(),
+            layers: Default::default(),
+            root: dir.clone(),
+            guids: [("run".to_string(), dir.join("Run.fbx"))].into_iter().collect(),
+            names: Default::default(),
+        };
+        let clip = |id| yaml::Ref { file_id: id, guid: Some("run".into()) };
+        assert!(model_clip_loops(&unity, &clip(5)));
+        assert!(!model_clip_loops(&unity, &clip(6)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
