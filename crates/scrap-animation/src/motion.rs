@@ -164,6 +164,15 @@ pub struct Moving {
     defaults: Vec<(hecs::Entity, Property, f32)>,
 }
 
+impl Moving {
+    /// The clip playing now, by name: what Unity's
+    /// `GetCurrentAnimatorClipInfo` says of an animator.
+    pub fn playing_clip(&self) -> Option<&str> {
+        let playing = self.animator.playing()?;
+        self.animator.clips.get(playing.clip).map(|c| c.name.as_str())
+    }
+}
+
 impl std::fmt::Debug for Moving {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Moving")
