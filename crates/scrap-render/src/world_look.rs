@@ -120,17 +120,20 @@ impl WorldUi {
     }
 }
 
+/// Drawn only by the cameras that draw into pictures — a mirror's — and
+/// never on the screen: what a first-person player is of themselves, their
+/// body, which the mirror shows and their own eyes do not. Unity's layer
+/// that the main camera's culling mask leaves out (Dacha's `OwnBody`).
+/// On each thing so drawn, as Unity's layer is on each renderer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PicturesOnly;
+
 /// A camera drawing into a picture, from its line's `render_texture`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToTexture(pub crate::scene::RenderTexture);
 
-/// A camera drawing into a picture: where it looks from, which picture,
-/// and the mirror's plane (a point on it and the way it faces) if it is one.
-type PictureCamera = (
-    Camera,
-    crate::scene::RenderTexture,
-    Option<(glam::Vec3, glam::Vec3)>,
-);
+/// A camera drawing into a picture: where it looks from, and which picture.
+type PictureCamera = (Camera, crate::scene::RenderTexture);
 
 /// Every camera that draws into a picture, as a frame of its own: what
 /// [`scene_frame`] puts on a frame for materials to show.
@@ -146,45 +149,43 @@ pub fn texture_views(
         .iter()
         .filter_map(|(lens, placed, picture)| {
             if picture.0.mirror {
-                let (_, turn, at) = placed.0.to_scale_rotation_translation();
-                let normal = (turn * glam::Vec3::Y).normalize();
-                Some((
-                    reflected(main, at, normal),
-                    picture.0.clone(),
-                    Some((at, normal)),
-                ))
+                // Its facing axis through the whole placement, scale and
+                // all: a mirror scaled flat on the other two keeps its glass.
+                let at = placed.0.w_axis.truncate();
+                let normal = placed.0.inverse().transpose().transform_vector3(picture.0.facing);
+                let normal = normal.try_normalize()?;
+                Some((reflected(main, at, normal), picture.0.clone()))
             } else {
-                lens.map(|l| (lens_camera(l.0, placed.0), picture.0.clone(), None))
+                lens.map(|l| (lens_camera(l.0, placed.0), picture.0.clone()))
             }
         })
         .collect();
     cameras
         .into_iter()
-        .map(|(camera, picture, plane)| {
-            let mut hidden: std::collections::HashSet<crate::id::EntityId> = world
+        .map(|(camera, picture)| {
+            let plane_mirror = picture.mirror;
+            let hidden: std::collections::HashSet<crate::id::EntityId> = world
                 .query::<(&Layer, &SceneId)>()
                 .iter()
                 .filter(|(layer, _)| picture.hide.contains(&layer.0))
                 .map(|(_, id)| id.0)
                 .collect();
-            // What is behind a mirror is not in it.
-            if let Some((at, normal)) = plane {
-                hidden.extend(
-                    world
-                        .query::<(&WorldTransform, &SceneId)>()
-                        .iter()
-                        .filter(|(p, _)| (p.0.w_axis.truncate() - at).dot(normal) < -0.05)
-                        .map(|(_, id)| id.0),
-                );
-            }
-            let mut frame = build_frame_where(
+            let mut frame = build_frame_seen(
                 world,
                 camera,
                 scene_lighting(&scene.sun()),
                 scene_fog(&scene.fog()),
                 |line| line.is_none_or(|id| !hidden.contains(&id)),
+                false,
             );
             scene_look(&mut frame, scene);
+            // The picture as lit, not graded: the screen's camera grades
+            // it, with the rest of its frame, when it shows it. Unity's
+            // reflection camera renders with post-processing off (a new
+            // camera's), so the mirror is not tonemapped twice.
+            if plane_mirror {
+                frame.post = crate::post::PostProcess::OFF;
+            }
             frame.post.motion_blur = Default::default();
             crate::render::TextureView {
                 id: crate::asset::AssetId::render_target(&picture.name),
@@ -622,14 +623,18 @@ pub fn camera_of(world: &World) -> Option<Camera> {
 
 /// A camera reflected in the plane through `at` facing `normal`: what a
 /// mirror there shows, left and right swapped (the mirror's material
-/// swaps them back, [`crate::material::ScreenMap::Mirror`]).
+/// swaps them back, [`crate::material::ScreenMap::Mirror`]). Its near
+/// plane is the mirror's, a centimetre out (Dacha's `clipOffset`): what
+/// stands behind the glass — the wall it hangs on — is not in it.
 pub fn reflected(camera: Camera, at: glam::Vec3, normal: glam::Vec3) -> Camera {
+    const CLIP_OFFSET: f32 = 0.01;
     let point = |p: glam::Vec3| p - 2.0 * (p - at).dot(normal) * normal;
     let direction = |d: glam::Vec3| d - 2.0 * d.dot(normal) * normal;
     Camera {
         position: point(camera.position),
         target: point(camera.target),
         up: direction(camera.up),
+        clip: Some(normal.extend(-normal.dot(at) - CLIP_OFFSET)),
         ..camera
     }
 }
@@ -660,10 +665,26 @@ pub fn build_frame_where(
     fog: FogSettings,
     keep: impl Fn(Option<crate::id::EntityId>) -> bool,
 ) -> Frame {
+    build_frame_seen(world, camera, lighting, fog, keep, true)
+}
+
+/// [`build_frame_where`] for the screen, or for a camera's picture, which
+/// also draws what is [`PicturesOnly`].
+fn build_frame_seen(
+    world: &World,
+    camera: Camera,
+    lighting: Lighting,
+    fog: FogSettings,
+    keep: impl Fn(Option<crate::id::EntityId>) -> bool,
+    screen: bool,
+) -> Frame {
     // What is switched off, itself or by a parent, is not in the picture —
     // what a scene placed and what the game spawned (which has no line)
     // alike.
-    let off: std::collections::HashSet<hecs::Entity> = inactive_in_hierarchy(world);
+    let mut off: std::collections::HashSet<hecs::Entity> = inactive_in_hierarchy(world);
+    if screen {
+        off.extend(world.query::<(hecs::Entity, &PicturesOnly)>().iter().map(|(e, _)| e));
+    }
     let on = |entity: hecs::Entity| !off.contains(&entity);
     let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();

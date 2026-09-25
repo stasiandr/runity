@@ -189,12 +189,25 @@ pub struct RenderTexture {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
-    /// A planar mirror instead: the entity's plane (its up the way it
-    /// faces) reflects what the screen's camera sees, no `camera` of its
-    /// own needed; its material shows the picture with `screen_map:
-    /// Mirror`. What is behind the plane is left out.
+    /// A planar mirror instead: the entity's plane (facing `facing`)
+    /// reflects what the screen's camera sees, no `camera` of its own
+    /// needed; its material shows the picture with `screen_map: Mirror`.
+    /// What is behind the plane is clipped away, a pixel at a time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mirror: bool,
+    /// Which of its own axes a mirror's glass looks along: its up, or
+    /// `(0.0, 0.0, 1.0)` for Unity's Quad (its −z, the scene mirrored) —
+    /// Dacha's `PlanarReflectionMirror.facing`.
+    #[serde(default = "up_axis", skip_serializing_if = "is_up_axis")]
+    pub facing: Vec3,
+}
+
+fn up_axis() -> Vec3 {
+    Vec3::Y
+}
+
+fn is_up_axis(v: &Vec3) -> bool {
+    *v == Vec3::Y
 }
 
 /// A place that looks different — the cellar darker and greener, the

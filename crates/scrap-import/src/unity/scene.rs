@@ -1497,10 +1497,22 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             // Dacha's planar mirror: scrap's own, a camera reflected in
             // the plane the mirror's material shows.
             if super::stem(path) == "PlanarReflectionMirror" {
+                // Which local axis its glass looks along (its `facing`:
+                // Back, Forward, Up, Down, Right, Left), z mirrored as
+                // the scene is: Back, −z, right for Unity's Quad, is +z.
+                let facing = match b.i64("facing").unwrap_or(0) {
+                    1 => Vec3::NEG_Z,
+                    2 => Vec3::Y,
+                    3 => Vec3::NEG_Y,
+                    4 => Vec3::X,
+                    5 => Vec3::NEG_X,
+                    _ => Vec3::Z,
+                };
                 desc.set_part(&scrap::scene::RenderTexture {
                     name: "mirror".into(),
                     hide: Vec::new(),
                     mirror: true,
+                    facing,
                 });
                 return;
             }

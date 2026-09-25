@@ -105,6 +105,12 @@ pub struct Camera {
     /// with no vanishing point: Unity's orthographic camera and the Scene
     /// view's axis views.
     pub ortho: Option<f32>,
+    /// A plane in the world, `(normal, d)` with `normal · p + d = 0` on
+    /// it, that is the near plane instead: what is on its far side (where
+    /// the sum is below zero) is not drawn. A mirror's camera, which must
+    /// not see what stands behind the glass — Unity's oblique projection
+    /// (`Camera.CalculateObliqueMatrix`). Perspective cameras only.
+    pub clip: Option<glam::Vec4>,
 }
 
 impl Default for Camera {
@@ -117,6 +123,7 @@ impl Default for Camera {
             near: 0.1,
             far: 500.0,
             ortho: None,
+            clip: None,
         }
     }
 }
@@ -142,7 +149,11 @@ impl Camera {
                 Mat4::perspective_rh(self.fov_y_degrees.to_radians(), aspect, self.near, self.far)
             }
         };
-        projection * Mat4::look_at_rh(self.position, self.target, self.up)
+        let view = Mat4::look_at_rh(self.position, self.target, self.up);
+        match self.clip {
+            Some(plane) if self.ortho.is_none() => oblique(projection, view, plane) * view,
+            _ => projection * view,
+        }
     }
 
     /// How far away a point looks: its distance, or with an orthographic
@@ -197,9 +208,54 @@ impl Camera {
     }
 }
 
+/// `projection` with its near plane swapped for `plane` (world space;
+/// what is kept on its positive side), Lengyel's oblique frustum for
+/// depth from 0 to 1: the far plane tilts to meet it, depth still grows
+/// along every ray.
+fn oblique(projection: Mat4, view: Mat4, plane: glam::Vec4) -> Mat4 {
+    // The plane as the camera sees it: planes go by the inverse transpose.
+    let c = view.inverse().transpose() * plane;
+    // The corner of the frustum farthest from it, in the camera's space.
+    let q = projection.inverse()
+        * glam::Vec4::new(c.x.signum(), c.y.signum(), 1.0, 1.0);
+    let along = c.dot(q);
+    // The camera on the kept side, or edge on: nothing sensible to clip.
+    if plane.dot(view.inverse().w_axis) >= 0.0 || along.abs() < 1e-8 {
+        return projection;
+    }
+    let mut rows = projection.transpose();
+    rows.z_axis = c * (1.0 / along);
+    rows.transpose()
+}
+
 #[cfg(test)]
 mod camera_tests {
     use super::*;
+
+    #[test]
+    fn a_clip_plane_is_the_near_plane_and_depth_still_grows() {
+        // Looking down −z from the origin; the plane z = −2 facing away.
+        let camera = Camera {
+            position: Vec3::ZERO,
+            target: Vec3::NEG_Z,
+            clip: Some(glam::Vec4::new(0.0, 0.0, -1.0, -2.0)),
+            ..Camera::default()
+        };
+        let m = camera.view_projection(1.0);
+        let depth = |p: Vec3| {
+            let c = m * p.extend(1.0);
+            c.z / c.w
+        };
+        assert!(depth(Vec3::new(0.0, 0.0, -1.0)) < 0.0, "before the plane: clipped");
+        assert!(depth(Vec3::new(0.5, 0.2, -1.9)) < 0.0, "just before it: clipped");
+        let (a, b) = (depth(Vec3::new(0.0, 0.0, -3.0)), depth(Vec3::new(0.0, 0.0, -30.0)));
+        assert!(a >= 0.0 && a < b && b <= 1.0, "past it: drawn, nearer first ({a}, {b})");
+        // Where it lands on the screen is not changed.
+        let plain = Camera { clip: None, ..camera }.view_projection(1.0);
+        let p = Vec3::new(1.0, 0.5, -5.0);
+        let (c, d) = (m * p.extend(1.0), plain * p.extend(1.0));
+        assert!((c.x / c.w - d.x / d.w).abs() < 1e-5 && (c.y / c.w - d.y / d.w).abs() < 1e-5);
+    }
 
     #[test]
     fn an_orthographic_camera_casts_parallel_rays_and_keeps_sizes() {
