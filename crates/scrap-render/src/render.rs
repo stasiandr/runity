@@ -1375,6 +1375,10 @@ pub struct Renderer {
     /// ([`crate::lean`]), and the shader modules they are built from: the
     /// standard one's (`None`) and each material shader's.
     lean: crate::lean::Lean<Look>,
+    /// Unlit see-through things at half size ([`crate::lowres`]).
+    lowres: crate::lowres::LowRes,
+    /// Whether the last screen frame used it.
+    lowres_drawn: bool,
     lean_modules: std::collections::HashMap<Option<crate::asset::AssetId>, wgpu::ShaderModule>,
     /// Meshes' and textures' names from their assets, for the debugger to
     /// call a draw by.
@@ -3485,6 +3489,8 @@ impl Renderer {
             timer: None,
             debugger: Default::default(),
             lean: Default::default(),
+            lowres: crate::lowres::LowRes::new(gpu),
+            lowres_drawn: false,
             lean_modules: [(None, shader.clone())].into_iter().collect(),
             mesh_names: Default::default(),
             texture_names: Default::default(),
@@ -4848,6 +4854,20 @@ impl Renderer {
     /// it off).
     pub fn set_lean_shaders(&mut self, on: bool) {
         self.lean.enabled = on;
+    }
+
+    /// Draw unlit see-through things — smoke, dust, glows — at half size
+    /// and lay them over the picture ([`crate::lowres`]) where the frame
+    /// allows, or always at full size: on by default
+    /// (`SCRAP_HALF_PARTICLES=0` starts it off).
+    pub fn set_half_size_particles(&mut self, on: bool) {
+        self.lowres.enabled = on;
+    }
+
+    /// Whether the last screen frame drew its unlit see-through things at
+    /// half size. For tests and tools.
+    pub fn halved_particles(&self) -> bool {
+        self.lowres_drawn
     }
 
     /// How many of the last frame's lit pipelines were lean ones in: 0 when
@@ -7215,6 +7235,19 @@ impl Renderer {
             );
         }
         self.depth_prepassed = reuse_depth;
+        // Unlit see-through things at half size, where it is the same
+        // picture (crate::lowres).
+        let halved = self.lowres.enabled
+            && screen
+            && self.samples == 1
+            && prepass_drawn
+            && !volumetric.enabled
+            && !dust_on
+            && !local_dust
+            && transparent.iter().any(|t| halved_look(t.1));
+        if screen {
+            self.lowres_drawn = halved;
+        }
         let scene_mark = crate::frame_debugger::mark();
         {
             // A probe's face is drawn straight into its layer.
@@ -7281,7 +7314,9 @@ impl Renderer {
                 {
                     run += 1;
                 }
-                self.draw_run(&mut pass, *look, *mesh, *texture, *pose, instance, run as u32, false);
+                if !(halved && halved_look(*look)) {
+                    self.draw_run(&mut pass, *look, *mesh, *texture, *pose, instance, run as u32, false);
+                }
                 instance += run as u32;
                 i += run;
             }
@@ -7306,6 +7341,35 @@ impl Renderer {
             }
         }
         self.depth_prepassed = false;
+        if halved {
+            self.lowres.prepare(gpu, (width, height));
+            let low_mark = crate::frame_debugger::mark();
+            {
+                let mut pass = self.lowres.begin(gpu, &mut encoder, &self.ssao.depth);
+                let mut instance = shadow_total + batched_total + singles.len() as u32;
+                let mut i = 0;
+                while i < transparent.len() {
+                    let (_, look, mesh, texture, pose, _) = &transparent[i];
+                    let mut run = 1;
+                    while !look.skinned
+                        && transparent.get(i + run).is_some_and(|(_, l, m, t, _, _)| l == look && m == mesh && t == texture)
+                    {
+                        run += 1;
+                    }
+                    if halved_look(*look) {
+                        self.draw_run(&mut pass, *look, *mesh, *texture, *pose, instance, run as u32, false);
+                    }
+                    instance += run as u32;
+                    i += run;
+                }
+            }
+            if debugged {
+                if let Some(low) = self.lowres.picture() {
+                    self.debugger.snapshot(gpu, &mut encoder, low_mark, crate::frame_debugger::Source::Hdr(low));
+                }
+            }
+            self.lowres.lay_over(gpu, &mut encoder, &self.scene.resolved, &self.ssao.depth);
+        }
         if debugged {
             self.debugger.snapshot(gpu, &mut encoder, scene_mark, crate::frame_debugger::Source::Hdr(&self.scene.resolved));
         }
@@ -7708,6 +7772,13 @@ fn caster_cascades(bounds: crate::asset::Bounds, transform: Mat4, cascades: &[(M
         }
     }
     mask
+}
+
+/// Whether a see-through look is drawn at half size when the frame allows
+/// (crate::lowres): unlit, not multiplying what is behind it, not drawn
+/// over everything, not skinned.
+fn halved_look(look: Look) -> bool {
+    look.unlit && look.blend.is_some_and(|b| b != Blend::Multiply) && !look.on_top && !look.skinned
 }
 
 /// Whether a frame may be drawn by the lean shaders (`LEAN`, render.wgsl):
