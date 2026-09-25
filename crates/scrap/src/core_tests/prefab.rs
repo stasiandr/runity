@@ -286,6 +286,68 @@
     }
 
     #[test]
+    fn a_link_to_a_part_of_a_prefab_inside_a_prefab_names_it_by_its_key() {
+        // A shed's lamp watches its door's hinge, and a scene's bell the
+        // same hinge in the shed it placed: each names the hinge by the key
+        // an override would — the door's instance within the hinge's own,
+        // and in the scene that within the shed's — as Unity's importer
+        // writes them (a vending machine's screen's labels). Expanded, each
+        // is the hinge.
+        let d1: EntityId = "00000000000000d1".parse().unwrap();
+        let e1: EntityId = "00000000000000e1".parse().unwrap();
+        let f0: EntityId = "00000000000000f0".parse().unwrap();
+        let mut prefabs = Prefabs::new();
+        prefabs.insert(
+            "door",
+            ron::from_str(
+                r#"(id: "00000000000000d0", name: "door", model: "", children: [
+                    (id: "00000000000000d1", name: "hinge", model: ""),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        prefabs.insert(
+            "shed",
+            ron::from_str(&format!(
+                r#"(id: "00000000000000e0", name: "shed", model: "", children: [
+                    (id: "00000000000000e1", name: "door", model: "", prefab: "door"),
+                    (id: "00000000000000e2", name: "lamp", model: "", components: {{
+                        "lamp": (watches: EntityRef("{}")),
+                    }}),
+                ])"#,
+                e1.within(d1)
+            ))
+            .unwrap(),
+        );
+        let scene = parse(&format!(
+            r#"(entities: [
+                (id: "00000000000000f0", name: "shed", model: "", prefab: "shed"),
+                (id: "00000000000000f1", name: "bell", model: "", components: {{
+                    "bell": (rings: EntityRef("{}")),
+                }}),
+            ])"#,
+            f0.within(e1.within(d1))
+        ));
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        assert!(done.scene.broken_links().is_empty(), "{:?}", done.scene.broken_links().len());
+        let hinge = done
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(d, _)| d.name == "hinge")
+            .map(|(d, _)| d.id)
+            .unwrap();
+        for (desc, _) in done.scene.flatten() {
+            for value in desc.components.values() {
+                for link in crate::EntityRef::find_in(value.get_ron()) {
+                    assert_eq!(link, hinge, "{} links the hinge", desc.name);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn an_override_of_the_prefabs_root_changes_the_instance_itself() {
         let prefabs = with_campfire();
         let root = prefabs

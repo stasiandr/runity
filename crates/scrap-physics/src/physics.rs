@@ -85,6 +85,11 @@ pub struct Contacts {
     /// pair; a character tells ground from a wall by the `y` of these, the
     /// way a controller reads contact normals rather than probing.
     pub normals: Vec<Vec3>,
+    /// Of `inside`, what touches through a trigger — this body's or the
+    /// other's: Unity's `OnTrigger*`. The rest of `inside` is solid
+    /// contact, its `OnCollision*`. Something touching both ways is in
+    /// both.
+    pub triggers: Vec<hecs::Entity>,
 }
 
 /// What a ray met.
@@ -1178,11 +1183,13 @@ impl PhysicsWorld {
             let mine = part.0;
             let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
             let mut now: Vec<hecs::Entity> = Vec::new();
+            let mut sensed: Vec<hecs::Entity> = Vec::new();
             for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
                 if touching {
-                    now.extend(entity_of(other(a, b)));
+                    sensed.extend(entity_of(other(a, b)));
                 }
             }
+            now.extend(sensed.iter().copied());
             for pair in self.narrow_phase.contact_pairs_with(mine) {
                 if pair.has_any_active_contact() {
                     now.extend(entity_of(other(pair.collider1, pair.collider2)));
@@ -1191,9 +1198,13 @@ impl PhysicsWorld {
             now.retain(|e| *e != entity);
             now.sort();
             now.dedup();
+            sensed.retain(|e| *e != entity);
+            sensed.sort();
+            sensed.dedup();
             contacts.entered = now.iter().filter(|e| !contacts.inside.contains(e)).copied().collect();
             contacts.left = contacts.inside.iter().filter(|e| !now.contains(e)).copied().collect();
             contacts.inside = now;
+            contacts.triggers = sensed;
         }
         for (entity, handle, contacts) in world
             .query_mut::<(hecs::Entity, &BodyHandle, &mut Contacts)>()
@@ -1203,12 +1214,14 @@ impl PhysicsWorld {
                 continue;
             };
             let mut now: Vec<hecs::Entity> = Vec::new();
+            let mut sensed: Vec<hecs::Entity> = Vec::new();
             let mut normals: Vec<Vec3> = Vec::new();
             for &mine in body.colliders() {
                 let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
                 for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
                     if touching {
                         now.extend(entity_of(other(a, b)));
+                        sensed.extend(entity_of(other(a, b)));
                     }
                 }
                 for pair in self.narrow_phase.contact_pairs_with(mine) {
@@ -1243,6 +1256,10 @@ impl PhysicsWorld {
                 .collect();
             contacts.inside = now;
             contacts.normals = normals;
+            sensed.retain(|e| *e != entity);
+            sensed.sort();
+            sensed.dedup();
+            contacts.triggers = sensed;
         }
     }
 
@@ -3416,6 +3433,7 @@ mod tests {
                 assert!(entered_at.is_none(), "entered once");
                 entered_at = Some(step);
                 assert_eq!(contacts.inside, [ball]);
+                assert_eq!(contacts.triggers, [ball], "through the trigger");
             }
             if contacts.left.contains(&ball) {
                 assert!(left_at.is_none(), "left once");
@@ -3483,6 +3501,10 @@ mod tests {
                 .inside
                 .contains(&platform),
             "resting on it"
+        );
+        assert!(
+            world.get::<&Contacts>(crate_).unwrap().triggers.is_empty(),
+            "a solid contact, not a trigger's"
         );
 
         // A lift: the game raises it two metres over two seconds.

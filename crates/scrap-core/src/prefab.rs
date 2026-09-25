@@ -319,6 +319,7 @@ pub fn instantiate_with(
         .iter()
         .map(|desc| expand(desc, None, prefabs, 0, &mut problems, &mut parts))
         .collect();
+    nested_links(&mut entities, &parts);
     grow(&mut entities);
     let expanded = Scene {
         parts: scene.parts.clone(),
@@ -519,6 +520,62 @@ pub fn links_in(text: &str) -> Vec<EntityId> {
         }
     }
     out
+}
+
+/// Links to a part of a prefab inside a prefab pointed at that part.
+///
+/// A file names such a part by the key [`local_key`] gives it —
+/// `screen.within(label)` for a label in the screen placed in a machine —
+/// and scoping that link to the machine's instance makes
+/// `machine.within(screen.within(label))`; but the label itself, expanded,
+/// is `machine.within(screen).within(label)`: the screen's instance first,
+/// then the label in it. `within` does not compose, so every link that
+/// names a nested part is put right here, once, after expansion — for the
+/// links a scene writes as for those a prefab does, at any depth. A link
+/// to a part of the instance's own prefab is already right and is left.
+fn nested_links(entities: &mut [EntityDesc], parts: &HashMap<EntityId, (EntityId, EntityId)>) {
+    let mut named: HashMap<EntityId, EntityId> = HashMap::new();
+    for &id in parts.keys() {
+        let Some(&(mut instance, own)) = parts.get(&id) else {
+            continue;
+        };
+        let mut key = own;
+        // Each instance further up names it by its own key for it.
+        while let Some(&(outer, outer_own)) = parts.get(&instance) {
+            key = outer_own.within(key);
+            instance = outer;
+            let written = instance.within(key);
+            if written != id {
+                named.insert(written, id);
+            }
+        }
+    }
+    if named.is_empty() {
+        return;
+    }
+    fn walk(entities: &mut [EntityDesc], named: &HashMap<EntityId, EntityId>) {
+        for desc in entities {
+            map_part_links(&mut desc.parts, |id| named.get(&id).copied().unwrap_or(id));
+            for value in desc.components.values_mut() {
+                let text = value.get_ron();
+                let links = crate::EntityRef::find_in(text);
+                if !links.iter().any(|l| named.contains_key(l)) {
+                    continue;
+                }
+                let mut out = text.to_string();
+                for id in links {
+                    if let Some(to) = named.get(&id) {
+                        out = out.replace(&format!("EntityRef(\"{id}\")"), &format!("EntityRef(\"{to}\")"));
+                    }
+                }
+                if let Ok(raw) = ron::value::RawValue::from_boxed_ron(out.into_boxed_str()) {
+                    *value = raw;
+                }
+            }
+            walk(&mut desc.children, named);
+        }
+    }
+    walk(entities, &named);
 }
 
 /// A line's module fields with every entity they name put through `map`.

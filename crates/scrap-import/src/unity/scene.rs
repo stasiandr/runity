@@ -696,7 +696,13 @@ fn instance(
             unity,
             entity_of: HashMap::new(),
             body_object: HashMap::new(),
-            scoped: b.links.iter().map(|(k, e)| (*k, desc.id.within(*e))).collect(),
+            // A link to the prefab's root is to the instance itself, as
+            // the engine has it (its root takes the instance's id).
+            scoped: b
+                .links
+                .iter()
+                .map(|(k, e)| (*k, if Some(*e) == root_key { desc.id } else { desc.id.within(*e) }))
+                .collect(),
         };
         let value = mono_behaviour(&b.body, &refs);
         let Ok(raw) = scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) else {
