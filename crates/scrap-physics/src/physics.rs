@@ -1839,6 +1839,30 @@ impl PhysicsWorld {
         Some(Vec3::new(i.x, i.y, i.z))
     }
 
+    /// Its inverse inertia in the world's axes, as it is turned now: how
+    /// much a torque about each axis spins it. Zero rows about an axis it
+    /// cannot turn about. What a hand's spring budget reads to know how light
+    /// a thing held off its centre feels (Dacha's `DragMath.InverseInertia`).
+    pub fn world_inverse_inertia(&self, world: &World, entity: hecs::Entity) -> Option<glam::Mat3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let props = body.mass_properties().local_mprops;
+        let i = props.principal_inertia();
+        let frame = props.principal_inertia_local_frame;
+        let turn = body.rotation() * frame;
+        let q = glam::Quat::from_xyzw(turn.i, turn.j, turn.k, turn.w);
+        let basis = glam::Mat3::from_quat(q);
+        let inverse = |v: f32| if v > 1e-9 { 1.0 / v } else { 0.0 };
+        let diag = glam::Mat3::from_diagonal(glam::Vec3::new(inverse(i.x), inverse(i.y), inverse(i.z)));
+        Some(basis * diag * basis.transpose())
+    }
+
+    /// Where its centre of mass is, in the world.
+    pub fn center_of_mass(&self, world: &World, entity: hecs::Entity) -> Option<Vec3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let c = body.center_of_mass();
+        Some(Vec3::new(c.x, c.y, c.z))
+    }
+
     /// Its mass, kilograms.
     pub fn mass(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
         Some(self.bodies.get(self.body_of(world, entity)?)?.mass())
