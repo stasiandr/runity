@@ -4605,6 +4605,23 @@ impl Renderer {
         instance: u32,
         prepass: bool,
     ) {
+        self.draw_run(pass, look, mesh, texture, pose, instance, 1, prepass);
+    }
+
+    /// [`Self::draw_single`] of `count` instances from `instance` on, one
+    /// call: a run of the same see-through thing.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_run<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        look: Look,
+        mesh: MeshHandle,
+        texture: Maps,
+        pose: u32,
+        instance: u32,
+        count: u32,
+        prepass: bool,
+    ) {
         let handle = mesh;
         let Some(mesh) = self.mesh(mesh) else {
             return;
@@ -4622,7 +4639,7 @@ impl Renderer {
         let Some(pipeline) = pipeline else {
             return;
         };
-        if !crate::frame_debugger::draw(|| self.describe(handle, Some(&look), &texture, 1, false, prepass, true)) {
+        if !crate::frame_debugger::draw(|| self.describe(handle, Some(&look), &texture, count, false, prepass, true)) {
             return;
         }
         pass.set_pipeline(pipeline);
@@ -4639,7 +4656,7 @@ impl Renderer {
             pass.set_vertex_buffer(3, skin.slice(..));
         }
         pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
+        pass.draw_indexed(0..mesh.index_count, 0, instance..instance + count);
     }
 
     /// The world-space box around everything being drawn.
@@ -7169,9 +7186,21 @@ impl Renderer {
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
-            for (_, look, mesh, texture, pose, _) in &transparent {
-                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
-                instance += 1;
+            // Farthest first, one at a time — but a run of the same thing
+            // (an emitter's sprites, nearest their neighbours) in one call:
+            // a call draws its instances in order, so the blend is the same.
+            let mut i = 0;
+            while i < transparent.len() {
+                let (_, look, mesh, texture, pose, _) = &transparent[i];
+                let mut run = 1;
+                while !look.skinned
+                    && transparent.get(i + run).is_some_and(|(_, l, m, t, _, _)| l == look && m == mesh && t == texture)
+                {
+                    run += 1;
+                }
+                self.draw_run(&mut pass, *look, *mesh, *texture, *pose, instance, run as u32, false);
+                instance += run as u32;
+                i += run;
             }
             // Particles on the GPU, among what is see-through.
             if probe.is_none()
