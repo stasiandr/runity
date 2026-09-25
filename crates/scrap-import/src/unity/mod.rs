@@ -379,6 +379,21 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         }
     }
 
+    // Unity's own textures the materials name, made again (there is no
+    // file of theirs to copy).
+    for file_id in material::builtin_textures_used(&unity) {
+        let Some((name, picture)) = material::builtin_texture(file_id) else {
+            continue;
+        };
+        std::fs::create_dir_all(&textures)?;
+        let to = textures.join(format!("{name}.png"));
+        writable(&to);
+        match picture.save(&to) {
+            Ok(()) => report.textures += 1,
+            Err(e) => report.errors.push(format!("{}: {e}", to.display())),
+        }
+    }
+
     // Sounds the scenes and prefabs name: short ones decoded on sync, long
     // ones kept compressed to stream.
     let sounds = project.assets().join("sounds");

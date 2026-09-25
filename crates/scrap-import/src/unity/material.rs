@@ -46,6 +46,47 @@ fn texture<'a>(m: &'a Yaml, name: &str) -> Option<(String, &'a Yaml)> {
     Some((r.guid?, t))
 }
 
+/// The GUID Unity's built-in extra resources go by: a texture of theirs is
+/// told apart by its fileID alone.
+const BUILTIN_EXTRA: &str = "0000000000000000f000000000000000";
+
+/// One of Unity's built-in textures a material names (`Default-Checker-Gray`
+/// on a prototyping floor), made again: its name in the project and its
+/// picture. Unity ships them inside the editor, not in the project, so
+/// there is no file to copy.
+pub fn builtin_texture(file_id: i64) -> Option<(&'static str, image::RgbaImage)> {
+    // Two squares by two, each colour a flat sRGB grey, as Unity's are.
+    let checker = |light: u8, dark: u8| {
+        image::RgbaImage::from_fn(64, 64, |x, y| {
+            let v = if (x < 32) == (y < 32) { light } else { dark };
+            image::Rgba([v, v, v, 255])
+        })
+    };
+    match file_id {
+        10309 => Some(("Default-Checker-Gray", checker(196, 157))),
+        _ => None,
+    }
+}
+
+/// The built-in texture a material's slot names, when it is one made
+/// again here: its fileID.
+fn builtin_in(m: &Yaml, slot: &str) -> Option<i64> {
+    let r = property(m, "m_TexEnvs", slot)?.reference("m_Texture")?;
+    (r.guid.as_deref() == Some(BUILTIN_EXTRA) && builtin_texture(r.file_id).is_some()).then_some(r.file_id)
+}
+
+/// The built-in textures the materials use, by fileID: what to make.
+pub fn builtin_textures_used(unity: &Unity) -> BTreeSet<i64> {
+    let mut used = BTreeSet::new();
+    for (_, path) in unity.of_kind("material") {
+        let Some(body) = material_body(unity, path) else {
+            continue;
+        };
+        used.extend(MAPS.iter().filter_map(|(slot, _)| builtin_in(&body, slot)));
+    }
+    used
+}
+
 /// A `.mat`'s Material as it draws: a variant (`m_Parent` set) saves only
 /// what it overrides, so its parents' properties come first and its own
 /// replace them by name; the shader is the variant's own when it says one.
@@ -554,12 +595,13 @@ pub fn convert_with(
         let Some((guid, t)) = texture(m, slot) else {
             continue;
         };
-        let Some((kind, name)) = unity.named(&guid) else {
-            continue;
+        let name = match builtin_in(m, slot).and_then(builtin_texture) {
+            Some((name, _)) => name.to_string(),
+            None => match unity.named(&guid) {
+                Some((kind, name)) if kind == "texture" => name.to_string(),
+                _ => continue,
+            },
         };
-        if kind != "texture" {
-            continue;
-        }
         fields.push(format!("{field}: {name:?}"));
         if field == "base_map" && !tiled {
             tiled = true;
@@ -890,6 +932,51 @@ Material:
         // What the importer writes is what the material reads: a field it
         // does not know would be dropped without a word, and the smoke lit.
         assert!(crate::material_source(&written).unwrap().unlit, "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_builtin_checker_is_made_again_and_tiled() {
+        let dir = std::env::temp_dir().join(format!("scrap-unity-checker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let checker = dir.join("Checker.mat");
+        std::fs::write(
+            &checker,
+            "%YAML 1.1
+--- !u!21 &2100000
+Material:
+  m_Name: Checker
+  m_Shader: {fileID: 4800000, guid: 933532a4fcc9baf4fa0491de14d08ed7, type: 3}
+  m_SavedProperties:
+    m_TexEnvs:
+    - _BaseMap:
+        m_Texture: {fileID: 10309, guid: 0000000000000000f000000000000000, type: 0}
+        m_Scale: {x: 1000, y: 1000}
+        m_Offset: {x: 0, y: 0}
+    m_Floats: []
+    m_Colors: []
+",
+        )
+        .unwrap();
+        let mut unity = Unity {
+            pieces: Default::default(),
+            mesh_pieces: Default::default(),
+            layers: Default::default(),
+            declared_params: Default::default(),
+            root: dir.clone(),
+            guids: Default::default(),
+            names: Default::default(),
+        };
+        unity.guids.insert("checker".into(), checker.clone());
+        unity.names.insert("checker".into(), "Checker".into());
+        let text = convert(&unity, &checker).unwrap();
+        assert!(text.contains("base_map: \"Default-Checker-Gray\""), "{text}");
+        assert!(text.contains("tiling: (1000, 1000)"), "{text}");
+        assert_eq!(builtin_textures_used(&unity).into_iter().collect::<Vec<_>>(), [10309]);
+        // Unity's: two by two squares of sRGB grey.
+        let (_, picture) = builtin_texture(10309).unwrap();
+        assert_eq!(picture.dimensions(), (64, 64));
+        assert_eq!((picture.get_pixel(0, 0)[0], picture.get_pixel(40, 0)[0], picture.get_pixel(40, 40)[0]), (196, 157, 196));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
