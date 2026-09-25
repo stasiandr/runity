@@ -179,7 +179,7 @@ pub fn spawn_parts(world: &mut hecs::World, owner: hecs::Entity, id: EntityId, p
             let place = at + turn * middle;
             let mut transform = Transform { position: place, ..Transform::default() };
             transform.set_rotation(turn);
-            let shape = Shape(Collider::Capsule { half_height: (length * 0.5).max(0.01), radius: part.radius * scale });
+            let shape = Shape(Collider::Capsule { half_height: (length * 0.5).max(0.01), radius: part.radius * scale, center: glam::Vec3::ZERO, axis: 1 });
             let joint = part.parent.map(|p| {
                 // Where it joins its parent, in its own space.
                 let anchor = part.joint * scale - middle;

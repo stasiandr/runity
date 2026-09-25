@@ -28,14 +28,24 @@ pub enum Collider {
         #[serde(default, skip_serializing_if = "is_zero_vec3")]
         center: Vec3,
     },
+    /// A ball around `center` in the entity's own space: Unity's
+    /// SphereCollider center.
     Sphere {
         radius: f32,
+        #[serde(default, skip_serializing_if = "is_zero_vec3")]
+        center: Vec3,
     },
     /// A cylinder with hemispherical caps: what a person is, because a box
-    /// catches on corners and a sphere rolls.
+    /// catches on corners and a sphere rolls. Around `center`, along `axis`
+    /// (0 x, 1 y — standing, the default — 2 z): Unity's CapsuleCollider
+    /// center and direction.
     Capsule {
         half_height: f32,
         radius: f32,
+        #[serde(default, skip_serializing_if = "is_zero_vec3")]
+        center: Vec3,
+        #[serde(default = "y_axis", skip_serializing_if = "is_y_axis")]
+        axis: u8,
     },
     /// An upright cylinder, centred: what fits `builtin:cylinder` with
     /// `half_height: 0.5, radius: 0.5`.
@@ -512,15 +522,17 @@ impl Collider {
                 segments.extend(box_edges(half * scale));
             }
             Collider::Ramp { half } => segments.extend(ramp_edges(half * scale)),
-            Collider::Sphere { radius } => {
+            Collider::Sphere { radius, center } => {
                 let r = radius * scale.max_element();
-                circle(&mut segments, Vec3::ZERO, Vec3::X, Vec3::Y, r);
-                circle(&mut segments, Vec3::ZERO, Vec3::Y, Vec3::Z, r);
-                circle(&mut segments, Vec3::ZERO, Vec3::Z, Vec3::X, r);
+                let c = center * scale;
+                circle(&mut segments, c, Vec3::X, Vec3::Y, r);
+                circle(&mut segments, c, Vec3::Y, Vec3::Z, r);
+                circle(&mut segments, c, Vec3::Z, Vec3::X, r);
             }
             Collider::Capsule {
                 half_height,
                 radius,
+                ..
             }
             | Collider::Cylinder {
                 half_height,
@@ -541,4 +553,13 @@ impl Collider {
         }
         (segments, frame)
     }
+}
+
+/// A capsule stands along y unless it says otherwise.
+fn y_axis() -> u8 {
+    1
+}
+
+fn is_y_axis(axis: &u8) -> bool {
+    *axis == 1
 }

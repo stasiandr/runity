@@ -115,8 +115,8 @@ fn primitives(world: &World, skip: impl Fn(hecs::Entity, Option<crate::body::Bod
             Collider::Box { half, center } => out.push(Obstacle::placed_box(placed, center, half)),
             Collider::Ramp { half } => out.push(Obstacle::placed_ramp(placed, half)),
             Collider::Stairs { half, .. } => out.push(Obstacle::placed_ramp(placed, half)),
-            Collider::Sphere { radius } => out.push(Obstacle::Sphere { center: at, radius: radius * wide }),
-            Collider::Capsule { half_height, radius } | Collider::Cylinder { half_height, radius } => {
+            Collider::Sphere { radius, .. } => out.push(Obstacle::Sphere { center: at, radius: radius * wide }),
+            Collider::Capsule { half_height, radius, .. } | Collider::Cylinder { half_height, radius } => {
                 let up = turn * Vec3::Y * (half_height * scale.y.abs());
                 out.push(Obstacle::Capsule {
                     a: at - up,

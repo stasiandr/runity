@@ -1073,7 +1073,11 @@ impl PhysicsWorld {
                     joint,
                     handle,
                     bodies: (other, body),
-                    fresh: Some(other) == self.ground,
+                    // Only a hinge — a door set flush in the sand. A thing
+                    // tethered on a spring (a ripe sponge in its bed) stands
+                    // on what it was set into: freed of it, it fell through
+                    // and tore its tether.
+                    fresh: Some(other) == self.ground && matches!(joint, crate::scene::Joint::Hinge { .. }),
                 },
             );
         }
@@ -1340,7 +1344,7 @@ impl PhysicsWorld {
         );
     }
 
-    /// A thing just hung on the world — a door on its hinge — stops
+    /// A thing just hinged on the world — a door — stops
     /// colliding with the still things it was put into: a door set flush
     /// in the sand would otherwise grind against it, and a stiff solver
     /// hold it shut by that friction. What it only comes to touch later (a
@@ -2186,21 +2190,36 @@ fn build_collider(
                 .translation(vector![c.x, c.y, c.z])
                 .build()
         }
-        ColliderShape::Sphere { radius } => {
+        ColliderShape::Sphere { radius, center } => {
             // One radius, so a sphere scaled unevenly takes the largest —
             // a ball that is not a ball is an ellipsoid, and rapier's ball
             // cannot be one.
             let r = radius * scale.max_element();
-            ColliderBuilder::ball(r.max(1e-4)).build()
+            let c = center * scale;
+            ColliderBuilder::ball(r.max(1e-4)).translation(vector![c.x, c.y, c.z]).build()
         }
         ColliderShape::Capsule {
             half_height,
             radius,
-        } => ColliderBuilder::capsule_y(
-            (half_height * scale.y).max(1e-4),
-            (radius * scale.x.max(scale.z)).max(1e-4),
-        )
-        .build(),
+            center,
+            axis,
+        } => {
+            let c = center * scale;
+            // Its length along its axis, its girth across it.
+            let (along, across) = match axis {
+                0 => (scale.x, scale.y.max(scale.z)),
+                2 => (scale.z, scale.x.max(scale.y)),
+                _ => (scale.y, scale.x.max(scale.z)),
+            };
+            let (h, r) = ((half_height * along).max(1e-4), (radius * across).max(1e-4));
+            match axis {
+                0 => ColliderBuilder::capsule_x(h, r),
+                2 => ColliderBuilder::capsule_z(h, r),
+                _ => ColliderBuilder::capsule_y(h, r),
+            }
+            .translation(vector![c.x, c.y, c.z])
+            .build()
+        }
         ColliderShape::Cylinder {
             half_height,
             radius,
@@ -2560,7 +2579,7 @@ mod tests {
                     "ball",
                     from,
                     Body::Dynamic,
-                    ColliderShape::Sphere { radius: 0.5 },
+                    ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO },
                 ),
             ],
             ..Default::default()
@@ -2586,7 +2605,7 @@ mod tests {
                 "weed",
                 0.6,
                 Body::Dynamic,
-                ColliderShape::Sphere { radius: 0.5 },
+                ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO },
             );
             e.transform.position.x = x;
             let mut props = e.physics();
@@ -2702,7 +2721,7 @@ mod tests {
             }
             .with(crate::scene::ModelRef("m".into()))
             .with(Body::Dynamic)
-            .with(ColliderShape::Sphere { radius: 0.5 })],
+            .with(ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO })],
             ..Default::default()
         };
         let mut world = World::new();
@@ -2946,7 +2965,7 @@ mod tests {
         let (mut physics, mut world, ball) = dropped(0.6);
         let before = *world.get::<&BodyHandle>(ball).unwrap();
         world
-            .insert_one(ball, Shape(ColliderShape::Sphere { radius: 2.0 }))
+            .insert_one(ball, Shape(ColliderShape::Sphere { radius: 2.0, center: Vec3::ZERO }))
             .unwrap();
         run_for(&mut physics, &mut world, 1);
         let after = *world.get::<&BodyHandle>(ball).unwrap();
@@ -2994,7 +3013,7 @@ mod tests {
                 half: Vec3::splat(0.5),
             },
             Vec3::new(4.0, 2.0, 4.0),
-            ColliderShape::Sphere { radius: 0.2 },
+            ColliderShape::Sphere { radius: 0.2, center: Vec3::ZERO },
             Vec3::new(0.0, 1.5, -1.0),
         );
         run_for(&mut physics, &mut world, 60);
@@ -3057,7 +3076,7 @@ mod tests {
             "ball",
             0.0,
             Body::Dynamic,
-            ColliderShape::Sphere { radius: 0.2 },
+            ColliderShape::Sphere { radius: 0.2, center: Vec3::ZERO },
         );
         ball.transform.position = Vec3::new(0.0, 1.5, -1.0);
         let scene = Scene {
@@ -3236,7 +3255,7 @@ mod tests {
                     "ball",
                     6.0,
                     Body::Dynamic,
-                    ColliderShape::Sphere { radius: 0.25 },
+                    ColliderShape::Sphere { radius: 0.25, center: Vec3::ZERO },
                 ),
             ],
             ..Default::default()

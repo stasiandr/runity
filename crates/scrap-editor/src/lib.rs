@@ -3501,6 +3501,7 @@ impl Session {
                         arm,
                         scrap::scene::Collider::Sphere {
                             radius: light.range.max(0.0),
+                            center: Vec3::ZERO,
                         },
                         at,
                         thickness,

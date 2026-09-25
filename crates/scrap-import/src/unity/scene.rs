@@ -1080,6 +1080,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "SphereCollider" => {
             desc.set_part(&Collider::Sphere {
                 radius: b.f32("m_Radius").unwrap_or(0.5),
+                center: b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO),
             });
             solid(desc, b);
         }
@@ -1089,10 +1090,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             desc.set_part(&Collider::Capsule {
                 half_height: (height * 0.5 - radius).max(0.0),
                 radius,
+                center: b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO),
+                // Unity's direction: 0 along x, 1 along y, 2 along z.
+                axis: b.i64("m_Direction").map_or(1, |d| d.clamp(0, 2) as u8),
             });
-            if b.i64("m_Direction").is_some_and(|d| d != 1) {
-                report.skip("a capsule lying along x or z (brought over standing)");
-            }
             solid(desc, b);
         }
         "MeshCollider" => {
