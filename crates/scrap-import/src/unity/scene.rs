@@ -1106,11 +1106,13 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             solid(desc, b);
         }
         "Rigidbody" => {
-            desc.set_part(&if b.i64("m_IsKinematic") == Some(1) {
-                Body::Kinematic
-            } else {
-                Body::Dynamic
-            });
+            // A kinematic Rigidbody beside a trigger collider is still a
+            // trigger — one that follows its transform, which a `Trigger`
+            // does: a shop counter's volume, not a solid box over it.
+            let kinematic = b.i64("m_IsKinematic") == Some(1);
+            if !(kinematic && desc.body() == Body::Trigger) {
+                desc.set_part(&if kinematic { Body::Kinematic } else { Body::Dynamic });
+            }
             desc.set_part(&BodyProps {
                 drag: b.f32("m_Drag").or(b.f32("m_LinearDamping")).unwrap_or(0.0),
                 spin_drag: b
@@ -2434,6 +2436,38 @@ AudioSource:
         let text = ron::to_string(&e).unwrap();
         let back: scrap::scene::Emitter = ron::from_str(&text).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn a_trigger_with_a_kinematic_rigidbody_stays_a_trigger() {
+        let volume = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Counter
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+--- !u!65 &12
+BoxCollider:
+  m_GameObject: {fileID: 10}
+  m_IsTrigger: 1
+  m_Size: {x: 1, y: 1, z: 1}
+--- !u!54 &13
+Rigidbody:
+  m_GameObject: {fileID: 10}
+  m_IsKinematic: 1
+  m_UseGravity: 0
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), volume, &mut report);
+        assert_eq!(roots[0].body(), Body::Trigger);
+        let solid = volume.replace("m_IsTrigger: 1", "m_IsTrigger: 0");
+        let roots = convert_file(&unity(), &solid, &mut report);
+        assert_eq!(roots[0].body(), Body::Kinematic);
     }
 
     #[test]
