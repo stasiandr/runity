@@ -1369,6 +1369,12 @@ pub struct Renderer {
     lod_meshes: Vec<GpuMesh>,
     /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
     timer: Option<crate::gpu_timer::GpuTimer>,
+    /// The Frame Debugger's recording and picture ([`crate::frame_debugger`]).
+    debugger: crate::frame_debugger::Debugger,
+    /// Meshes' and textures' names from their assets, for the debugger to
+    /// call a draw by.
+    mesh_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
+    texture_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
     timing: bool,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
@@ -3492,6 +3498,9 @@ impl Renderer {
             lods: std::collections::HashMap::new(),
             lod_meshes: Vec::new(),
             timer: None,
+            debugger: Default::default(),
+            mesh_names: Default::default(),
+            texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
             atmosphere,
             clouds,
@@ -3598,6 +3607,7 @@ impl Renderer {
     pub fn upload_mesh(&mut self, gpu: &Gpu, mesh: &ArchivedMeshAsset) -> MeshHandle {
         let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
         let handle = self.upload(gpu, vertex_slice(mesh), mesh.colors.as_slice(), &indices);
+        self.mesh_names.insert(handle.0, mesh.name.as_str().into());
         if let Some(skin) = mesh.skin.as_ref() {
             let bindings: Vec<SkinVertex> = skin
                 .joints
@@ -3704,6 +3714,13 @@ impl Renderer {
         }
         self.looks.remove(&handle);
         self.free_meshes.push(handle.0);
+    }
+
+    /// A mesh's triangles as uploaded (its finest level), and its bounds'
+    /// size: what a profile names a heavy draw by.
+    pub fn mesh_size(&self, mesh: MeshHandle) -> Option<(u32, Vec3)> {
+        let m = self.meshes.get(mesh.0 as usize)?;
+        Some((m.index_count / 3, Vec3::from(m.bounds.max) - Vec3::from(m.bounds.min)))
     }
 
     /// Meshes uploaded and not released.
@@ -3851,6 +3868,7 @@ impl Renderer {
         let id = crate::asset::AssetId::from(&texture.id);
         let handle = self.upload_texture_levels(gpu, &levels, texture.srgb);
         self.by_asset.insert(id, handle);
+        self.texture_names.insert(handle.0, texture.name.as_str().into());
         self.streams.insert(
             handle,
             crate::streaming_textures::TextureStream::new(id, &levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>()),
@@ -4097,7 +4115,11 @@ impl Renderer {
     /// entry point: an import is a decision, and making it as easy to skip
     /// as to do is how a codebase ends up parsing OBJ at startup again.
     pub fn upload_mesh_owned(&mut self, gpu: &Gpu, mesh: &crate::asset::MeshAsset) -> MeshHandle {
-        self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices)
+        let handle = self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices);
+        if !mesh.name.is_empty() {
+            self.mesh_names.insert(handle.0, mesh.name.as_str().into());
+        }
+        handle
     }
 
     /// Issue the grouped draws. Shared by both passes so that what casts a
@@ -4143,6 +4165,10 @@ impl Renderer {
                     pipelines.scene.get(&(look.face, look.water))
                 };
                 if let (Some(pipeline), true) = (pipeline, self.clusters.this_frame.contains_key(&k)) {
+                    if !crate::frame_debugger::draw(|| self.describe(*handle, Some(look), texture, count, true, prepass, textured)) {
+                        first += count;
+                        continue;
+                    }
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
                     if textured {
@@ -4155,6 +4181,10 @@ impl Renderer {
                 }
             }
             if prepass && look.is_some_and(|l| self.cuts(l)) {
+                first += count;
+                continue;
+            }
+            if !crate::frame_debugger::draw(|| self.describe(*handle, look.as_ref(), texture, count, occluded, prepass, textured)) {
                 first += count;
                 continue;
             }
@@ -4189,6 +4219,68 @@ impl Renderer {
             }
             first += count;
         }
+    }
+
+    /// A draw as the Frame Debugger lists it: the mesh by name, what it
+    /// is drawn with. Made only while a frame is recorded.
+    #[allow(clippy::too_many_arguments)]
+    fn describe(
+        &self,
+        handle: MeshHandle,
+        look: Option<&Look>,
+        maps: &Maps,
+        instances: u32,
+        culled_on_gpu: bool,
+        prepass: bool,
+        textured: bool,
+    ) -> crate::frame_debugger::DrawCall {
+        let triangles = self.mesh(handle).map_or(0, |m| m.index_count as u64 / 3);
+        // A level of detail is called by the mesh it is a level of.
+        let (source, level) = if handle.0 & LOD_HANDLE != 0 {
+            self.lods
+                .iter()
+                .find_map(|(m, levels)| levels.iter().position(|(l, _)| *l == handle).map(|i| (*m, Some(i + 1))))
+                .unwrap_or((handle.0, None))
+        } else {
+            (handle.0, None)
+        };
+        let mut what = self
+            .mesh_names
+            .get(&source)
+            .map_or_else(|| format!("mesh {source}"), |n| n.to_string());
+        if let Some(level) = level {
+            what += &format!(" (LOD{level})");
+        }
+        let pipeline = match (look, prepass, textured) {
+            (_, false, false) => "shadow caster".to_string(),
+            (Some(l), true, _) => format!("prepass, {:?} faces{}", l.face, if l.skinned { ", skinned" } else { "" }),
+            (Some(l), false, _) => {
+                let mut p = match l.blend {
+                    None => "opaque".to_string(),
+                    Some(b) => format!("{b:?} blend"),
+                };
+                p += &format!(", {:?} faces", l.face);
+                if let Some(shader) = l.shader {
+                    p += &format!(", shader {shader:?}");
+                }
+                for (on, name) in [(l.skinned, "skinned"), (l.water, "water"), (l.terrain, "terrain"), (l.unlit, "unlit"), (l.on_top, "on top")] {
+                    if on {
+                        p += &format!(", {name}");
+                    }
+                }
+                p
+            }
+            (None, _, _) => "default".to_string(),
+        };
+        let textures = if textured {
+            maps.iter()
+                .filter(|t| **t != TextureHandle::WHITE)
+                .map(|t| self.texture_names.get(&t.0).map_or_else(|| format!("texture {}", t.0), |n| n.to_string()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        crate::frame_debugger::DrawCall { what, triangles, instances, culled_on_gpu, pipeline, textures }
     }
 
     /// Handles and outlines over the finished picture ([`crate::tools`]):
@@ -4378,6 +4470,15 @@ impl Renderer {
         ) else {
             return;
         };
+        if !crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall {
+            what: "terrain (mesh shader)".into(),
+            instances: 1,
+            culled_on_gpu: true,
+            pipeline: if prepass { "terrain prepass" } else { "terrain" }.into(),
+            ..Default::default()
+        }) {
+            return;
+        }
         pass.set_pipeline(if prepass { depth } else { drawn });
         pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
         self.bind_maps(pass, maps);
@@ -4418,6 +4519,7 @@ impl Renderer {
         instance: u32,
         prepass: bool,
     ) {
+        let handle = mesh;
         let Some(mesh) = self.mesh(mesh) else {
             return;
         };
@@ -4434,6 +4536,9 @@ impl Renderer {
         let Some(pipeline) = pipeline else {
             return;
         };
+        if !crate::frame_debugger::draw(|| self.describe(handle, Some(&look), &texture, 1, false, prepass, true)) {
+            return;
+        }
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
         self.bind_maps(pass, texture);
@@ -4645,6 +4750,44 @@ impl Renderer {
     /// Slots held for particles on the GPU, over all their emitters.
     pub fn gpu_particle_slots(&self) -> u32 {
         self.gpu_particles.slots()
+    }
+
+    /// Record the screen's frames for the Frame Debugger
+    /// ([`crate::frame_debugger`]) — every frame from now until
+    /// [`Self::stop_debugging`], each stopped at event `stop` (none: drawn
+    /// whole). [`Self::frame_capture`] is the last one recorded.
+    pub fn debug_frame(&mut self, stop: Option<usize>) {
+        self.debugger.wanted = Some(stop);
+    }
+
+    /// No more frames recorded, and the last one forgotten.
+    pub fn stop_debugging(&mut self) {
+        self.debugger.wanted = None;
+        self.debugger.captured = None;
+    }
+
+    /// The last frame recorded for the Frame Debugger.
+    pub fn frame_capture(&self) -> Option<&crate::frame_debugger::FrameCapture> {
+        self.debugger.captured.as_ref()
+    }
+
+    /// Whether the last frame recorded was stopped where there is a
+    /// picture to show — else the frame itself is the one to look at.
+    pub fn has_debug_picture(&self) -> bool {
+        self.debugger.has_picture()
+    }
+
+    /// The Frame Debugger's picture drawn over `view` (a target of this
+    /// renderer's format), fitted inside `area`: x, y, width, height in
+    /// pixels. Nothing when there is no picture.
+    pub fn show_debug_picture(&mut self, gpu: &Gpu, view: &wgpu::TextureView, area: (f32, f32, f32, f32)) {
+        self.debugger.show(gpu, view, self.format, area);
+    }
+
+    /// The Frame Debugger's picture as RGBA pixels (sRGB) and its size —
+    /// waits on the GPU: for tests and tools.
+    pub fn read_debug_picture(&self, gpu: &Gpu) -> Option<(Vec<u8>, (u32, u32))> {
+        self.debugger.read_picture(gpu)
     }
 
     /// Time each pass of the screen's frame on the GPU, or stop: see
@@ -5067,6 +5210,11 @@ impl Renderer {
         // The screen's frame timed, when asked — or when dynamic resolution
         // needs the GPU's time: not a probe's face or a picture's.
         let timed = (self.timing || (scaling && upscaling.dynamic.enabled)) && screen;
+        // The Frame Debugger's frame: the screen's, recorded pass by pass.
+        let debugged = screen && self.debugger.wanted.is_some();
+        if debugged {
+            crate::frame_debugger::begin(self.debugger.wanted.flatten());
+        }
         // The irradiance volume, for the screen's frame: its probes made
         // again when its grid changes, and the frame's group with them.
         if screen && self.ddgi.prepare(gpu, frame.irradiance_volumes.first().copied()) {
@@ -6411,6 +6559,8 @@ impl Renderer {
             }
         }
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
+            let mark = crate::frame_debugger::mark();
+            {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scrap::shadow"),
                 color_attachments: &[],
@@ -6444,6 +6594,10 @@ impl Renderer {
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
                 self.draw_batches(&mut pass, both, solid_casters + count(one), true);
+            }
+            }
+            if debugged {
+                self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::LinearDepth(layer));
             }
         }
 
@@ -6683,6 +6837,7 @@ impl Renderer {
             self.graph = graph;
         }
         if prepass_drawn {
+            let mark = crate::frame_debugger::mark();
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("scrap::prepass"),
@@ -6714,6 +6869,9 @@ impl Renderer {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
                 }
             }
+            if debugged {
+                self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::Normals(&self.ssao.normals));
+            }
             // This frame's depth into the pyramid, for the next frame's
             // culling.
             if probe.is_none() && view.is_some() && !self.picturing {
@@ -6725,6 +6883,7 @@ impl Renderer {
                 }
             }
             if ssao_on {
+                let mark = crate::frame_debugger::mark();
                 let now = drawn;
                 self.ssao.run(
                     gpu,
@@ -6738,6 +6897,9 @@ impl Renderer {
                     // as many do: the history adds them up.
                     (taa_run && self.taa.frames() > 0).then(|| (self.taa.frames() as f32 * 0.618_034).fract()),
                 );
+                if debugged {
+                    self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::Alpha(&self.ssao.result));
+                }
             }
         }
 
@@ -6850,6 +7012,7 @@ impl Renderer {
             );
         }
         self.depth_prepassed = reuse_depth;
+        let scene_mark = crate::frame_debugger::mark();
         {
             // A probe's face is drawn straight into its layer.
             let face = probe.map(|layer| self.reflections.layer(layer, 0));
@@ -6896,7 +7059,9 @@ impl Renderer {
             // The sky last among what is solid: only where nothing was
             // drawn is it shaded at all. A plain colour needs no pass —
             // unless there is fog in the air in front of it.
-            if frame.sky.mode != SkyMode::Color || volumetric.enabled {
+            if (frame.sky.mode != SkyMode::Color || volumetric.enabled)
+                && crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall::fullscreen("sky"))
+            {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
@@ -6906,17 +7071,29 @@ impl Renderer {
                 instance += 1;
             }
             // Particles on the GPU, among what is see-through.
-            if probe.is_none() {
+            if probe.is_none()
+                && self.gpu_particles.slots() > 0
+                && crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall {
+                    what: "gpu particles".into(),
+                    instances: self.gpu_particles.slots(),
+                    culled_on_gpu: true,
+                    pipeline: "particles".into(),
+                    ..Default::default()
+                })
+            {
                 self.gpu_particles.draw(&mut pass);
             }
             // What falls, in front of it all.
-            if weather.falling() {
+            if weather.falling() && crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall::fullscreen("rain or snow")) {
                 pass.set_pipeline(&self.pipelines.precipitation);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
         self.depth_prepassed = false;
+        if debugged {
+            self.debugger.snapshot(gpu, &mut encoder, scene_mark, crate::frame_debugger::Source::Hdr(&self.scene.resolved));
+        }
 
         // This frame, kept for the next one's screen-space reflections and
         // bounced light.
@@ -6938,6 +7115,7 @@ impl Renderer {
             .previous_view_projection
             .replace(view_projection)
             .unwrap_or(view_projection);
+        let taa_mark = crate::frame_debugger::mark();
         let picture = if taa_run {
             self.taa.run(
                 gpu,
@@ -6950,6 +7128,10 @@ impl Renderer {
         } else {
             &self.scene.resolved
         };
+        if debugged {
+            self.debugger.snapshot(gpu, &mut encoder, taa_mark, crate::frame_debugger::Source::Hdr(picture));
+        }
+        let lens_mark = crate::frame_debugger::mark();
         let lensed = self.lens.run(
             gpu,
             &mut encoder,
@@ -7008,6 +7190,9 @@ impl Renderer {
         post.auto_exposure.compensation -= 1.6 * night;
         let most = post.auto_exposure.max_ev;
         post.auto_exposure.max_ev = most + (most.min(1.0) - most) * night;
+        if let (true, Some(lensed)) = (debugged, lensed) {
+            self.debugger.snapshot(gpu, &mut encoder, lens_mark, crate::frame_debugger::Source::Hdr(lensed));
+        }
         let picture = lensed.unwrap_or(picture);
         let picture = if upscale_on {
             self.upscaler.run(
@@ -7049,6 +7234,9 @@ impl Renderer {
         if scaling {
             let ms = self.timer.as_ref().and_then(|t| t.frame_ms());
             self.upscaler.adjust(&upscaling, ms);
+        }
+        if debugged {
+            self.debugger.captured = crate::frame_debugger::finish(output);
         }
         let timer = self.timer.as_mut().filter(|_| timed);
         match timer {

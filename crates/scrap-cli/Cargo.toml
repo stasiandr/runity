@@ -14,6 +14,8 @@ anyhow = "1.0.104"
 ron = "0.12.2"
 scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap" }
 scrap-import = { version = "0.1.0", path = "../scrap-import" }
+# `frame-debug`'s picture of a stopped frame.
+image = { version = "0.25.9", default-features = false, features = ["png"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [[bin]]

@@ -47,6 +47,7 @@ use scrap_core::web_time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod embedded;
+mod frame_debugger;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -276,6 +277,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
             }
         },
         captured: false,
+        debugger: Default::default(),
+        frozen: None,
     };
     #[cfg(not(target_arch = "wasm32"))]
     event_loop.run_app(&mut shell)?;
@@ -395,6 +398,9 @@ struct Shell<G: Game> {
     pads: Option<gilrs::Gilrs>,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
+    /// The Frame Debugger's window (F9), and the frame it takes apart.
+    debugger: frame_debugger::Panel,
+    frozen: Option<Frame>,
 }
 
 impl<G: Game> Shell<G> {
@@ -525,6 +531,11 @@ impl<G: Game> Shell<G> {
     /// steps are owed, draw once — with a render thread, the next frame's
     /// steps beside the drawing.
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
+        // F9: the Frame Debugger opens on this frame, or lets the game go
+        // on (shell/frame_debugger.rs).
+        if self.input.pressed(frame_debugger::KEY) {
+            self.toggle_debugger();
+        }
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -543,6 +554,11 @@ impl<G: Game> Shell<G> {
             drawing.surface.resize(&state.gpu, width, height);
             (drawing.surface.width(), drawing.surface.height())
         };
+
+        if self.debugger.open {
+            self.draw_debugged(size);
+            return;
+        }
 
         let mut quit = false;
         // The pointer the game asked for, captured or free, applied once the
@@ -670,6 +686,64 @@ impl<G: Game> Shell<G> {
 }
 
 impl<G: Game> Shell<G> {
+    /// The Frame Debugger opened — the game stopped where it is, the
+    /// pointer let go, the passes timed — or closed, and all of it undone.
+    fn toggle_debugger(&mut self) {
+        let Some(state) = self.state.as_mut() else { return };
+        let open = !self.debugger.open;
+        self.debugger.open = open;
+        self.frozen = None;
+        if let Some(d) = state.drawing.as_deref_mut() {
+            if open {
+                d.renderer.profile_gpu(true);
+            } else {
+                d.renderer.stop_debugging();
+                d.renderer.profile_gpu(std::env::var_os("SCRAP_GPU_TIMES").is_some());
+            }
+        }
+        if open {
+            self.debugger.was_captured = self.captured;
+            if self.captured {
+                set_captured(&state.window, false);
+                self.captured = false;
+            }
+        } else if self.debugger.was_captured {
+            set_captured(&state.window, true);
+            self.captured = true;
+        }
+    }
+
+    /// A turn with the Frame Debugger open: no steps, the game's last
+    /// frame drawn again stopped at the event picked, its picture and the
+    /// window over it.
+    fn draw_debugged(&mut self, size: (u32, u32)) {
+        let Some(state) = self.state.as_mut() else { return };
+        if self.frozen.is_none() {
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+            let game = &mut self.game;
+            self.frozen = Some(hot(|| game.frame(&mut ctx)));
+        }
+        let Some(frame) = self.frozen.as_ref() else { return };
+        let gpu = &state.gpu;
+        let d = state.drawing.as_deref_mut().expect("back from the render thread");
+        self.debugger.update(&self.input, d.renderer.frame_capture(), size);
+        d.renderer.debug_frame(self.debugger.stop());
+        match d.surface.begin_frame() {
+            Ok(acquired) => {
+                d.renderer.draw_ui_pictures(gpu, &mut d.overlay, frame);
+                d.renderer.render_to_frame(gpu, &acquired, frame);
+                d.renderer.show_debug_picture(gpu, &acquired.view, frame_debugger::Panel::picture_area(size));
+                let times = d.renderer.gpu_times();
+                self.debugger.draw(d.renderer.frame_capture(), &self.input, size, &times);
+                d.overlay.render_to_frame(gpu, &acquired, &self.debugger.ui);
+                acquired.present(gpu);
+            }
+            Err(SurfaceError::Outdated) => d.surface.reconfigure(gpu),
+            Err(e) => eprintln!("{e}"),
+        }
+        self.input.begin_frame();
+    }
+
     /// The device and the window are there: the game starts.
     fn begin(&mut self, mut state: Running) {
         let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured, &self.loop_times);

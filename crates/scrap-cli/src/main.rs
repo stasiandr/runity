@@ -10,6 +10,7 @@
 //! scrap modules [sync] [PROJECT]  the engine's modules; Cargo.toml from scrap.ron
 //! scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]  frames against budgets.ron
+//! scrap frame-debug SCENE [PROJECT] [--stop N] [--size WxH] [--out FILE]  a frame's passes and draws
 //! scrap build [PROJECT] [--out DIR] [--debug | --size]  a folder to ship
 //! scrap merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! scrap git-setup [PROJECT]             turn the driver on in this clone
@@ -128,6 +129,11 @@ scrap add scene NAME [PROJECT]
 scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
+scrap frame-debug SCENE [PROJECT] [--stop N] [--size WxH] [--out FILE]
+    The Frame Debugger without a window (F9 in a running game): a frame of
+    SCENE drawn offscreen, every pass and draw listed with the mesh drawn,
+    its triangles and instances. --stop N draws it stopped at event N and
+    writes what its pass had drawn by then to FILE (frame.png).
 scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]
     Draw every scene (or one) offscreen at budgets.ron's size and measure
     it: the GPU's milliseconds a frame (over N frames, 10), the draws, the
@@ -308,6 +314,7 @@ fn run() -> Result<ExitCode> {
         }
         "rebuild-time" => rebuild_time(&rest),
         "perf" => perf(&rest),
+        "frame-debug" => frame_debug(&rest),
         "merge" => merge(&rest),
         "build" => build(&rest),
         "rename" => rename(&rest),
@@ -521,6 +528,66 @@ fn rebuild_time(rest: &[String]) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn frame_debug(rest: &[String]) -> Result<ExitCode> {
+    let mut at: Vec<String> = Vec::new();
+    let mut stop: Option<usize> = None;
+    let mut size = (1280u32, 720u32);
+    let mut out = std::path::PathBuf::from("frame.png");
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--stop" => stop = Some(args.next().context("--stop wants an event's number")?.parse()?),
+            "--size" => {
+                let s = args.next().context("--size wants WxH")?;
+                let (w, h) = s.split_once('x').context("--size wants WxH, like 1920x1080")?;
+                size = (w.parse()?, h.parse()?);
+            }
+            "--out" => out = args.next().context("--out wants a file")?.into(),
+            other if other.starts_with('-') => bail!("unknown option {other}"),
+            other => at.push(other.to_string()),
+        }
+    }
+    let Some(scene) = at.first().cloned() else {
+        bail!("which scene? scrap frame-debug SCENE [PROJECT]");
+    };
+    let project = find(&at[1..])?;
+    let path = project.scenes().join(format!("{scene}.ron"));
+    let mut shot = scrap::shot::Shot::open(&path, size.0, size.1, None).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let warm = shot.warm_frames();
+    shot.draw(warm);
+    shot.renderer.profile_gpu(true);
+    shot.renderer.debug_frame(stop);
+    shot.draw(1);
+    let pixels = shot.pixels();
+    // Timed a frame later, when the GPU's times are back.
+    shot.draw(1);
+    shot.pixels();
+    let Some(capture) = shot.renderer.frame_capture().cloned() else {
+        bail!("the frame was not recorded");
+    };
+    print!("{}", capture.text());
+    let mut times = shot.renderer.gpu_times();
+    times.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for (pass, ms) in &times {
+        println!("gpu {pass}: {ms:.2} ms");
+    }
+    let (pixels, (w, h), what) = match shot.renderer.read_debug_picture(&shot.gpu) {
+        Some((pixels, size)) => {
+            let p = capture.picture.as_ref().expect("a picture has its pass");
+            (pixels, size, format!("{} of pass {} at event {}", p.target, p.pass, stop.unwrap_or(0)))
+        }
+        None => (pixels, size, "the finished frame".to_string()),
+    };
+    if let Some(i) = stop {
+        for line in capture.details(i) {
+            println!("  {line}");
+        }
+    }
+    image::save_buffer(&out, &pixels, w, h, image::ExtendedColorType::Rgba8)?;
+    println!("wrote {} ({what})", out.display());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn perf(rest: &[String]) -> Result<ExitCode> {

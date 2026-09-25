@@ -3394,6 +3394,7 @@ name = "scrap-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "ron",
  "scrap-engine",
  "scrap-import",
@@ -3701,8 +3702,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gilrs",
+ "image",
  "js-sys",
  "scrap-core",
+ "scrap-geometry",
  "scrap-gpu",
  "scrap-overlay",
  "scrap-render",

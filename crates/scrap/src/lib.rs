@@ -112,6 +112,7 @@ pub use scrap_net::lan;
 pub use scrap_render::ddgi;
 pub use scrap_render::graph;
 pub use scrap_render::lens;
+pub use scrap_render::frame_debugger;
 pub use scrap_render::lights;
 pub use scrap_render::lod;
 pub use scrap_render::occlusion;

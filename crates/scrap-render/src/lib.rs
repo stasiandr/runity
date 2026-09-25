@@ -22,6 +22,7 @@ pub mod distance;
 pub mod exposure;
 pub mod floaters;
 pub mod foliage;
+pub mod frame_debugger;
 pub mod footprints;
 pub mod gizmo;
 pub mod graph;
@@ -80,7 +81,23 @@ use scrap_core::{defaults, id, impl_parts, input, library, AssetLink, Library, T
 #[allow(unused_imports)]
 use scrap_geometry::{animation, builtin, ease};
 #[allow(unused_imports)]
-use scrap_gpu::{gpu, gpu_timer, surface};
+use scrap_gpu::{gpu, surface};
+
+/// The GPU profiler's pass stamps (`scrap_gpu::gpu_timer`), each pass also
+/// told to the frame debugger as it begins: one line at every pass, not two.
+mod gpu_timer {
+    pub use scrap_gpu::gpu_timer::GpuTimer;
+
+    pub fn render(label: &'static str) -> Option<wgpu::RenderPassTimestampWrites<'static>> {
+        crate::frame_debugger::pass(label, crate::frame_debugger::PassKind::Render);
+        scrap_gpu::gpu_timer::render(label)
+    }
+
+    pub fn compute(label: &'static str) -> Option<wgpu::ComputePassTimestampWrites<'static>> {
+        crate::frame_debugger::pass(label, crate::frame_debugger::PassKind::Compute);
+        scrap_gpu::gpu_timer::compute(label)
+    }
+}
 #[allow(unused_imports)]
 use scrap_overlay::{ui, ui_render};
 
