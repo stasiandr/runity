@@ -654,26 +654,27 @@ pub fn build_frame_where(
     keep: impl Fn(Option<crate::id::EntityId>) -> bool,
 ) -> Frame {
     // What is switched off, itself or by a parent, is not in the picture.
-    let off: std::collections::HashSet<crate::id::EntityId> = inactive_in_hierarchy(world)
+    let off: scrap_core::hash::FastSet<crate::id::EntityId> = inactive_in_hierarchy(world)
         .into_iter()
         .filter_map(|e| world.get::<&SceneId>(e).ok().map(|id| id.0))
         .collect();
     let keep =
         |line: Option<crate::id::EntityId>| line.is_none_or(|id| !off.contains(&id)) && keep(line);
-    let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
-    for (placed, shown, model, surface, textured, posed, line) in world
-        .query::<(
-            &WorldTransform,
-            Option<&crate::world::Shown>,
-            &Model,
-            &Surface,
-            Option<&Textured>,
-            Option<&Posed>,
-            Option<&SceneId>,
-        )>()
-        .iter()
-    {
+    let mut drawn = world.query::<(
+        &WorldTransform,
+        Option<&crate::world::Shown>,
+        &Model,
+        &Surface,
+        Option<&Textured>,
+        Option<&Posed>,
+        Option<&SceneId>,
+    )>();
+    let drawn = drawn.iter();
+    // A draw is a few hundred bytes: grown by doubling, a level's worth is
+    // copied over and over before the frame is built.
+    let mut draws = Vec::with_capacity(drawn.len());
+    for (placed, shown, model, surface, textured, posed, line) in drawn {
         if !keep(line.map(|l| l.0)) {
             continue;
         }

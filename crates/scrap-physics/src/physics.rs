@@ -139,8 +139,8 @@ struct PartFound {
 /// Every part (`Body::Part`, `Body::TriggerPart`) by the entity whose body
 /// it belongs to: the nearest ancestor with a body of its own. A part with
 /// none is left out, and built as a body of its own — standing still.
-fn parts_of(world: &World, off: &std::collections::HashSet<hecs::Entity>) -> std::collections::HashMap<hecs::Entity, Vec<PartFound>> {
-    let mut out: std::collections::HashMap<hecs::Entity, Vec<PartFound>> = Default::default();
+fn parts_of(world: &World, off: &scrap_core::hash::FastSet<hecs::Entity>) -> scrap_core::hash::FastMap<hecs::Entity, Vec<PartFound>> {
+    let mut out: scrap_core::hash::FastMap<hecs::Entity, Vec<PartFound>> = Default::default();
     for (entity, physics, shape, placed, mesh, props, layer) in world
         .query::<(
             hecs::Entity,
@@ -545,7 +545,7 @@ impl PhysicsWorld {
         let mut stale: Vec<hecs::Entity> = Vec::new();
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
-        let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
+        let mut live: scrap_core::hash::FastSet<RigidBodyHandle> = Default::default();
         let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
         // What is switched off has no body.
         let off = crate::world::inactive_in_hierarchy(world);
@@ -701,12 +701,14 @@ impl PhysicsWorld {
             )>()
             .iter()
         {
-            let kind = solved(physics.0, replica.is_some());
-            let props = props.map(|p| p.0).unwrap_or_default();
-            let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
+            // Almost every body is already built: out before anything is
+            // copied for it.
             if existing.is_some() || physics.0 == Body::None || off.contains(&entity) {
                 continue;
             }
+            let kind = solved(physics.0, replica.is_some());
+            let props = props.map(|p| p.0).unwrap_or_default();
+            let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
             // A part is built with the body it belongs to; one with no body
             // above it stands still on its own.
             if kind.is_part() && owner_of(world, entity).is_some() {
@@ -887,6 +889,12 @@ impl PhysicsWorld {
     /// entity no longer asks for one. A joint whose partner is not there —
     /// not built yet, or a typo'd id — waits rather than guessing.
     fn sync_joints(&mut self, world: &mut World) {
+        // No joint asked for and none built: most worlds, most steps.
+        if world.query::<&Jointed>().iter().next().is_none()
+            && world.query::<&JointBuilt>().iter().next().is_none()
+        {
+            return;
+        }
         // By the scene's ids, and by a run-time prefab's own: a mouse spawned
         // mid-level has a tail whose links name each other.
         let mut bodies_by_id: std::collections::HashMap<crate::id::EntityId, RigidBodyHandle> = world
@@ -1385,14 +1393,33 @@ impl PhysicsWorld {
                 ..Transform::default()
             };
             local.set_rotation(rotation);
-            let _ = world.insert_one(entity, WorldTransform(matrix));
             // Where the step took it from and to: a frame between steps
-            // draws it between them (`world::interpolate`).
-            let _ = world.insert_one(entity, crate::world::Stepped { from: was, to: matrix });
-            let _ = world.insert_one(entity, local);
-            if let Ok(mut built) = world.get::<&mut Built>(entity) {
+            // draws it between them (`world::interpolate`). Written in place:
+            // after the first step a body has all of these, and an insert
+            // would look up the archetype to move it to on every one.
+            let stepped = crate::world::Stepped { from: was, to: matrix };
+            let Ok((placed, own, step, built)) = world.query_one_mut::<(
+                &mut WorldTransform,
+                Option<&mut Transform>,
+                Option<&mut crate::world::Stepped>,
+                Option<&mut Built>,
+            )>(entity) else {
+                continue;
+            };
+            placed.0 = matrix;
+            if let Some(built) = built {
                 built.local = local;
                 built.placed = matrix;
+            }
+            let own = own.map(|own| *own = local).is_some();
+            match step {
+                Some(step) => *step = stepped,
+                None => {
+                    let _ = world.insert_one(entity, stepped);
+                }
+            }
+            if !own {
+                let _ = world.insert_one(entity, local);
             }
         }
     }

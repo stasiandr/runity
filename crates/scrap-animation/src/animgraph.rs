@@ -837,7 +837,13 @@ impl Controller {
     }
 
     pub fn set(&mut self, name: &str, value: f32) {
-        self.params.insert(name.to_string(), value);
+        // Set per character per step: the name is copied only the first time.
+        match self.params.get_mut(name) {
+            Some(was) => *was = value,
+            None => {
+                self.params.insert(name.to_string(), value);
+            }
+        }
     }
 
     pub fn set_bool(&mut self, name: &str, value: bool) {
@@ -953,7 +959,7 @@ impl Controller {
         } else {
             self.triggers.clone()
         };
-        let mut because = String::from("start");
+        let mut because = None;
         let entered = match &self.state {
             None => Some((self.graph.start.clone(), 0.0)),
             Some(now) => {
@@ -973,7 +979,7 @@ impl Controller {
                         })
                     })
                     .map(|t| {
-                        because = describe(&t.when);
+                        because = Some(describe(&t.when));
                         (t.to.clone(), t.fade)
                     })
             }
@@ -983,7 +989,7 @@ impl Controller {
                 update: self.updates,
                 from: self.state.clone().unwrap_or_default(),
                 to: to.clone(),
-                when: because,
+                when: because.unwrap_or_else(|| "start".to_string()),
             });
             while self.trail.len() > TRAIL {
                 self.trail.pop_front();

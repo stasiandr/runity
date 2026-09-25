@@ -66,12 +66,19 @@ impl Quality {
     /// The frame as this preset draws it: its passes, then the shadow map
     /// and drawn share lowered, never raised.
     pub fn apply(self, frame: &Frame) -> Frame {
-        let mut frame = self.passes().apply(frame);
+        let mut frame = frame.clone();
+        self.apply_to(&mut frame);
+        frame
+    }
+
+    /// [`Quality::apply`] on a frame already copied.
+    pub fn apply_to(self, frame: &mut Frame) {
+        self.passes().apply_to(frame);
         let (resolution, cascades) = match self {
             Quality::Low => (1024, 2),
             Quality::Medium => (2048, 3),
             Quality::High => (2048, 4),
-            Quality::Ultra => return frame,
+            Quality::Ultra => return,
         };
         frame.shadows.resolution = frame.shadows.resolution.min(resolution);
         frame.shadows.cascades = frame.shadows.cascades.min(cascades);
@@ -93,7 +100,6 @@ impl Quality {
             up.dynamic.target_ms = target;
             up.dynamic.min_scale = (scale * 0.67).max(0.33);
         }
-        frame
     }
 
     /// What a machine starts on, by its GPU.

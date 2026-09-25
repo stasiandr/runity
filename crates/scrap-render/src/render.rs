@@ -637,6 +637,89 @@ pub struct Frame {
     pub poses: Vec<Pose>,
 }
 
+impl Frame {
+    /// A copy to draw from, without what the renderer has already taken
+    /// out of it: the live meshes (whose vertices, a head of hair or a
+    /// sheet of water, are the largest thing in a frame) and the cameras'
+    /// frames (drawn into their textures before this one). Every field is
+    /// named, so a new one is a compile error here rather than a copy that
+    /// quietly leaves it out.
+    fn shallow(&self) -> Frame {
+        let Frame {
+            camera,
+            lighting,
+            fog,
+            shadows,
+            sky,
+            clear_color,
+            post,
+            ambient_occlusion,
+            ray_tracing,
+            draws,
+            overlay_draws,
+            outline_draws,
+            outline_width,
+            lights,
+            flares,
+            ui_pictures,
+            reflection_probes,
+            irradiance_volumes,
+            decals,
+            volumetric_fog,
+            puffs,
+            smoke,
+            distance_field,
+            gpu_particles,
+            plumes,
+            terrain,
+            wind,
+            benders,
+            time,
+            weather,
+            screen_space_reflections,
+            poses,
+            live_meshes: _,
+            texture_views: _,
+        } = self;
+        Frame {
+            camera: camera.clone(),
+            lighting: lighting.clone(),
+            fog: fog.clone(),
+            shadows: shadows.clone(),
+            sky: sky.clone(),
+            clear_color: clear_color.clone(),
+            post: post.clone(),
+            ambient_occlusion: ambient_occlusion.clone(),
+            ray_tracing: ray_tracing.clone(),
+            draws: draws.clone(),
+            overlay_draws: overlay_draws.clone(),
+            outline_draws: outline_draws.clone(),
+            outline_width: outline_width.clone(),
+            lights: lights.clone(),
+            flares: flares.clone(),
+            ui_pictures: ui_pictures.clone(),
+            reflection_probes: reflection_probes.clone(),
+            irradiance_volumes: irradiance_volumes.clone(),
+            decals: decals.clone(),
+            volumetric_fog: volumetric_fog.clone(),
+            puffs: puffs.clone(),
+            smoke: smoke.clone(),
+            distance_field: distance_field.clone(),
+            gpu_particles: gpu_particles.clone(),
+            plumes: plumes.clone(),
+            terrain: terrain.clone(),
+            wind: wind.clone(),
+            benders: benders.clone(),
+            time: time.clone(),
+            weather: weather.clone(),
+            screen_space_reflections: screen_space_reflections.clone(),
+            poses: poses.clone(),
+            live_meshes: Vec::new(),
+            texture_views: Vec::new(),
+        }
+    }
+}
+
 impl Default for Frame {
     fn default() -> Self {
         Self {
@@ -4496,7 +4579,7 @@ impl Renderer {
             .time
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         let bolt = frame.weather.bolt(time)?;
-        let mut lit = frame.clone();
+        let mut lit = frame.shallow();
         let l = &mut lit.lighting;
         let strength = bolt.flash * 7.0;
         if strength > l.sun_intensity {
@@ -4532,45 +4615,36 @@ impl Renderer {
         // A stroke of lightning coming down: for its moment the light of
         // the scene is its light — from where it struck, bright and blue,
         // with hard shadows — and the whole sky flares.
-        let flashed;
-        let frame = match self.lightning(frame) {
-            Some(lit) => {
-                flashed = lit;
-                &flashed
-            }
-            None => frame,
-        };
-        if frame.live_meshes.is_empty() {
-            self.bake_probes(gpu, frame);
-            self.render_view(gpu, Some(view), width, height, frame, None);
-            return;
-        }
-        let mut frame = frame.clone();
-        for live in std::mem::take(&mut frame.live_meshes) {
-            // Nothing to draw yet — water not poured, a mesh not made:
-            // an empty buffer is no buffer to the device.
-            if live.vertices.is_empty() || live.indices.is_empty() {
-                continue;
-            }
-            let mesh = match self.live.get(&live.key) {
-                Some(&(mesh, version)) if version == live.version => mesh,
-                Some(&(mesh, _)) => {
-                    self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
-                    mesh
+        let mut owned = self.lightning(frame);
+        if !frame.live_meshes.is_empty() {
+            let drawn = owned.get_or_insert_with(|| frame.shallow());
+            for live in &frame.live_meshes {
+                // Nothing to draw yet — water not poured, a mesh not made:
+                // an empty buffer is no buffer to the device.
+                if live.vertices.is_empty() || live.indices.is_empty() {
+                    continue;
                 }
-                None => self.upload_live(gpu, &live.vertices, &live.indices),
-            };
-            self.live.insert(live.key, (mesh, live.version));
-            frame.draws.push(Draw {
-                mesh,
-                transform: live.transform,
-                texture: TextureHandle::WHITE,
-                material: live.material,
-                pose: None,
-            });
+                let mesh = match self.live.get(&live.key) {
+                    Some(&(mesh, version)) if version == live.version => mesh,
+                    Some(&(mesh, _)) => {
+                        self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
+                        mesh
+                    }
+                    None => self.upload_live(gpu, &live.vertices, &live.indices),
+                };
+                self.live.insert(live.key, (mesh, live.version));
+                drawn.draws.push(Draw {
+                    mesh,
+                    transform: live.transform,
+                    texture: TextureHandle::WHITE,
+                    material: live.material,
+                    pose: None,
+                });
+            }
         }
-        self.bake_probes(gpu, &frame);
-        self.render_view(gpu, Some(view), width, height, &frame, None);
+        let frame = owned.as_ref().unwrap_or(frame);
+        self.bake_probes(gpu, frame);
+        self.render_view(gpu, Some(view), width, height, frame, None);
     }
 
     /// Which passes run: the game's graphics settings. [`Passes::MAX`]
@@ -4695,10 +4769,9 @@ impl Renderer {
     /// texture cannot be drawn into and read in one pass.
     fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
         self.picture_target(gpu, picture.id, size);
-        let mut frame = (*picture.frame).clone();
+        let mut frame = picture.frame.shallow();
         let shows = |m: &Material| m.maps().any(|id| id == picture.id);
         frame.draws.retain(|d| !shows(&d.material));
-        frame.texture_views.clear();
         let view = self.targets[&picture.id]
             .0
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -4827,11 +4900,14 @@ impl Renderer {
         let frame = if self.passes == crate::passes::Passes::MAX && self.quality.is_none() {
             frame
         } else {
-            let preset = match self.quality {
-                Some(quality) => quality.apply(frame),
-                None => frame.clone(),
-            };
-            masked = self.passes.apply(&preset);
+            // One copy for both, and without the live meshes and the
+            // cameras' frames, which the view does not read.
+            let mut copy = frame.shallow();
+            if let Some(quality) = self.quality {
+                quality.apply_to(&mut copy);
+            }
+            self.passes.apply_to(&mut copy);
+            masked = copy;
             &masked
         };
         let aspect = width as f32 / height.max(1) as f32;
@@ -5256,7 +5332,10 @@ impl Renderer {
                 let Some(mesh) = self.meshes.get(draw.mesh.0 as usize) else { continue };
                 let (lo, hi) = world_box(mesh.bounds, draw.transform);
                 use std::hash::{Hash, Hasher};
-                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                // Only compared with the last frame's key, in this process:
+                // no attacker picks it, and SipHash here cost a word's worth
+                // of rounds per float of every caster, every frame.
+                let mut hash = scrap_core::hash::FastHasher::default();
                 draw.mesh.0.hash(&mut hash);
                 for v in draw.transform.to_cols_array() {
                     v.to_bits().hash(&mut hash);
@@ -5806,6 +5885,7 @@ impl Renderer {
         for view in &clustered.shadow_views {
             let planes = frustum_planes(*view);
             let (mut solid, mut clipped) = (Vec::new(), Vec::new());
+            let (mut solid_index, mut clipped_index) = (BatchIndex::default(), BatchIndex::default());
             // What is unlit is a light itself: a lamp's bulb would
             // otherwise put everything around it in its shadow.
             for draw in frame
@@ -5819,15 +5899,15 @@ impl Renderer {
                 if !aabb_in_frustum(&planes, mesh.bounds, draw.transform) {
                     continue;
                 }
-                let list = if draw.material.alpha_clip > 0.0 {
-                    &mut clipped
+                let (list, index) = if draw.material.alpha_clip > 0.0 {
+                    (&mut clipped, &mut clipped_index)
                 } else {
-                    &mut solid
+                    (&mut solid, &mut solid_index)
                 };
                 let maps = self.maps_of(draw);
                 let mut raw = instance_of(draw.transform, &draw.material);
                 raw.maps = packed(maps);
-                push(list, (None, draw.mesh, self.batch_maps(maps)), raw);
+                index.push(list, (None, draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
         }
@@ -6889,7 +6969,7 @@ struct Prepared {
 /// together, and then no key is hashed at all.
 #[derive(Default)]
 struct BatchIndex {
-    at: std::collections::HashMap<BatchKey, usize>,
+    at: scrap_core::hash::FastMap<BatchKey, usize>,
     last: Option<(BatchKey, usize)>,
 }
 

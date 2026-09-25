@@ -8,6 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::hash::{FastMap, FastSet};
+
 use hecs::World;
 
 use crate::id::EntityId;
@@ -52,7 +54,10 @@ const JUMP: f32 = 5.0;
 /// it) is drawn where it is.
 pub fn interpolate(world: &mut World, alpha: f32) {
     let alpha = alpha.clamp(0.0, 1.0);
-    let mut shown: HashMap<hecs::Entity, (glam::Mat4, glam::Mat4)> = HashMap::new();
+    // Where each is drawn, and for a stepped one also how far that is from
+    // where it stands (`at * placed⁻¹`), which what hangs from it shares:
+    // inverted once per stepped thing, not once per thing under it.
+    let mut shown: FastMap<hecs::Entity, (glam::Mat4, Option<glam::Mat4>)> = FastMap::default();
     for (entity, placed, stepped) in world.query::<(hecs::Entity, &WorldTransform, &Stepped)>().iter() {
         if placed.0 != stepped.to {
             continue;
@@ -64,7 +69,7 @@ pub fn interpolate(world: &mut World, alpha: f32) {
         } else {
             glam::Mat4::from_scale_rotation_translation(fs.lerp(ts, alpha), fr.slerp(tr, alpha), ft.lerp(tt, alpha))
         };
-        shown.insert(entity, (at, placed.0));
+        shown.insert(entity, (at, Some(at * placed.0.inverse())));
     }
     // What hangs from them: its place relative to the nearest stepped
     // ancestor kept.
@@ -79,23 +84,26 @@ pub fn interpolate(world: &mut World, alpha: f32) {
                 let Some(ancestor) = up else {
                     break;
                 };
-                if let Some((at, was)) = shown.get(&ancestor) {
-                    hanging.push((entity, *at * was.inverse() * placed.0, placed.0));
+                if let Some((_, Some(moved))) = shown.get(&ancestor) {
+                    hanging.push((entity, *moved * placed.0));
                     break;
                 }
                 up = world.get::<&Parent>(ancestor).ok().map(|p| p.0);
             }
         }
-        for (entity, at, placed) in hanging {
-            shown.insert(entity, (at, placed));
+        for (entity, at) in hanging {
+            shown.insert(entity, (at, None));
         }
     }
-    let stale: Vec<hecs::Entity> = world
-        .query::<(hecs::Entity, &Shown)>()
-        .iter()
-        .filter(|(e, _)| !shown.contains_key(e))
-        .map(|(e, _)| e)
-        .collect();
+    // Written in place where it already is, taken off where it no longer
+    // applies, inserted only where it is new.
+    let mut stale = Vec::new();
+    for (entity, drawn) in world.query_mut::<(hecs::Entity, &mut Shown)>() {
+        match shown.remove(&entity) {
+            Some((at, _)) => drawn.0 = at,
+            None => stale.push(entity),
+        }
+    }
     for entity in stale {
         let _ = world.remove_one::<Shown>(entity);
     }
@@ -170,13 +178,40 @@ pub fn is_active(world: &World, entity: hecs::Entity) -> bool {
 
 /// Every entity that is off, itself or by a parent: what the frame and the
 /// physics leave out.
-pub fn inactive_in_hierarchy(world: &World) -> std::collections::HashSet<hecs::Entity> {
-    let mut out = std::collections::HashSet::new();
+pub fn inactive_in_hierarchy(world: &World) -> crate::hash::FastSet<hecs::Entity> {
+    let mut out = crate::hash::FastSet::default();
     if world.query::<&Inactive>().iter().next().is_none() {
         return out;
     }
+    // Each entity's answer is its parent's unless it is off itself, so the
+    // answers are remembered on the way up: one look per entity, not one
+    // per entity per level.
+    let mut known: FastMap<hecs::Entity, bool> = FastMap::default();
+    let mut chain = Vec::new();
     for (entity, _) in world.query::<(hecs::Entity, &Transform)>().iter() {
-        if !is_active(world, entity) {
+        chain.clear();
+        let mut at = Some(entity);
+        let mut off = false;
+        while let Some(e) = at {
+            if let Some(&k) = known.get(&e) {
+                off = k;
+                break;
+            }
+            if world.get::<&Inactive>(e).is_ok() {
+                off = true;
+                known.insert(e, true);
+                break;
+            }
+            chain.push(e);
+            if chain.len() > 64 {
+                break;
+            }
+            at = world.get::<&Parent>(e).ok().map(|p| p.0);
+        }
+        for e in chain.drain(..) {
+            known.insert(e, off);
+        }
+        if off {
             out.insert(entity);
         }
     }
@@ -483,61 +518,123 @@ impl Patch<'_> {
 
 /// Recompute every [`WorldTransform`] from the local transforms and parents.
 ///
-/// Call it after moving something that has children. It resolves each entity
-/// by walking up to its root, and it stops at a depth limit rather than
-/// looping: nothing built from a scene file can contain a cycle, but an
-/// editor that sets a parent by hand can make one, and hanging is a worse
-/// answer than a wrong transform.
+/// Call it after moving something that has children. Each entity's matrix
+/// is computed once, from its parent's, and a cycle is cut where it closes
+/// rather than looped: nothing built from a scene file can contain one, but
+/// an editor that sets a parent by hand can, and hanging is a worse answer
+/// than a wrong transform.
 pub fn apply_hierarchy(world: &mut World) {
-    const MAX_DEPTH: usize = 64;
-
     // Snapshotted first, then resolved, then written back. Walking up the
     // tree while holding a query borrow would mean reading the world through
     // the same handle that is iterating it; taking the local transforms out
     // once is both simpler and cheaper than resolving inside the loop.
-    let mut locals: std::collections::HashMap<hecs::Entity, (glam::Mat4, Option<hecs::Entity>)> =
-        std::collections::HashMap::new();
-    for (entity, local, parent) in world
-        .query::<(hecs::Entity, &Transform, Option<&Parent>)>()
+    //
+    // Every entity is a slot, in the order the query visits them. Only an
+    // entity something hangs from needs finding by handle, so only those go
+    // in a map; each slot's world matrix is computed once and reused by all
+    // under it — one product per entity, not one per entity per level.
+    let mut is_parent: FastSet<hecs::Entity> = FastSet::default();
+    for (_, parent) in world.query::<(hecs::Entity, &Parent)>().iter() {
+        is_parent.insert(parent.0);
+    }
+    let mut slot_of: FastMap<hecs::Entity, u32> = FastMap::default();
+    let mut entities: Vec<hecs::Entity> = Vec::new();
+    let mut locals: Vec<glam::Mat4> = Vec::new();
+    let mut parents: Vec<Option<hecs::Entity>> = Vec::new();
+    for (entity, local, parent, between) in world
+        .query::<(hecs::Entity, &Transform, Option<&Parent>, Option<&Between>)>()
         .iter()
     {
-        locals.insert(entity, (local.matrix(), parent.map(|p| p.0)));
-    }
-    // What stands between a thing and its parent — the bone of the
-    // parent's skeleton it rides on — goes between.
-    for (entity, between) in world.query::<(hecs::Entity, &Between)>().iter() {
-        if let Some((local, _)) = locals.get_mut(&entity) {
-            *local = between.0 * *local;
+        if !is_parent.is_empty() && is_parent.contains(&entity) {
+            slot_of.insert(entity, locals.len() as u32);
         }
+        entities.push(entity);
+        // What stands between a thing and its parent — the bone of the
+        // parent's skeleton it rides on — goes between.
+        locals.push(match between {
+            Some(between) => between.0 * local.matrix(),
+            None => local.matrix(),
+        });
+        parents.push(parent.map(|p| p.0));
     }
+    // A parent that no longer exists leaves the child where it is rather
+    // than dropping it: a despawn should not teleport whatever was attached.
+    let up: Vec<Option<u32>> = parents
+        .iter()
+        .map(|p| p.and_then(|p| slot_of.get(&p).copied()))
+        .collect();
 
-    let mut resolved: Vec<(hecs::Entity, glam::Mat4)> = Vec::with_capacity(locals.len());
-    for (entity, (local, parent)) in &locals {
-        let mut matrix = *local;
-        let mut current = *parent;
-        let mut depth = 0;
-        while let Some(ancestor) = current {
-            let Some((ancestor_local, ancestor_parent)) = locals.get(&ancestor) else {
-                // A parent that no longer exists leaves the child where it
-                // is rather than dropping it: a despawn should not teleport
-                // whatever was attached.
-                break;
-            };
-            matrix = *ancestor_local * matrix;
-            current = *ancestor_parent;
-            depth += 1;
-            if depth >= MAX_DEPTH {
+    const TODO: u8 = 0;
+    const WALKING: u8 = 1;
+    const DONE: u8 = 2;
+    let mut state = vec![TODO; locals.len()];
+    let mut resolved = vec![glam::Mat4::IDENTITY; locals.len()];
+    let mut chain: Vec<u32> = Vec::new();
+    for start in 0..locals.len() {
+        if state[start] == DONE {
+            continue;
+        }
+        if up[start].is_none() {
+            // A root, most of a level: its own place.
+            resolved[start] = locals[start];
+            state[start] = DONE;
+            continue;
+        }
+        // Up to the first ancestor already resolved (or the root), then
+        // back down, each slot once.
+        chain.clear();
+        let mut at = Some(start as u32);
+        let mut above = glam::Mat4::IDENTITY;
+        while let Some(slot) = at {
+            match state[slot as usize] {
+                DONE => {
+                    above = resolved[slot as usize];
+                    break;
+                }
                 // Nothing built from a scene file can contain a cycle — a
                 // tree written as a tree cannot describe one — but an editor
                 // setting a parent by hand can. A wrong transform is a better
-                // answer than a hang.
-                break;
+                // answer than a hang: the cycle is cut where it closes.
+                WALKING => break,
+                _ => {}
             }
+            state[slot as usize] = WALKING;
+            chain.push(slot);
+            at = up[slot as usize];
         }
-        resolved.push((*entity, matrix));
+        for &slot in chain.iter().rev() {
+            above *= locals[slot as usize];
+            resolved[slot as usize] = above;
+            state[slot as usize] = DONE;
+        }
     }
 
-    for (entity, matrix) in resolved {
+    // Written in place where the entity already has one; inserted (which
+    // moves it to another archetype) only the first time. The same set of
+    // entities as the snapshot, so the same order; checked, not assumed.
+    let mut fresh: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
+    let mut every: Option<FastMap<hecs::Entity, usize>> = None;
+    for (slot, (entity, placed)) in world
+        .query_mut::<(hecs::Entity, Option<&mut WorldTransform>)>()
+        .with::<&Transform>()
+        .into_iter()
+        .enumerate()
+    {
+        let matrix = if entities.get(slot) == Some(&entity) {
+            resolved[slot]
+        } else {
+            let every = every.get_or_insert_with(|| entities.iter().enumerate().map(|(i, e)| (*e, i)).collect());
+            match every.get(&entity) {
+                Some(&at) => resolved[at],
+                None => continue,
+            }
+        };
+        match placed {
+            Some(placed) => placed.0 = matrix,
+            None => fresh.push((entity, matrix)),
+        }
+    }
+    for (entity, matrix) in fresh {
         let _ = world.insert_one(entity, WorldTransform(matrix));
     }
 }

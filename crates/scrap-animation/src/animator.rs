@@ -632,7 +632,7 @@ pub fn advance_animations_on(world: &mut World, dt: f32, ground: crate::ik::Grou
         }
     }
     let at = |e: hecs::Entity| world.get::<&WorldTransform>(e).ok().map(|t| t.0);
-    let looks: Vec<(hecs::Entity, Option<glam::Vec3>)> = world
+    let looks: scrap_core::hash::FastMap<hecs::Entity, Option<glam::Vec3>> = world
         .query::<(hecs::Entity, &LookingAt)>()
         .iter()
         .map(|(e, l)| (e, at(l.0).map(|m| m.w_axis.truncate())))
@@ -649,17 +649,20 @@ pub fn advance_animations_on(world: &mut World, dt: f32, ground: crate::ik::Grou
     {
         let mut pose = animator.advance(dt);
         if let Some(ik) = ik {
-            let look = looks
-                .iter()
-                .find(|(e, _)| *e == entity)
-                .and_then(|(_, p)| *p);
+            let look = looks.get(&entity).copied().flatten();
             let placed = placed.map_or(Mat4::IDENTITY, |p| p.0);
             crate::ik::solve(&animator.skeleton, &mut pose, placed, ik, look, ground);
         }
         posed.push((entity, animator.skeleton.skinning_matrices(&pose)));
     }
     for (entity, matrices) in posed {
-        let _ = world.insert_one(entity, Posed(matrices));
+        // In place after the first step: an insert would look up the
+        // archetype to move it to, every step, for every skeleton.
+        if let Ok(was) = world.query_one_mut::<&mut Posed>(entity) {
+            was.0 = matrices;
+        } else {
+            let _ = world.insert_one(entity, Posed(matrices));
+        }
     }
     pose_bound_skins(world);
     hold_on_bones(world);
