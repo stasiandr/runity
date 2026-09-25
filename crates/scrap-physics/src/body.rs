@@ -284,6 +284,11 @@ pub struct BodyProps {
     /// went through it); this stays for the lines that say it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fast: bool,
+    /// Not swept, though dynamic: for a body that moves itself over ground
+    /// it rests on — a walking pawn — which a sweep would stop short each
+    /// step it goes faster than its own size, as PhysX's sweep does not.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unswept: bool,
     /// Axes it may not move along, as letters: `"y"` keeps it at its height.
     /// Unity's Freeze Position.
     #[serde(default, skip_serializing_if = "Axes::is_none")]
@@ -352,6 +357,7 @@ impl Default for BodyProps {
             gravity: 1.0,
             blown: 0.0,
             fast: false,
+            unswept: false,
             freeze_move: Axes::default(),
             freeze_turn: Axes::default(),
         }

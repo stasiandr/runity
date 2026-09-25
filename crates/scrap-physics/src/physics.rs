@@ -874,7 +874,7 @@ impl PhysicsWorld {
             // moves further in a step than it is thick, so a resting
             // level costs nothing for it. (`fast` is kept for lines that
             // ask; it is always so now.)
-            .ccd_enabled(props.fast || kind == Body::Dynamic)
+            .ccd_enabled(props.fast || (kind == Body::Dynamic && !props.unswept))
             .locked_axes(locked(&props))
             .build();
             let mut body = body;
