@@ -115,6 +115,10 @@ struct Built {
     layer: String,
     /// What its parts were built from ([`parts_of`]): any change rebuilds it.
     parts: u64,
+    /// Where its parts sit on it ([`parts_placement`]): a change moves
+    /// their colliders on the body, which keeps its speed — a collider
+    /// under an animated child, as Unity's compound follows it.
+    parts_at: u64,
 }
 
 /// The collider a part was built as, on its ancestor's body: what its
@@ -240,6 +244,15 @@ fn parts_signature(_owner: glam::Mat4, parts: &[PartFound]) -> u64 {
         part.entity.to_bits().hash(&mut hash);
         format!("{:?}{:?}{}{}", part.shape, part.props, part.layer, part.trigger).hash(&mut hash);
         part.mesh.as_ref().map_or(0, CollisionMesh::key).hash(&mut hash);
+    }
+    hash.finish()
+}
+
+/// Where a body's parts sit on it, to the millimetre.
+fn parts_placement(parts: &[PartFound]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for part in parts {
         for v in part.under.to_cols_array() {
             ((v * 1000.0).round() as i64).hash(&mut hash);
         }
@@ -547,6 +560,7 @@ impl PhysicsWorld {
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
         let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
+        let mut reseat: Vec<(hecs::Entity, glam::Mat4, bool)> = Vec::new();
         // What is switched off has no body.
         let off = crate::world::inactive_in_hierarchy(world);
         let parts = parts_of(world, &off);
@@ -579,6 +593,11 @@ impl PhysicsWorld {
             if signature != built.parts {
                 stale.push(entity);
                 continue;
+            }
+            if let Some(mine) = parts.get(&entity) {
+                if parts_placement(mine) != built.parts_at {
+                    reseat.push((entity, placed.0, built.body == Body::Dynamic));
+                }
             }
             // Dynamic ↔ kinematic keeps the body and its speed: switched in
             // place, as Unity's isKinematic does.
@@ -615,6 +634,21 @@ impl PhysicsWorld {
                 if built.local != *local || carried {
                     teleport.push((entity, handle.0, placed.0, *local, body));
                 }
+            }
+        }
+        // Parts that moved on their body: their colliders moved with them.
+        for (owner, placed, dynamic) in reseat {
+            let Some(mine) = parts.get(&owner) else { continue };
+            for part in mine {
+                let Ok(handle) = world.get::<&PartCollider>(part.entity).map(|h| h.0) else { continue };
+                let Some(built) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else { continue };
+                let offset = isometry(placed).inverse() * isometry(part.placed);
+                if let Some(c) = self.colliders.get_mut(handle) {
+                    c.set_position_wrt_parent(offset * *built.position());
+                }
+            }
+            if let Ok(mut built) = world.get::<&mut Built>(owner) {
+                built.parts_at = parts_placement(mine);
             }
         }
         for (entity, handle, kind) in switched {
@@ -851,6 +885,7 @@ impl PhysicsWorld {
                     props,
                     layer,
                     parts: parts_signature(placed.0, mine),
+                    parts_at: parts_placement(mine),
                 },
             ));
         }
@@ -3324,6 +3359,33 @@ mod tests {
         run_for(&mut physics, &mut world, 1);
         assert!(world.get::<&JointBuilt>(tail).is_err());
         assert_eq!(physics.impulse_joints.len(), 0);
+    }
+
+    #[test]
+    fn a_body_whose_part_is_animated_falls_as_freely_as_any() {
+        // A seed packet: its fruit, a collider, bobs on an animated child;
+        // the packet falls all the same, its speed kept step to step.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "packet", model: "m", body: Dynamic,
+                 collider: Box(half: (0.18, 0.16, 0.18)), transform: (position: (0.0, 20.0, 0.0)), children: [
+                    (id: "00000000000000f2", name: "fruit", model: "m", body: Part,
+                     collider: Sphere(radius: 0.1), transform: (position: (0.0, 0.3, 0.0))),
+                ]),
+            ])"#,
+        );
+        let packet = by_id(&world, scene.entities[0].id);
+        let fruit = by_id(&world, crate::id::EntityId::from_raw(0xf2));
+        run_for(&mut physics, &mut world, 1);
+        let start = world.get::<&WorldTransform>(packet).unwrap().0.w_axis.y;
+        for i in 0..30 {
+            world.get::<&mut Transform>(fruit).unwrap().position.y = 0.3 + 0.05 * (i as f32 * 0.7).sin();
+            run_for(&mut physics, &mut world, 1);
+        }
+        let fell = start - world.get::<&WorldTransform>(packet).unwrap().0.w_axis.y;
+        // Half a second of free fall is 1.2 m; rebuilt every step it was
+        // a few centimetres.
+        assert!(fell > 1.0, "fell {fell} m in half a second");
     }
 
     #[test]
