@@ -1216,18 +1216,22 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     }
     match c.kind.as_str() {
         "MeshFilter" => {
-            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                let model = piece(refs.unity, model, &desc.name);
-                desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+            if let Some(r) = b.reference("m_Mesh") {
+                if let Some(model) = model(&r, refs.unity) {
+                    let model = piece_of(refs.unity, model, &desc.name, &r);
+                    desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                }
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 // Its piece, with its skin: bent by the bones of the scene
                 // it is under, found by name when it is spawned.
-                if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                    let model = piece(refs.unity, model, &desc.name);
-                    desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                if let Some(r) = b.reference("m_Mesh") {
+                    if let Some(model) = model(&r, refs.unity) {
+                        let model = piece_of(refs.unity, model, &desc.name, &r);
+                        desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                    }
                 }
             }
             let materials = b.list("m_Materials");
@@ -1274,9 +1278,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
             // Its own mesh, which need not be the one drawn.
-            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                let model = piece(refs.unity, model, &desc.name);
-                desc.set_part(&scrap::scene::CollisionModel(AssetLink::named(model)));
+            if let Some(r) = b.reference("m_Mesh") {
+                if let Some(model) = model(&r, refs.unity) {
+                    let model = piece_of(refs.unity, model, &desc.name, &r);
+                    desc.set_part(&scrap::scene::CollisionModel(AssetLink::named(model)));
+                }
             }
             solid(desc, b);
         }
@@ -1953,6 +1959,25 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
     (kind == "model").then(|| name.to_string())
 }
 
+/// [`piece`], or — when the object's own name is none of the model's
+/// pieces — the piece the same mesh (the model's GUID and the mesh's
+/// fileID) is drawn as elsewhere, by an object named as that piece: a
+/// model's root object carries its body under the file's own name
+/// (Dacha's multitool: `SM_Multitool_01` draws `SM_Multitool_Body_01`,
+/// which its art prefab of that name draws too). Not the whole model: that
+/// draws every tool head and fan of it, still, over the ones its clips move.
+fn piece_of(unity: &Unity, model: String, object: &str, mesh: &Ref) -> String {
+    let named = piece(unity, model.clone(), object);
+    if named != model {
+        return named;
+    }
+    let key = (mesh.guid.clone().unwrap_or_default(), mesh.file_id);
+    match unity.mesh_pieces.get(&key) {
+        Some(p) => format!("{model}@{p}"),
+        None => model,
+    }
+}
+
 /// Which mesh of a model a renderer on `object` draws, in that object's
 /// frame: the piece named as the object is (Unity's "(1)" copies aside),
 /// or a model's only piece. The whole model, in its root's frame, when it
@@ -2262,6 +2287,7 @@ mod tests {
     fn unity() -> Unity {
         Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             declared_params: Default::default(),
             root: Default::default(),
             guids: [
@@ -2574,6 +2600,20 @@ Transform:
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_models_root_draws_the_piece_its_mesh_is_elsewhere() {
+        // Dacha's multitool: the object `SM_Multitool_01` draws the mesh
+        // its art prefab `SM_Multitool_Body_01` draws — its body alone,
+        // not the whole model with every tool head in it.
+        let mut unity = unity();
+        unity.pieces.insert("tool".into(), vec!["Body".into(), "Fan".into(), "Head".into()]);
+        unity.mesh_pieces.insert(("g".into(), 868), "Body".into());
+        let mesh = |id| Ref { file_id: id, guid: Some("g".into()) };
+        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(868)), "tool@Body");
+        assert_eq!(piece_of(&unity, "tool".into(), "Fan (1)", &mesh(868)), "tool@Fan", "its own name first");
+        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(5)), "tool", "a mesh no prefab names: the whole");
     }
 
     #[test]

@@ -346,6 +346,7 @@ AnimatorStateTransition:
         .unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             declared_params: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
@@ -379,6 +380,7 @@ AnimatorStateTransition:
         std::fs::write(&path, CONTROLLER).unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             declared_params: Default::default(),
             layers: Default::default(),
             root: dir.clone(),

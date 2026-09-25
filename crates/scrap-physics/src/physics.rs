@@ -1534,17 +1534,50 @@ impl PhysicsWorld {
             // the hierarchy is recomputed from, and what a reload compares
             // with the file. Writing only the world one would let the next
             // hierarchy pass put the body back where the scene had it.
-            let parent_matrix = parent
+            //
+            // Only its place and turn are the body's: its own scale stays
+            // what it was, as Unity keeps a Rigidbody's `localScale`. Under
+            // a parent scaled unevenly and turned, the world matrix is
+            // sheared, and reading a scale back out of it and into the
+            // local one grew the thing a little every step — a mouse's jaw
+            // on a hinge, under its model's 275×325×282 bones, a metre
+            // wider each second.
+            let parent_world = parent
                 .and_then(|p| world.get::<&WorldTransform>(p).ok().map(|w| w.0))
                 .unwrap_or(glam::Mat4::IDENTITY);
-            let local_matrix = parent_matrix.inverse() * matrix;
-            let (scale, rotation, translation) = local_matrix.to_scale_rotation_translation();
-            let mut local = Transform {
-                position: translation,
-                scale,
-                ..Transform::default()
+            // What the hierarchy puts between them (a bone it rides on).
+            let between = world.get::<&crate::world::Between>(entity).ok().map(|b| b.0);
+            let parent_matrix = parent_world * between.unwrap_or(glam::Mat4::IDENTITY);
+            let (parent_scale, parent_rotation, _) = parent_matrix.to_scale_rotation_translation();
+            let uneven = parent.is_some()
+                && parent_scale.abs().max_element() > parent_scale.abs().min_element() * 1.001;
+            let kept = world.get::<&Transform>(entity).ok().map(|t| t.scale);
+            let (local, matrix) = match kept.filter(|_| uneven) {
+                // Its place and turn under the parent; its scale its own.
+                Some(scale) => {
+                    let (_, rotation, translation) = matrix.to_scale_rotation_translation();
+                    let mut local = Transform {
+                        position: parent_matrix.inverse().transform_point3(translation),
+                        scale,
+                        ..Transform::default()
+                    };
+                    local.set_rotation((parent_rotation.inverse() * rotation).normalize());
+                    // What the hierarchy makes of it: the parent's shear and all.
+                    (local, parent_matrix * local.matrix())
+                }
+                // An evenly scaled parent — mirrored too — shears nothing:
+                // the local transform is the world one undone by it.
+                None => {
+                    let (scale, rotation, translation) = (parent_world.inverse() * matrix).to_scale_rotation_translation();
+                    let mut local = Transform {
+                        position: translation,
+                        scale,
+                        ..Transform::default()
+                    };
+                    local.set_rotation(rotation);
+                    (local, matrix)
+                }
             };
-            local.set_rotation(rotation);
             let _ = world.insert_one(entity, WorldTransform(matrix));
             // Where the step took it from and to: a frame between steps
             // draws it between them (`world::interpolate`).
@@ -2638,6 +2671,38 @@ mod tests {
         let found = physics.overlap_sphere(head_now, 0.1);
         assert!(!found.is_empty(), "the head's collider is where its parent took it: {found:?}");
         assert!(physics.overlap_sphere(Vec3::new(0.0, 0.0, 1.0), 0.1).is_empty(), "and not left where it started");
+    }
+
+    /// A dynamic body under a parent scaled unevenly and turned keeps its
+    /// own scale, as Unity keeps a Rigidbody's `localScale`: reading one
+    /// back out of its sheared world matrix grew it every step (Dacha's
+    /// metal sphere mouse's jaw, a hinged body under 275×325×282 bones,
+    /// was metres wide in seconds).
+    #[test]
+    fn a_body_under_an_unevenly_scaled_turned_parent_keeps_its_scale() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "bones", transform: (rotation_deg: (0.0, -90.0, 0.0), scale: (275.0, 325.0, 282.0)),
+             children: [(id: "0000000000000002", name: "jaw",
+               transform: (position: (0.0, 0.01, 0.0), rotation_deg: (0.0, -177.0, 136.0), scale: (0.009, 0.0077, 0.0089)),
+               body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)), physics: (gravity: 0.0))]),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let jaw = world.query::<(hecs::Entity, &Physics)>().iter().find(|(_, p)| p.0 == Body::Dynamic).map(|(e, _)| e).unwrap();
+        let was = world.get::<&Transform>(jaw).unwrap().scale;
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.run(&mut world);
+        physics.set_spin(&world, jaw, Vec3::new(0.0, 1.0, 2.0));
+        for _ in 0..90 {
+            physics.run(&mut world);
+            crate::world::apply_hierarchy(&mut world);
+        }
+        let now = world.get::<&Transform>(jaw).unwrap().scale;
+        assert!((now - was).abs().max_element() < 1e-6, "its own scale kept: {was} then {now}");
+        let wide = world.get::<&WorldTransform>(jaw).unwrap().0.to_scale_rotation_translation().0.max_element();
+        assert!(wide < 4.0, "and not grown in the world: {wide}");
     }
 
     /// A hinge held at an angle by its spring gets there, and against a

@@ -798,6 +798,7 @@ Material:
         let unity = Unity {
             layers: Default::default(),
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             declared_params: Default::default(),
             root: dir.clone(),
             guids: [
@@ -876,6 +877,7 @@ Material:
         .unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             root: dir.clone(),
@@ -916,6 +918,7 @@ Material:
         .unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             root: dir.clone(),
@@ -944,6 +947,7 @@ Material:
         std::fs::write(&path, MAT).unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             root: dir.clone(),

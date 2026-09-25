@@ -507,10 +507,10 @@ pub struct SkinOf(pub crate::AssetLink);
 /// where the bone stood when it was bound — the pose the model was made in.
 #[derive(Debug, Clone)]
 pub struct BoundSkin {
-    bones: Vec<Option<hecs::Entity>>,
+    pub bones: Vec<Option<hecs::Entity>>,
     /// Per joint: the bone's place when bound, undone, then the model's
     /// own place then (its vertices are in its own frame).
-    unbind: Vec<Mat4>,
+    pub unbind: Vec<Mat4>,
 }
 
 /// Bind every skinned model not yet bound and not played by an animator
