@@ -201,7 +201,9 @@ pub fn step(world: &mut World, seconds: f32) {
     // Where everything is before it moves: what went through what.
     let starts = frame_starts(world);
     let (solid, tags) = tagged_obstacles_but(world, |_| false);
-    let obstacles = Obstacles::tagged(solid.clone(), tags.clone());
+    // Kept for the second grid only when there are cloths to add to it.
+    let for_sheets = cloth.then(|| (solid.clone(), tags.clone()));
+    let obstacles = Obstacles::tagged(solid, tags);
     if cloth {
         run_cloth(world, seconds, &obstacles);
     }
@@ -209,24 +211,27 @@ pub fn step(world: &mut World, seconds: f32) {
         run_hair(world, seconds, &obstacles);
     }
     // The rest meet the cloths as they now are, within their own steps.
-    let with_sheets = if cloth {
-        let mut all = solid;
-        all.extend(sheet_obstacles(world));
-        Obstacles::tagged(all, tags)
-    } else {
-        obstacles.clone()
+    // Without cloths it is the same grid, lent rather than copied.
+    let sheets;
+    let with_sheets = match for_sheets {
+        Some((mut all, tags)) => {
+            all.extend(sheet_obstacles(world));
+            sheets = Obstacles::tagged(all, tags);
+            &sheets
+        }
+        None => &obstacles,
     };
     if ropes {
-        run_ropes(world, seconds, &with_sheets);
+        run_ropes(world, seconds, with_sheets);
     }
     if bodies {
-        run_soft_bodies(world, seconds, &with_sheets);
+        run_soft_bodies(world, seconds, with_sheets);
     }
     if fluids {
-        run_fluids(world, seconds, &with_sheets);
+        run_fluids(world, seconds, with_sheets);
     }
     if grains {
-        run_grains(world, seconds, &with_sheets);
+        run_grains(world, seconds, with_sheets);
     }
     // Then each kind against the others: one solver's contacts.
     run_contacts(world, &starts, &obstacles);
