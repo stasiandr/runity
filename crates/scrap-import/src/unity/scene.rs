@@ -615,6 +615,19 @@ fn instance(
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
             }
+        } else if path == "m_Controller" && kind == "model" {
+            // A placed model given an animator graph for its own Animator —
+            // a variant of a hand model that plays its grab and point: the
+            // model is one entity, so the graph is the line's.
+            let graph = m
+                .reference("objectReference")
+                .and_then(|r| r.guid)
+                .and_then(|g| unity.named(&g))
+                .filter(|(k, _)| *k == "animator");
+            match graph {
+                Some((_, name)) => desc.set_part(&scrap::scene::AnimatorRef(name.to_string())),
+                None => report.skip("a placed model's Animator given no graph (or an override controller)"),
+            }
         } else if path == "m_Enabled" && value == 0.0 && kind == "model" {
             // A placed model's renderer or collider switched off: drawn
             // not at all, solid by its mesh still if its collider is on.
