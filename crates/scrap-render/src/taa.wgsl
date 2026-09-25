@@ -104,27 +104,23 @@ fn fs_resolve(in: Varyings) -> @location(0) vec4<f32> {
     if taa.params.x < 0.5 {
         return vec4<f32>(here, 1.0);
     }
-    // The neighbourhood: its mean and spread, and the nearest depth in it —
-    // an edge moves with what is in front.
+    // The neighbourhood — the pixel and the four beside it, a cross, as
+    // Unreal's: its mean and spread, and the nearest depth in it (an edge
+    // moves with what is in front). Nine taps would be a third again of
+    // the pass for a box the cross already bounds.
     var m1 = vec3<f32>(0.0);
     var m2 = vec3<f32>(0.0);
     var nearest = 1.0;
-    var nearest_at = pixel;
-    for (var y = -1; y <= 1; y = y + 1) {
-        for (var x = -1; x <= 1; x = x + 1) {
-            let at = clamp(pixel + vec2<i32>(x, y), vec2<i32>(0), limit);
-            let c = to_ycocg(tamed(textureLoad(current, at, 0).rgb));
-            m1 += c;
-            m2 += c * c;
-            let d = textureLoad(depth, at, 0);
-            if d < nearest {
-                nearest = d;
-                nearest_at = at;
-            }
-        }
+    let cross = array<vec2<i32>, 5>(vec2<i32>(0, 0), vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1));
+    for (var i = 0; i < 5; i = i + 1) {
+        let at = clamp(pixel + cross[i], vec2<i32>(0), limit);
+        let c = to_ycocg(tamed(textureLoad(current, at, 0).rgb));
+        m1 += c;
+        m2 += c * c;
+        nearest = min(nearest, textureLoad(depth, at, 0));
     }
-    let mean = m1 / 9.0;
-    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));
+    let mean = m1 / 5.0;
+    let sigma = sqrt(max(m2 / 5.0 - mean * mean, vec3<f32>(0.0)));
     let low = mean - sigma * 1.25;
     let high = mean + sigma * 1.25;
 
