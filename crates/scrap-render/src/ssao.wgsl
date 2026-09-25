@@ -22,6 +22,8 @@ struct Ssao {
     // how much light bounces (0: none), how far its rays reach; 1 for GTAO;
     // how many screen pixels across the occlusion's one is
     bounce: vec4<f32>,
+    // near, far, 1 when orthographic
+    depth_range: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> ssao: Ssao;
@@ -50,6 +52,19 @@ fn world_at(pixel: vec2<i32>) -> vec3<f32> {
     let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
     let world = ssao.inverse_view_projection * ndc;
     return world.xyz / world.w;
+}
+
+/// How far into the view a pixel's depth is, metres: all the blur needs
+/// to tell a neighbour on the same surface from one behind it, for a load
+/// and a division rather than a world position.
+fn view_distance(pixel: vec2<i32>) -> f32 {
+    let d = textureLoad(depth, pixel, 0);
+    let near = ssao.depth_range.x;
+    let far = ssao.depth_range.y;
+    if ssao.depth_range.z > 0.5 {
+        return near + d * (far - near);
+    }
+    return near * far / max(far - d * (far - near), 1e-6);
 }
 
 fn hash(p: vec2<f32>) -> f32 {
@@ -360,14 +375,14 @@ fn fs_blur(in: Varyings) -> @location(0) vec4<f32> {
     let scale = i32(ssao.bounce.w);
     let screen = vec2<i32>(ssao.size.xy) - vec2<i32>(1);
     let limit = vec2<i32>(textureDimensions(source)) - vec2<i32>(1);
-    let here = length(world_at(pixel) - ssao.eye.xyz);
+    let here = view_distance(pixel);
     let centre = pixel / scale;
     var sum = vec4<f32>(0.0);
     var weight = 0.0;
     for (var y = -2; y < 2; y = y + 1) {
         for (var x = -2; x < 2; x = x + 1) {
             let at = clamp(centre + vec2<i32>(x, y), vec2<i32>(0), limit);
-            let there = length(world_at(min(at * scale, screen)) - ssao.eye.xyz);
+            let there = view_distance(min(at * scale, screen));
             let w = 1.0 - smoothstep(0.02, 0.1, abs(there - here) / max(here, 1e-3));
             sum += textureLoad(source, at, 0) * w;
             weight += w;

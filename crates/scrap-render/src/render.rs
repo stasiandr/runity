@@ -1374,7 +1374,7 @@ pub struct Renderer {
     /// The lit pipelines built lean, for frames that may be drawn so
     /// ([`crate::lean`]), and the shader modules they are built from: the
     /// standard one's (`None`) and each material shader's.
-    lean: crate::lean::Lean<Look>,
+    lean: crate::lean::Lean<LeanKey>,
     /// Unlit see-through things at half size ([`crate::lowres`]).
     lowres: crate::lowres::LowRes,
     /// Whether the last screen frame used it.
@@ -2549,7 +2549,7 @@ impl Renderer {
     fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
         let (key, prepassed) = self.scene_key(look)?;
         if self.lean.on {
-            if let Some(lean) = self.lean.ready.get(&(key, prepassed)) {
+            if let Some(lean) = self.lean.ready.get(&LeanKey::Scene(key, prepassed)) {
                 return Some(lean);
             }
         }
@@ -2579,7 +2579,7 @@ impl Renderer {
             for prepassed in [false, true] {
                 self.depth_prepassed = prepassed;
                 if let Some(key) = self.scene_key(look) {
-                    if !self.lean.asked(&key) && !wanted.contains(&key) {
+                    if !self.lean.asked(&LeanKey::Scene(key.0, key.1)) && !wanted.contains(&key) {
                         wanted.push(key);
                     }
                 }
@@ -2591,7 +2591,25 @@ impl Renderer {
                 continue;
             };
             let layout = if look.skinned { self.skinned_layout.clone() } else { self.pipeline_layout.clone() };
-            self.lean.ask(&gpu.device, (look, prepassed), module, layout, look.describe(prepassed, self.samples));
+            let describe = look.describe(prepassed, self.samples);
+            let build: crate::lean::Build = Box::new(move |device: &wgpu::Device| {
+                crate::lean::scene_pipeline(device, &module, &layout, describe, true)
+            });
+            self.lean.ask(&gpu.device, LeanKey::Scene(look, prepassed), build);
+        }
+    }
+
+    /// Ask for the lean pipelines drawing culled clusters of these faces.
+    fn ask_lean_clusters(&mut self, gpu: &Gpu, wanted: impl Iterator<Item = (RenderFace, bool)>) {
+        let Some(module) = self.lean_modules.get(&None).cloned() else {
+            return;
+        };
+        for (face, water) in wanted {
+            let key = LeanKey::Cluster(face, water);
+            if !self.lean.asked(&key) {
+                let build = self.clusters.lean_build(&module, face, water, self.samples);
+                self.lean.ask(&gpu.device, key, build);
+            }
         }
     }
 
@@ -4156,7 +4174,11 @@ impl Renderer {
                 let pipeline = if prepass {
                     pipelines.prepass.get(&look.face)
                 } else {
-                    pipelines.scene.get(&(look.face, look.water))
+                    self.lean
+                        .ready
+                        .get(&LeanKey::Cluster(look.face, look.water))
+                        .filter(|_| self.lean.on)
+                        .or_else(|| pipelines.scene.get(&(look.face, look.water)))
                 };
                 if let (Some(pipeline), true) = (pipeline, self.clusters.this_frame.contains_key(&k)) {
                     if !crate::frame_debugger::draw(|| self.describe(*handle, Some(look), texture, count, true, prepass, textured)) {
@@ -6431,6 +6453,15 @@ impl Renderer {
                 .chain(transparent.iter().map(|t| t.1))
                 .collect();
             self.ask_lean(gpu, looks.into_iter());
+            let faces: Vec<(RenderFace, bool)> = batches
+                .iter()
+                .filter_map(|((look, handle, _), _)| {
+                    let look = (*look)?;
+                    self.mesh(*handle)?.clusters.as_ref()?;
+                    Some((look.face, look.water))
+                })
+                .collect();
+            self.ask_lean_clusters(gpu, faces.into_iter());
         }
         // One-sided first, then both: each range with its own culling.
         let shadow_one_sided = shadow_batches.len();
@@ -7119,6 +7150,12 @@ impl Renderer {
                     // Under TAA the bounce's rays turn each frame, and half
                     // as many do: the history adds them up.
                     (taa_run && self.taa.frames() > 0).then(|| (self.taa.frames() as f32 * 0.618_034).fract()),
+                    [
+                        frame.camera.near,
+                        frame.camera.far,
+                        if frame.camera.ortho.is_some() { 1.0 } else { 0.0 },
+                        0.0,
+                    ],
                 );
                 if debugged {
                     self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::Alpha(&self.ssao.result));
@@ -7772,6 +7809,14 @@ fn caster_cascades(bounds: crate::asset::Bounds, transform: Mat4, cascades: &[(M
         }
     }
     mask
+}
+
+/// A lean pipeline ([`crate::lean`]): a look's, over the prepass's depth
+/// or not; or one drawing culled clusters of a face, water or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LeanKey {
+    Scene(Look, bool),
+    Cluster(RenderFace, bool),
 }
 
 /// Whether a see-through look is drawn at half size when the frame allows

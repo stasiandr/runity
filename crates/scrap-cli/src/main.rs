@@ -561,9 +561,12 @@ fn frame_debug(rest: &[String]) -> Result<ExitCode> {
     shot.renderer.debug_frame(stop);
     shot.draw(1);
     let pixels = shot.pixels();
-    // Timed a frame later, when the GPU's times are back.
-    shot.draw(1);
-    shot.pixels();
+    // Timed over a few frames more, each waited for, so the GPU's times
+    // are back (the first frame's are not counted).
+    for _ in 0..8 {
+        shot.draw(1);
+        shot.pixels();
+    }
     let Some(capture) = shot.renderer.frame_capture().cloned() else {
         bail!("the frame was not recorded");
     };

@@ -27,16 +27,14 @@ use std::sync::mpsc;
 
 use crate::material::RenderFace;
 
-/// A pipeline asked for: which look, over the prepass's depth or not.
-pub(crate) type Key<L> = (L, bool);
+/// How the worker builds a pipeline.
+pub(crate) type Build = Box<dyn FnOnce(&wgpu::Device) -> wgpu::RenderPipeline + Send>;
 
-/// What the worker needs to build one.
-pub(crate) struct Job<L> {
-    pub(crate) key: Key<L>,
-    pub(crate) generation: u64,
-    pub(crate) module: wgpu::ShaderModule,
-    pub(crate) layout: wgpu::PipelineLayout,
-    pub(crate) describe: Describe,
+/// What the worker is given: the key, the shaders' generation, how.
+struct Job<K> {
+    key: K,
+    generation: u64,
+    build: Build,
 }
 
 /// A scene pipeline's particulars, as `scene_pipelines` builds it.
@@ -53,19 +51,19 @@ pub(crate) struct Describe {
     pub(crate) samples: u32,
 }
 
-pub(crate) struct Lean<L: Copy + Eq + std::hash::Hash + Send + 'static> {
+pub(crate) struct Lean<K: Copy + Eq + std::hash::Hash + Send + 'static> {
     /// This frame is drawn lean where a pipeline is in.
     pub(crate) on: bool,
     /// Off by `SCRAP_LEAN=0`.
     pub(crate) enabled: bool,
-    pub(crate) ready: HashMap<Key<L>, wgpu::RenderPipeline>,
-    pending: HashSet<Key<L>>,
+    pub(crate) ready: HashMap<K, wgpu::RenderPipeline>,
+    pending: HashSet<K>,
     generation: u64,
-    jobs: Option<mpsc::Sender<Job<L>>>,
-    done: Option<mpsc::Receiver<(Key<L>, u64, wgpu::RenderPipeline)>>,
+    jobs: Option<mpsc::Sender<Job<K>>>,
+    done: Option<mpsc::Receiver<(K, u64, wgpu::RenderPipeline)>>,
 }
 
-impl<L: Copy + Eq + std::hash::Hash + Send + 'static> Default for Lean<L> {
+impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Default for Lean<K> {
     fn default() -> Self {
         Self {
             on: false,
@@ -79,7 +77,7 @@ impl<L: Copy + Eq + std::hash::Hash + Send + 'static> Default for Lean<L> {
     }
 }
 
-impl<L: Copy + Eq + std::hash::Hash + Send + 'static> Lean<L> {
+impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Lean<K> {
     /// What was built is stale: the shaders or the samples changed.
     pub(crate) fn forget(&mut self) {
         self.generation += 1;
@@ -88,22 +86,22 @@ impl<L: Copy + Eq + std::hash::Hash + Send + 'static> Lean<L> {
     }
 
     /// Whether this key was asked for already (and so is in, or coming).
-    pub(crate) fn asked(&self, key: &Key<L>) -> bool {
+    pub(crate) fn asked(&self, key: &K) -> bool {
         self.ready.contains_key(key) || self.pending.contains(key)
     }
 
     /// Ask for a pipeline: built on the worker, in by a later frame.
-    pub(crate) fn ask(&mut self, device: &wgpu::Device, key: Key<L>, module: wgpu::ShaderModule, layout: wgpu::PipelineLayout, describe: Describe) {
+    pub(crate) fn ask(&mut self, device: &wgpu::Device, key: K, build: Build) {
         if self.asked(&key) {
             return;
         }
         if self.jobs.is_none() {
-            let (jobs, inbox) = mpsc::channel::<Job<L>>();
+            let (jobs, inbox) = mpsc::channel::<Job<K>>();
             let (outbox, done) = mpsc::channel();
             let device = device.clone();
             let spawned = std::thread::Builder::new().name("scrap-lean-pipelines".into()).spawn(move || {
                 for job in inbox {
-                    let pipeline = scene_pipeline(&device, &job.module, &job.layout, job.describe, true);
+                    let pipeline = (job.build)(&device);
                     if outbox.send((job.key, job.generation, pipeline)).is_err() {
                         break;
                     }
@@ -118,7 +116,7 @@ impl<L: Copy + Eq + std::hash::Hash + Send + 'static> Lean<L> {
         }
         self.pending.insert(key);
         if let Some(jobs) = &self.jobs {
-            let _ = jobs.send(Job { key, generation: self.generation, module, layout, describe });
+            let _ = jobs.send(Job { key, generation: self.generation, build });
         }
     }
 

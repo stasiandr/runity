@@ -126,6 +126,9 @@ struct SsaoUniform {
     kernel: [[f32; 4]; 16],
     previous_view_projection: [[f32; 4]; 4],
     bounce: [f32; 4],
+    /// The camera's near and far, and 1 when it is orthographic: what the
+    /// blur reads a depth as distance by.
+    depth_range: [f32; 4],
 }
 
 /// Sixteen points in the unit hemisphere over +z, more of them near the
@@ -315,6 +318,7 @@ impl SsaoRenderer {
         settings: &AmbientOcclusion,
         last_frame: Option<&wgpu::TextureView>,
         turn: Option<f32>,
+        depth_range: [f32; 4],
     ) {
         let (w, h) = self.size;
         let uniform = SsaoUniform {
@@ -343,6 +347,7 @@ impl SsaoRenderer {
                 // The occlusion's pixel is this many of the screen's across.
                 scale_for(self.size) as f32,
             ],
+            depth_range,
         };
         let last_frame = last_frame.unwrap_or(&self.white);
         gpu.queue

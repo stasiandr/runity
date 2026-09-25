@@ -570,43 +570,7 @@ impl Clusters {
             return None;
         }
         let pipeline = |face: RenderFace, fragment: &str, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32| {
-            gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("scrap::clusters"),
-                layout: Some(&self.pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_cluster"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some(fragment),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: match face {
-                        RenderFace::Front => Some(wgpu::Face::Back),
-                        RenderFace::Back => Some(wgpu::Face::Front),
-                        RenderFace::Both | RenderFace::BothAsFront => None,
-                    },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    ..Default::default()
-                },
-                multiview_mask: None,
-                cache: None,
-            })
+            cluster_pipeline(&gpu.device, &self.pipeline_layout, shader, face, fragment, format, depth, samples, false)
         };
         let faces = [RenderFace::Front, RenderFace::Back, RenderFace::Both];
         let mut scene = std::collections::HashMap::new();
@@ -625,6 +589,16 @@ impl Clusters {
             );
         }
         Some(ClusterPipelines { scene, prepass })
+    }
+
+    /// How a lean colour pipeline of `face` (and water or not) is built —
+    /// on the lean worker ([`crate::lean`]).
+    pub(crate) fn lean_build(&self, shader: &wgpu::ShaderModule, face: RenderFace, water: bool, samples: u32) -> crate::lean::Build {
+        let (layout, shader) = (self.pipeline_layout.clone(), shader.clone());
+        Box::new(move |device: &wgpu::Device| {
+            let fragment = if water { "fs_water" } else { "fs" };
+            cluster_pipeline(device, &layout, &shader, face, fragment, crate::post::HDR_FORMAT, crate::render::DEPTH_FORMAT, samples, true)
+        })
     }
 
     /// Cull this frame's clustered batches: what is kept is on the list,
@@ -852,4 +826,61 @@ mod tests {
         let small = crate::builtin::sphere(1.0, 16, 8);
         assert!(build(&small.vertices, &small.indices).is_none());
     }
+}
+
+/// A pipeline drawing culled clusters, its vertices pulled; `lean` builds
+/// its fragment stage with `LEAN` on (render.wgsl).
+#[allow(clippy::too_many_arguments)]
+fn cluster_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    face: RenderFace,
+    fragment: &str,
+    format: wgpu::TextureFormat,
+    depth: wgpu::TextureFormat,
+    samples: u32,
+    lean: bool,
+) -> wgpu::RenderPipeline {
+    let constants: &[(&str, f64)] = if lean { &[("LEAN", 1.0)] } else { &[] };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(if lean { "scrap::clusters (lean)" } else { "scrap::clusters" }),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_cluster"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fragment),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants,
+                ..Default::default()
+            },
+            targets: &[Some(format.into())],
+        }),
+        primitive: wgpu::PrimitiveState {
+            cull_mode: match face {
+                RenderFace::Front => Some(wgpu::Face::Back),
+                RenderFace::Back => Some(wgpu::Face::Front),
+                RenderFace::Both | RenderFace::BothAsFront => None,
+            },
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: samples,
+            ..Default::default()
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }
