@@ -108,11 +108,17 @@ pub struct Light {
     pub intensity: f32,
     #[serde(default = "light_range")]
     pub range: f32,
-    /// A spot light instead: shines along the entity's +z in a cone this
-    /// many degrees across — a torch, a searchlight, headlights. Unity's
-    /// Spot Light.
+    /// A spot light instead: shines along the entity's −z (the way a
+    /// camera looks, and a Unity light's +z brought over the mirror) in a
+    /// cone this many degrees across — a torch, a searchlight, headlights.
+    /// Unity's Spot Light.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub cone_deg: Option<f32>,
+    /// A spot's inner cone, degrees across: all its light inside, fading
+    /// to none at `cone_deg` — URP's Inner Spot Angle. Without it the
+    /// light fades over the cone's last tenth.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub inner_cone_deg: Option<f32>,
     /// Casts shadows — on unless `shadows: false`, as a lamp in URP; the
     /// nearest lamps the camera sees get them first.
     #[serde(default = "yes_look", skip_serializing_if = "is_true")]
@@ -122,6 +128,13 @@ pub struct Light {
     /// lamp. Unity's Lens Flare (SRP) component. 0 is none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flare: f32,
+    /// How it fades on its way to `range`: smooth unless said.
+    #[serde(default, skip_serializing_if = "is_smooth")]
+    pub falloff: crate::render::Falloff,
+}
+
+fn is_smooth(f: &crate::render::Falloff) -> bool {
+    *f == crate::render::Falloff::Smooth
 }
 
 /// A box whose surroundings polished things in it reflect — URP's baked

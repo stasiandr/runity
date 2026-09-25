@@ -11,6 +11,7 @@
 
 pub mod appearance;
 pub mod atmosphere;
+pub mod procedural_sky;
 pub mod bindless;
 pub mod cameras;
 pub mod clouds;

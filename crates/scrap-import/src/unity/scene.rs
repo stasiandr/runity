@@ -1292,8 +1292,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 intensity: b.f32("m_Intensity").unwrap_or(1.0),
                 range: b.f32("m_Range").unwrap_or(10.0),
                 cone_deg: (kind == 0).then(|| b.f32("m_SpotAngle").unwrap_or(30.0)),
+                inner_cone_deg: (kind == 0).then(|| b.f32("m_InnerSpotAngle")).flatten(),
                 shadows: b["m_Shadows"].i64("m_Type").unwrap_or(0) != 0,
                 flare: 0.0,
+                // URP's lamps fall off as the square of the distance.
+                falloff: scrap::render::Falloff::InverseSquare,
             });
         }
         "Camera" => {

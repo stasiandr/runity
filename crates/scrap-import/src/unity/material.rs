@@ -24,13 +24,13 @@ fn property<'a>(material: &'a Yaml, list: &str, name: &str) -> Option<&'a Yaml> 
         })
 }
 
-fn float(m: &Yaml, name: &str) -> Option<f32> {
+pub(super) fn float(m: &Yaml, name: &str) -> Option<f32> {
     property(m, "m_Floats", name)
         .and_then(yaml::number)
         .map(|n| n as f32)
 }
 
-fn color(m: &Yaml, name: &str) -> Option<[f32; 4]> {
+pub(super) fn color(m: &Yaml, name: &str) -> Option<[f32; 4]> {
     let c = property(m, "m_Colors", name)?;
     Some([
         yaml::number(&c["r"])? as f32,

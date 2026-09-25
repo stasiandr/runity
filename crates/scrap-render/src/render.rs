@@ -337,10 +337,16 @@ impl Default for FogSettings {
 /// What is behind everything: URP's skybox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SkyMode {
-    /// A gradient from the horizon to the zenith, the ground below, and
-    /// the sun's disc where the sun is: URP's Procedural skybox. Its
-    /// colours are the scene's to pick, for a look the air would not give.
+    /// Unity's Procedural skybox, as every URP scene starts with: the air
+    /// a thin shell the sun lights ([`crate::procedural_sky`]) — deep blue
+    /// overhead and pale at the horizon, warmer as the sun goes down, the
+    /// sky's `ground` below and the sun's disc where the sun is. `tint`,
+    /// `thickness`, `ground`, `exposure` and `sun_size` are its knobs.
     Procedural,
+    /// A gradient from the horizon to the zenith, the ground below, and
+    /// the sun's disc where the sun is. Its colours are the scene's to
+    /// pick, for a look the air would not give.
+    Gradient,
     /// A flat colour: the frame's `clear_color`. URP's Solid Color.
     Color,
     /// Sunlight scattered by the air: blue at noon, orange at sunset, with
@@ -368,6 +374,14 @@ pub struct Sky {
     pub sun_size: f32,
     /// How bright the whole sky is.
     pub exposure: f32,
+    /// For [`SkyMode::Procedural`], linear: which light the air scatters
+    /// most — middle grey (0.214) is Unity's blue sky, more red a warmer
+    /// one. Unity's Sky Tint.
+    pub tint: [f32; 3],
+    /// For [`SkyMode::Procedural`]: how much air, 1 Earth's; thicker is
+    /// bluer overhead and redder at the horizon. Unity's Atmosphere
+    /// Thickness.
+    pub thickness: f32,
     /// The air, for [`SkyMode::Physical`].
     pub atmosphere: crate::atmosphere::Atmosphere,
     /// Clouds over it ([`crate::clouds`]); none by default.
@@ -383,6 +397,8 @@ impl Default for Sky {
             ground: [0.30, 0.28, 0.25],
             sun_size: 1.5,
             exposure: 1.0,
+            tint: [0.214, 0.214, 0.214],
+            thickness: 1.0,
             atmosphere: crate::atmosphere::Atmosphere::default(),
             clouds: crate::clouds::Clouds::default(),
         }
@@ -838,6 +854,25 @@ pub struct PointLight {
     pub spot: Option<(Vec3, f32)>,
     /// Casts shadows, if a shadow map is left for it ([`crate::lights`]).
     pub shadows: bool,
+    /// How it fades with distance.
+    pub falloff: Falloff,
+    /// For a spot: its inner cone, degrees across — all its light inside,
+    /// fading to none at its edge, as URP's Inner Spot Angle. `None`
+    /// fades over the cone's last tenth.
+    pub inner_cone: Option<f32>,
+}
+
+/// How a lamp's light fades on its way to `range`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Falloff {
+    /// `(1 − d/range)²`: a soft pool, its colour times its intensity at
+    /// the lamp itself — the numbers a person picks by eye.
+    #[default]
+    Smooth,
+    /// As the square of the distance, eased to nothing at `range`: URP's
+    /// (`1/d² · (1 − (d/range)⁴)²`), so a Unity lamp's intensity means
+    /// what it did there — its light a metre off.
+    InverseSquare,
 }
 
 /// A mesh the game rewrites as it goes, as a frame carries it. `key`
@@ -5266,8 +5301,23 @@ impl Renderer {
             sun_light * (1.0 - 0.8 * storm) * Vec3::new(1.0, 1.0 - 0.25 * storm, 1.0 - 0.5 * storm);
         // A scene that says its light from all round has it, whatever the
         // sky would work out: above, the horizon, below.
-        let (sky_light, ground_light, equator) = match frame.lighting.ambient {
-            Some([sky, equator, ground]) => (sky, ground, extend(equator, 1.0)),
+        // Unity's ambient probe: the scene's gradient as the probe has it,
+        // or, when the scene says no light of its own, Unity's procedural
+        // sky's — what a face turned up, sideways and down sees.
+        let unity_sky = crate::procedural_sky::UnitySky::new(&frame.sky);
+        let ambient = match frame.lighting.ambient {
+            Some([sky, equator, ground]) => {
+                Some(crate::procedural_sky::gradient_seen(sky, equator, ground))
+            }
+            None if frame.sky.mode == SkyMode::Procedural => Some(unity_sky.ambient(
+                sky_to_sun,
+                frame.lighting.sun_color * sky_sun_intensity,
+                frame.sky.sun_size,
+            )),
+            None => None,
+        };
+        let (sky_light, ground_light, equator) = match ambient {
+            Some([up, side, down]) => (up, down, extend(side, 1.0)),
             None => (sky_light, ground_light, [0.0; 4]),
         };
         let sky_light = sky_light.lerp(Vec3::new(0.55, 0.4, 0.26), storm * 0.7);
@@ -5403,29 +5453,43 @@ impl Renderer {
             },
             light_shadow: [1.0 / self.light_shadow_resolution as f32, 0.0, 0.0, 0.0],
             inverse_view_projection: drawn.inverse().to_cols_array_2d(),
-            sky_zenith: [
-                frame.sky.zenith[0],
-                frame.sky.zenith[1],
-                frame.sky.zenith[2],
-                match frame.sky.mode {
-                    SkyMode::Color => 0.0,
-                    SkyMode::Procedural => 1.0,
-                    SkyMode::Physical => 2.0,
-                },
-            ],
-            sky_horizon: [
-                frame.sky.horizon[0],
-                frame.sky.horizon[1],
-                frame.sky.horizon[2],
+            // Unity's procedural sky wants its own numbers where the
+            // gradient's colours go: 1/λ⁴ for the zenith, Rayleigh's
+            // constant and the sun's radius (radians) for the horizon.
+            sky_zenith: {
+                let c = if frame.sky.mode == SkyMode::Procedural {
+                    unity_sky.inv_wavelength.to_array()
+                } else {
+                    frame.sky.zenith
+                };
+                [
+                    c[0],
+                    c[1],
+                    c[2],
+                    match frame.sky.mode {
+                        SkyMode::Color => 0.0,
+                        SkyMode::Gradient => 1.0,
+                        SkyMode::Physical => 2.0,
+                        SkyMode::Procedural => 3.0,
+                    },
+                ]
+            },
+            sky_horizon: {
                 // No disc in a probe's picture: a probe's texels are coarse,
                 // and the disc would come back from every mirror as a square
                 // — the sun's highlight is the lights' own.
-                if probe.is_some() {
-                    1.0
+                let radius = if probe.is_some() {
+                    0.0
                 } else {
-                    (frame.sky.sun_size.max(0.0).to_radians() * 0.5).cos()
-                },
-            ],
+                    frame.sky.sun_size.max(0.0).to_radians() * 0.5
+                };
+                let c = if frame.sky.mode == SkyMode::Procedural {
+                    [unity_sky.rayleigh, radius, 0.0]
+                } else {
+                    frame.sky.horizon
+                };
+                [c[0], c[1], c[2], radius.cos()]
+            },
             sky_ground: [
                 frame.sky.ground[0],
                 frame.sky.ground[1],

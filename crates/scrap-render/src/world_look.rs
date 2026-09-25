@@ -759,9 +759,11 @@ pub fn build_frame_where(
                 range: l.range,
                 spot: l.cone_deg.map(|cone| {
                     let (_, turn, _) = placed.0.to_scale_rotation_translation();
-                    (turn * glam::Vec3::Z, cone)
+                    (turn * glam::Vec3::NEG_Z, cone)
                 }),
                 shadows: l.shadows,
+                falloff: l.falloff,
+                inner_cone: l.inner_cone_deg,
             }
         })
         .collect();

@@ -334,7 +334,7 @@ fn hot_air_shimmers_far_off_and_mirrors_the_sky_at_the_horizon() {
     let shoot = |renderer: &mut Renderer, heat: scrap::lens::HeatHaze, time: f32| {
         let frame = Frame {
             sky: Sky {
-                mode: SkyMode::Procedural,
+                mode: SkyMode::Gradient,
                 zenith: [0.1, 0.3, 0.9],
                 horizon: [0.2, 0.5, 1.0],
                 sun_size: 0.0,

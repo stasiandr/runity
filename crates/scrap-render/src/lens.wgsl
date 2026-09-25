@@ -93,11 +93,19 @@ fn circle_of_confusion(d: f32) -> f32 {
 // behind the pixel spreads no wider than twice the pixel's own blur, so a
 // sharp object does not bleed the background's blur over itself.
 // (Gustafsson's single-pass scatter-as-gather.)
+/// A colour that is a number, and one half floats hold: a NaN or an
+/// infinity in one pixel (a glint past the format's top) is black, not a
+/// disc of it through the blur — URP's Stop NaN.
+fn finite(c: vec3<f32>) -> vec3<f32> {
+    let bad = (c != c) | (abs(c) > vec3<f32>(65000.0));
+    return select(c, vec3<f32>(0.0), bad);
+}
+
 @fragment
 fn fs_depth_of_field(in: Varyings) -> @location(0) vec4<f32> {
     let centre_depth = distance_at(in.uv);
     let centre_size = circle_of_confusion(centre_depth);
-    var color = textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb;
+    var color = finite(textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb);
     var total = 1.0;
     let largest = lens.blur.z;
     if largest < 0.5 {
@@ -112,7 +120,7 @@ fn fs_depth_of_field(in: Varyings) -> @location(0) vec4<f32> {
             break;
         }
         let tap = in.uv + vec2<f32>(cos(angle), sin(angle)) * lens.size.zw * radius;
-        let tap_color = textureSampleLevel(source, linear_sampler, tap, 0.0).rgb;
+        let tap_color = finite(textureSampleLevel(source, linear_sampler, tap, 0.0).rgb);
         let tap_depth = distance_at(tap);
         var tap_size = circle_of_confusion(tap_depth);
         if tap_depth > centre_depth {

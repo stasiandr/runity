@@ -44,24 +44,52 @@ pub fn fog(text: &str) -> Option<scrap::scene::Fog> {
     Some(fog)
 }
 
-/// The scene's sky: a Unity scene's skybox is a gradient behind a fog of
-/// its own colour, not air the sun lights — so URP's Procedural skybox,
-/// in the colours Unity's default one shows at an afternoon sun. A scene
-/// with no skybox is its fog's colour.
-pub fn sky(text: &str) -> Option<scrap::render::Sky> {
+/// The scene's sky: Unity's Procedural skybox as its material sets it —
+/// the built-in Default-Skybox's numbers when it is that one, or when the
+/// material is not a file of the project. A scene with no skybox is its
+/// fog's colour.
+pub fn sky(unity: &Unity, text: &str) -> Option<scrap::render::Sky> {
     let docs = yaml::documents(text);
     let b = &docs.iter().find(|d| d.kind == "RenderSettings")?.body;
-    let linear = |c: [f32; 3]| c.map(|v| scrap::material::srgb_to_linear(v / 255.0));
-    let none = b.reference("m_SkyboxMaterial").is_none_or(|r| r.is_none());
+    let skybox = b.reference("m_SkyboxMaterial");
+    if skybox.as_ref().is_none_or(|r| r.is_none()) {
+        return Some(scrap::render::Sky {
+            mode: scrap::render::SkyMode::Color,
+            ..Default::default()
+        });
+    }
+    let material = skybox
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))
+        .and_then(|p| super::material::material_body(unity, p));
+    let float = |name: &str, default: f32| {
+        material
+            .as_ref()
+            .and_then(|m| super::material::float(m, name))
+            .unwrap_or(default)
+    };
+    // Saved as the picker shows them, sRGB; the sky's colours are linear.
+    let colour = |name: &str, default: [f32; 3]| {
+        let c = material
+            .as_ref()
+            .and_then(|m| super::material::color(m, name))
+            .map_or(default, |c| [c[0], c[1], c[2]]);
+        c.map(|v| scrap::material::srgb_to_linear(v.clamp(0.0, 1.0)))
+    };
+    // _SunSize is the disc's radius, as a length between unit
+    // directions; scrap's is degrees across. _SunDisk 0 is none.
+    let sun_size = if float("_SunDisk", 1.0) < 0.5 {
+        0.0
+    } else {
+        2.0 * float("_SunSize", 0.04).to_degrees()
+    };
     Some(scrap::render::Sky {
-        mode: if none {
-            scrap::render::SkyMode::Color
-        } else {
-            scrap::render::SkyMode::Procedural
-        },
-        zenith: linear([120.0, 160.0, 215.0]),
-        horizon: linear([165.0, 190.0, 215.0]),
-        ground: linear([94.0, 89.0, 87.0]),
+        mode: scrap::render::SkyMode::Procedural,
+        tint: colour("_SkyTint", [0.5, 0.5, 0.5]),
+        ground: colour("_GroundColor", [0.369, 0.349, 0.341]),
+        thickness: float("_AtmosphereThickness", 1.0),
+        exposure: float("_Exposure", 1.3),
+        sun_size,
         ..Default::default()
     })
 }
@@ -111,53 +139,65 @@ fn vec4(component: &yaml_rust2::Yaml, key: &str) -> Option<[f32; 4]> {
     Some([v.f32("x")?, v.f32("y")?, v.f32("z")?, v.f32("w")?])
 }
 
+/// ColorUtils.Luminance: sRGB primaries, D65.
 fn luminance(c: [f32; 3]) -> f32 {
-    c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722
+    c[0] * 0.2126729 + c[1] * 0.7151522 + c[2] * 0.072175
 }
 
-/// URP's ColorUtils.PrepareLiftGammaGain: each trackball's colour about
-/// its own luminance, plus its offset.
+/// A trackball's colour, saved as the picker shows it, in linear light:
+/// ColorUtils' GammaToLinearSpace.
+fn trackball(v: [f32; 4], scale: f32) -> [f32; 3] {
+    [v[0], v[1], v[2]].map(|c| scrap::material::srgb_to_linear(c.max(0.0)) * scale)
+}
+
+/// URP's ColorUtils.PrepareLiftGammaGain (Unity 6): each trackball's
+/// colour in linear light, scaled, about its own luminance, plus its
+/// offset — lift's added as it is, gamma's and gain's about one.
 fn lift_gamma_gain(lift: [f32; 4], gamma: [f32; 4], gain: [f32; 4]) -> scrap::post::LiftGammaGain {
-    let about = |v: [f32; 4], scale: f32, offset: f32| {
-        let c = [v[0] * scale, v[1] * scale, v[2] * scale];
+    let about = |c: [f32; 3], offset: f32| {
         let l = luminance(c);
-        [
-            c[0] - l + v[3] * scale + offset,
-            c[1] - l + v[3] * scale + offset,
-            c[2] - l + v[3] * scale + offset,
-        ]
+        c.map(|v| v - l + offset)
     };
-    let lift = about(lift, 0.2, 0.0);
-    let inverse_gamma = about(gamma, 0.8, 1.0).map(|g| 1.0 / g.max(1e-3));
-    let gain = about(gain, 0.8, 1.0);
-    scrap::post::LiftGammaGain {
-        lift,
-        // scrap's gamma is the power's inverse: the picture to 1/gamma.
-        gamma: inverse_gamma.map(|g| 1.0 / g),
-        gain,
-    }
+    let lift = about(trackball(lift, 0.15), lift[3]);
+    // URP's shader raises to 1/this; so does scrap's.
+    let gamma = about(trackball(gamma, 0.8), gamma[3] + 1.0).map(|g| g.max(1e-3));
+    let gain = about(trackball(gain, 0.8), gain[3] + 1.0);
+    scrap::post::LiftGammaGain { lift, gamma, gain }
 }
 
-/// URP's ColorUtils.PrepareShadowsMidtonesHighlights: the offset weighs
-/// four times as much brightening as darkening.
+/// URP's ColorUtils.PrepareShadowsMidtonesHighlights: the colour in linear
+/// light, and the offset weighing four times as much brightening as
+/// darkening.
 fn tone(v: [f32; 4]) -> [f32; 3] {
     let weight = v[3] * if v[3] < 0.0 { 1.0 } else { 4.0 };
-    [
-        (v[0] + weight).max(0.0),
-        (v[1] + weight).max(0.0),
-        (v[2] + weight).max(0.0),
-    ]
+    trackball(v, 1.0).map(|c| (c + weight).max(0.0))
 }
 
-/// A Volume profile as scrap's post settings.
-pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
+/// What URP does with no profile overriding it: no tonemapping, no bloom,
+/// no vignette — and no eye adapting to the light: a picture is as
+/// exposed as its profiles say.
+fn urp_defaults() -> PostProcess {
     let mut post = PostProcess {
         tonemapping: scrap::post::Tonemapping::None,
         ..PostProcess::default()
     };
-    // URP has no eye adapting to the light: a picture is as exposed as
-    // its profile says.
+    post.bloom.intensity = 0.0;
+    post.bloom.threshold = 0.9;
     post.auto_exposure.enabled = false;
+    post
+}
+
+/// A Volume profile as scrap's post settings, over URP's defaults.
+#[cfg(test)]
+fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
+    let mut post = urp_defaults();
+    apply_profile(&mut post, text, report);
+    post
+}
+
+/// A Volume profile's overrides laid over `post`: what it does not
+/// override stays as it was.
+fn apply_profile(post: &mut PostProcess, text: &str, report: &mut Report) {
     for doc in yaml::documents(text) {
         let c = &doc.body;
         if c.i64("active") == Some(0) {
@@ -166,7 +206,7 @@ pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
         match c.str("m_Name").unwrap_or("") {
             "Bloom" => {
                 let b = &mut post.bloom;
-                b.intensity = number(c, "intensity").unwrap_or(0.0);
+                b.intensity = number(c, "intensity").unwrap_or(b.intensity);
                 b.threshold = number(c, "threshold").unwrap_or(b.threshold);
                 b.scatter = number(c, "scatter").unwrap_or(b.scatter);
                 b.clamp = number(c, "clamp").unwrap_or(b.clamp);
@@ -176,28 +216,30 @@ pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
                 post.tonemapping = match value(c, "mode").and_then(yaml::integer) {
                     Some(1) => scrap::post::Tonemapping::Neutral,
                     Some(2) => scrap::post::Tonemapping::Aces,
-                    _ => scrap::post::Tonemapping::None,
+                    Some(_) => scrap::post::Tonemapping::None,
+                    None => post.tonemapping,
                 }
             }
             "ColorAdjustments" => {
-                post.exposure = number(c, "postExposure").unwrap_or(0.0);
-                post.contrast = number(c, "contrast").unwrap_or(0.0);
-                post.saturation = number(c, "saturation").unwrap_or(0.0);
-                post.hue_shift = number(c, "hueShift").unwrap_or(0.0);
+                post.exposure = number(c, "postExposure").unwrap_or(post.exposure);
+                post.contrast = number(c, "contrast").unwrap_or(post.contrast);
+                post.saturation = number(c, "saturation").unwrap_or(post.saturation);
+                post.hue_shift = number(c, "hueShift").unwrap_or(post.hue_shift);
                 post.color_filter = rgb(c, "colorFilter").unwrap_or(post.color_filter);
             }
             "WhiteBalance" => {
-                post.temperature = number(c, "temperature").unwrap_or(0.0);
-                post.tint = number(c, "tint").unwrap_or(0.0);
+                post.temperature = number(c, "temperature").unwrap_or(post.temperature);
+                post.tint = number(c, "tint").unwrap_or(post.tint);
             }
             "Vignette" => {
                 let v = &mut post.vignette;
-                v.intensity = number(c, "intensity").unwrap_or(0.0);
+                v.intensity = number(c, "intensity").unwrap_or(v.intensity);
                 v.smoothness = number(c, "smoothness").unwrap_or(v.smoothness);
                 v.color = rgb(c, "color").unwrap_or(v.color);
                 if let Some(at) = value(c, "center") {
                     v.center = [at.f32("x").unwrap_or(0.5), at.f32("y").unwrap_or(0.5)];
                 }
+                v.rounded = number(c, "rounded").map_or(v.rounded, |r| r > 0.5);
             }
             "LiftGammaGain" => {
                 let neutral = [1.0, 1.0, 1.0, 0.0];
@@ -226,12 +268,12 @@ pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
                 let t = &mut post.split_toning;
                 t.shadows = rgb(c, "shadows").unwrap_or(t.shadows);
                 t.highlights = rgb(c, "highlights").unwrap_or(t.highlights);
-                t.balance = number(c, "balance").unwrap_or(0.0);
+                t.balance = number(c, "balance").unwrap_or(t.balance);
             }
             "ChromaticAberration" => {
-                post.chromatic_aberration = number(c, "intensity").unwrap_or(0.0);
+                post.chromatic_aberration = number(c, "intensity").unwrap_or(post.chromatic_aberration);
             }
-            "FilmGrain" => post.film_grain = number(c, "intensity").unwrap_or(0.0),
+            "FilmGrain" => post.film_grain = number(c, "intensity").unwrap_or(post.film_grain),
             "DepthOfField" => {
                 let d = &mut post.depth_of_field;
                 d.mode = match value(c, "mode").and_then(yaml::integer) {
@@ -249,7 +291,7 @@ pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
             }
             "MotionBlur" => {
                 let m = &mut post.motion_blur;
-                m.intensity = number(c, "intensity").unwrap_or(0.0);
+                m.intensity = number(c, "intensity").unwrap_or(m.intensity);
                 m.clamp = number(c, "clamp").unwrap_or(m.clamp);
             }
             "" => {}
@@ -259,11 +301,13 @@ pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
             _ => {}
         }
     }
-    post
 }
 
-/// The scene's global Volume's profile, as post settings: the first
-/// Volume with `isGlobal` and a shared profile.
+/// The scene's post settings as URP layers them: its defaults, the render
+/// pipeline asset's own Volume Profile under every scene (Unity 6), then
+/// the scene's global Volume — the first with `isGlobal` and a shared
+/// profile. `None` for a project with no URP pipeline and a scene with no
+/// Volume.
 pub fn post(unity: &Unity, text: &str, report: &mut Report) -> Option<PostProcess> {
     let docs = yaml::documents(text);
     let profile = docs.iter().find_map(|d| {
@@ -274,10 +318,57 @@ pub fn post(unity: &Unity, text: &str, report: &mut Report) -> Option<PostProces
             .then(|| b.reference("sharedProfile"))
             .flatten()
             .and_then(|r| r.guid)
+    });
+    let read = |guid: &String| unity.guids.get(guid).and_then(|p| std::fs::read_to_string(p).ok());
+    let pipeline = pipeline_asset(unity);
+    let under = pipeline.as_ref().and_then(|text| {
+        let guid = yaml::documents(text)
+            .into_iter()
+            .find_map(|d| d.body.reference("m_VolumeProfile"))
+            .filter(|r| r.file_id != 0)?
+            .guid?;
+        read(&guid)
+    });
+    let scene = profile.as_ref().and_then(read);
+    if pipeline.is_none() && scene.is_none() {
+        return None;
+    }
+    let mut post = urp_defaults();
+    for text in [under, scene].into_iter().flatten() {
+        apply_profile(&mut post, &text, report);
+    }
+    post.grading = grading(pipeline.as_deref());
+    Some(post)
+}
+
+/// The project's render pipeline asset, as text: the quality level's own
+/// pipeline, or the graphics settings'.
+fn pipeline_asset(unity: &Unity) -> Option<String> {
+    let settings = |name: &str| {
+        let text = std::fs::read_to_string(unity.root.join("ProjectSettings").join(name)).ok()?;
+        yaml::documents(&text).into_iter().next().map(|d| d.body)
+    };
+    let usable = |r: Option<yaml::Ref>| r.filter(|r| r.file_id != 0).and_then(|r| r.guid);
+    let from_quality = settings("QualitySettings.asset").and_then(|q| {
+        let current = q.i64("m_CurrentQuality").unwrap_or(0).max(0) as usize;
+        usable(q.list("m_QualitySettings").get(current)?.reference("customRenderPipeline"))
+    });
+    let pipeline = from_quality.or_else(|| {
+        settings("GraphicsSettings.asset").and_then(|g| usable(g.reference("m_CustomRenderPipeline")))
     })?;
-    let path = unity.guids.get(&profile)?;
-    let text = std::fs::read_to_string(path).ok()?;
-    Some(post_of_profile(&text, report))
+    std::fs::read_to_string(unity.guids.get(&pipeline)?).ok()
+}
+
+/// Where a render pipeline asset grades: its Grading Mode. High dynamic
+/// range when it cannot be told.
+pub fn grading(pipeline: Option<&str>) -> scrap::post::Grading {
+    let mode = pipeline.and_then(|text| {
+        yaml::documents(text).into_iter().find_map(|d| d.body.i64("m_ColorGradingMode"))
+    });
+    match mode {
+        Some(0) => scrap::post::Grading::LowDynamicRange,
+        _ => scrap::post::Grading::HighDynamicRange,
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +385,21 @@ mod tests {
             assert!((g.gain[i] - 1.0).abs() < 1e-5, "{g:?}");
         }
         assert_eq!(tone(n), [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn trackballs_are_prepared_as_urps_color_utils_does() {
+        // GDScene's profile, and what Unity 6's ColorUtils makes of it.
+        let g = lift_gamma_gain(
+            [0.9135216, 0.9521028, 1.0, 0.0],
+            [1.0, 0.9882, 0.96140367, -0.09930486],
+            [1.0, 0.9315856, 0.8925388, 0.63555104],
+        );
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 2e-3);
+        assert!(near(g.lift, [-0.0106, 0.0014, 0.0172]), "{g:?}");
+        assert!(near(g.gamma.map(|g| 1.0 / g), [1.0859, 1.1116, 1.1731]), "{g:?}");
+        assert!(near(g.gain, [1.7337, 1.6148, 1.5519]), "{g:?}");
+        assert!(near(tone([0.7274276, 0.86546403, 1.0, 0.079443894]), [0.8058, 1.0386, 1.3178]));
     }
 
     #[test]

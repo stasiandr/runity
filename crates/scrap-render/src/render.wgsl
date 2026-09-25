@@ -40,9 +40,11 @@ struct Frame {
     // one texel of a lamp's shadow map, in UV
     light_shadow: vec4<f32>,
     inverse_view_projection: mat4x4<f32>,
-    // Zenith colour; w is 1 for a procedural sky.
+    // Zenith colour; w the sky: 0 a colour, 1 a gradient, 2 physical, 3
+    // Unity's procedural (its xyz then 1/λ⁴).
     sky_zenith: vec4<f32>,
-    // Horizon colour; w is the cosine of the sun disc's radius.
+    // Horizon colour (Unity's procedural: Rayleigh's constant, the sun's
+    // radius in radians); w is the cosine of the sun disc's radius.
     sky_horizon: vec4<f32>,
     // Below the horizon; w is the sky's exposure.
     sky_ground: vec4<f32>,
@@ -145,13 +147,53 @@ struct Frame {
 // and for each cell of a grid over the view — across, down and deep — the
 // run of `light_indices` naming those that reach into it.
 struct Light {
-    // position, range
+    // position, range (negative: it falls off as the inverse square)
     position_range: vec4<f32>,
     // colour times intensity; w its first shadow map, or -1
     color_shadow: vec4<f32>,
     // for a spot, which way and the cosine of half its cone; -2 every way
     spot: vec4<f32>,
+    // x the cosine of half the spot's inner cone, where it starts to fade;
+    // above 1, over the last tenth of the cone
+    cone: vec4<f32>,
 };
+
+/// How much of a spot's light goes `along` (the cosine off its axis): all
+/// inside its inner cone, fading to none at its edge — URP's, the square
+/// of a straight ramp; or over the cone's last tenth. 1 for a lamp that
+/// shines every way.
+fn spot_cone(light: Light, along: f32) -> f32 {
+    let outer = light.spot.w;
+    if outer < -1.5 {
+        return 1.0;
+    }
+    let inner = light.cone.x;
+    if inner > 1.0 {
+        return smoothstep(outer, outer + (1.0 - outer) * 0.1, along);
+    }
+    let ramp = clamp((along - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+    return ramp * ramp;
+}
+
+/// How far a lamp reaches.
+fn lamp_range(light: Light) -> f32 {
+    return abs(light.position_range.w);
+}
+
+/// How much of a lamp's light is left `distance` from it: a soft pool to
+/// its range, `(1 − d/range)²` — or URP's, the inverse square eased to
+/// nothing at its range.
+fn lamp_falloff(light: Light, distance: f32) -> f32 {
+    let range = abs(light.position_range.w);
+    if light.position_range.w < 0.0 {
+        let d2 = max(distance * distance, 1e-4);
+        let f = d2 / (range * range);
+        let ease = clamp(1.0 - f * f, 0.0, 1.0);
+        return ease * ease / d2;
+    }
+    let reach = clamp(1.0 - distance / range, 0.0, 1.0);
+    return reach * reach;
+}
 @group(0) @binding(6) var<storage, read> lights: array<Light>;
 // Per cell: its lights' run in light_indices (start, count), then its
 // decals' (start, count).
@@ -1234,7 +1276,7 @@ fn lamp_shadow(light: Light, position: vec3<f32>, normal: vec3<f32>, distance_to
     // Compared a little nearer the lamp, in metres: its depth is a
     // perspective one, so the bias is put back through the same curve.
     let near = 0.05;
-    let far = light.position_range.w;
+    let far = lamp_range(light);
     let z = max(clip.w - texel - 0.02, near);
     let reference = far / (far - near) * (1.0 - near / z);
     var sum = 0.0;
@@ -1374,10 +1416,8 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         let to_lamp = lamp.position_range.xyz - p;
         let distance_to = length(to_lamp);
         let toward = to_lamp / max(distance_to, 1e-4);
-        let reach = clamp(1.0 - distance_to / lamp.position_range.w, 0.0, 1.0);
-        let spot = lamp.spot;
-        let edge = spot.w + (1.0 - spot.w) * 0.1;
-        let cone = select(smoothstep(spot.w, edge, dot(-toward, spot.xyz)), 1.0, spot.w < -1.5);
+        let reach = lamp_falloff(lamp, distance_to);
+        let cone = spot_cone(lamp, dot(-toward, lamp.spot.xyz));
         if reach * cone <= 0.0 {
             continue;
         }
@@ -1389,8 +1429,9 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         // Closer to a square law than the surfaces' soft pool: a lamp in
         // mist is a glow round the lamp, not an even wash to its range.
-        let near_lamp = 1.0 / (1.0 + distance_to * distance_to);
-        light += lamp.color_shadow.rgb * reach * reach * near_lamp * cone * shadow
+        // (An inverse-square lamp is that already.)
+        let near_lamp = select(1.0 / (1.0 + distance_to * distance_to), 1.0, lamp.position_range.w < 0.0);
+        light += lamp.color_shadow.rgb * reach * near_lamp * cone * shadow
             * phase(dot(-toward, to_eye), g) * frame.fog_lamps.x;
     }
     // Kicked-up dust is thick enough to light as a soft solid would — the
@@ -1956,6 +1997,88 @@ fn direct(b: Brdf, normal: vec3<f32>, to_light: vec3<f32>, to_eye: vec3<f32>, hi
     return color;
 }
 
+// Unity's Procedural skybox (Skybox/Procedural): O'Neil's scattering, two
+// samples through a thin shell of air, as its vertex shader does it — here
+// per pixel. procedural_sky.rs has the same for the light all round.
+const SKY_OUTER: f32 = 1.025;
+const SKY_CAMERA_HEIGHT: f32 = 0.0001;
+const SKY_MIE: f32 = 0.0010;
+const SKY_SUN_BRIGHTNESS: f32 = 20.0;
+const SKY_SCALE: f32 = 40.0;
+const SKY_SCALE_DEPTH: f32 = 0.25;
+const SKY_SCALE_OVER_DEPTH: f32 = 160.0;
+
+fn sky_scale(c: f32) -> f32 {
+    let x = 1.0 - c;
+    return 0.25 * exp(-0.00287 + x * (0.459 + x * (3.83 + x * (-6.80 + x * 5.25))));
+}
+
+struct UnitySky {
+    // The sky that way, exposed.
+    color: vec3<f32>,
+    // The sun's disc's colour there, before its shape.
+    sun: vec3<f32>,
+};
+
+fn unity_sky(eye_ray: vec3<f32>) -> UnitySky {
+    let ray = normalize(eye_ray);
+    let inv_wavelength = frame.sky_zenith.xyz;
+    let rayleigh = frame.sky_horizon.x;
+    let pi4 = 4.0 * 3.14159265;
+    let extinction = inv_wavelength * rayleigh * pi4 + vec3<f32>(SKY_MIE * pi4);
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    let camera = vec3<f32>(0.0, 1.0 + SKY_CAMERA_HEIGHT, 0.0);
+    var c_in: vec3<f32>;
+    var c_out: vec3<f32>;
+    if ray.y >= 0.0 {
+        let far = sqrt(SKY_OUTER * SKY_OUTER + ray.y * ray.y - 1.0) - ray.y;
+        let height = 1.0 + SKY_CAMERA_HEIGHT;
+        let depth = exp(SKY_SCALE_OVER_DEPTH * -SKY_CAMERA_HEIGHT);
+        let start_offset = depth * sky_scale(dot(ray, camera) / height);
+        let length_ = far / 2.0;
+        let hop = ray * length_;
+        var p = camera + hop * 0.5;
+        var front = vec3<f32>(0.0);
+        for (var i = 0; i < 2; i = i + 1) {
+            let h = length(p);
+            let d = exp(SKY_SCALE_OVER_DEPTH * (1.0 - h));
+            let scatter = start_offset + d * (sky_scale(dot(to_sun, p) / h) - sky_scale(dot(ray, p) / h));
+            let attenuate = exp(-clamp(scatter, 0.0, 50.0) * extinction);
+            front += attenuate * (d * length_ * SKY_SCALE);
+            p += hop;
+        }
+        c_in = front * inv_wavelength * rayleigh * SKY_SUN_BRIGHTNESS;
+        c_out = front * SKY_MIE * SKY_SUN_BRIGHTNESS;
+    } else {
+        let far = -SKY_CAMERA_HEIGHT / min(-0.001, ray.y);
+        let at = camera + ray * far;
+        let depth = exp(-SKY_CAMERA_HEIGHT / SKY_SCALE_DEPTH);
+        let camera_scale = sky_scale(dot(-ray, at));
+        let light_scale = sky_scale(dot(to_sun, at));
+        let length_ = far / 2.0;
+        let p = camera + ray * length_ * 0.5;
+        let d = exp(SKY_SCALE_OVER_DEPTH * (1.0 - length(p)));
+        let scatter = d * (light_scale + camera_scale) - depth * camera_scale;
+        let attenuate = exp(-clamp(scatter, 0.0, 50.0) * extinction);
+        let front = attenuate * (d * length_ * SKY_SCALE);
+        c_in = front * (inv_wavelength * rayleigh * SKY_SUN_BRIGHTNESS + vec3<f32>(SKY_MIE * SKY_SUN_BRIGHTNESS));
+        c_out = clamp(attenuate, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    let exposure = frame.sky_ground.w;
+    let ground = (c_in + frame.sky_ground.rgb * c_out) * exposure;
+    let cos = dot(to_sun, -ray);
+    let sky = c_in * (0.75 + 0.75 * cos * cos) * exposure;
+    var out: UnitySky;
+    out.color = mix(sky, ground, clamp(-ray.y / 0.02, 0.0, 1.0));
+    // Unity's simple disc: bright even in LDR, whatever the light's
+    // intensity, and only above the horizon.
+    let light = frame.sun_color.rgb;
+    let brightness = clamp(length(light), 0.25, 1.0);
+    out.sun = 27.0 * clamp(c_out * 400.0 * SKY_SUN_BRIGHTNESS, vec3<f32>(0.0), vec3<f32>(1.0)) * light / brightness
+        * step(0.0, ray.y);
+    return out;
+}
+
 /// What the surroundings look like in a direction, blurred by roughness:
 /// the sky's gradient for a smooth surface, the hemisphere's average for a
 /// rough one. No sun in it: the sun is a direct light, counted once.
@@ -1963,6 +2086,9 @@ fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let hemisphere = mix(frame.ground_color.rgb, frame.sky_color.rgb, direction.y * 0.5 + 0.5);
     if frame.sky_zenith.w < 0.5 {
         return hemisphere;
+    }
+    if frame.sky_zenith.w > 2.5 {
+        return mix(unity_sky(direction).color, hemisphere, perceptual_roughness);
     }
     if frame.sky_zenith.w > 1.5 {
         return mix(physical_sky(direction) * frame.sky_ground.w, hemisphere, perceptual_roughness);
@@ -2645,13 +2771,12 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
             let to_light = light.position_range.xyz - in.world_position;
             let distance_to = length(to_light);
             let toward = to_light / max(distance_to, 1e-4);
-            let reach = clamp(1.0 - distance_to / light.position_range.w, 0.0, 1.0);
+            let reach = lamp_falloff(light, distance_to);
             let facing = max(dot(normal, toward), 0.0);
             let along = dot(-toward, light.spot.xyz);
-            let edge = light.spot.w + (1.0 - light.spot.w) * 0.1;
-            let cone = select(smoothstep(light.spot.w, edge, along), 1.0, light.spot.w < -1.5);
+            let cone = spot_cone(light, along);
             color = color + direct(b, normal, toward, to_eye, highlights)
-                * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * reservoir.w;
+                * light.color_shadow.rgb * facing * reach * cone * direct_ao * reservoir.w;
         }
     }
     for (var n = 0u; n < select(cell.y, 0u, restir_on); n = n + 1u) {
@@ -2660,13 +2785,12 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         let to_light = at.xyz - in.world_position;
         let distance_to = length(to_light);
         let toward = to_light / max(distance_to, 1e-4);
-        let reach = clamp(1.0 - distance_to / at.w, 0.0, 1.0);
+        let reach = lamp_falloff(light, distance_to);
         let facing = max(dot(normal, toward), 0.0);
         // A spot: full inside the cone, fading over its last tenth.
         let spot = light.spot;
         let along = dot(-toward, spot.xyz);
-        let edge = spot.w + (1.0 - spot.w) * 0.1;
-        let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
+        let cone = spot_cone(light, along);
         // A lamp's shadow, by a ray to it — only where it lights at all.
         // Or by its shadow map, where it has one.
         var blocked = 1.0;
@@ -2693,7 +2817,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
             }
         }
         color = color + direct(b, normal, toward, to_eye, highlights)
-            * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * blocked;
+            * light.color_shadow.rgb * facing * reach * cone * direct_ao * blocked;
     }
 
     // Hemisphere ambient: a face turned up sees sky, one turned down sees
@@ -2709,14 +2833,14 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     }
     var all_round = mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5);
     if frame.ambient_equator.w > 0.5 {
-        // The scene's three colours, blended as smoothly as Unity's
-        // gradient is once it is spherical harmonics: straight up sees
-        // only the sky, sideways half the horizon and a quarter each of
-        // the sky and the ground.
+        // Unity's ambient probe, as spherical harmonics have it: what a
+        // face turned up, sideways and down sees, and a quadratic in how
+        // far it is turned up between them.
         let y = clamp(normal.y, -1.0, 1.0);
-        all_round = frame.sky_color.rgb * (1.0 + y) * (1.0 + y) * 0.25
-            + frame.ground_color.rgb * (1.0 - y) * (1.0 - y) * 0.25
-            + frame.ambient_equator.rgb * (1.0 - y * y) * 0.5;
+        let up = frame.sky_color.rgb;
+        let down = frame.ground_color.rgb;
+        let side = frame.ambient_equator.rgb;
+        all_round = max(side + (up - down) * 0.5 * y + ((up + down) * 0.5 - side) * y * y, vec3<f32>(0.0));
     }
     var ambient = around(in.world_position, normal, all_round);
     // Inside an irradiance volume its probes give the diffuse light.
@@ -3265,6 +3389,22 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
     let direction = normalize(far.xyz / far.w - near.xyz / near.w);
     let up = direction.y;
+    if frame.sky_zenith.w > 2.5 {
+        // Unity's procedural sky: its own exposure, its own disc — a round
+        // spot, fading as the square of the way out to its radius.
+        let unity = unity_sky(direction);
+        let radius = frame.sky_horizon.y;
+        var color = unity.color;
+        if radius > 0.0 {
+            let spot = 1.0 - smoothstep(0.0, radius, length(-normalize(frame.sun_direction.xyz) - direction));
+            color += unity.sun * spot * spot;
+        }
+        if frame.clouds[0].x > 0.0 || frame.weather[1].z > 0.0 || frame.dust.x > 0.5 {
+            let c = cloud_sharp(in.position.xy / frame.cluster_depth.zw);
+            color = color * c.a + c.rgb;
+        }
+        return vec4<f32>(through_fog(color, in.position.xy, frame.volume.y), 1.0);
+    }
     var color: vec3<f32>;
     if frame.sky_zenith.w > 1.5 {
         color = physical_sky(direction);

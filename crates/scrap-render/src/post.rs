@@ -42,10 +42,12 @@ pub enum Tonemapping {
 pub struct Bloom {
     /// How much of the glow is added; 0 is off.
     pub intensity: f32,
-    /// How bright, in linear light, before something glows. 1.0 is white:
-    /// only what is lit past white or emits does.
+    /// How bright before something glows, as URP says it — in gamma: 1.0
+    /// is white, so only what is lit past white or emits does; 0.9 is
+    /// linear 0.79.
     pub threshold: f32,
-    /// How far the glow spreads, 0 to 1.
+    /// How far the glow spreads, 0 to 1: each step up the chain takes this
+    /// much of the wider glow below it (URP's 0.05 to 0.95 of it).
     pub scatter: f32,
     pub tint: [f32; 3],
     /// The brightest a pixel counts as, so a single spark does not flood.
@@ -74,6 +76,9 @@ pub struct Vignette {
     pub smoothness: f32,
     pub color: [f32; 3],
     pub center: [f32; 2],
+    /// Round whatever the screen's shape; otherwise an ellipse the
+    /// screen's shape, as URP's unless Rounded is ticked.
+    pub rounded: bool,
 }
 
 impl Default for Vignette {
@@ -85,8 +90,20 @@ impl Default for Vignette {
             smoothness: 0.4,
             color: [0.0, 0.0, 0.0],
             center: [0.5, 0.5],
+            rounded: false,
         }
     }
+}
+
+/// Where the grade is done — URP's Grading Mode (the pipeline asset's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Grading {
+    /// On the picture as lit, past white and all, then the tonemapper.
+    #[default]
+    HighDynamicRange,
+    /// After the tonemapper, on the picture brought into range: what is
+    /// past white is white before it is graded.
+    LowDynamicRange,
 }
 
 /// Each output channel as a mix of the inputs: URP's Channel Mixer, as
@@ -109,9 +126,9 @@ impl Default for ChannelMixer {
     }
 }
 
-/// The three trackballs of a grade: `lift` raises the darks (added,
-/// fading to nothing at white), `gamma` bends the middle (a power), `gain`
-/// scales the brights. URP's Lift Gamma Gain.
+/// The three trackballs of a grade, as URP's shader has them once its
+/// `ColorUtils.PrepareLiftGammaGain` is done: the picture times `gain`,
+/// plus `lift`, to the power 1/`gamma`. URP's Lift Gamma Gain.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LiftGammaGain {
@@ -301,6 +318,8 @@ pub struct PostProcess {
     /// Post exposure, in stops (EV): +1 is twice as bright.
     pub exposure: f32,
     pub tonemapping: Tonemapping,
+    /// Graded before the tonemapper or after it.
+    pub grading: Grading,
     pub bloom: Bloom,
     /// Colour Adjustments: -100 to 100, as URP.
     pub contrast: f32,
@@ -358,6 +377,7 @@ impl Default for PostProcess {
             enabled: true,
             exposure: 0.0,
             tonemapping: Tonemapping::Neutral,
+            grading: Grading::HighDynamicRange,
             bloom: Bloom::default(),
             contrast: 0.0,
             saturation: 0.0,
@@ -394,6 +414,7 @@ impl PostProcess {
         enabled: false,
         exposure: 0.0,
         tonemapping: Tonemapping::None,
+        grading: Grading::HighDynamicRange,
         bloom: Bloom {
             intensity: 0.0,
             threshold: 1.0,
@@ -412,6 +433,7 @@ impl PostProcess {
             smoothness: 0.4,
             color: [0.0, 0.0, 0.0],
             center: [0.5, 0.5],
+            rounded: false,
         },
         channel_mixer: ChannelMixer {
             red: [1.0, 0.0, 0.0],
@@ -466,6 +488,7 @@ impl PostProcess {
             } else {
                 self.tonemapping
             },
+            grading: if half { other.grading } else { self.grading },
             bloom: Bloom {
                 intensity: f(self.bloom.intensity, other.bloom.intensity),
                 threshold: f(self.bloom.threshold, other.bloom.threshold),
@@ -487,6 +510,11 @@ impl PostProcess {
                     f(self.vignette.center[0], other.vignette.center[0]),
                     f(self.vignette.center[1], other.vignette.center[1]),
                 ],
+                rounded: if half {
+                    other.vignette.rounded
+                } else {
+                    self.vignette.rounded
+                },
             },
             channel_mixer: ChannelMixer {
                 red: v3(self.channel_mixer.red, other.channel_mixer.red),
@@ -864,9 +892,11 @@ impl PostRenderer {
                         targets: &[Some(wgpu::ColorTargetState {
                             format,
                             blend: add.then_some(wgpu::BlendState {
+                                // What is there kept by one less the
+                                // alpha: the upsample's scatter.
                                 color: wgpu::BlendComponent {
                                     src_factor: wgpu::BlendFactor::One,
-                                    dst_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                                     operation: wgpu::BlendOperation::Add,
                                 },
                                 alpha: wgpu::BlendComponent::REPLACE,
@@ -1128,7 +1158,10 @@ impl PostRenderer {
             Tonemapping::Agx => 3.0,
         };
         let balance = white_balance_coefficients(s.temperature, s.tint);
-        let knee = s.bloom.threshold * 0.5;
+        // URP's threshold is in gamma, its knee half of it in linear, and
+        // its scatter kept off both ends.
+        let threshold = crate::material::srgb_to_linear(s.bloom.threshold.max(0.0));
+        let knee = threshold * 0.5;
         PostUniform {
             a: [
                 2f32.powf(s.exposure),
@@ -1174,9 +1207,9 @@ impl PostRenderer {
             ],
             texel: [0.0; 4],
             bloom: [
-                s.bloom.threshold.max(0.0),
+                threshold,
                 knee,
-                s.bloom.scatter.clamp(0.0, 1.0),
+                0.05 + 0.9 * s.bloom.scatter.clamp(0.0, 1.0),
                 s.bloom.clamp.max(1.0),
             ],
             mixer_red: v4(s.channel_mixer.red, 0.0),
@@ -1231,7 +1264,12 @@ impl PostRenderer {
             lamp_count: [self.flares.len() as f32, 0.0, 0.0, 0.0],
             lamps: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.0)),
             lamp_colors: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.1)),
-            night: [self.night.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+            night: [
+                self.night.clamp(0.0, 1.0),
+                if s.grading == Grading::LowDynamicRange { 1.0 } else { 0.0 },
+                if s.vignette.rounded { 1.0 } else { 0.0 },
+                0.0,
+            ],
         }
     }
 }

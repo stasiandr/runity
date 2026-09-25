@@ -48,6 +48,9 @@ pub(crate) struct GpuLight {
     /// For a spot, which way it shines and the cosine of half its cone;
     /// −2 for every way.
     pub spot: [f32; 4],
+    /// `x` the cosine of half a spot's inner cone; 2 to fade over the
+    /// cone's last tenth.
+    pub cone: [f32; 4],
 }
 
 /// What a frame's lights come to: the ones shaded, each cell's share of
@@ -240,7 +243,11 @@ pub(crate) fn cluster(
                     light.position.x,
                     light.position.y,
                     light.position.z,
-                    light.range.max(0.01),
+                    // Negative: inverse square (render.wgsl's lamp_falloff).
+                    match light.falloff {
+                        crate::render::Falloff::Smooth => light.range.max(0.01),
+                        crate::render::Falloff::InverseSquare => -light.range.max(0.01),
+                    },
                 ],
                 color_shadow: [light.color.x, light.color.y, light.color.z, first],
                 spot: match light.spot {
@@ -255,6 +262,17 @@ pub(crate) fn cluster(
                     }
                     None => [0.0, 0.0, 0.0, -2.0],
                 },
+                cone: [
+                    match (light.spot, light.inner_cone) {
+                        (Some((_, cone)), Some(inner)) => {
+                            (inner.clamp(0.0, cone.clamp(1.0, 179.0)).to_radians() * 0.5).cos()
+                        }
+                        _ => 2.0,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             }
         })
         .collect();
@@ -331,6 +349,8 @@ mod tests {
 
     fn lamp(position: Vec3, range: f32) -> PointLight {
         PointLight {
+            falloff: Default::default(),
+            inner_cone: None,
             position,
             color: Vec3::ONE,
             range,
