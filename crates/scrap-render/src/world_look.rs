@@ -660,17 +660,16 @@ pub fn build_frame_where(
     fog: FogSettings,
     keep: impl Fn(Option<crate::id::EntityId>) -> bool,
 ) -> Frame {
-    // What is switched off, itself or by a parent, is not in the picture.
-    let off: std::collections::HashSet<crate::id::EntityId> = inactive_in_hierarchy(world)
-        .into_iter()
-        .filter_map(|e| world.get::<&SceneId>(e).ok().map(|id| id.0))
-        .collect();
-    let keep =
-        |line: Option<crate::id::EntityId>| line.is_none_or(|id| !off.contains(&id)) && keep(line);
+    // What is switched off, itself or by a parent, is not in the picture —
+    // what a scene placed and what the game spawned (which has no line)
+    // alike.
+    let off: std::collections::HashSet<hecs::Entity> = inactive_in_hierarchy(world);
+    let on = |entity: hecs::Entity| !off.contains(&entity);
     let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
-    for (placed, shown, model, surface, textured, posed, line) in world
+    for (entity, placed, shown, model, surface, textured, posed, line) in world
         .query::<(
+            hecs::Entity,
             &WorldTransform,
             Option<&crate::world::Shown>,
             &Model,
@@ -681,7 +680,7 @@ pub fn build_frame_where(
         )>()
         .iter()
     {
-        if !keep(line.map(|l| l.0)) {
+        if !on(entity) || !keep(line.map(|l| l.0)) {
             continue;
         }
         let pose = posed.map(|p| {
@@ -697,11 +696,11 @@ pub fn build_frame_where(
         });
     }
     // Copies of one mesh: the renderer draws them as instances.
-    for (copies, surface, line) in world
-        .query::<(&Copies, &Surface, Option<&SceneId>)>()
+    for (entity, copies, surface, line) in world
+        .query::<(hecs::Entity, &Copies, &Surface, Option<&SceneId>)>()
         .iter()
     {
-        if keep(line.map(|l| l.0)) {
+        if on(entity) && keep(line.map(|l| l.0)) {
             draws.extend(copies.placed.iter().map(|placed| Draw {
                 mesh: copies.mesh,
                 transform: *placed,
@@ -717,7 +716,7 @@ pub fn build_frame_where(
         .query::<(hecs::Entity, &WorldUi, Option<&SceneId>)>()
         .iter()
     {
-        if !keep(line.map(|l| l.0)) {
+        if !on(entity) || !keep(line.map(|l| l.0)) {
             continue;
         }
         let id = crate::asset::AssetId::render_target(&screen.name);
@@ -745,16 +744,16 @@ pub fn build_frame_where(
         .query::<(hecs::Entity, &crate::particles::Emitting, Option<&SceneId>)>()
         .iter()
     {
-        if keep(line.map(|l| l.0)) {
+        if on(entity) && keep(line.map(|l| l.0)) {
             gpu_particles.extend(emitting.gpu(entity.to_bits().get()));
             draws.extend(emitting.draws_facing(Some(camera.position)));
         }
     }
     let lights = world
-        .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
+        .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&SceneId>)>()
         .iter()
-        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
-        .map(|(light, placed, _)| {
+        .filter(|(entity, _, _, line)| on(*entity) && keep(line.map(|l| l.0)))
+        .map(|(_, light, placed, _)| {
             let l = light.0;
             let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
             crate::render::PointLight {
@@ -782,7 +781,7 @@ pub fn build_frame_where(
             Option<&SceneId>,
         )>()
         .iter()
-        .filter(|(_, _, _, _, line)| keep(line.map(|l| l.0)))
+        .filter(|(entity, _, _, _, line)| on(*entity) && keep(line.map(|l| l.0)))
         .map(
             |(entity, live, placed, surface, _)| crate::render::LiveMeshDraw {
                 key: entity.to_bits().get(),
@@ -795,10 +794,10 @@ pub fn build_frame_where(
         )
         .collect();
     let flares = world
-        .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
+        .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&SceneId>)>()
         .iter()
-        .filter(|(light, _, line)| light.0.flare > 0.0 && keep(line.map(|l| l.0)))
-        .map(|(light, placed, _)| {
+        .filter(|(entity, light, _, line)| light.0.flare > 0.0 && on(*entity) && keep(line.map(|l| l.0)))
+        .map(|(_, light, placed, _)| {
             let l = light.0;
             let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
             crate::render::Flare {
@@ -829,10 +828,10 @@ pub fn build_frame_where(
         })
         .collect();
     let mut decals: Vec<crate::decals::Decal> = world
-        .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
+        .query::<(hecs::Entity, &Pressing, &WorldTransform, Option<&SceneId>)>()
         .iter()
-        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
-        .map(|(pressing, placed, _)| crate::decals::Decal {
+        .filter(|(entity, _, _, line)| on(*entity) && keep(line.map(|l| l.0)))
+        .map(|(_, pressing, placed, _)| crate::decals::Decal {
             transform: placed.0 * glam::Mat4::from_scale(pressing.0.size),
             material: pressing.1,
             shape: crate::decals::DecalShape::Picture,
