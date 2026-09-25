@@ -195,12 +195,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
                 }
-                // A switched-off renderer draws nothing: its mesh is not
-                // brought over to be drawn.
-                let hidden = components.get(&d.file_id).into_iter().flatten().any(|c| {
-                    matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
-                        && c.body.i64("m_Enabled") == Some(0)
-                });
+                // A switched-off renderer draws nothing, and a mesh with no
+                // renderer at all (a trigger's shape, a collider's) is not
+                // drawn either: its mesh is not brought over to be drawn.
+                let own = || components.get(&d.file_id).into_iter().flatten();
+                let renderer = |c: &&Doc| matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer");
+                let hidden = own().any(|c| renderer(&c) && c.body.i64("m_Enabled") == Some(0))
+                    || (own().any(|c| c.kind == "MeshFilter") && !own().any(|c| renderer(&c)));
                 // A mesh collider keeps its mesh as its collision model.
                 if hidden {
                     if desc.part::<Collider>() == Some(Collider::Model)
@@ -516,6 +517,8 @@ fn instance(
     let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
     // A component's fields changed: the prefab's component, changed.
     let mut behaviours: BTreeMap<i64, Behaviour> = BTreeMap::new();
+    // A built-in component's fields changed: it, changed, and which fields.
+    let mut builtins: BTreeMap<i64, (Builtin, Vec<String>)> = BTreeMap::new();
     // Whether an anchored position is said: then it, not the local
     // position's x and y, is where a RectTransform stands.
     let anchored_too = modification
@@ -531,6 +534,15 @@ fn instance(
         if let Some((t, b)) = behaviour.filter(|_| kind == "prefab" && !path.starts_with("m_")) {
             let b = behaviours.entry(t).or_insert_with(|| b.clone());
             modify(&mut b.body, path, m);
+            continue;
+        }
+        let builtin = target.and_then(|t| Some((t, of.as_ref()?.builtins.get(&t)?)));
+        if let Some((t, b)) = builtin.filter(|_| {
+            kind == "prefab" && path != "m_Enabled" && !path.starts_with("m_Materials")
+        }) {
+            let (b, fields) = builtins.entry(t).or_insert_with(|| (b.clone(), Vec::new()));
+            modify(&mut b.doc.body, path, m);
+            fields.push(field_of(path).to_string());
             continue;
         }
         let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
@@ -699,6 +711,87 @@ fn instance(
             .components
             .insert(b.name, raw);
     }
+    // Each built-in component changed: made again from its changed fields,
+    // and what it makes of the line set on its part — its body only when
+    // what makes the body (a trigger, kinematic) is what changed, since
+    // the part's other components have their say in it too.
+    for (b, fields) in builtins.into_values() {
+        let refs = Refs {
+            unity,
+            entity_of: HashMap::new(),
+            body_object: HashMap::new(),
+            scoped: HashMap::new(),
+        };
+        // The part made again from all it has — its colliders first, then
+        // its body, as a whole object is — the changed one as changed, so
+        // a trigger turned solid on a Rigidbody stays that Rigidbody's.
+        let mut made = EntityDesc::default();
+        made.name = desc.name.clone();
+        let siblings: Vec<&Builtin> = of
+            .as_ref()
+            .map(|o| o.builtins.iter().filter(|(_, x)| x.part == b.part).map(|(_, x)| x).collect())
+            .unwrap_or_default();
+        let order = |kind: &str| match kind {
+            k if k.ends_with("Collider") => 0,
+            "Rigidbody" => 1,
+            _ => 2,
+        };
+        let mut docs: Vec<&Doc> = siblings
+            .iter()
+            .filter(|x| x.doc.file_id != b.doc.file_id && x.doc.kind != b.doc.kind)
+            .map(|x| &x.doc)
+            .chain(std::iter::once(&b.doc))
+            .collect();
+        docs.sort_by_key(|d| order(&d.kind));
+        let mut quiet = Report::default();
+        for d in docs {
+            let say = if d.file_id == b.doc.file_id { &mut *report } else { &mut quiet };
+            let mut own = EntityDesc::default();
+            if d.file_id == b.doc.file_id {
+                component(&mut made, d, &refs, say);
+            } else {
+                // A sibling only for the body it makes.
+                own.name = made.name.clone();
+                if let Some(body) = made.parts.raw("body") {
+                    let _ = own.parts.set_raw("body", body);
+                }
+                component(&mut own, d, &refs, say);
+                if let Some(body) = own.parts.raw("body") {
+                    let _ = made.parts.set_raw("body", body);
+                }
+            }
+        }
+        let body_changed = fields.iter().any(|f| f == "m_IsTrigger" || f == "m_IsKinematic");
+        let joint = b.doc.kind.ends_with("Joint");
+        let change = desc.overrides.entry(b.part).or_default();
+        for (name, text) in made.parts.iter() {
+            if name == "body" && !body_changed {
+                continue;
+            }
+            if name == "joint" {
+                continue;
+            }
+            let _ = change.parts.set_raw(name, text);
+        }
+        if joint {
+            // What it is joined to, as a part of this instance; the world
+            // when it names nothing.
+            let to = b
+                .doc
+                .body
+                .reference("m_ConnectedBody")
+                .filter(|r| r.file_id != 0)
+                .and_then(|r| b.links.get(&r.file_id).copied());
+            let to = match to {
+                Some(part) if Some(part) == root_key => desc.id,
+                Some(part) => desc.id.within(part),
+                None => EntityId::UNASSIGNED,
+            };
+            if let Some(j) = made.parts.try_get::<Joint>().ok().flatten() {
+                change.set_part(&j.with_to(to));
+            }
+        }
+    }
     // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
         let found =
@@ -740,6 +833,29 @@ struct PrefabParts {
     /// Its MonoBehaviours by the id a modification's `target` names them:
     /// what an instance changes a field of.
     behaviours: HashMap<i64, Behaviour>,
+    /// Its colliders, bodies, joints and lamps by the id a modification's
+    /// `target` names them: what an instance changes a size or an axis of.
+    builtins: HashMap<i64, Builtin>,
+}
+
+/// A prefab's built-in component as it stands in the prefab: the part it
+/// is on, its document, and what the objects it names are as parts.
+#[derive(Clone)]
+struct Builtin {
+    part: EntityId,
+    doc: Doc,
+    links: std::rc::Rc<HashMap<i64, EntityId>>,
+}
+
+/// The built-in components an instance's change of a field is carried
+/// for: what `component` makes of them, again, with the change.
+fn changeable(kind: &str) -> bool {
+    matches!(
+        kind,
+        "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider" | "Rigidbody"
+            | "HingeJoint" | "SpringJoint" | "ConfigurableJoint" | "CharacterJoint" | "FixedJoint"
+            | "Light"
+    )
 }
 
 /// A prefab's MonoBehaviour as it stands in the prefab: the part it is on,
@@ -933,6 +1049,28 @@ impl Parts {
                             modify(&mut b.body, path, m);
                         }
                     }
+                    let mut builtins: HashMap<i64, Builtin> = inner.builtins.clone();
+                    for m in d.body["m_Modification"].list("m_Modifications") {
+                        let (Some(path), Some(target)) =
+                            (m.str("propertyPath"), m.reference("target"))
+                        else {
+                            continue;
+                        };
+                        if let Some(b) = builtins.get_mut(&target.file_id) {
+                            modify(&mut b.doc.body, path, m);
+                        }
+                    }
+                    for (x, b) in builtins {
+                        let links = b.links.iter().map(|(k, e)| (*k, key_of(*e))).collect();
+                        out.builtins.insert(
+                            (d.file_id ^ x) & i64::MAX,
+                            Builtin {
+                                part: key_of(b.part),
+                                links: std::rc::Rc::new(links),
+                                ..b
+                            },
+                        );
+                    }
                     for (x, b) in changed {
                         let links = b.links.iter().map(|(k, e)| (*k, key_of(*e))).collect();
                         out.behaviours.insert(
@@ -947,6 +1085,16 @@ impl Parts {
                 }
                 _ if !d.stripped => {
                     let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
+                    if let Some(go) = go.as_ref().filter(|_| changeable(&d.kind)) {
+                        out.builtins.insert(
+                            d.file_id,
+                            Builtin {
+                                part: entity_id(go.file_id),
+                                doc: d.clone(),
+                                links: links.clone(),
+                            },
+                        );
+                    }
                     if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
                         if d.kind == "MonoBehaviour" {
                             out.behaviours.insert(
@@ -2276,6 +2424,99 @@ ParticleSystemRenderer:
         assert!(body.contains("condition: 2"), "{body}");
         assert!(!body.contains("m_Name"), "{body}");
         assert!(data_asset(&unity(), "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n  m_ObjectHideFlags: 0\n").is_none());
+    }
+
+    #[test]
+    fn an_instance_changes_a_parts_collider_and_hinge() {
+        let dir = std::env::temp_dir().join(format!("scrap-builtins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lever = dir.join("Lever.prefab");
+        std::fs::write(
+            &lever,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Lever
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!1 &200
+GameObject:
+  m_Name: Handle
+--- !u!4 &201
+Transform:
+  m_GameObject: {fileID: 200}
+  m_Father: {fileID: 101}
+--- !u!65 &202
+BoxCollider:
+  m_GameObject: {fileID: 200}
+  m_IsTrigger: 1
+  m_Enabled: 1
+  m_Size: {x: 1, y: 1, z: 1}
+  m_Center: {x: 0, y: 0, z: 0}
+--- !u!54 &203
+Rigidbody:
+  m_GameObject: {fileID: 200}
+  m_Mass: 1
+--- !u!59 &204
+HingeJoint:
+  m_GameObject: {fileID: 200}
+  m_ConnectedBody: {fileID: 0}
+  m_Anchor: {x: 0, y: 0, z: 0}
+  m_Axis: {x: 1, y: 0, z: 0}
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("lll".into(), lever);
+        unity.names.insert("lll".into(), "Lever".into());
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 101, guid: lll, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 5
+    - target: {fileID: 202, guid: lll, type: 3}
+      propertyPath: m_Size.y
+      value: 3
+    - target: {fileID: 202, guid: lll, type: 3}
+      propertyPath: m_IsTrigger
+      value: 0
+    - target: {fileID: 204, guid: lll, type: 3}
+      propertyPath: m_Axis.x
+      value: 0
+    - target: {fileID: 204, guid: lll, type: 3}
+      propertyPath: m_Axis.z
+      value: 1
+  m_SourcePrefab: {fileID: 100100000, guid: lll, type: 3}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: lll, type: 3}
+  m_PrefabInstance: {fileID: 900}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let handle = &roots[0].overrides[&entity_id(200)];
+        let collider: Collider = handle.parts.try_get().unwrap().expect("the collider changed");
+        assert!(matches!(collider, Collider::Box { half, .. } if half == Vec3::new(0.5, 1.5, 0.5)), "{collider:?}");
+        assert_eq!(
+            handle.parts.raw("body"),
+            Some("Dynamic"),
+            "a trigger made solid is its Rigidbody's body, not a static one"
+        );
+        let joint: Joint = handle.parts.try_get().unwrap().expect("the hinge changed");
+        match joint {
+            Joint::Hinge { to, axis, .. } => {
+                assert!(to.is_unassigned(), "still to the world");
+                assert!((axis - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-6 || (axis - Vec3::Z).length() < 1e-6, "{axis}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
