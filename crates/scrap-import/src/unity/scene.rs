@@ -1733,8 +1733,9 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
                 10202 => "builtin:cube",
                 10206 => "builtin:cylinder",
                 10207 => "builtin:sphere",
-                10208 => "builtin:cylinder",
-                10209 | 10210 => "builtin:plane",
+                10208 => "builtin:capsule",
+                10209 => "builtin:unity_plane",
+                10210 => "builtin:unity_quad",
                 _ => return None,
             }
             .to_string(),
