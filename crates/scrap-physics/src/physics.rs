@@ -1916,6 +1916,21 @@ impl PhysicsWorld {
         Some(self.bodies.get(self.body_of(world, entity)?)?.mass())
     }
 
+    /// What a body carries besides its colliders' own weight — the water
+    /// in a bucket: `mass` kilograms at `centre`, a point in the body's own
+    /// space (its position and turn, not its scale). Its mass and centre
+    /// of mass are then its colliders' and this together, as Unity's are
+    /// after writing `Rigidbody.mass` and `centerOfMass`; zero takes it
+    /// off. Replaces what was carried before, and wakes the body when it
+    /// changes. False when the entity has no body yet.
+    pub fn set_carried_mass(&mut self, world: &World, entity: hecs::Entity, mass: f32, centre: Vec3) -> bool {
+        let Some(handle) = self.body_of(world, entity) else { return false };
+        let Some(body) = self.bodies.get_mut(handle) else { return false };
+        let props = MassProperties::new(point![centre.x, centre.y, centre.z], mass.max(0.0), vector![0.0, 0.0, 0.0]);
+        body.set_additional_mass_properties(props, true);
+        true
+    }
+
     /// How fast a point of the body is going, in the world: its own speed
     /// and its turning together.
     pub fn velocity_at(&self, world: &World, entity: hecs::Entity, at: Vec3) -> Option<Vec3> {
@@ -2430,6 +2445,33 @@ mod tests {
             world.get::<&Contacts>(head).is_ok(),
             "a part can have contacts of its own"
         );
+    }
+
+    /// A bucket of 1 kg carrying 3 kg of water low down: 4 kg, its centre
+    /// pulled toward the water's; carrying nothing again is the bucket.
+    #[test]
+    fn a_body_weighs_what_it_carries() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "bucket", body: Dynamic, physics: (mass: Some(1.0), gravity: 0.0),
+             collider: Box(half: (0.2, 0.2, 0.2)), transform: (position: (0.0, 1.0, 0.0))),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let bucket = world.query::<(hecs::Entity, &crate::world::SceneId)>().iter().next().map(|(e, _)| e).unwrap();
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        assert!(!physics.set_carried_mass(&world, bucket, 3.0, Vec3::ZERO), "no body before the first step");
+        physics.run(&mut world);
+        assert!(physics.set_carried_mass(&world, bucket, 3.0, Vec3::new(0.0, -0.1, 0.0)));
+        physics.run(&mut world);
+        assert!((physics.mass(&world, bucket).unwrap() - 4.0).abs() < 1e-4);
+        let centre = physics.center_of_mass(&world, bucket).unwrap();
+        let y = world.get::<&Transform>(bucket).unwrap().position.y;
+        assert!((centre.y - (y - 0.075)).abs() < 1e-4, "(1·0 + 3·-0.1)/4 below its origin: {centre} at {y}");
+        physics.set_carried_mass(&world, bucket, 0.0, Vec3::ZERO);
+        physics.run(&mut world);
+        assert!((physics.mass(&world, bucket).unwrap() - 1.0).abs() < 1e-4);
     }
 
     #[test]
