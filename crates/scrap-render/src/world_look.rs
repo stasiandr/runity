@@ -161,7 +161,7 @@ pub fn texture_views(
     cameras
         .into_iter()
         .map(|(camera, picture, plane)| {
-            let mut hidden: std::collections::HashSet<crate::id::EntityId> = world
+            let mut hidden: scrap_core::hash::FastSet<crate::id::EntityId> = world
                 .query::<(&Layer, &SceneId)>()
                 .iter()
                 .filter(|(layer, _)| picture.hide.contains(&layer.0))

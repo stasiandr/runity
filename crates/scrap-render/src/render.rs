@@ -1143,7 +1143,7 @@ pub struct Renderer {
     material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
     /// What each of those reads through `texture_at`, by its
     /// `// scrap:textures` line: the names of its slots.
-    shader_textures: std::collections::HashMap<crate::asset::AssetId, Vec<String>>,
+    shader_textures: scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -1247,7 +1247,7 @@ pub struct Renderer {
     free_meshes: Vec<u32>,
     /// Texture assets' resident levels and what the frames need
     /// ([`crate::streaming_textures`]).
-    streams: std::collections::HashMap<TextureHandle, crate::streaming_textures::TextureStream>,
+    streams: scrap_core::hash::FastMap<TextureHandle, crate::streaming_textures::TextureStream>,
     /// Live meshes by their key: the mesh each is drawn with, and the
     /// version last uploaded.
     live: std::collections::HashMap<u64, (MeshHandle, u64)>,
@@ -1256,13 +1256,13 @@ pub struct Renderer {
     textures: Vec<GpuTexture>,
     /// Which handle each texture asset was uploaded as, so a material's
     /// maps — asset ids — find theirs.
-    by_asset: std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
+    by_asset: scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
     /// Each mesh's own look, from its file's materials: drawn with when
     /// the material has no base map and the entity no texture of its own.
-    looks: std::collections::HashMap<MeshHandle, TextureHandle>,
+    looks: scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
     /// A bind group per set of four maps in use, made before the frame's
     /// passes and kept.
-    map_groups: std::collections::HashMap<Maps, wgpu::BindGroup>,
+    map_groups: scrap_core::hash::FastMap<Maps, wgpu::BindGroup>,
     /// Every texture in one array the shader indexes, where the device can
     /// ([`crate::bindless`]).
     bindless: Option<crate::bindless::Bindless>,
@@ -1304,7 +1304,7 @@ pub struct Renderer {
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
-    lods: std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
+    lods: scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
     lod_meshes: Vec<GpuMesh>,
     /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
     timer: Option<crate::gpu_timer::GpuTimer>,
@@ -3286,7 +3286,7 @@ impl Renderer {
             graph: crate::graph::FrameGraph::new(),
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
-            shader_textures: std::collections::HashMap::new(),
+            shader_textures: scrap_core::hash::FastMap::default(),
             layout,
             bind_group,
             shadow_bind_group,
@@ -3341,13 +3341,13 @@ impl Renderer {
             stats: FrameStats::default(),
             meshes: Vec::new(),
             free_meshes: Vec::new(),
-            streams: std::collections::HashMap::new(),
+            streams: scrap_core::hash::FastMap::default(),
             live: std::collections::HashMap::new(),
             targets: std::collections::HashMap::new(),
             textures: Vec::new(),
-            by_asset: std::collections::HashMap::new(),
-            looks: std::collections::HashMap::new(),
-            map_groups: std::collections::HashMap::new(),
+            by_asset: scrap_core::hash::FastMap::default(),
+            looks: scrap_core::hash::FastMap::default(),
+            map_groups: scrap_core::hash::FastMap::default(),
             bindless: bindless_on.then(crate::bindless::Bindless::new),
             texture_layout,
             texture_sampler,
@@ -3372,7 +3372,7 @@ impl Renderer {
                 DEPTH_FORMAT,
                 samples,
             ),
-            lods: std::collections::HashMap::new(),
+            lods: scrap_core::hash::FastMap::default(),
             lod_meshes: Vec::new(),
             timer: None,
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
@@ -6862,10 +6862,10 @@ type Batches = Vec<(BatchKey, Vec<InstanceRaw>)>;
 #[derive(Clone, Copy)]
 struct DrawLookup<'a> {
     meshes: &'a [GpuMesh],
-    lods: &'a std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
-    looks: &'a std::collections::HashMap<MeshHandle, TextureHandle>,
-    by_asset: &'a std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
-    shader_textures: &'a std::collections::HashMap<crate::asset::AssetId, Vec<String>>,
+    lods: &'a scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
+    looks: &'a scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
+    by_asset: &'a scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
+    shader_textures: &'a scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
 }
 
 impl DrawLookup<'_> {

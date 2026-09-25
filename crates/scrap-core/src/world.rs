@@ -6,7 +6,7 @@
 //! The entity store is `hecs`. Nothing here wraps it or hides it: a game
 //! wanting to add a component adds one.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::hash::{FastMap, FastSet};
 
@@ -352,9 +352,9 @@ pub fn patch_scene_dressed(
     world: &mut World,
     dressers: &mut [Box<dyn Dress + '_>],
 ) -> Patched {
-    let mut old: HashMap<EntityId, (&EntityDesc, Option<EntityId>)> = HashMap::new();
+    let mut old: FastMap<EntityId, (&EntityDesc, Option<EntityId>)> = FastMap::default();
     index(&before.entities, None, &mut old);
-    let live: HashMap<EntityId, hecs::Entity> = world
+    let live: FastMap<EntityId, hecs::Entity> = world
         .query::<(hecs::Entity, &SceneId)>()
         .iter()
         .map(|(entity, id)| (id.0, entity))
@@ -363,7 +363,7 @@ pub fn patch_scene_dressed(
     let mut patch = Patch {
         old: &old,
         live: &live,
-        kept: HashSet::new(),
+        kept: FastSet::default(),
         out: Patched::default(),
     };
     for desc in &after.entities {
@@ -373,7 +373,7 @@ pub fn patch_scene_dressed(
 
     // Only lines this scene had: a world can hold several scenes, and a line
     // another scene spawned is not this one's to remove.
-    let mut doomed: HashSet<hecs::Entity> = live
+    let mut doomed: FastSet<hecs::Entity> = live
         .iter()
         .filter(|(id, _)| !kept.contains(*id) && old.contains_key(*id))
         .map(|(_, entity)| *entity)
@@ -403,7 +403,7 @@ pub fn patch_scene_dressed(
 fn index<'a>(
     entities: &'a [EntityDesc],
     parent: Option<EntityId>,
-    out: &mut HashMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
+    out: &mut FastMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
 ) {
     for desc in entities {
         out.insert(desc.id, (desc, parent));
@@ -412,9 +412,9 @@ fn index<'a>(
 }
 
 struct Patch<'a> {
-    old: &'a HashMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
-    live: &'a HashMap<EntityId, hecs::Entity>,
-    kept: HashSet<EntityId>,
+    old: &'a FastMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
+    live: &'a FastMap<EntityId, hecs::Entity>,
+    kept: FastSet<EntityId>,
     out: Patched,
 }
 
@@ -490,6 +490,9 @@ impl Patch<'_> {
         // or taken off.
         let differ: Vec<String> = match was {
             None => Vec::new(),
+            // Most lines of a reload: every field as it was, in the same
+            // order — one pass, no name looked up in the other line.
+            Some((old, _)) if old.parts.iter().eq(desc.parts.iter()) => Vec::new(),
             Some((old, _)) => desc
                 .parts
                 .names()
