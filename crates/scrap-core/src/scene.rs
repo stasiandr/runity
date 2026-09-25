@@ -53,6 +53,12 @@ impl Default for Transform {
 
 impl Transform {
     pub fn rotation(&self) -> Quat {
+        // Most of a level is not turned, and this runs for every entity
+        // on every hierarchy pass: three sines and cosines of nothing.
+        // Exact — `from_euler` of zeros is the identity bit for bit.
+        if self.rotation_deg == Vec3::ZERO {
+            return Quat::IDENTITY;
+        }
         let r = self.rotation_deg * std::f32::consts::PI / 180.0;
         Quat::from_euler(glam::EulerRot::YXZ, r.y, r.x, r.z)
     }
