@@ -898,11 +898,74 @@ fn the_git_tab_lists_the_scenes_revisions_and_brings_one_back() {
         })
         .collect();
     let older = format!("revision {}", rows.last().unwrap());
-    click(&mut s, &older);
-    click(&mut s, &older);
+    double_click(&mut s, &older);
     assert!(s.session.find("crate").is_some(), "brought back");
     click(&mut s, "undo");
     assert!(s.session.find("crate").is_none());
+}
+
+#[test]
+fn the_git_tab_commits_what_is_ticked_and_shows_what_a_commit_changed() {
+    let Some((mut s, dir)) = studio() else { return };
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    if git(&["init", "-q", "-b", "main"]).is_none() {
+        eprintln!("no git here; skipped");
+        return;
+    }
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "Tess"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first light"]);
+
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    std::fs::write(dir.join("notes.txt"), "not for this commit").unwrap();
+    click(&mut s, "tab git");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("#git file scenes/first-light.ron"), "{dump}");
+    assert!(dump.contains("\"unsaved\""), "the unsaved scene is a change: {dump}");
+    assert!(dump.contains("#git file notes.txt"), "{dump}");
+    assert!(dump.contains("\"main\""), "the branch: {dump}");
+
+    // The note left out; a message; Commit saves the scene and commits it.
+    click(&mut s, "git file notes.txt");
+    click(&mut s, "git message");
+    type_text(&mut s, "no crate");
+    click(&mut s, "git commit");
+    assert!(!s.session.is_modified(), "saved on the way");
+    assert_eq!(
+        git(&["log", "-1", "--format=%s"]).unwrap().trim(),
+        "no crate"
+    );
+    let left = git(&["status", "--porcelain"]).unwrap();
+    assert_eq!(left.trim(), "?? notes.txt", "only the ticked file went");
+
+    s.frame();
+    let dump = s.ui.dump();
+    let newest = dump
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("#revision "))
+        .map(|r| format!("revision {}", r.split(' ').next().unwrap()))
+        .expect("a revision line");
+    click(&mut s, &newest);
+    let dump = s.ui.dump();
+    assert!(dump.contains("removed `crate`"), "what the commit changed: {dump}");
+    assert!(dump.contains("#git restore"), "{dump}");
+
+    // The whole project's history has both commits.
+    click(&mut s, "git scope Project");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"2 commits\""), "{dump}");
 }
 
 #[test]

@@ -1324,7 +1324,8 @@ impl Studio {
         // An open Blender: saves and objects being moved, every frame, so
         // a drag there moves here while it happens.
         self.session.poll_blender();
-        self.bottom.update_git(&mut self.ui, &mut self.session);
+        self.bottom
+            .update_git(&mut self.ui, &mut self.session, &mut self.git);
         // The Project's pictures, in frames nobody is waiting on: none
         // while the person is doing something or the document or the
         // selection just changed, and a few milliseconds' worth at most —
@@ -5146,6 +5147,11 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "handles at" => "Handles on the entity's pivot or the selection's centre",
 
         "grid" => "Show the grid",
+        "git commit" => "Commit what is ticked — ⌘/Ctrl Enter in the message does too",
+        "git all" => "Tick every change, or none",
+        "git refresh" => "Ask git again now",
+        "git resolved" => "Save the scene and tell git its conflicts are settled",
+        "git restore" => "Put the scene back as it was at this commit, as one undo step",
         "status console" => "The Console's newest line: click to show the Console",
         "play" => "Play the game in the Game view / Stop",
         "pause" => "Simulate physics here, paused",

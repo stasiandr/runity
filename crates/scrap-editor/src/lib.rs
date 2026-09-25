@@ -55,7 +55,7 @@ use scrap::{
 };
 
 pub use error::EditError;
-pub use history::{Lock, Revision};
+pub use history::{FileStatus, Lock, Revision, Status};
 
 /// What a failed session call hands back.
 pub type EditResult<T> = Result<T, EditError>;
@@ -77,6 +77,23 @@ impl Snap {
         degrees: 15.0,
         scale: 0.1,
     };
+}
+
+/// A merge of the open scene being settled: [`Session::merge_conflicts`].
+#[derive(Clone)]
+struct Merging {
+    ours: Scene,
+    theirs: Scene,
+    conflicts: Vec<scrap::merge::Conflict>,
+}
+
+/// What one commit changed: [`Session::commit_changes`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RevisionChanges {
+    /// Git's letter and the file, relative to the repository's top.
+    pub files: Vec<(char, String)>,
+    /// The open scene's changes, when the commit touched it.
+    pub scene: Vec<scrap::merge::Change>,
 }
 
 /// Everything one open document needs.
@@ -187,9 +204,9 @@ pub struct Session {
     /// — and when the scene's files last changed. What tells an edit made
     /// on disk from one made here.
     on_disk: Option<(Scene, scrap::live::Stamps)>,
-    /// Theirs, and the conflicts, while a merge of the open scene is being
-    /// settled.
-    merge: Option<(Scene, Vec<scrap::merge::Conflict>)>,
+    /// While a merge of the open scene is being settled: ours and theirs as
+    /// they were before it, and the conflicts.
+    merge: Option<Merging>,
     /// Selected besides `selected`, which stays the one the gizmo is on.
     also_selected: Vec<EntityId>,
     /// Scene entities folded shut in the hierarchy, and prefab instances
@@ -1227,7 +1244,11 @@ impl Session {
             return Ok(Vec::new());
         };
         let merged = scrap::merge::merge_scenes(&base, &ours, &theirs);
-        self.merge = Some((theirs, merged.conflicts.clone()));
+        self.merge = Some(Merging {
+            ours,
+            theirs,
+            conflicts: merged.conflicts.clone(),
+        });
         Ok(merged.conflicts)
     }
 
@@ -1235,28 +1256,159 @@ impl Session {
     /// theirs' way, as one undoable edit. Keeping ours needs nothing: the
     /// merge already kept it.
     pub fn take_theirs(&mut self, conflict: usize) -> EditResult<()> {
+        self.take_side(conflict, scrap::merge::Side::Theirs)
+    }
+
+    /// Settle one conflict ours' way again, after taking theirs or editing
+    /// it by hand, as one undoable edit.
+    pub fn take_ours(&mut self, conflict: usize) -> EditResult<()> {
+        self.take_side(conflict, scrap::merge::Side::Ours)
+    }
+
+    fn take_side(&mut self, conflict: usize, side: scrap::merge::Side) -> EditResult<()> {
         self.refuse_while_playing()?;
-        let Some((theirs, conflicts)) = self.merge.clone() else {
+        let Some(merging) = self.merge.clone() else {
             return Err(EditError::Scene(
                 "no merge conflicts loaded — call merge_conflicts first".into(),
             ));
         };
-        let Some(conflict) = conflicts.get(conflict) else {
+        let Some(conflict) = merging.conflicts.get(conflict) else {
             return Err(EditError::Scene(format!(
                 "there are {} conflicts, not {}",
-                conflicts.len(),
+                merging.conflicts.len(),
                 conflict + 1
             )));
         };
         let mut scene = self.history.scene().clone();
-        if !conflict.take_theirs(&mut scene, &theirs) {
+        let (taken, word) = match side {
+            scrap::merge::Side::Theirs => (conflict.take_theirs(&mut scene, &merging.theirs), "theirs"),
+            scrap::merge::Side::Ours => (conflict.take_ours(&mut scene, &merging.ours), "ours"),
+        };
+        if !taken {
             return Err(EditError::Scene(format!(
-                "nothing of theirs to take for: {conflict}"
+                "nothing of {word} to take for: {conflict}"
             )));
+        }
+        if &scene == self.history.scene() {
+            return Ok(());
         }
         *self.history.edit() = scene;
         self.respawn();
         Ok(())
+    }
+
+    /// Which side the open document holds for each conflict of
+    /// [`Session::merge_conflicts`], in its order: `None` for neither — a
+    /// hand edit — or nothing to choose. Empty with no merge loaded.
+    pub fn conflict_sides(&self) -> Vec<Option<scrap::merge::Side>> {
+        let Some(merging) = &self.merge else {
+            return Vec::new();
+        };
+        let now = self.history.scene();
+        let from_ours = scrap::merge::diff_scenes(&merging.ours, now);
+        let from_theirs = scrap::merge::diff_scenes(&merging.theirs, now);
+        merging
+            .conflicts
+            .iter()
+            .map(|c| c.side(now, &from_ours, &from_theirs))
+            .collect()
+    }
+
+    /// Tell git the open scene's conflicts are settled: saved as it stands
+    /// and added, so the merge can be committed. Refuses unsaved edits,
+    /// which would stay out.
+    pub fn mark_resolved(&mut self) -> EditResult<()> {
+        let path = self.scene_path.clone().ok_or(EditError::NoPath)?;
+        if self.is_modified() {
+            return Err(EditError::Scene(
+                "the scene has unsaved edits — save it first, or git gets the file without them"
+                    .into(),
+            ));
+        }
+        history::resolve(&path).map_err(EditError::Io)?;
+        self.merge = None;
+        Ok(())
+    }
+
+    /// The folder git is asked about: the project's, or the open scene's.
+    fn git_dir(&self) -> EditResult<PathBuf> {
+        if let Some(project) = &self.project {
+            return Ok(project.root().to_path_buf());
+        }
+        self.scene_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .ok_or(EditError::NotInProject)
+    }
+
+    /// Where the project's repository stands: branch, how far from the
+    /// branch it follows, whether a merge is under way, and each file of
+    /// the project not as committed. Unsaved edits are not files yet: see
+    /// [`Session::is_modified`].
+    pub fn git_status(&self) -> EditResult<Status> {
+        history::status(&self.git_dir()?).map_err(EditError::Io)
+    }
+
+    /// Commit `paths` — absolute, or relative to the project — with
+    /// `message`: their changes, new files and deletions, and nothing else.
+    /// The new commit, short. Refuses when the open scene is among them
+    /// with unsaved edits, which would stay out of it.
+    pub fn commit(&mut self, paths: &[PathBuf], message: &str) -> EditResult<String> {
+        let dir = self.git_dir()?;
+        // As the file system has them, so git knows its own folder through
+        // a link (macOS's /var is /private/var); a deleted file by its folder.
+        let real = |p: &Path| {
+            p.canonicalize().unwrap_or_else(|_| {
+                match (p.parent().and_then(|d| d.canonicalize().ok()), p.file_name()) {
+                    (Some(dir), Some(name)) => dir.join(name),
+                    _ => p.to_path_buf(),
+                }
+            })
+        };
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .map(|p| real(&if p.is_absolute() { p.clone() } else { dir.join(p) }))
+            .collect();
+        if self.is_modified() {
+            if let Some(scene) = &self.scene_path {
+                let scene = real(scene);
+                if paths.contains(&scene) {
+                    return Err(EditError::Scene(format!(
+                        "{} has unsaved edits — save it first, or they stay out of the commit",
+                        scene.display()
+                    )));
+                }
+            }
+        }
+        history::commit(&dir, &paths, message).map_err(EditError::Io)
+    }
+
+    /// The commits that touched anything in the project, newest first,
+    /// `limit` at most.
+    pub fn project_history(&self, limit: usize) -> EditResult<Vec<Revision>> {
+        history::log_dir(&self.git_dir()?, limit).map_err(EditError::Io)
+    }
+
+    /// What `commit` changed: the project's files it touched and, when the
+    /// open scene is one of them, the scene's things and fields it changed
+    /// — against the commit before, or an empty scene for the first.
+    pub fn commit_changes(&self, commit: &str) -> EditResult<RevisionChanges> {
+        let files = history::files_at(&self.git_dir()?, commit).map_err(EditError::Io)?;
+        let name = self
+            .scene_path
+            .as_deref()
+            .and_then(|p| history::name_in_repo(p).ok());
+        let touched = name.is_some_and(|name| files.iter().any(|(_, f)| *f == name));
+        // A scene that was named otherwise then has no changes to show.
+        let scene = match (touched, self.scene_at(commit)) {
+            (true, Ok(after)) => {
+                let before = self.scene_at(&format!("{commit}^")).unwrap_or_default();
+                scrap::merge::diff_scenes(&before, &after)
+            }
+            _ => Vec::new(),
+        };
+        Ok(RevisionChanges { files, scene })
     }
 
     /// The scene's look — sun, fog, sky, post-processing, volumetric fog,

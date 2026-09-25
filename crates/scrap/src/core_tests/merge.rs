@@ -173,3 +173,49 @@
             "the other conflict is still ours"
         );
     }
+
+    #[test]
+    fn a_diff_names_what_was_added_removed_and_which_field_changed() {
+        let before = scene(BASE);
+        let after = scene(
+            &BASE
+                .replace("(0.0, 0.0, 0.0)", "(5.0, 0.0, 0.0)")
+                .replace(r#"(id: "b2", name: "rock", model: "m", material: "stone"),"#, "")
+                .replace(
+                    r#"[(id: "d4", name: "door", model: "m")]"#,
+                    r#"[(id: "d4", name: "door", model: "m"), (id: "f6", name: "window", model: "m")]"#,
+                ),
+        );
+        let changes = diff_scenes(&before, &after);
+        let said: Vec<String> = changes.iter().map(|c| c.to_string()).collect();
+        assert_eq!(changes.len(), 3, "{said:?}");
+        assert!(said.iter().any(|s| s.starts_with("added `window`")), "{said:?}");
+        assert!(said.iter().any(|s| s.starts_with("removed `rock`")), "{said:?}");
+        let moved = changes
+            .iter()
+            .find(|c| c.is_field(Some("a1".parse().unwrap()), "its position"))
+            .expect("the tree's move");
+        assert!(moved.to_string().contains("→"), "{moved}");
+        assert!(diff_scenes(&before, &before).is_empty(), "no change, no lines");
+    }
+
+    #[test]
+    fn a_conflict_taken_theirs_can_be_taken_ours_again_and_says_which_side_it_holds() {
+        let base = scene(BASE);
+        let ours = scene(&BASE.replace("(0.0, 0.0, 0.0)", "(5.0, 0.0, 0.0)"));
+        let theirs = scene(&BASE.replace("(0.0, 0.0, 0.0)", "(0.0, 0.0, 9.0)"));
+        let merged = merge_scenes(&base, &ours, &theirs);
+        let conflict = &merged.conflicts[0];
+        let side = |scene: &Scene| {
+            conflict.side(scene, &diff_scenes(&ours, scene), &diff_scenes(&theirs, scene))
+        };
+        let mut now = merged.scene.clone();
+        assert_eq!(side(&now), Some(Side::Ours), "the merge keeps ours");
+        assert!(conflict.take_theirs(&mut now, &theirs));
+        assert_eq!(side(&now), Some(Side::Theirs));
+        assert!(conflict.take_ours(&mut now, &ours));
+        assert_eq!(side(&now), Some(Side::Ours));
+        assert_eq!(now.find("tree").unwrap().transform.position.x, 5.0);
+        now.get_mut("a1".parse().unwrap()).unwrap().transform.position.y = 3.0;
+        assert_eq!(side(&now), None, "a hand edit is neither side");
+    }

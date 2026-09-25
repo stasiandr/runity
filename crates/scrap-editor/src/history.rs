@@ -14,6 +14,8 @@ pub struct Revision {
     pub author: String,
     /// `YYYY-MM-DD`.
     pub date: String,
+    /// Seconds since 1970: for "3 h ago".
+    pub when: i64,
     pub summary: String,
 }
 
@@ -50,32 +52,219 @@ fn split(path: &Path) -> Result<(&Path, String), String> {
 /// added, new to git — as absolute paths: what the Project and the
 /// Hierarchy mark with a dot. An error outside a repository.
 pub fn uncommitted(dir: &Path) -> Result<std::collections::HashSet<std::path::PathBuf>, String> {
+    Ok(status(dir)?.files.into_iter().map(|f| f.path).collect())
+}
+
+/// Where the repository around a folder stands: its branch, how far it is
+/// from the branch it follows, whether a merge is under way, and the files
+/// under the folder that are not as committed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Status {
+    /// `None` on a detached `HEAD`.
+    pub branch: Option<String>,
+    /// The branch it follows, `origin/main`, when it follows one.
+    pub upstream: Option<String>,
+    /// Commits here the upstream has not, and there that are not here.
+    pub ahead: u32,
+    pub behind: u32,
+    /// Git is in the middle of a merge: what is committed next finishes it.
+    pub merging: bool,
+    pub files: Vec<FileStatus>,
+}
+
+/// One file not as committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStatus {
+    /// Absolute.
+    pub path: std::path::PathBuf,
+    /// Relative to the repository's top, with `/`, as git names it.
+    pub name: String,
+    /// Git's two letters: the index's and the working tree's — `M`, `A`,
+    /// `D`, `R`, `U` unmerged, `?` new to git, `.` unchanged.
+    pub index: char,
+    pub worktree: char,
+}
+
+impl FileStatus {
+    /// In a merge that conflicted on it and has not been settled.
+    pub fn conflicted(&self) -> bool {
+        matches!(
+            (self.index, self.worktree),
+            ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
+        )
+    }
+
+    /// One letter for the change: `M` changed, `A` new, `D` deleted, `R`
+    /// renamed, `U` in conflict.
+    pub fn letter(&self) -> char {
+        if self.conflicted() {
+            return 'U';
+        }
+        match (self.index, self.worktree) {
+            ('?', _) | ('A', _) => 'A',
+            ('R', _) | (_, 'R') => 'R',
+            ('D', _) | (_, 'D') => 'D',
+            _ => 'M',
+        }
+    }
+
+    /// The letter in words.
+    pub fn word(&self) -> &'static str {
+        match self.letter() {
+            'U' => "in conflict",
+            'A' => "new",
+            'D' => "deleted",
+            'R' => "renamed",
+            _ => "changed",
+        }
+    }
+}
+
+/// [`Status`] of the repository around `dir`, with the files under it.
+pub fn status(dir: &Path) -> Result<Status, String> {
     let top = git(dir, &["rev-parse", "--show-toplevel"])?;
     let top = Path::new(top.trim());
     let text = git(
         dir,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ],
     )?;
-    Ok(status_paths(&text)
-        .into_iter()
-        .map(|p| top.join(p))
-        .collect())
+    let mut status = parse_status(&text);
+    for f in &mut status.files {
+        f.path = top.join(&f.name);
+    }
+    status.merging = merging(dir);
+    Ok(status)
 }
 
-/// The paths of `git status --porcelain=v1 -z`, relative to the top of
-/// the repository: `XY path`, a rename followed by the name it had.
-fn status_paths(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
+fn merging(dir: &Path) -> bool {
+    git(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok()
+}
+
+/// `git status --porcelain=v2 --branch -z`, the paths left relative.
+fn parse_status(text: &str) -> Status {
+    let mut status = Status::default();
     let mut entries = text.split('\0').filter(|e| !e.is_empty());
+    let file = |name: &str, xy: &str| {
+        let mut letters = xy.chars();
+        FileStatus {
+            path: name.into(),
+            name: name.to_string(),
+            index: letters.next().unwrap_or('.'),
+            worktree: letters.next().unwrap_or('.'),
+        }
+    };
     while let Some(entry) = entries.next() {
-        let Some(path) = entry.get(3..) else { continue };
-        out.push(path.to_string());
-        if entry.starts_with('R') || entry.starts_with('C') {
-            // The old name: gone from the tree, nothing to mark.
-            entries.next();
+        if let Some(header) = entry.strip_prefix("# ") {
+            let (key, value) = header.split_once(' ').unwrap_or((header, ""));
+            match key {
+                "branch.head" if value != "(detached)" => status.branch = Some(value.into()),
+                "branch.upstream" => status.upstream = Some(value.into()),
+                "branch.ab" => {
+                    for n in value.split(' ') {
+                        if let Some(a) = n.strip_prefix('+') {
+                            status.ahead = a.parse().unwrap_or(0);
+                        } else if let Some(b) = n.strip_prefix('-') {
+                            status.behind = b.parse().unwrap_or(0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        // The path is the last field and may hold spaces.
+        let xy = entry.get(2..4).unwrap_or("..");
+        let path_at = |n: usize| entry.splitn(n + 1, ' ').nth(n).map(str::to_string);
+        match entry.get(..1).unwrap_or("") {
+            // 1 XY sub mH mI mW hH hI path
+            "1" => {
+                if let Some(path) = path_at(8) {
+                    status.files.push(file(&path, xy));
+                }
+            }
+            // 2 XY sub mH mI mW hH hI score path, then the name it had
+            "2" => {
+                if let Some(path) = path_at(9) {
+                    status.files.push(file(&path, xy));
+                }
+                entries.next();
+            }
+            // u XY sub m1 m2 m3 mW h1 h2 h3 path
+            "u" => {
+                if let Some(path) = path_at(10) {
+                    status.files.push(file(&path, xy));
+                }
+            }
+            "?" => status.files.push(file(&entry[2..], "??")),
+            _ => {}
         }
     }
-    out
+    status
+}
+
+/// Commit `paths` — every change to them, new files and deletions too —
+/// with `message`, and nothing else that is staged. Mid-merge git commits
+/// the whole merge, so everything staged goes. The new commit, short.
+pub fn commit(dir: &Path, paths: &[std::path::PathBuf], message: &str) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("a commit needs a message: what changed, and why".into());
+    }
+    if paths.is_empty() {
+        return Err("nothing chosen to commit".into());
+    }
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut add = vec!["add", "-A", "--"];
+    add.extend(names.iter().map(String::as_str));
+    git(dir, &add)?;
+    let mut commit = vec!["commit", "-q", "-m", message];
+    if !merging(dir) {
+        commit.push("--");
+        commit.extend(names.iter().map(String::as_str));
+    }
+    git(dir, &commit)?;
+    git(dir, &["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_string())
+}
+
+/// A file's name as git names it: relative to the repository's top.
+pub fn name_in_repo(path: &Path) -> Result<String, String> {
+    let (dir, name) = split(path)?;
+    let prefix = git(dir, &["rev-parse", "--show-prefix"])?;
+    Ok(format!("{}{name}", prefix.trim()))
+}
+
+/// Tell git a file's conflict is settled: `git add` it.
+pub fn resolve(path: &Path) -> Result<(), String> {
+    let (dir, name) = split(path)?;
+    git(dir, &["add", "--", &name]).map(|_| ())
+}
+
+/// The files a commit changed under `dir`: git's letter (`M`, `A`, `D`,
+/// `R`…) and the name, relative to the repository's top.
+pub fn files_at(dir: &Path, commit: &str) -> Result<Vec<(char, String)>, String> {
+    let text = git(
+        dir,
+        &["show", "--name-status", "--format=", commit, "--", "."],
+    )?;
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let letter = line.chars().next()?;
+            // A rename names where it went last.
+            let name = line.rsplit('\t').next()?.to_string();
+            Some((letter, name))
+        })
+        .collect())
 }
 
 /// The commit `HEAD` names in the repository around `dir`.
@@ -83,32 +272,39 @@ pub fn head(dir: &Path) -> Result<String, String> {
     git(dir, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
 }
 
+const LOG_FORMAT: &str = "--format=%H%x1f%an%x1f%ad%x1f%at%x1f%s";
+
 /// The commits that touched `path`, newest first, following renames.
 pub fn log(path: &Path) -> Result<Vec<Revision>, String> {
     let (dir, name) = split(path)?;
     let text = git(
         dir,
-        &[
-            "log",
-            "--follow",
-            "--date=short",
-            "--format=%H%x1f%an%x1f%ad%x1f%s",
-            "--",
-            &name,
-        ],
+        &["log", "--follow", "--date=short", LOG_FORMAT, "--", &name],
     )?;
-    Ok(text
-        .lines()
+    Ok(revisions(&text))
+}
+
+/// The commits that touched anything under `dir`, newest first, `limit`
+/// at most.
+pub fn log_dir(dir: &Path, limit: usize) -> Result<Vec<Revision>, String> {
+    let limit = format!("-{limit}");
+    let text = git(dir, &["log", &limit, "--date=short", LOG_FORMAT, "--", "."])?;
+    Ok(revisions(&text))
+}
+
+fn revisions(text: &str) -> Vec<Revision> {
+    text.lines()
         .filter_map(|line| {
             let mut parts = line.split('\u{1f}');
             Some(Revision {
                 commit: parts.next()?.to_string(),
                 author: parts.next()?.to_string(),
                 date: parts.next()?.to_string(),
+                when: parts.next()?.parse().unwrap_or(0),
                 summary: parts.next().unwrap_or("").to_string(),
             })
         })
-        .collect())
+        .collect()
 }
 
 /// What `path` said at `commit`.
@@ -192,12 +388,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_status_lists_each_path_once_and_a_rename_by_its_new_name() {
-        let text = " M scenes/main.ron\0?? prefabs/new.prefab\0R  b.ron\0a.ron\0A  x.png\0";
+    fn the_status_says_the_branch_how_far_it_is_and_each_file_once() {
+        let text = "# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0\
+# branch.ab +2 -1\0\
+1 .M N... 100644 100644 100644 a b scenes/main scene.ron\0\
+2 R. N... 100644 100644 100644 a b R100 b.ron\0a.ron\0\
+u UU N... 100644 100644 100644 100644 a b c prefabs/door.prefab\0\
+? new.png\0";
+        let status = parse_status(text);
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((status.ahead, status.behind), (2, 1));
+        let names: Vec<(&str, char)> = status
+            .files
+            .iter()
+            .map(|f| (f.name.as_str(), f.letter()))
+            .collect();
         assert_eq!(
-            status_paths(text),
-            ["scenes/main.ron", "prefabs/new.prefab", "b.ron", "x.png"]
+            names,
+            [
+                ("scenes/main scene.ron", 'M'),
+                ("b.ron", 'R'),
+                ("prefabs/door.prefab", 'U'),
+                ("new.png", 'A')
+            ]
         );
+        assert!(status.files[2].conflicted());
+        assert_eq!(parse_status("# branch.head (detached)\0").branch, None);
     }
 
     #[test]

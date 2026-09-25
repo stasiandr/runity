@@ -125,10 +125,15 @@ pub fn list() -> Vec<Value> {
             "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
             "spacing": { "type": "number", "description": "metres between copies; 1 by default" },
         }), &["what", "points"]),
-        tool("history", "The commits that touched the open scene's file, newest first: commit, author, date, summary.", json!({}), &[]),
+        tool("history", "The commits that touched the open scene's file — or with project: true, anything in the project — newest first: commit, author, date, summary.", json!({ "project": { "type": "boolean" } }), &[]),
+        tool("changes", "What one commit changed: the project's files it touched and, when it touched the open scene, each thing added or removed and each field changed, before → after.", json!({ "commit": { "type": "string" } }), &["commit"]),
+        tool("git_status", "Where the project's repository stands: branch, commits ahead of and behind the branch it follows, whether a merge is under way, and each file not as committed, with a letter: M changed, A new, D deleted, R renamed, U in conflict.", json!({}), &[]),
+        tool("commit", "Commit files of the project — all that `git_status` lists when paths is left out — with a message. Save the scene first: unsaved edits are refused, not left out silently.", json!({ "message": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" }, "description": "relative to the project, or absolute" } }), &["message"]),
         tool("restore", "Put the open scene back as it was at a commit, as one undo step (render afterwards to look; undo to go back).", json!({ "commit": { "type": "string" } }), &["commit"]),
-        tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered. The file holds ours for each.", json!({}), &[]),
-        tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered, and which side the document holds for it now. The merge holds ours for each.", json!({}), &[]),
+        tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Then save and `resolved`.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("take_ours", "Settle one conflict ours' way again after taking theirs or editing it, as one undo step.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("resolved", "Tell git the open scene's conflicts are settled (`git add`), so the merge can be committed. Save first.", json!({}), &[]),
         tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
         tool("sculpt", "Shape a terrain with one brush stroke at a world point: raise (by > 0) or lower it, or with flatten: true pull it toward the height `by`. Written as one line in the terrain's .scrterrain and rebuilt at once.", json!({
@@ -621,10 +626,13 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!("{count} {verb}"))])
         }
         "history" => {
-            let revisions = server
-                .session()?
-                .scene_history()
-                .map_err(|e| e.to_string())?;
+            let session = server.session()?;
+            let revisions = if args.get("project").and_then(Value::as_bool) == Some(true) {
+                session.project_history(200)
+            } else {
+                session.scene_history()
+            }
+            .map_err(|e| e.to_string())?;
             if revisions.is_empty() {
                 return Ok(vec![text("not in any commit yet")]);
             }
@@ -642,6 +650,70 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .collect();
             Ok(vec![text(lines.join("\n"))])
         }
+        "changes" => {
+            let commit = string(args, "commit")?;
+            let changes = server
+                .session()?
+                .commit_changes(&commit)
+                .map_err(|e| e.to_string())?;
+            let mut lines: Vec<String> = changes
+                .files
+                .iter()
+                .map(|(letter, name)| format!("{letter} {name}"))
+                .collect();
+            if !changes.scene.is_empty() {
+                lines.push(String::new());
+                lines.push("in the open scene:".into());
+                lines.extend(changes.scene.iter().map(|c| format!("  {c}")));
+            }
+            if lines.is_empty() {
+                return Ok(vec![text("it changed nothing in the project")]);
+            }
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "git_status" => {
+            let session = server.session()?;
+            let status = session.git_status().map_err(|e| e.to_string())?;
+            let mut lines = vec![git_branch_line(&status)];
+            if session.is_modified() {
+                lines.push("the open scene has unsaved edits".into());
+            }
+            if status.files.is_empty() {
+                lines.push("nothing to commit".into());
+            }
+            lines.extend(
+                status
+                    .files
+                    .iter()
+                    .map(|f| format!("{} {}", f.letter(), f.name)),
+            );
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "commit" => {
+            let message = string(args, "message")?;
+            let session = server.session()?;
+            let paths: Vec<std::path::PathBuf> = match args.get("paths") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| v.as_str().map(Into::into).ok_or("paths are strings"))
+                    .collect::<Result<_, _>>()?,
+                _ => session
+                    .git_status()
+                    .map_err(|e| e.to_string())?
+                    .files
+                    .into_iter()
+                    .map(|f| f.path)
+                    .collect(),
+            };
+            let commit = session
+                .commit(&paths, &message)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "committed {commit}: {} file{}",
+                paths.len(),
+                if paths.len() == 1 { "" } else { "s" }
+            ))])
+        }
         "restore" => {
             let commit = string(args, "commit")?;
             server
@@ -653,29 +725,48 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             ))])
         }
         "conflicts" => {
-            let conflicts = server
-                .session()?
-                .merge_conflicts()
-                .map_err(|e| e.to_string())?;
+            let session = server.session()?;
+            let conflicts = session.merge_conflicts().map_err(|e| e.to_string())?;
             if conflicts.is_empty() {
                 return Ok(vec![text("no merge conflicts in the open scene")]);
             }
+            let sides = session.conflict_sides();
             let lines: Vec<String> = conflicts
                 .iter()
                 .enumerate()
-                .map(|(i, c)| format!("{i}: {c}"))
+                .map(|(i, c)| {
+                    let holds = match sides.get(i).copied().flatten() {
+                        Some(scrap::merge::Side::Ours) => " [holds ours]",
+                        Some(scrap::merge::Side::Theirs) => " [holds theirs]",
+                        None => "",
+                    };
+                    format!("{i}: {c}{holds}")
+                })
                 .collect();
             Ok(vec![text(lines.join("\n"))])
         }
-        "take_theirs" => {
+        "take_theirs" | "take_ours" => {
             let index = integer(args, "conflict")? as usize;
+            let session = server.session()?;
+            let side = if name == "take_ours" {
+                session.take_ours(index)
+            } else {
+                session.take_theirs(index)
+            };
+            side.map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "conflict {index} settled {} way; not saved",
+                if name == "take_ours" { "ours'" } else { "theirs'" }
+            ))])
+        }
+        "resolved" => {
             server
                 .session()?
-                .take_theirs(index)
+                .mark_resolved()
                 .map_err(|e| e.to_string())?;
-            Ok(vec![text(format!(
-                "conflict {index} settled theirs' way; not saved"
-            ))])
+            Ok(vec![text(
+                "the scene's conflicts are settled for git; commit to finish the merge",
+            )])
         }
         "copy" => {
             let ids = match args.get("ids") {
@@ -2029,6 +2120,24 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
             Ok(vec![text(format!("`{from}` is `{to}` in {name}{also}"))])
         }
     }
+}
+
+/// `main → origin/main, 2 ahead, 1 behind`, and the merge under way.
+fn git_branch_line(status: &scrap_editor::Status) -> String {
+    let mut line = status
+        .branch
+        .clone()
+        .unwrap_or_else(|| "no branch (detached HEAD)".into());
+    if let Some(upstream) = &status.upstream {
+        line += &format!(
+            " → {upstream}, {} ahead, {} behind",
+            status.ahead, status.behind
+        );
+    }
+    if status.merging {
+        line += "; merging — committing finishes it";
+    }
+    line
 }
 
 fn string(args: &Value, key: &str) -> Result<String, String> {

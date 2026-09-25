@@ -24,6 +24,7 @@ mod clipboard;
 mod dialogues;
 mod dock;
 mod git_marks;
+mod git_tab;
 mod hierarchy;
 mod inspector;
 pub mod keymap;
