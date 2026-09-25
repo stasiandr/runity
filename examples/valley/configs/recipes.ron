@@ -1,0 +1,32 @@
+// Recipes by the properties they need (docs/design/05-economy.md, 6.3).
+// A step takes units of a tag at a grade or better; its tool is not spent,
+// but its grade caps the result's.
+{
+    "Верёвка": (
+        id: "f4ffe0a4294712f6",
+        // Nettles by hand, or a strip of hide cut with something sharp.
+        steps: [(need: Fibrous, units: 4, min_grade: 1)],
+        makes: Some("Верёвка"),
+    ),
+    "Факел": (
+        id: "3d68dccd225aebe8",
+        steps: [
+            (part: "рукоять", need: Hard, units: 2, min_grade: 1),
+            (part: "пропитка", need: Oily, units: 2, min_grade: 1),
+        ],
+    ),
+    "Топор": (
+        id: "d9591810b8012227",
+        // The same axe at every stage: stone at first, iron when the
+        // village has iron (docs/design/05-economy.md, 6.3).
+        steps: [
+            (part: "лезвие", need: Sharp, units: 2, min_grade: 2),
+            (part: "топорище", need: Hard, units: 2, min_grade: 1, tool: Some(Sharp)),
+            (part: "вязка", need: Fibrous, units: 2, min_grade: 1),
+        ],
+    ),
+    "Утепление": (
+        id: "28bfad136bd08633",
+        steps: [(need: Warm, units: 6, min_grade: 1)],
+    ),
+}

@@ -22,7 +22,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use scrap::project::{
-    ANIMATORS, DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES, SHADERS, TUNING, UI,
+    ANIMATORS, CONFIGS, DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES, SHADERS, UI,
 };
 use scrap::Project;
 
@@ -175,7 +175,7 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
         SCENES,
         PREFABS,
         LIBRARY,
-        TUNING,
+        CONFIGS,
         UI,
         ANIMATORS,
         SHADERS,

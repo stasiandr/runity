@@ -162,7 +162,60 @@ fn git_setup_turns_the_driver_on_in_a_clone() {
     let attributes = std::fs::read_to_string(root.join(".gitattributes")).unwrap();
     assert_eq!(
         attributes.matches("merge=scrap").count(),
-        2,
+        3,
         "not added twice"
     );
+    // A project from before configs merged gets only that line.
+    let old = attributes.replace("configs/**/*.ron merge=scrap\n", "");
+    std::fs::write(root.join(".gitattributes"), &old).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_scrap"))
+        .args(["git-setup"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let attributes = std::fs::read_to_string(root.join(".gitattributes")).unwrap();
+    assert_eq!(attributes.matches("merge=scrap").count(), 3, "{attributes}");
+    assert!(attributes.ends_with("configs/**/*.ron merge=scrap\n"), "{attributes}");
+}
+
+#[test]
+fn two_branches_editing_a_table_merge_by_record_and_field() {
+    let Some((root, _)) = repository("table") else {
+        return;
+    };
+    let table = root.join("configs/materials.ron");
+    std::fs::write(
+        &table,
+        "{\n    \"Палка\": (id: \"1\", hard: 1, burns: 2),\n    \"Доска\": (id: \"2\", hard: 2, burns: 2),\n}\n",
+    )
+    .unwrap();
+    ok(&root, &["add", "-A"]);
+    ok(&root, &["commit", "-q", "-m", "materials"]);
+    ok(&root, &["branch", "theirs"]);
+    // Both edit the same line, different fields; theirs also renames.
+    edit(&root, &table, "main", "hard: 1,", "hard: 3,");
+    edit(&root, &table, "theirs", "burns: 2),\n    \"Доска", "burns: 5),\n    \"Доска");
+    edit(&root, &table, "theirs", "\"Доска\"", "\"Брус\"");
+    ok(&root, &["checkout", "-q", "main"]);
+    let out = git(&root, &["merge", "-q", "--no-edit", "theirs"]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&table).unwrap();
+    assert!(text.contains("\"Палка\": (id: \"1\", hard: 3, burns: 5)"), "{text}");
+    assert!(text.contains("\"Брус\": (id: \"2\""), "{text}");
+
+    // The same field, two ways: ours stays, and git is told.
+    ok(&root, &["branch", "-f", "theirs"]);
+    edit(&root, &table, "main", "hard: 3,", "hard: 1,");
+    edit(&root, &table, "theirs", "hard: 3,", "hard: 2,");
+    ok(&root, &["checkout", "-q", "main"]);
+    let out = git(&root, &["merge", "-q", "--no-edit", "theirs"]);
+    assert!(!out.status.success(), "a conflict fails the merge");
+    let text = std::fs::read_to_string(&table).unwrap();
+    assert!(text.contains("hard: 1,") && !text.contains("<<<<"), "{text}");
 }

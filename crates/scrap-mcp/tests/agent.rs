@@ -132,6 +132,9 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "add_component",
         "import_settings",
         "fit_collider",
+        "configs",
+        "config_set",
+        "config_undo",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -699,4 +702,50 @@ fn an_agent_reads_connects_and_renames_in_an_animator_graph() {
     assert!(agent
         .text("graph", json!({ "name": "hero" }))
         .contains("never reached"));
+}
+
+#[test]
+fn an_agent_reads_finds_and_sets_a_table_s_records() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-configs");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    std::fs::write(
+        root.join("configs/tools.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\", weight: 1.0),\n    \"Посох\": (base: \"Палка\", weight: 2.0),\n}\n",
+    )
+    .unwrap();
+    let listed = agent.text("configs", json!({}));
+    assert!(listed.contains("configs/tools.ron") && listed.contains("configs/world.ron"), "{listed}");
+    let found = agent.text("configs", json!({ "find": "по" }));
+    assert_eq!(found.trim(), "configs/tools.ron: Посох", "{found}");
+    let shown = agent.text("configs", json!({ "file": "configs/tools.ron" }));
+    assert!(shown.contains("name | base | weight") && shown.contains("Посох | \"Палка\" | 2.0"), "{shown}");
+
+    let set = agent.text(
+        "config_set",
+        json!({ "file": "configs/tools.ron", "record": "Палка", "field": "weight", "value": "1.5" }),
+    );
+    assert_eq!(set, "set tools.ron: Палка.weight");
+    let text = std::fs::read_to_string(root.join("configs/tools.ron")).unwrap();
+    assert!(text.contains("(id: \"4c1e\", weight: 1.5)"), "{text}");
+    assert!(text.contains("\"Посох\": (id: \""), "its id written: {text}");
+    // A top-level field of a struct of numbers.
+    agent.text(
+        "config_set",
+        json!({ "file": "configs/world.ron", "field": "gravity", "value": "-3.7" }),
+    );
+    assert!(std::fs::read_to_string(root.join("configs/world.ron")).unwrap().contains("-3.7"));
+    assert_eq!(agent.text("config_undo", json!({})), "undone: world.ron: gravity");
+    let err = agent
+        .call("config_set", json!({ "file": "configs/tools.ron", "record": "Кость", "field": "weight", "value": "1" }))
+        .unwrap_err();
+    assert!(err.contains("no record `Кость`"), "{err}");
 }

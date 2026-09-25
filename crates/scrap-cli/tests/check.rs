@@ -358,6 +358,107 @@ fn a_file_outside_the_layout_is_named_with_where_it_goes() {
 }
 
 #[test]
+fn a_table_is_checked_by_record_as_written_and_by_the_game_s_types() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Material {
+        hard: u8,
+    }
+    impl scrap::Record for Material {}
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Recipe {
+        tool: scrap::Link<Material>,
+    }
+    impl scrap::Record for Recipe {}
+
+    let project = project("tables");
+    let root = project.root();
+    write(
+        &root.join("configs/materials.ron"),
+        "{\n    \"Палка\": (id: \"1\", hard: 1),\n    \"Доска\": (id: \"1\", base: \"Палко\"),\n    \"Кость\": (hard: \"very\"),\n}\n",
+    );
+    write(
+        &root.join("configs/recipes/tools.ron"),
+        "{ \"Нож\": (id: \"a\", tool: \"Кремень\") }\n",
+    );
+    // A map of numbers by name is no table: nothing here is said of it.
+    write(&root.join("configs/prices.ron"), "{ \"wolf\": (gold: 3) }\n");
+    let lines = |findings: &[Finding], severity: Severity| -> Vec<String> {
+        findings
+            .iter()
+            .filter(|f| f.severity == severity)
+            .map(ToString::to_string)
+            .collect()
+    };
+
+    // What the file says alone.
+    let findings = check(&project);
+    let errors = lines(&findings, Severity::Error);
+    one_containing(&errors, "line 3: `Доска`: has the id of `Палка`");
+    assert!(one_containing(&errors, "base `Палко`").contains("did you mean `Палка`?"));
+    let warnings = lines(&findings, Severity::Warning);
+    one_containing(&warnings, "line 4: `Кость`: no `id` written yet");
+    assert!(!findings.iter().any(|f| f.file.contains("prices")), "{findings:#?}");
+    assert!(!errors.iter().any(|e| e.contains("very")), "no types known yet");
+
+    // What the game says its tables hold.
+    let mut tables = scrap::Tables::new();
+    tables
+        .register::<Material>("configs/materials.ron")
+        .register::<Recipe>("configs/recipes")
+        .register::<Material>("configs/stones.ron");
+    tables
+        .write_shapes(root.join(scrap::project::TABLE_SHAPES))
+        .unwrap();
+    let findings = check(&project);
+    let errors = lines(&findings, Severity::Error);
+    one_containing(&errors, "line 4: `Кость`: `hard` is a whole number");
+    one_containing(&errors, "configs/recipes/tools.ron: line 1: `Нож`: `tool`: no `Material` called `Кремень`");
+    one_containing(&errors, "configs/stones.ron: the game reads its `Material` records from here");
+
+    // A component's link to a record, where its shape says it is one.
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Crafter {
+        from: scrap::Link<Material>,
+    }
+    let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> =
+        [("crafter".to_string(), scrap::shape::of::<Crafter>())]
+            .into_iter()
+            .collect();
+    write(
+        &root.join(scrap::project::SHAPES),
+        &ron::to_string(&shapes).unwrap(),
+    );
+    write(
+        &root.join("scenes/craft.ron"),
+        "(entities: [(id: \"b1\", name: \"bench\", components: {\"crafter\": (from: \"Кремень\")}), (id: \"b2\", name: \"table\", components: {\"crafter\": (from: \"Палка\")})])\n",
+    );
+    let errors = lines(&check(&project), Severity::Error);
+    let found = one_containing(&errors, "`crafter.from`: no `Material` called `Кремень`");
+    assert!(found.starts_with("error: scenes/craft.ron"), "{found}");
+    assert!(!errors.iter().any(|e| e.contains("`Палка`") && e.contains("crafter")), "{errors:#?}");
+}
+
+#[test]
+fn the_old_tuning_folder_is_named_with_its_new_name() {
+    let project = project("tuning");
+    write(&project.root().join("tuning/world.ron"), "(gravity: -9.81)");
+    let findings = check(&project);
+    let warnings: Vec<String> = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .map(ToString::to_string)
+        .collect();
+    assert!(one_containing(&warnings, "`tuning/`").contains("git mv tuning configs"));
+    assert!(
+        errors(&findings).is_empty(),
+        "warnings, not errors: {findings:#?}"
+    );
+}
+
+#[test]
 fn a_component_value_that_does_not_fit_the_game_s_type_is_found() {
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
