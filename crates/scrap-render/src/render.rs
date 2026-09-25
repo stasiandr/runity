@@ -4221,6 +4221,92 @@ impl Renderer {
         }
     }
 
+    /// Shadow casters into one cascade: of each batch, the runs of its
+    /// instances whose bit is set in `masks` (indexed as the instances
+    /// are, from 0 at the first caster), each run one call.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_casters<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        batches: &[(BatchKey, Vec<InstanceRaw>)],
+        base: u32,
+        textured: bool,
+        masks: &[u8],
+        bit: u8,
+        cascade: Option<Mat4>,
+    ) {
+        let mut first = base;
+        for ((look, handle, texture), list) in batches {
+            let count = list.len() as u32;
+            let Some(mesh) = self.mesh(*handle) else {
+                first += count;
+                continue;
+            };
+            let mut bound = false;
+            let mut at = first;
+            let end = first + count;
+            while at < end {
+                if masks.get(at as usize).is_some_and(|m| m & bit == 0) {
+                    at += 1;
+                    continue;
+                }
+                let start = at;
+                while at < end && masks.get(at as usize).is_none_or(|m| m & bit != 0) {
+                    at += 1;
+                }
+                // A dense mesh a cluster at a time: of a mountain range a
+                // kilometre round, what is over this cascade's square.
+                if let (Some(clusters), Some(cascade)) = (mesh.clusters.as_ref(), cascade) {
+                    for instance in start..at {
+                        let Some(model) = list.get((instance - first) as usize).map(|r| Mat4::from_cols_array_2d(&r.model)) else {
+                            continue;
+                        };
+                        let mut runs = Vec::new();
+                        clusters.runs_in(model, cascade, &mut runs);
+                        if runs.is_empty() {
+                            continue;
+                        }
+                        let triangles: u32 = runs.iter().map(|r| (r.1 - r.0) / 3).sum();
+                        if !crate::frame_debugger::draw(|| {
+                            let mut d = self.describe(*handle, look.as_ref(), texture, 1, false, false, textured);
+                            d.what += &format!(" ({} of {} clusters' runs)", runs.len(), clusters.count);
+                            d.triangles = triangles as u64;
+                            d
+                        }) {
+                            continue;
+                        }
+                        if textured {
+                            self.bind_maps(pass, *texture);
+                        }
+                        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                        pass.set_vertex_buffer(1, self.instances.slice(..));
+                        pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
+                        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                        for (a, b) in runs {
+                            pass.draw_indexed(a..b, 0, instance..instance + 1);
+                        }
+                    }
+                    continue;
+                }
+                if !crate::frame_debugger::draw(|| self.describe(*handle, look.as_ref(), texture, at - start, false, false, textured)) {
+                    continue;
+                }
+                if !bound {
+                    if textured {
+                        self.bind_maps(pass, *texture);
+                    }
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_vertex_buffer(1, self.instances.slice(..));
+                    pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    bound = true;
+                }
+                pass.draw_indexed(0..mesh.index_count, 0, start..at);
+            }
+            first = end;
+        }
+    }
+
     /// A draw as the Frame Debugger lists it: the mesh by name, what it
     /// is drawn with. Made only while a frame is recorded.
     #[allow(clippy::too_many_arguments)]
@@ -6558,6 +6644,22 @@ impl Renderer {
                 self.rebind(gpu);
             }
         }
+        // Which cascades each caster lands in: its box, seen from the sun,
+        // over the cascade's square. Most of a level's casters are in one
+        // or two of them — and a mountain range a kilometre off, past where
+        // shadows end, in none.
+        let caster_masks: Vec<u8> = shadow_batches
+            .iter()
+            .chain(clip_batches.iter())
+            .flat_map(|((_, handle, _), list)| {
+                let bounds = self.mesh(*handle).map(|m| m.bounds);
+                list.iter().map(move |raw| (bounds, raw.model))
+            })
+            .map(|(bounds, model)| match bounds {
+                Some(bounds) => caster_cascades(bounds, Mat4::from_cols_array_2d(&model), &cascades),
+                None => 0,
+            })
+            .collect();
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
             let mark = crate::frame_debugger::mark();
             {
@@ -6579,21 +6681,22 @@ impl Renderer {
             });
             let offset = [(cascade as u64 * self.caster_stride) as u32];
             let count = |b: &[(BatchKey, Vec<InstanceRaw>)]| b.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
+            let bit = 1u8 << cascade;
             let (one, both) = shadow_batches.split_at(shadow_one_sided);
             pass.set_pipeline(&self.pipelines.shadow_front);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_batches(&mut pass, one, 0, false);
+            self.draw_casters(&mut pass, one, 0, false, &caster_masks, bit, Some(cascades[cascade].0));
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_batches(&mut pass, both, count(one), false);
+            self.draw_casters(&mut pass, both, count(one), false, &caster_masks, bit, Some(cascades[cascade].0));
             if !clip_batches.is_empty() {
                 let (one, both) = clip_batches.split_at(clip_one_sided);
                 pass.set_pipeline(&self.pipelines.shadow_clip_front);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_batches(&mut pass, one, solid_casters, true);
+                self.draw_casters(&mut pass, one, solid_casters, true, &caster_masks, bit, Some(cascades[cascade].0));
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_batches(&mut pass, both, solid_casters + count(one), true);
+                self.draw_casters(&mut pass, both, solid_casters + count(one), true, &caster_masks, bit, Some(cascades[cascade].0));
             }
             }
             if debugged {
@@ -7464,6 +7567,35 @@ fn world_box(bounds: crate::asset::Bounds, transform: Mat4) -> (Vec3, Vec3) {
         max = max.max(p);
     }
     (min, max)
+}
+
+/// The cascades (a bit each) a caster's box lands in, seen from the sun:
+/// its corners in the cascade's clip space overlapping the square, and not
+/// all past its far end. What is between the sun and the square is kept —
+/// it casts onto it.
+fn caster_cascades(bounds: crate::asset::Bounds, transform: Mat4, cascades: &[(Mat4, Vec3, f32, f32, f32)]) -> u8 {
+    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+    let corners: [Vec3; 8] = std::array::from_fn(|i| {
+        transform.transform_point3(Vec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        ))
+    });
+    let mut mask = 0u8;
+    for (i, (matrix, ..)) in cascades.iter().enumerate().take(8) {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for c in &corners {
+            let p = matrix.project_point3(*c);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        if max.x >= -1.0 && min.x <= 1.0 && max.y >= -1.0 && min.y <= 1.0 && min.z <= 1.0 {
+            mask |= 1 << i;
+        }
+    }
+    mask
 }
 
 fn aabb_in_frustum(

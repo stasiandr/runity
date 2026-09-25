@@ -316,6 +316,9 @@ fn cs_clusters(@builtin(global_invocation_id) id: vec3<u32>) {
 pub(crate) struct MeshClusters {
     pub(crate) buffer: wgpu::Buffer,
     pub(crate) count: u32,
+    /// The same, kept on the CPU: the shadow cascades cull by them there
+    /// (`Renderer::draw_casters`), where a draw is cheaper than a pass.
+    pub(crate) spheres: Vec<ClusterRaw>,
 }
 
 impl MeshClusters {
@@ -328,6 +331,33 @@ impl MeshClusters {
                 usage: wgpu::BufferUsages::STORAGE,
             }),
             count: clusters.len() as u32,
+            spheres: clusters.to_vec(),
+        }
+    }
+
+    /// The runs of indices (start, end) of the clusters whose spheres,
+    /// placed by `model`, land in the clip box of `view_projection` (an
+    /// orthographic one: a shadow cascade's) — neighbouring clusters one
+    /// run, their indices being in order.
+    pub(crate) fn runs_in(&self, model: glam::Mat4, view_projection: glam::Mat4, out: &mut Vec<(u32, u32)>) {
+        out.clear();
+        let m = view_projection * model;
+        // How far a unit of the mesh's space reaches in clip space, along
+        // each axis of it: the row's length.
+        let reach = |r: glam::Vec4| r.truncate().length();
+        let (rx, ry, rz) = (reach(m.row(0)), reach(m.row(1)), reach(m.row(2)));
+        for c in &self.spheres {
+            let p = m.project_point3(Vec3::new(c.sphere[0], c.sphere[1], c.sphere[2]));
+            let r = c.sphere[3];
+            let inside = p.x.abs() - r * rx <= 1.0 && p.y.abs() - r * ry <= 1.0 && p.z - r * rz <= 1.0;
+            if !inside {
+                continue;
+            }
+            let (start, end) = (c.first, c.first + c.count * 3);
+            match out.last_mut() {
+                Some(last) if last.1 == start => last.1 = end,
+                _ => out.push((start, end)),
+            }
         }
     }
 }

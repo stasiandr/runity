@@ -37,7 +37,21 @@ fn cs_first(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= size.x || id.y >= size.y {
         return;
     }
-    textureStore(level_out, id.xy, vec4<f32>(textureLoad(source_depth, id.xy, 0), 0.0, 0.0, 0.0));
+    // Half the depth's size: the farthest of the 2x2 under it, and the
+    // odd row or column at the edge.
+    let above = vec2<i32>(textureDimensions(source_depth));
+    let base = vec2<i32>(id.xy) * 2;
+    var far = 0.0;
+    for (var y = 0; y < 3; y = y + 1) {
+        for (var x = 0; x < 3; x = x + 1) {
+            if (x == 2 && above.x - base.x != 3) || (y == 2 && above.y - base.y != 3) {
+                continue;
+            }
+            let at = min(base + vec2<i32>(x, y), above - 1);
+            far = max(far, textureLoad(source_depth, at, 0));
+        }
+    }
+    textureStore(level_out, id.xy, vec4<f32>(far, 0.0, 0.0, 0.0));
 }
 
 // The farthest of what lies under: the 2x2, and the odd row or column
@@ -547,6 +561,10 @@ impl Occlusion {
             self.made_with = None;
             return;
         }
+        // Its finest level is half the depth's size: a whole screen of
+        // texels written and read back is most of what the pyramid costs,
+        // and a box a texel or two across tells nothing at a finer one.
+        let size = (size.0.div_ceil(2).max(1), size.1.div_ceil(2).max(1));
         if self.pyramid.as_ref().is_none_or(|p| p.1 != size) {
             let levels = 32 - size.0.max(size.1).max(1).leading_zeros();
             let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

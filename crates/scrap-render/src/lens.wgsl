@@ -107,12 +107,20 @@ fn fs_depth_of_field(in: Varyings) -> @location(0) vec4<f32> {
     let centre_size = circle_of_confusion(centre_depth);
     var color = finite(textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb);
     var total = 1.0;
-    let largest = lens.blur.z;
+    var largest = lens.blur.z;
+    // Gaussian (URP's): the far field alone is blurred, each pixel by its
+    // own circle, and what is sharp — most of a frame — is sharp without a
+    // tap. Twenty-odd taps are soft enough for a blur this small.
+    var taps = 120.0;
+    if lens.focus.x < 1.5 {
+        largest = centre_size;
+        taps = 40.0;
+    }
     if largest < 0.5 {
         return vec4<f32>(color, 1.0);
     }
-    // The step grows the spiral so about sixty taps cover the disc.
-    let scale = max(largest * largest / 120.0, 0.25);
+    // The step grows the spiral so about taps / 2 cover the disc.
+    let scale = max(largest * largest / taps, 0.25);
     var radius = scale;
     var angle = 0.0;
     for (var i = 0; i < 256; i = i + 1) {
@@ -154,6 +162,10 @@ fn fs_motion_blur(in: Varyings) -> @location(0) vec4<f32> {
     let speed = length(velocity);
     if speed > most {
         velocity = velocity * (most / speed);
+    }
+    // Swept less than half a pixel: nothing to average.
+    if length(velocity * lens.size.xy) < 0.5 {
+        return vec4<f32>(textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb, 1.0);
     }
     let count = max(u32(lens.motion.z), 2u);
     var color = vec3<f32>(0.0);
