@@ -246,8 +246,9 @@ pub struct BodyProps {
     pub blown: f32,
     /// Checked between steps as well as at them, so something fast and
     /// small — a thrown stone, a bullet — cannot pass through a wall between
-    /// one step and the next. Costs more; Unity's continuous collision
-    /// detection.
+    /// one step and the next: Unity's continuous collision detection. Every
+    /// dynamic body is swept so now (a thin stick falling on mesh ground
+    /// went through it); this stays for the lines that say it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fast: bool,
     /// Axes it may not move along, as letters: `"y"` keeps it at its height.

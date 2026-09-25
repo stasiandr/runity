@@ -807,7 +807,13 @@ impl PhysicsWorld {
             .linear_damping(props.drag.max(0.0))
             .angular_damping(props.spin_drag.max(0.0))
             .gravity_scale(props.gravity)
-            .ccd_enabled(props.fast)
+            // Swept between steps: a thin thing — a shovel's stick, a
+            // knife — falling onto ground that is a mesh with no inside
+            // would otherwise pass through it. Rapier sweeps only what
+            // moves further in a step than it is thick, so a resting
+            // level costs nothing for it. (`fast` is kept for lines that
+            // ask; it is always so now.)
+            .ccd_enabled(props.fast || kind == Body::Dynamic)
             .locked_axes(locked(&props))
             .build();
             let mut body = body;
@@ -3362,6 +3368,27 @@ mod tests {
     }
 
     #[test]
+    fn a_body_made_only_of_a_scaled_part_lands_on_the_floor() {
+        // The greybox shovel: a dynamic root with no collider of its own, a
+        // unit box under it scaled to a stick.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000a1", name: "floor", model: "m", body: Static,
+                 collider: Box(half: (5.0, 0.5, 5.0)), transform: (position: (0.0, -0.5, 0.0))),
+                (id: "00000000000000a2", name: "shovel", model: "m", body: Dynamic, physics: (mass: Some(3.0)),
+                 transform: (position: (0.0, 1.5, 0.0)), children: [
+                    (id: "00000000000000a3", name: "Mesh", model: "builtin:cube", body: Part,
+                     collider: Box(half: (0.5, 0.5, 0.5)), transform: (scale: (0.18, 0.18, 0.7))),
+                ]),
+            ])"#,
+        );
+        let shovel = by_id(&world, scene.entities[1].id);
+        run_for(&mut physics, &mut world, 120);
+        let y = world.get::<&WorldTransform>(shovel).unwrap().0.w_axis.y;
+        assert!(y > 0.0 && y < 0.2, "lies on the floor: {y}");
+    }
+
+    #[test]
     fn a_body_whose_part_is_animated_falls_as_freely_as_any() {
         // A seed packet: its fruit, a collider, bobs on an animated child;
         // the packet falls all the same, its speed kept step to step.
@@ -3856,8 +3883,11 @@ mod tests {
         );
         assert!((y(balloon) - 50.0).abs() < 1e-3, "floats: {}", y(balloon));
 
-        // A stone thrown at 300 m/s at a thin wall: without `fast` it is
-        // past the wall between two steps; with it, it stops there.
+        // A stone thrown at 300 m/s at a thin wall stops there, `fast` or
+        // not: every dynamic body is swept between steps, so a shovel's
+        // stick does not fall through a mesh ground either. (Unity's
+        // discrete bodies would let the stone through; nothing in a game
+        // wants that, and a stick through the sand is what it cost.)
         let throw = |fast: bool| {
             let (mut physics, mut world, scene) = scene_world(&format!(
                 r#"(entities: [
@@ -3878,7 +3908,7 @@ mod tests {
             let x = world.get::<&WorldTransform>(stone).unwrap().0.w_axis.x;
             x
         };
-        assert!(throw(false) > 0.5, "tunnelled: {}", throw(false));
+        assert!(throw(false) < 0.0, "stopped at the wall: {}", throw(false));
         assert!(throw(true) < 0.0, "stopped at the wall: {}", throw(true));
     }
 
