@@ -2220,7 +2220,21 @@ fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
         return hemisphere;
     }
     if frame.sky_zenith.w > 2.5 {
-        return mix(unity_sky(direction).color, hemisphere, perceptual_roughness);
+        // Unity reflects its sky out of a cube map blurred by the lobe, so
+        // the hard line between the sky and its ground is a ramp as wide
+        // as the lobe on a rough face: the sky just above and the ground
+        // just below, blended across it. Taken as it is, the line ran
+        // round every wall at the horizon's height.
+        let width = 0.02 + perceptual_roughness * perceptual_roughness;
+        var sky = vec3<f32>(0.0);
+        if direction.y > -width {
+            sky = unity_sky(vec3<f32>(direction.x, max(direction.y, 1e-3), direction.z)).color;
+        }
+        if direction.y < width {
+            let ground = unity_sky(vec3<f32>(direction.x, min(direction.y, -0.021), direction.z)).color;
+            sky = mix(ground, sky, smoothstep(-width, width, direction.y));
+        }
+        return mix(sky, hemisphere, perceptual_roughness);
     }
     if frame.sky_zenith.w > 1.5 {
         return mix(physical_sky(direction) * frame.sky_ground.w, hemisphere, perceptual_roughness);

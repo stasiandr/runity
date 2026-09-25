@@ -78,12 +78,16 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let graded_anim = landscape_saturation(landscape_contrast(c2, LANDSCAPE_CONTRAST_ANIM), LANDSCAPE_SATURATION_ANIM);
     let c3 = mix(c2, graded_anim, noise_anim * LANDSCAPE_MULTI_ANIM);
 
-    // Glimmer: rare specks in a fine grid, each lit now and then.
+    // Glimmer: rare specks in a fine grid, each lit now and then — a
+    // pixel or two across whatever the mesh's UVs make of the grid, as the
+    // texture's specks are: a sand mesh whose UVs spread far drew a cell a
+    // metre wide, and its speck as a white blot on the ground.
     let g = uv * LANDSCAPE_GLIMMER_TILING;
     let cell = floor(g);
     let chance = landscape_hash(cell);
-    let spot = 1.0 - smoothstep(0.1, 0.25, length(fract(g) - 0.5));
-    let speck = step(0.97, chance) * step(1.0, spot * LANDSCAPE_GLIMMER_INT);
+    let pixels = length(fract(g) - 0.5) / max(length(fwidth(g)), 1e-6);
+    let spot = 1.0 - smoothstep(0.5, 1.5, pixels);
+    let speck = step(0.97, chance) * spot * min(LANDSCAPE_GLIMMER_INT, 1.0);
     let twinkle = step(0.7, sin(in.time * 3.0 + chance * 60.0));
 
     o.albedo = max(c3, vec3<f32>(0.0));
