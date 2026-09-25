@@ -501,6 +501,18 @@ pub struct Sun {
     /// one turned down each see — Unity's gradient ambient.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<Ambient>,
+    /// How dark its shadow is, 0 to 1: 1 black but for the light from
+    /// all round, less lets some of the sun in — Unity's Strength.
+    #[serde(default = "full", skip_serializing_if = "is_full")]
+    pub shadow_strength: f32,
+}
+
+fn full() -> f32 {
+    1.0
+}
+
+fn is_full(v: &f32) -> bool {
+    *v == 1.0
 }
 
 /// Light from all round as three colours (sRGB, as a picker says them,
@@ -530,6 +542,7 @@ impl Default for Sun {
             toward: None,
             tint: None,
             ambient: None,
+            shadow_strength: 1.0,
         }
     }
 }

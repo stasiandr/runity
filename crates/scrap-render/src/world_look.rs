@@ -360,6 +360,7 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
             sky_sun: None,
             night: 0.0,
             ambient: scene_ambient(sun),
+            sun_shadow_strength: sun.shadow_strength,
         };
     }
     // Night: the moon is the light above — cold, an eighth of the sun, and
@@ -392,6 +393,7 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
         sky_sun: Some((sun.true_direction(), sun.intensity)),
         night,
         ambient: scene_ambient(sun),
+        sun_shadow_strength: sun.shadow_strength,
     }
 }
 

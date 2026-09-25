@@ -82,6 +82,7 @@ pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
         // near it.
         toward: Some(travel),
         tint: tint.filter(|c| *c != [1.0, 1.0, 1.0]),
+        shadow_strength: light.body["m_Shadows"].f32("m_Strength").unwrap_or(1.0),
         ..scrap::scene::Sun::default()
     })
 }

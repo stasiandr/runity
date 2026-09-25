@@ -2559,6 +2559,8 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
             }
         }
         shadow *= dust_wall_shadow(in.world_position, to_sun);
+        // A shadow short of full strength lets some of the sun in (w).
+        shadow = mix(shadow, 1.0, frame.sun_color.w);
     }
     // The scene's distance field softens the sun's shadow where the map
     // is coarse and adds what the map missed.

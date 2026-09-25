@@ -277,6 +277,9 @@ pub struct Lighting {
     /// the horizon, below. Set, it is what faces see instead of the sky
     /// and the ground's bounce.
     pub ambient: Option<[Vec3; 3]>,
+    /// How dark the sun's shadow is, 0 to 1: 1 none of its light gets in,
+    /// 0.8 a fifth does — Unity's light Strength under Shadows.
+    pub sun_shadow_strength: f32,
 }
 
 impl Default for Lighting {
@@ -291,6 +294,7 @@ impl Default for Lighting {
             sky_sun: None,
             night: 0.0,
             ambient: None,
+            sun_shadow_strength: 1.0,
         }
     }
 }
@@ -5360,7 +5364,7 @@ impl Renderer {
         let uniform = FrameUniform {
             view_projection: drawn.to_cols_array_2d(),
             sun_direction: extend(frame.lighting.sun_direction.normalize_or_zero(), 0.0),
-            sun_color: extend(sun_light, 0.0),
+            sun_color: extend(sun_light, 1.0 - frame.lighting.sun_shadow_strength.clamp(0.0, 1.0)),
             sky_color: extend(sky_light, 0.0),
             ground_color: extend(ground_light, 0.0),
             fog_color: extend(fog.color, 0.0),
