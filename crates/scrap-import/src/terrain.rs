@@ -381,6 +381,7 @@ pub fn mesh_from_terrain(path: &Path, settings: &ImportSettings) -> Result<MeshA
         vertices,
         indices,
         skin: None,
+        colors: Vec::new(),
         look: None,
     })
 }

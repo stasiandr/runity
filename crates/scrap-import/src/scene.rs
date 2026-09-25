@@ -359,6 +359,7 @@ pub fn build(
                 vertices: primitive.vertices,
                 indices: primitive.indices,
                 skin: None,
+                colors: Vec::new(),
                 look: None,
             };
             written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::MESH)?));

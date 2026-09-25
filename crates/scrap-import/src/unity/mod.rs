@@ -699,10 +699,18 @@ fn models(unity: &Unity, project: &scrap::Project, options: &Options, report: &m
                 writable(&entry.path());
             }
         }
+        // Vertex colours come through as the file has them, as Unity reads
+        // them: taken in as plain numbers (Blender's default reads them as
+        // sRGB, and its glTF writer then bends them to linear), and the
+        // active set written as COLOR_0 — by default Blender writes only
+        // colours its own material uses, and here that is none.
         let script = format!(
             "import bpy, math, mathutils, re\n\
              bpy.ops.wm.read_factory_settings(use_empty=True)\n\
-             bpy.ops.import_scene.fbx(filepath={:?})\n\
+             fbx_options = bpy.ops.import_scene.fbx.get_rna_type().properties.keys()\n\
+             gltf_options = bpy.ops.export_scene.gltf.get_rna_type().properties.keys()\n\
+             colors = {{'export_vertex_color': 'ACTIVE'}} if 'export_vertex_color' in gltf_options else {{'export_colors': True}}\n\
+             bpy.ops.import_scene.fbx(filepath={:?}, **({{'colors_type': 'LINEAR'}} if 'colors_type' in fbx_options else {{}}))\n\
              scene = bpy.context.scene\n\
              import struct\n\
              data = open({:?}, 'rb').read()\n\
@@ -723,7 +731,7 @@ fn models(unity: &Unity, project: &scrap::Project, options: &Options, report: &m
              \x20   o.parent = None\n\
              \x20   o.matrix_world = frame\n\
              \x20   piece = re.sub(r'[^A-Za-z0-9_-]', '_', o.name)\n\
-             \x20   bpy.ops.export_scene.gltf(filepath={:?} + '/' + {:?} + '@' + piece + '.glb', export_format='GLB', use_selection=True, export_animations=False, export_skins=bool(arm))\n\
+             \x20   bpy.ops.export_scene.gltf(filepath={:?} + '/' + {:?} + '@' + piece + '.glb', export_format='GLB', use_selection=True, export_animations=False, export_skins=bool(arm), **colors)\n\
              \x20   o.parent = parent\n\
              \x20   o.matrix_world = placed\n\
              for x in scene.objects: x.select_set(False)\n\
@@ -732,7 +740,7 @@ fn models(unity: &Unity, project: &scrap::Project, options: &Options, report: &m
              bpy.context.scene.collection.objects.link(turn)\n\
              for o in roots: o.parent = turn\n\
              turn.rotation_euler[2] = math.pi\n\
-             bpy.ops.export_scene.gltf(filepath={:?}, export_format='GLB', export_animations=True)\n",
+             bpy.ops.export_scene.gltf(filepath={:?}, export_format='GLB', export_animations=True, **colors)\n",
             path.to_string_lossy(),
             path.to_string_lossy(),
             pieces_dir.to_string_lossy().trim_end_matches('/'),

@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"SCRAP\0\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 21;
+pub const FORMAT_VERSION: u32 = 22;
 
 /// What kind of asset a file holds: the byte in its header.
 ///

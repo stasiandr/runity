@@ -376,6 +376,7 @@ pub fn mesh_from_obj(path: impl AsRef<Path>, settings: &ImportSettings) -> Resul
         submeshes,
         // OBJ has no concept of a skeleton.
         skin: None,
+        colors: Vec::new(),
         look: None,
     })
 }
@@ -449,6 +450,8 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     let mut submeshes: Vec<Submesh> = Vec::new();
     let mut joint_indices: Vec<[u16; 4]> = Vec::new();
     let mut joint_weights: Vec<[f32; 4]> = Vec::new();
+    // Each vertex's painted colour, white where its primitive has none.
+    let mut colors: Vec<[u8; 4]> = Vec::new();
 
     // Walked through the scene graph rather than over `document.meshes()`,
     // because a node carries the transform that places its mesh. Reading the
@@ -506,6 +509,14 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                     reader.read_joints(0).map(|j| j.into_u16().collect());
                 let skin_weights: Option<Vec<[f32; 4]>> =
                     reader.read_weights(0).map(|w| w.into_f32().collect());
+                // COLOR_0 as the file has it, in bytes as Unity keeps a
+                // mesh's colours (rounded, as it rounds them): no curve
+                // either way.
+                let painted_colors: Option<Vec<[u8; 4]>> = reader.read_colors(0).map(|c| {
+                    c.into_rgba_f32()
+                        .map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
+                        .collect()
+                });
 
                 let base = vertices.len() as u32;
                 for (i, position) in positions.iter().enumerate() {
@@ -526,6 +537,13 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                             // Bound entirely to joint zero leaves it where it
                             // is.
                             .unwrap_or([1.0, 0.0, 0.0, 0.0]),
+                    );
+                    colors.push(
+                        painted_colors
+                            .as_ref()
+                            .and_then(|c| c.get(i))
+                            .copied()
+                            .unwrap_or([255; 4]),
                     );
                     let p =
                         placed.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
@@ -576,6 +594,11 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         }
     }
 
+    // A mesh painted all white — or not painted — keeps no colours: it
+    // reads as white all the same, and costs nothing.
+    if colors.iter().all(|c| *c == [255; 4]) {
+        colors.clear();
+    }
     let skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
     let look = if settings.keep_uvs {
         None
@@ -594,6 +617,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         indices,
         submeshes,
         skin,
+        colors,
         look,
     })
 }
@@ -2544,6 +2568,56 @@ f 1 4 3
         let plain =
             mesh_from_gltf(&fixture, &ImportSettings::for_source("floating_quad.gltf")).unwrap();
         assert!(plain.look.is_none());
+    }
+
+    /// A triangle whose COLOR_0 is `colors` (floats, as Blender writes a
+    /// float colour attribute), or none.
+    fn painted_triangle(dir: &Path, colors: Option<[[f32; 4]; 3]>) -> PathBuf {
+        let mut bin: Vec<u8> = Vec::new();
+        for p in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+            bin.extend(p.iter().flat_map(|f| f.to_le_bytes()));
+        }
+        let mut attributes = r#""POSITION": 0"#.to_string();
+        let mut accessors = r#"{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 0, 1]}"#.to_string();
+        let mut views = r#"{"buffer": 0, "byteOffset": 0, "byteLength": 36}"#.to_string();
+        if let Some(colors) = colors {
+            for c in colors {
+                bin.extend(c.iter().flat_map(|f| f.to_le_bytes()));
+            }
+            attributes += r#", "COLOR_0": 1"#;
+            accessors += r#", {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC4"}"#;
+            views += r#", {"buffer": 0, "byteOffset": 36, "byteLength": 48}"#;
+        }
+        std::fs::write(dir.join("triangle.bin"), &bin).unwrap();
+        let json = format!(
+            r#"{{"asset": {{"version": "2.0"}}, "scene": 0, "scenes": [{{"nodes": [0]}}], "nodes": [{{"mesh": 0}}],
+            "meshes": [{{"primitives": [{{"attributes": {{{attributes}}}}}]}}],
+            "accessors": [{accessors}], "bufferViews": [{views}],
+            "buffers": [{{"uri": "triangle.bin", "byteLength": {}}}]}}"#,
+            bin.len()
+        );
+        let path = dir.join("triangle.gltf");
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_gltf_keeps_the_colours_painted_on_its_vertices_as_the_file_has_them() {
+        let dir = temp("vertex-colours");
+        let source = painted_triangle(
+            &dir,
+            Some([[0.29, 0.0, 1.0, 1.0], [1.0, 0.5, 0.0, 1.0], [0.0, 0.0, 0.0, 0.25]]),
+        );
+        let settings = ImportSettings::for_source("triangle.gltf");
+        let mesh = mesh_from_gltf(&source, &settings).unwrap();
+        // As numbers, not bent through a curve: 0.29 is 74 of 255, not
+        // the 147 that 0.29 made sRGB would be.
+        assert_eq!(mesh.colors, vec![[74, 0, 255, 255], [255, 128, 0, 255], [0, 0, 0, 64]]);
+        // Unpainted, or painted all white: no colours kept.
+        let plain = mesh_from_gltf(painted_triangle(&dir, None), &settings).unwrap();
+        assert!(plain.colors.is_empty());
+        let white = mesh_from_gltf(painted_triangle(&dir, Some([[1.0; 4]; 3])), &settings).unwrap();
+        assert!(white.colors.is_empty(), "white everywhere is what no colours read as");
     }
 
     #[test]

@@ -760,6 +760,8 @@ struct VertexInput {
     // mask, emission in the low halves, the material's own four
     // textures in the high
     @location(17) maps: vec4<u32>,
+    // the colour painted on the vertex (white where the mesh has none)
+    @location(18) vertex_color: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -779,6 +781,7 @@ struct VertexOutput {
     @location(9) params_1: vec4<f32>,
     @location(10) subsurface: vec4<f32>,
     @location(11) @interpolate(flat) maps: vec4<u32>,
+    @location(12) vertex_color: vec4<f32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -838,6 +841,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
     out.maps = in.maps;
+    out.vertex_color = in.vertex_color;
     return out;
 }
 
@@ -1912,6 +1916,7 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
     out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
     out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
     out.maps = vec4<u32>(0u);
+    out.vertex_color = vec4<f32>(1.0);
     return out;
 }
 
@@ -2047,6 +2052,9 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
     in.params_1 = cluster_instances[s + 10u];
     in.subsurface = cluster_instances[s + 11u];
     in.maps = bitcast<vec4<u32>>(cluster_instances[s + 12u]);
+    // What has its own shader, the only reader of vertex colours, is not
+    // drawn by clusters.
+    in.vertex_color = vec4<f32>(1.0);
     return standard_vertex(in);
 }
 
@@ -2076,6 +2084,7 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
     out.maps = in.maps;
+    out.vertex_color = in.vertex_color;
     return out;
 }
 
@@ -2583,6 +2592,10 @@ struct SurfaceIn {
     params: array<vec4<f32>, 2>,
     // Where its textures are, for `texture_at`: not to be read otherwise.
     maps: vec4<u32>,
+    // The colour painted on the mesh's vertices, as its file has it (glTF's
+    // COLOR_0, Unity's Vertex Color), between them; white where the mesh
+    // has none. The standard shader does not use it, as URP Lit does not.
+    vertex_color: vec4<f32>,
 };
 
 // What the standard shader worked out for the fragment, before the light:
@@ -2650,7 +2663,7 @@ fn fs_unlit(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
         discard;
     }
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
         Surface(in.base_color * sampled.rgb, alpha, in.surface.x, in.surface.y, geometric, in.emission.rgb * emitted),
     );
     return unlit_seen(shaped.albedo + shaped.emission, shaped.alpha, in, screen_flags);
@@ -2780,7 +2793,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 
     // The material's own shader has its say, before the light.
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
         Surface(albedo, alpha, in.surface.x * mask.r * weather.metal, smoothness, normal, in.emission.rgb * emitted),
     );
     albedo = shaped.albedo;

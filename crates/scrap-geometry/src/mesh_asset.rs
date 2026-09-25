@@ -161,6 +161,16 @@ pub struct MeshAsset {
     pub bounds: Bounds,
     /// Present only when the mesh is skinned.
     pub skin: Option<MeshSkin>,
+    /// The colour painted on each vertex (glTF's `COLOR_0`), parallel to
+    /// `vertices` — or empty, the commonest case, when the file paints
+    /// none or paints it all white.
+    ///
+    /// Held apart from [`Vertex`] for the reason the skin is: most meshes
+    /// have none, and they pay nothing for it. Four bytes a vertex, as
+    /// Unity keeps them, and as the file says them: no curve is taken off
+    /// or put on, so a material's shader reads the number the artist
+    /// painted (a mask more often than a colour).
+    pub colors: Vec<[u8; 4]>,
     /// The model's own colours, from the file's materials: its one texture,
     /// or its materials' colours in a little palette its UVs point into.
     /// What it is drawn with when the entity's material has no map of its

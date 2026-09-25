@@ -15,9 +15,15 @@ use glam::Vec3;
 use crate::asset::Vertex;
 
 /// A coarser mesh from `vertices` and `indices`, merging what lies within
-/// `cell` metres: its vertices and triangles, or `None` when it would be
-/// hardly smaller.
-pub fn simplify(vertices: &[Vertex], indices: &[u32], cell: f32) -> Option<(Vec<Vertex>, Vec<u32>)> {
+/// `cell` metres: its vertices, their painted colours (averaged, when
+/// `colors` has one a vertex; none when it is empty) and triangles, or
+/// `None` when it would be hardly smaller.
+pub fn simplify(
+    vertices: &[Vertex],
+    colors: &[[u8; 4]],
+    indices: &[u32],
+    cell: f32,
+) -> Option<(Vec<Vertex>, Vec<[u8; 4]>, Vec<u32>)> {
     if cell <= 0.0 || indices.len() < 3 {
         return None;
     }
@@ -77,7 +83,22 @@ pub fn simplify(vertices: &[Vertex], indices: &[u32], cell: f32) -> Option<(Vec<
     if out_indices.is_empty() || out_indices.len() * 10 > indices.len() * 7 {
         return None;
     }
-    Some((out_vertices, out_indices))
+    let mut out_colors = Vec::new();
+    if colors.len() == vertices.len() {
+        let mut totals = vec![[0u32; 5]; out_vertices.len()];
+        for (c, &at) in colors.iter().zip(&remap) {
+            let t = &mut totals[at as usize];
+            for k in 0..4 {
+                t[k] += c[k] as u32;
+            }
+            t[4] += 1;
+        }
+        out_colors = totals
+            .iter()
+            .map(|t| std::array::from_fn(|k| (t[k] / t[4].max(1)) as u8))
+            .collect();
+    }
+    Some((out_vertices, out_colors, out_indices))
 }
 
 /// The triangles a mesh needs before it is given coarser levels.
@@ -107,7 +128,7 @@ mod tests {
         let sphere = crate::builtin::sphere(1.0, 64, 32);
         let before = sphere.indices.len() / 3;
         let diag = 2.0 * 3f32.sqrt();
-        let (v, i) = simplify(&sphere.vertices, &sphere.indices, diag / 11.0).expect("coarser");
+        let (v, _, i) = simplify(&sphere.vertices, &[], &sphere.indices, diag / 11.0).expect("coarser");
         let after = i.len() / 3;
         assert!(after * 4 < before, "{after} of {before} triangles");
         // Still about the size it was: its points about a unit out.
@@ -125,7 +146,7 @@ mod tests {
                 ..*v
             })
             .collect();
-        if let Some((tv, ti)) = simplify(&thin, &wall.indices, 0.5) {
+        if let Some((tv, _, ti)) = simplify(&thin, &[], &wall.indices, 0.5) {
             let facing = |z: f32| {
                 ti.chunks_exact(3)
                     .filter(|t| t.iter().all(|&k| tv[k as usize].normal[2].signum() == z))
@@ -134,7 +155,7 @@ mod tests {
             assert!(facing(1.0) > 0 && facing(-1.0) > 0, "both faces kept");
         }
         // A small mesh is not worth it.
-        assert!(simplify(&sphere.vertices, &sphere.indices, 0.0001).is_none());
+        assert!(simplify(&sphere.vertices, &[], &sphere.indices, 0.0001).is_none());
     }
 
     #[test]

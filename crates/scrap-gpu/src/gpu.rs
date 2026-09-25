@@ -155,7 +155,7 @@ impl Gpu {
             | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         let bindless = adapter.features().contains(bindless_features)
             && adapter.limits().max_binding_array_elements_per_shader_stage >= 4096
-            && adapter.limits().max_vertex_attributes >= 18
+            && adapter.limits().max_vertex_attributes >= 19
             && std::env::var_os("SCRAP_NO_BINDLESS").is_none();
         let mesh_shaders = adapter
             .features()
@@ -163,12 +163,13 @@ impl Gpu {
             && std::env::var_os(MESH_SHADERS_VAR).is_some();
         let mut required_limits =
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
-        // An instance's numbers take eighteen vertex attributes: its light
-        // under the surface is the seventeenth, its maps' handles the
-        // eighteenth.
+        // A skinned draw takes nineteen vertex attributes: an instance's
+        // numbers eighteen (its light under the surface the seventeenth,
+        // its maps' handles the eighteenth), and the vertex's painted
+        // colour, at location 18, the nineteenth.
         required_limits.max_vertex_attributes = required_limits
             .max_vertex_attributes
-            .max(18)
+            .max(19)
             .min(adapter.limits().max_vertex_attributes);
         // Sixteen storage buffers a stage where there are: the occlusion
         // culling reads five, the lit shader one more when it traces (what

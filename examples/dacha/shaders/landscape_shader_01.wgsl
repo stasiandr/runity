@@ -9,9 +9,8 @@
 // (x141.5), masked by the same texture laid over the screen and faded out
 // with scene depth near the camera.
 // Here the road and both noise textures are the material's own, read as the
-// graph reads them. Vertex colour red is painted on the mesh (the .glb
-// carries COLOR_0) but the importer does not keep it and a surface is not
-// given it, so it is a low-frequency world-space noise here. The glimmer texture would be a fifth, so its specks are
+// graph reads them, and vertex colour red is the mesh's own
+// (`in.vertex_color`, the FBX's colours as Unity reads them). The glimmer texture would be a fifth, so its specks are
 // procedural: a rare lit cell in a fine grid on the UVs, twinkling with time
 // where the original twinkles as the screen-space mask slides over it; the
 // depth fade is left out (no scene depth or camera here). The final
@@ -47,22 +46,6 @@ fn landscape_hash(p: vec2<f32>) -> f32 {
     return fract(r.x * r.y);
 }
 
-fn landscape_noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    let a = landscape_hash(i);
-    let b = landscape_hash(i + vec2<f32>(1.0, 0.0));
-    let c = landscape_hash(i + vec2<f32>(0.0, 1.0));
-    let d = landscape_hash(i + vec2<f32>(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-fn landscape_fbm(p: vec2<f32>) -> f32 {
-    return landscape_noise(p) * 0.5 + landscape_noise(p * 2.07 + 5.3) * 0.3
-        + landscape_noise(p * 4.13 + 11.7) * 0.2;
-}
-
 // Shader Graph's Contrast and Saturation nodes.
 fn landscape_contrast(c: vec3<f32>, k: f32) -> vec3<f32> {
     let mid = pow(0.5, 2.2);
@@ -84,8 +67,7 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let anim_uv = uv * LANDSCAPE_TILING_1 + vec2<f32>(0.0, in.time * LANDSCAPE_SPEED);
     let noise_anim = texture_at(in, LANDSCAPE_NOISE_ANIM, anim_uv).r;
 
-    // Vertex colour red stands in as a broad world-space patchiness.
-    let painted = smoothstep(0.35, 0.65, landscape_fbm(in.world_position.xz * 0.08));
+    let painted = in.vertex_color.r;
     let graded_1 = landscape_saturation(landscape_contrast(road_2, LANDSCAPE_CONTRAST_01), LANDSCAPE_SATURATION);
     let c1 = mix(road_1, graded_1, painted);
 

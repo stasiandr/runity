@@ -1171,6 +1171,9 @@ const LOD_HANDLE: u32 = 1 << 31;
 
 struct GpuMesh {
     vertices: wgpu::Buffer,
+    /// Its vertices' painted colours, when it has any; the renderer's
+    /// white ones stand in when it has none.
+    colors: Option<wgpu::Buffer>,
     /// Joint indices and weights, when the mesh has them.
     skin: Option<wgpu::Buffer>,
     indices: wgpu::Buffer,
@@ -1206,6 +1209,12 @@ pub struct Renderer {
     frame_buffer: wgpu::Buffer,
     instances: wgpu::Buffer,
     instance_capacity: u64,
+    /// White, a vertex's worth for every vertex of the largest mesh with no
+    /// colours of its own: what such a mesh is drawn with in their slot, so
+    /// one pipeline draws both and a mesh with none carries none.
+    white_colors: wgpu::Buffer,
+    /// How many vertices `white_colors` covers.
+    white_capacity: u64,
     depth: wgpu::TextureView,
     depth_size: (u32, u32),
     /// Every cascade's map, as one array to sample.
@@ -1780,6 +1789,17 @@ const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_array
 ];
 const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
+const COLOR_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![18 => Unorm8x4];
+
+/// A buffer of white vertex colours, `count` of them.
+fn white_buffer(gpu: &Gpu, count: u64) -> wgpu::Buffer {
+    use wgpu::util::DeviceExt;
+    gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("white vertex colours"),
+        contents: &vec![255u8; count as usize * 4],
+        usage: wgpu::BufferUsages::VERTEX,
+    })
+}
 
 fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
     let mut out = vec![
@@ -1792,6 +1812,12 @@ fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>
             array_stride: std::mem::size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &INSTANCE_ATTRIBUTES,
+        }),
+        // Slot 2: the vertices' painted colours (or the white stand-in).
+        Some(wgpu::VertexBufferLayout {
+            array_stride: 4,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &COLOR_ATTRIBUTES,
         }),
     ];
     if skinned {
@@ -3356,6 +3382,9 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let white_capacity = 4096;
+        let white_colors = white_buffer(gpu, white_capacity);
+
         let vsm = crate::vsm::VirtualShadows::new(gpu, &shadow_layout, caster_stride, DEPTH_FORMAT, shadow_resolution, vsm_table);
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
         clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
@@ -3379,6 +3408,8 @@ impl Renderer {
             frame_buffer,
             instances,
             instance_capacity,
+            white_colors,
+            white_capacity,
             depth: depth_view(gpu, width, height, samples),
             depth_size: (width, height),
             samples,
@@ -3566,7 +3597,7 @@ impl Renderer {
     /// asset format exists.
     pub fn upload_mesh(&mut self, gpu: &Gpu, mesh: &ArchivedMeshAsset) -> MeshHandle {
         let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
-        let handle = self.upload(gpu, vertex_slice(mesh), &indices);
+        let handle = self.upload(gpu, vertex_slice(mesh), mesh.colors.as_slice(), &indices);
         if let Some(skin) = mesh.skin.as_ref() {
             let bindings: Vec<SkinVertex> = skin
                 .joints
@@ -3615,11 +3646,12 @@ impl Renderer {
         &mut self,
         gpu: &Gpu,
         vertices: &[crate::asset::Vertex],
+        colors: &[[u8; 4]],
         indices: &[u32],
     ) -> MeshHandle {
-        let mesh = self.gpu_mesh(gpu, vertices, indices, true, false);
+        let mesh = self.gpu_mesh(gpu, vertices, colors, indices, true, false);
         let handle = self.take_slot(mesh);
-        self.make_lods(gpu, handle, vertices, indices);
+        self.make_lods(gpu, handle, vertices, colors, indices);
         handle
     }
 
@@ -3628,7 +3660,7 @@ impl Renderer {
     /// — and, where rays are traced, a structure quick to build, built
     /// again in place as it changes ([`Renderer::update_mesh`]).
     fn upload_live(&mut self, gpu: &Gpu, vertices: &[crate::asset::Vertex], indices: &[u32]) -> MeshHandle {
-        let mesh = self.gpu_mesh(gpu, vertices, indices, true, true);
+        let mesh = self.gpu_mesh(gpu, vertices, &[], indices, true, true);
         self.take_slot(mesh)
     }
 
@@ -3661,12 +3693,12 @@ impl Renderer {
             normal: [0.0, 1.0, 0.0],
             uv: [0.0; 2],
         };
-        self.meshes[slot] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false, true);
+        self.meshes[slot] = self.gpu_mesh(gpu, &[blank], &[], &[0, 0, 0], false, true);
         if let Some(levels) = self.lods.remove(&handle.0) {
             for (level, _) in levels {
                 let at = (level.0 & !LOD_HANDLE) as usize;
                 if at < self.lod_meshes.len() {
-                    self.lod_meshes[at] = self.gpu_mesh(gpu, &[blank], &[0, 0, 0], false, true);
+                    self.lod_meshes[at] = self.gpu_mesh(gpu, &[blank], &[], &[0, 0, 0], false, true);
                 }
             }
         }
@@ -3685,6 +3717,7 @@ impl Renderer {
         gpu: &Gpu,
         handle: MeshHandle,
         vertices: &[crate::asset::Vertex],
+        colors: &[[u8; 4]],
         indices: &[u32],
     ) {
         self.lods.remove(&handle.0);
@@ -3695,10 +3728,10 @@ impl Renderer {
         let diagonal = (Vec3::from_array(bounds.max) - Vec3::from_array(bounds.min)).length();
         let mut levels = Vec::new();
         for (share, below) in crate::lod::LEVELS {
-            let Some((v, i)) = crate::lod::simplify(vertices, indices, diagonal * share) else {
+            let Some((v, c, i)) = crate::lod::simplify(vertices, colors, indices, diagonal * share) else {
                 break;
             };
-            let mesh = self.gpu_mesh(gpu, &v, &i, false, false);
+            let mesh = self.gpu_mesh(gpu, &v, &c, &i, false, false);
             self.lod_meshes.push(mesh);
             levels.push((MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1)), below));
         }
@@ -3711,15 +3744,30 @@ impl Renderer {
     /// `live`: rewritten as it goes — never cut into clusters, and its
     /// rays' structure made to be built again quickly.
     fn gpu_mesh(
-        &self,
+        &mut self,
         gpu: &Gpu,
         vertices: &[crate::asset::Vertex],
+        colors: &[[u8; 4]],
         indices: &[u32],
         traced: bool,
         live: bool,
     ) -> GpuMesh {
         let bounds = crate::asset::Bounds::of(vertices);
         use wgpu::util::DeviceExt;
+
+        // Its own colours, one to a vertex; the white ones otherwise, grown
+        // to reach its last vertex.
+        let colors = (colors.len() == vertices.len() && !colors.is_empty()).then(|| {
+            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vertex colours"),
+                contents: bytemuck::cast_slice(colors),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
+        if colors.is_none() && vertices.len() as u64 > self.white_capacity {
+            self.white_capacity = (vertices.len() as u64).next_power_of_two();
+            self.white_colors = white_buffer(gpu, self.white_capacity);
+        }
 
         let traced = traced && self.ray.is_some();
         let mut usage = if traced {
@@ -3762,6 +3810,7 @@ impl Renderer {
         });
         GpuMesh {
             vertices: vertex_buffer,
+            colors,
             skin: None,
             indices: index_buffer,
             index_count: indices.len() as u32,
@@ -3769,6 +3818,11 @@ impl Renderer {
             blas,
             clusters: clustered.map(|(_, c)| crate::cluster::MeshClusters::new(gpu, &c)),
         }
+    }
+
+    /// What a mesh's vertex colours are read from: its own, or white.
+    fn colors_of<'a>(&'a self, mesh: &'a GpuMesh) -> &'a wgpu::Buffer {
+        mesh.colors.as_ref().unwrap_or(&self.white_colors)
     }
 
     /// A mesh by its handle, a coarser level's too.
@@ -4043,7 +4097,7 @@ impl Renderer {
     /// entry point: an import is a decision, and making it as easy to skip
     /// as to do is how a codebase ends up parsing OBJ at startup again.
     pub fn upload_mesh_owned(&mut self, gpu: &Gpu, mesh: &crate::asset::MeshAsset) -> MeshHandle {
-        self.upload(gpu, &mesh.vertices, &mesh.indices)
+        self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices)
     }
 
     /// Issue the grouped draws. Shared by both passes so that what casts a
@@ -4124,6 +4178,7 @@ impl Renderer {
                 self.bind_maps(pass, *texture);
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             if occluded {
                 pass.set_vertex_buffer(1, self.occlusion.kept.buffer.slice(..));
@@ -4384,12 +4439,13 @@ impl Renderer {
         self.bind_maps(pass, texture);
         pass.set_vertex_buffer(0, mesh.vertices.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
+        pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
         if look.skinned {
             let Some(skin) = mesh.skin.as_ref() else {
                 return;
             };
             pass.set_bind_group(2, &self.pose_bind_group, &[pose * self.pose_stride as u32]);
-            pass.set_vertex_buffer(2, skin.slice(..));
+            pass.set_vertex_buffer(3, skin.slice(..));
         }
         pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
@@ -4900,7 +4956,8 @@ impl Renderer {
             self.meshes[mesh.0 as usize].bounds = crate::asset::Bounds::of(vertices);
             return;
         }
-        self.meshes[mesh.0 as usize] = self.gpu_mesh(gpu, vertices, indices, true, true);
+        let replaced = self.gpu_mesh(gpu, vertices, &[], indices, true, true);
+        self.meshes[mesh.0 as usize] = replaced;
     }
 
     /// The probes' pictures, when the probes are not the ones they are of:
@@ -6462,6 +6519,7 @@ impl Renderer {
                             }
                             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                             pass.set_vertex_buffer(1, self.instances.slice(..));
+                            pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
                             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                             bound = true;
                         }
