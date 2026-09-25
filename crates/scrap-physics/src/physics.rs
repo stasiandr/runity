@@ -3823,18 +3823,15 @@ mod tests {
         assert!((door - 45.0).abs() < 6.0, "held at 45°: {door}");
     }
 
-    /// A known fault of rapier 0.26, kept to show it: a hinge on a moving
-    /// kinematic body (a lever on the train) is dragged back as if by
-    /// wind. For a joint to a body the solver does not move, rapier puts
-    /// that body's end of the joint where it stood at the start of the step
-    /// (`JointOneBodyConstraintBuilder::generate`) and never moves it over
-    /// the substeps, while the dynamic end does move: the joint's position
-    /// correction pulls the lever back toward where the train was. Joined
-    /// to a heavy dynamic body instead, the same lever keeps up. Unity's
-    /// PhysX does not do this; Dacha's train lever returns to centre in
-    /// half a second where ours takes three.
+    /// A hinge on a moving kinematic body (a lever on the train) rides
+    /// with it, held upright by its spring, as in Unity's PhysX. rapier 0.26
+    /// dragged it back as if by wind: it put the kinematic end of a joint
+    /// where the body stood at the start of the step and never moved it
+    /// over the substeps, so the joint pulled the lever toward where the
+    /// train had been, and Dacha's train lever took three seconds to
+    /// return to centre instead of half a second. rapier 0.36 solves a
+    /// kinematic body with the rest; this keeps it so.
     #[test]
-    #[ignore = "rapier 0.26 drags a joint to a moving kinematic body"]
     fn a_lever_on_a_moving_kinematic_body_is_not_dragged() {
         let (_, mut world, _) = scene_world(
             r#"(entities: [
