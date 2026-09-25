@@ -1767,6 +1767,42 @@ impl PhysicsWorld {
         true
     }
 
+    /// Turn a body where it stands, at once, keeping how it moves — as
+    /// Unity does when a script sets a Rigidbody's `transform.rotation`
+    /// (a billboard on a loose crate). Its transform follows.
+    pub fn turn(&mut self, world: &mut World, entity: hecs::Entity, rotation: Quat) -> bool {
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        let mut pose = *body.position();
+        pose.rotation = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            rotation.w, rotation.x, rotation.y, rotation.z,
+        ));
+        body.set_position(pose, true);
+        // The transform is its parent's: the turn as the parent sees it.
+        let parent = world
+            .get::<&Parent>(entity)
+            .ok()
+            .and_then(|p| world.get::<&WorldTransform>(p.0).ok().map(|t| t.0));
+        let local = match parent {
+            Some(m) => {
+                let (_, turn, _) = m.to_scale_rotation_translation();
+                turn.inverse() * rotation
+            }
+            None => rotation,
+        };
+        if let Ok(mut transform) = world.get::<&mut Transform>(entity) {
+            transform.set_rotation(local);
+        }
+        if let Ok(mut built) = world.get::<&mut Built>(entity) {
+            built.local.set_rotation(local);
+        }
+        true
+    }
+
     /// Put a body somewhere at once, still: a cannon reloading its
     /// muzzle. Its transform follows.
     pub fn teleport(
@@ -3872,6 +3908,26 @@ mod tests {
         }
         let angle = physics.hinge_angle(&world, lever).unwrap();
         assert!(angle.abs() < 2.0, "a spring holding it upright on a steady train: {angle}°");
+    }
+
+    #[test]
+    fn a_turned_body_keeps_moving() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000c1", name: "crate", model: "m", body: Dynamic,
+                 collider: Box(half: (0.5, 0.5, 0.5)), transform: (position: (0.0, 5.0, 0.0)),
+                 physics: (gravity: 0.0)),
+            ])"#,
+        );
+        let crate_ = by_id(&world, "00000000000000c1".parse().unwrap());
+        run_for(&mut physics, &mut world, 1);
+        physics.set_velocity(&world, crate_, Vec3::new(3.0, 0.0, 0.0));
+        let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(physics.turn(&mut world, crate_, quarter));
+        run_for(&mut physics, &mut world, 10);
+        let t = *world.get::<&Transform>(crate_).unwrap();
+        assert!(t.rotation().angle_between(quarter) < 1e-3, "turned: {:?}", t.rotation());
+        assert!((t.position.x - 0.5).abs() < 0.05, "still going: {}", t.position.x);
     }
 
     #[test]
