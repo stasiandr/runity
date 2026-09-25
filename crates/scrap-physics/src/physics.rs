@@ -547,6 +547,39 @@ impl PhysicsWorld {
         self.bodies.len()
     }
 
+    /// What an entity's body is pressed against now, by entity, with the
+    /// deepest contact's depth (negative is sunk in): for finding what
+    /// pushes a thing.
+    pub fn pressed_against(&self, world: &World, entity: hecs::Entity) -> Vec<(Option<hecs::Entity>, f32)> {
+        let Ok(handle) = world.get::<&BodyHandle>(entity).map(|h| h.0) else { return Vec::new() };
+        let Some(body) = self.bodies.get(handle) else { return Vec::new() };
+        let mut out = Vec::new();
+        for &collider in body.colliders() {
+            for pair in self.narrow_phase.contact_pairs_with(collider) {
+                if !pair.has_any_active_contact {
+                    continue;
+                }
+                let other = if pair.collider1 == collider { pair.collider2 } else { pair.collider1 };
+                let who = self.colliders.get(other).and_then(|c| hecs::Entity::from_bits(c.user_data as u64));
+                let depth = pair.manifolds.iter().flat_map(|m| m.points.iter()).map(|p| p.dist).fold(f32::MAX, f32::min);
+                out.push((who, depth));
+            }
+        }
+        out
+    }
+
+    /// Every joint built, as the two entities it holds together (`None`
+    /// for the world's ground): what a line's `joint` came to.
+    pub fn joined(&self) -> Vec<(Option<hecs::Entity>, Option<hecs::Entity>)> {
+        let entity = |h: RigidBodyHandle| {
+            self.bodies.get(h).and_then(|b| hecs::Entity::from_bits(b.user_data as u64))
+        };
+        self.impulse_joints
+            .iter()
+            .map(|(_, j)| (entity(j.body1), entity(j.body2)))
+            .collect()
+    }
+
     /// Bring rapier in line with the world: build a body for every entity
     /// that asks for one, rebuild the ones whose body kind or shape changed,
     /// move the ones whose transform was changed from outside the solver,
