@@ -69,7 +69,9 @@ fn gq(q: Rotation) -> Quat {
 /// to know. Rewritten after every step: `entered` and `left` are this
 /// step's changes, so a system that runs every step sees each exactly once.
 /// Unity's `OnTriggerEnter`/`OnCollisionEnter`, as data a system queries
-/// rather than callbacks on a class.
+/// rather than callbacks on a class — and, as PhysX's, what the step found
+/// at its *start*, before it moved anything: a system reading them on the
+/// next step reads where things were a step ago, as Unity's scripts do.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Contacts {
     /// Everything touching now, in no particular order.
@@ -852,6 +854,12 @@ impl PhysicsWorld {
             }
             // Its own collider, or — for a body made only of its parts — none.
             let mut collider = own.unwrap_or_else(|| ColliderBuilder::ball(1e-3).sensor(true).build());
+            // rapier sweeps any dynamic body fast for its size, asked or
+            // not: an unswept one is made of shapes too thick to sweep.
+            let unswept = dynamic && props.unswept;
+            if unswept {
+                unsweep(&mut collider);
+            }
             // Which entity a collider is, for contacts to be told in
             // entities rather than rapier handles.
             collider.user_data = entity.to_bits().get() as u128;
@@ -897,8 +905,10 @@ impl PhysicsWorld {
             // knife — falling onto ground that is a mesh with no inside
             // would otherwise pass through it. Rapier sweeps only what
             // moves further in a step than it is thick, so a resting
-            // level costs nothing for it. (`fast` is kept for lines that
-            // ask; it is always so now.)
+            // level costs nothing for it; against what stands still it
+            // sweeps every dynamic body so (an unswept one is kept out by
+            // its shapes, above), and this sweeps it against what moves
+            // too. (`fast` is kept for lines that ask; it is always so now.)
             .ccd_enabled(props.fast || (kind == Body::Dynamic && !props.unswept))
             .locked_axes(locked(&props))
             .build();
@@ -921,6 +931,9 @@ impl PhysicsWorld {
                 let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else {
                     continue;
                 };
+                if unswept {
+                    unsweep(&mut c);
+                }
                 // Where it sits on the body: both as the solver places them,
                 // without scale — the part's own scale is in its shape.
                 let offset = isometry(placed.0).inverse() * isometry(part.placed);
@@ -2207,6 +2220,20 @@ fn isometry(placed: glam::Mat4) -> Pose {
     Pose::from_parts(rv(translation), rq(rotation.normalize()))
 }
 
+/// The convex hull of `points`, as a collider that stands on the whole of
+/// a broad face (see [`crate::shapes::Hull`]).
+fn hull(points: &[Vector]) -> Option<Collider> {
+    let polyhedron = rapier3d::parry::shape::ConvexPolyhedron::from_convex_hull(points)?;
+    Some(ColliderBuilder::new(SharedShape::new(crate::shapes::Hull::new(polyhedron))).build())
+}
+
+/// `collider`'s shape, never swept between steps (see
+/// [`crate::shapes::Unswept`]).
+fn unsweep(collider: &mut Collider) {
+    let shape = collider.shared_shape().clone();
+    collider.set_shape(SharedShape::new(crate::shapes::Unswept(shape)));
+}
+
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
 fn build_collider(
     shape: ColliderShape,
@@ -2230,15 +2257,18 @@ fn build_collider(
                 })
                 .collect();
             if dynamic {
-                ColliderBuilder::convex_hull(&points)?.build()
+                hull(&points)?
             } else {
                 // Triangles with no area — a mesh squashed flat by a zero
                 // scale, a sliver — are nothing to stand on, and a query
-                // against a tree of only those panics in parry.
+                // against a tree of only those panics in parry. A mirroring
+                // scale turns every triangle inside out: turned back, so
+                // each still faces the side it was drawn to face.
+                let mirrored = scale.x * scale.y * scale.z < 0.0;
                 let triangles: Vec<[u32; 3]> = mesh
                     .triangles
                     .iter()
-                    .copied()
+                    .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
                     .filter(|t| {
                         let [a, b, c] = t.map(|i| points.get(i as usize).copied());
                         let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
@@ -2248,7 +2278,19 @@ fn build_collider(
                 if triangles.is_empty() || points.iter().any(|p| !p.is_finite()) {
                     return None;
                 }
-                ColliderBuilder::trimesh(points, triangles)
+                // Ground as PhysX has it. Its internal edges fixed: a body
+                // sliding over the seam between two triangles is pushed by
+                // the surface the two make, not bumped up by the edge of the
+                // one ahead. And one-sided — each triangle solid on the side
+                // it faces — so a body swept between steps is stopped by
+                // the ground it would pass through, not by the next rise of
+                // the ground it slides over (it ends the step in front of
+                // that, and rapier's sweep lets it go on).
+                ColliderBuilder::trimesh_with_flags(
+                    points,
+                    triangles,
+                    TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::ORIENTED,
+                )
                     .ok()?
                     .build()
             }
@@ -2310,7 +2352,7 @@ fn build_collider(
             .into_iter()
             .map(|(x, y, z)| Vector::new(x * h.x, y * h.y, z * h.z))
             .collect();
-            ColliderBuilder::convex_hull(&points)?.build()
+            hull(&points)?
         }
         ColliderShape::Stairs { half, steps } => {
             // One box per step, each from the ground up, as the mesh has
@@ -3877,6 +3919,116 @@ mod tests {
         let t = *world.get::<&Transform>(crate_).unwrap();
         assert!(t.rotation().angle_between(quarter) < 1e-3, "turned: {:?}", t.rotation());
         assert!((t.position.x - 0.5).abs() < 0.05, "still going: {}", t.position.x);
+    }
+
+    /// `ground` standing still as a mesh (scaled by `scale`) and `thing`
+    /// over it, its mesh `thing_mesh` if it is a model: their world and the
+    /// thing, stepped at 30 Hz as the game steps.
+    fn on_mesh(
+        ground: CollisionMesh,
+        scale: Vec3,
+        thing: EntityDesc,
+        thing_mesh: Option<CollisionMesh>,
+    ) -> (PhysicsWorld, World, hecs::Entity) {
+        let mut floor = entity("ground", 0.0, Body::Static, ColliderShape::Model);
+        floor.transform.scale = scale;
+        let mut scene = Scene { entities: vec![floor, thing], ..Default::default() };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let (floor, thing) = (by_id(&world, scene.entities[0].id), by_id(&world, scene.entities[1].id));
+        let _ = world.insert_one(floor, ground);
+        if let Some(mesh) = thing_mesh {
+            let _ = world.insert_one(thing, mesh);
+        }
+        (PhysicsWorld::new(1.0 / 30.0), world, thing)
+    }
+
+    /// A grid of 1 m squares, each two triangles facing up, its height at
+    /// (x, z) `height(x, z)`.
+    fn ground_mesh(cells: i32, height: impl Fn(f32, f32) -> f32) -> CollisionMesh {
+        let side = cells + 1;
+        let vertices = (0..side * side).map(|k| {
+            let (x, z) = ((k % side - cells / 2) as f32, (k / side - cells / 2) as f32);
+            Vec3::new(x, height(x, z), z)
+        });
+        let indices = (0..cells * cells).flat_map(|k| {
+            let (i, j) = (k % cells, k / cells);
+            let a = (j * side + i) as u32;
+            let (b, c, d) = (a + 1, a + side as u32, a + side as u32 + 1);
+            [a, c, b, b, c, d]
+        });
+        CollisionMesh::from_parts(vertices, indices)
+    }
+
+    /// A mine, round and flat, lands on a slope of mesh ground and lies on
+    /// it — on the whole of its round bottom, not tipped over the side of
+    /// it parry would stand on, and not into the mesh and through.
+    #[test]
+    fn a_disc_lands_flat_on_a_slope_of_mesh_ground() {
+        let slope = |x: f32, _z: f32| 0.2 * x;
+        let rim: Vec<Vec3> = (0..24)
+            .flat_map(|i| {
+                let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                [Vec3::new(0.39 * a.cos(), -0.06, 0.39 * a.sin()), Vec3::new(0.39 * a.cos(), 0.06, 0.39 * a.sin())]
+            })
+            .collect();
+        let disc = CollisionMesh::from_parts(rim.into_iter(), std::iter::empty());
+        let mut mine = entity("mine", 0.0, Body::Dynamic, ColliderShape::Model);
+        mine.transform.position = Vec3::new(0.3, 1.0, 0.2);
+        let (mut physics, mut world, mine) = on_mesh(ground_mesh(8, slope), Vec3::ONE, mine, Some(disc));
+        run_for(&mut physics, &mut world, 90);
+        let placed = world.get::<&WorldTransform>(mine).unwrap().0;
+        let at = placed.w_axis.truncate();
+        let up = placed.transform_vector3(Vec3::Y).normalize();
+        let normal = Vec3::new(-0.2, 1.0, 0.0).normalize();
+        let above = (at - Vec3::new(at.x, slope(at.x, at.z), at.z)).dot(normal);
+        assert!((above - 0.06).abs() < 0.02, "lying on the ground: {above} above it, at {at}");
+        assert!(up.angle_between(normal).to_degrees() < 2.0, "flat on the slope: up {up}");
+    }
+
+    /// Ground mirrored by its scale still faces up: a ball lands on it.
+    #[test]
+    fn a_ball_lands_on_mesh_ground_its_scale_mirrors() {
+        let ball = entity("ball", 2.0, Body::Dynamic, ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO });
+        let (mut physics, mut world, ball) = on_mesh(ground_mesh(4, |_, _| 0.0), Vec3::new(-1.0, 1.0, 1.0), ball, None);
+        run_for(&mut physics, &mut world, 60);
+        let y = world.get::<&WorldTransform>(ball).unwrap().0.w_axis.y;
+        assert!((y - 0.5).abs() < 0.05, "on the ground: y {y}");
+    }
+
+    /// Two links of a rope on a ball joint, unswept, stood on end and
+    /// dropped a metre onto the floor: they land and stay, as Unity's
+    /// (Discrete) links do. Swept, rapier stops the lower link at the floor
+    /// mid-step and not the upper, and the joint flings both back up.
+    #[test]
+    fn unswept_links_dropped_on_end_land_without_a_bounce() {
+        let (_, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f0", name: "floor", body: Static, collider: Box(half: (10.0, 0.5, 10.0)), transform: (position: (0.0, -0.5, 0.0))),
+                (id: "00000000000000f1", name: "upper", body: Dynamic, collider: Capsule(half_height: 0.4, radius: 0.1),
+                 physics: (mass: Some(0.4), unswept: true), transform: (position: (0.0, 2.5, 0.0), rotation_deg: (180.0, 0.0, 0.0))),
+                (id: "00000000000000f2", name: "lower", body: Dynamic, collider: Capsule(half_height: 0.4, radius: 0.1),
+                 physics: (mass: Some(0.4), unswept: true), transform: (position: (0.0, 1.5, 0.0), rotation_deg: (180.0, 0.0, 0.0)),
+                 joint: Ball(to: "00000000000000f1", anchor: (0.0, -0.5, 0.0), connected: (0.0, 0.5, 0.0))),
+            ])"#,
+        );
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.set_solver_iterations(16);
+        let (upper, lower) = (by_id(&world, scene.entities[1].id), by_id(&world, scene.entities[2].id));
+        physics.ignore_collision(upper, lower, true);
+        let mut highest_after_landing = f32::MIN;
+        let mut landed = false;
+        for _ in 0..45 {
+            run_for(&mut physics, &mut world, 1);
+            let y = world.get::<&WorldTransform>(lower).unwrap().0.w_axis.y;
+            landed |= y < 0.6;
+            if landed {
+                highest_after_landing = highest_after_landing.max(y);
+            }
+        }
+        assert!(landed, "it fell");
+        assert!(highest_after_landing < 0.75, "no bounce: the lower link rose to {highest_after_landing}");
     }
 
     #[test]

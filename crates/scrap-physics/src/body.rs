@@ -284,9 +284,10 @@ pub struct BodyProps {
     /// went through it); this stays for the lines that say it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fast: bool,
-    /// Not swept, though dynamic: for a body that moves itself over ground
-    /// it rests on — a walking pawn — which a sweep would stop short each
-    /// step it goes faster than its own size, as PhysX's sweep does not.
+    /// Not swept, though dynamic: Unity's `CollisionDetectionMode.Discrete`,
+    /// for a body a sweep does more harm to than tunnelling could — a link
+    /// of a rope, which a sweep stops at the ground mid-step while the link
+    /// above it goes on, for their joint to fling both back up.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unswept: bool,
     /// Axes it may not move along, as letters: `"y"` keeps it at its height.

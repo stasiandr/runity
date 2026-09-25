@@ -10,6 +10,8 @@
 pub mod bodies;
 pub mod body;
 #[cfg(feature = "rapier")]
+mod shapes;
+#[cfg(feature = "rapier")]
 pub mod physics;
 
 #[cfg(feature = "rapier")]
