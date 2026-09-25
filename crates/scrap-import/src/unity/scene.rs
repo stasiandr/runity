@@ -948,6 +948,7 @@ fn removal(d: &Doc, unity: &Unity) -> Option<String> {
             "ParticleSystem" | "ParticleSystemRenderer" => "particles",
             "AudioSource" => "sound",
             "Animator" => "animator",
+            "NavMeshAgent" => "nav_mesh_agent",
             "MonoBehaviour" => {
                 let script = d.body.reference("m_Script")?;
                 let path = unity.guids.get(script.guid.as_deref()?)?;
@@ -1539,6 +1540,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             }
         }
         "AudioSource" => audio_source(desc, b, refs.unity, report),
+        "NavMeshAgent" => nav_mesh_agent(desc, b, report),
         "ParticleSystem" => {
             shuriken(desc, b, report);
             bind_custom(desc, refs.unity);
@@ -1572,6 +1574,34 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             bind_custom(desc, refs.unity);
         }
         other => report.skip(other.to_string()),
+    }
+}
+
+/// A NavMeshAgent as a `nav_mesh_agent` component: how the thing walks —
+/// its speed, acceleration and turn (degrees a second), where it counts
+/// as arrived, and its radius and height. Unity's navigation runs it; the
+/// game that reads these walks it here. A switched-off one is not brought.
+fn nav_mesh_agent(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
+    if b.i64("m_Enabled") == Some(0) {
+        report.skip("a switched-off NavMeshAgent");
+        return;
+    }
+    let f = |key: &str, default: f32| b.f32(key).unwrap_or(default);
+    let value = format!(
+        "(speed: {}, acceleration: {}, angularSpeed: {}, stoppingDistance: {}, radius: {}, height: {}, baseOffset: {})",
+        f("m_Speed", 3.5),
+        f("m_Acceleration", 8.0),
+        f("m_AngularSpeed", 120.0),
+        f("m_StoppingDistance", 0.0),
+        f("m_Radius", 0.5),
+        f("m_Height", 2.0),
+        f("m_BaseOffset", 0.0),
+    );
+    match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
+        Ok(raw) => {
+            desc.components.insert("nav_mesh_agent".into(), raw);
+        }
+        Err(_) => report.skip("a NavMeshAgent whose fields did not make RON"),
     }
 }
 
@@ -3005,6 +3035,41 @@ AudioSource:
         assert_eq!((sound.volume, sound.pitch), (0.5, 0.8));
         assert!(sound.looped && sound.on_start && sound.spatial);
         assert_eq!((sound.near, sound.far), (2.0, 12.0));
+    }
+
+    #[test]
+    fn a_nav_mesh_agent_says_how_its_thing_walks() {
+        let text = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Mouse
+  m_Component:
+  - component: {fileID: 11}
+  - component: {fileID: 12}
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_Father: {fileID: 0}
+--- !u!195 &12
+NavMeshAgent:
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Radius: 0.18
+  m_Speed: 2
+  m_Acceleration: 20
+  avoidancePriority: 50
+  m_AngularSpeed: 600
+  m_StoppingDistance: 0.25
+  m_Height: 0.3
+  m_BaseOffset: 0
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), text, &mut report);
+        let agent = roots[0].components.get("nav_mesh_agent").expect("its agent").get_ron();
+        assert_eq!(
+            agent,
+            "(speed: 2, acceleration: 20, angularSpeed: 600, stoppingDistance: 0.25, radius: 0.18, height: 0.3, baseOffset: 0)"
+        );
     }
 
     #[test]
