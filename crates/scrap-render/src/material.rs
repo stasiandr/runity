@@ -138,8 +138,24 @@ pub enum RenderFace {
     Front,
     /// The inside: a room seen from within a box.
     Back,
-    /// Both: a leaf, a sheet of cloth, a flag.
+    /// Both: a leaf, a sheet of cloth, a flag. The back is lit from its
+    /// own side: its normal turned round (HDRP's Double-Sided Normal Mode
+    /// Flip).
     Both,
+    /// Both, the back lit as though it were the front — its normal kept
+    /// (HDRP's Normal Mode None). URP's Render Face Both, which never turns
+    /// it: grass cards whose normals all point up are lit as the ground.
+    BothAsFront,
+}
+
+impl RenderFace {
+    /// Which faces the GPU culls by: the two ways of drawing both are one.
+    pub fn culled(self) -> RenderFace {
+        match self {
+            RenderFace::BothAsFront => RenderFace::Both,
+            face => face,
+        }
+    }
 }
 
 /// A surface.
@@ -479,6 +495,7 @@ impl From<&ArchivedMaterial> for Material {
                 ArchivedRenderFace::Front => RenderFace::Front,
                 ArchivedRenderFace::Back => RenderFace::Back,
                 ArchivedRenderFace::Both => RenderFace::Both,
+                ArchivedRenderFace::BothAsFront => RenderFace::BothAsFront,
             },
             specular_highlights: archived.specular_highlights,
             environment_reflections: archived.environment_reflections,

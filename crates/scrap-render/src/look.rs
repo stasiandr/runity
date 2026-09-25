@@ -131,6 +131,30 @@ pub struct Light {
     /// How it fades on its way to `range`: smooth unless said.
     #[serde(default, skip_serializing_if = "is_smooth")]
     pub falloff: crate::render::Falloff,
+    /// Its colour temperature, kelvin, laid over `color` — Unity's light
+    /// Temperature ([`color_temperature`]). None is white light.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub temperature: Option<f32>,
+}
+
+/// The colour of a black body `kelvin` hot, linear, its brightest channel
+/// 1: Unity's `Mathf.CorrelatedColorTemperatureToRGB` (Krystek's
+/// approximation of the Planckian locus, into sRGB's primaries), what URP
+/// multiplies a light's colour by when it uses a temperature.
+pub fn color_temperature(kelvin: f32) -> glam::Vec3 {
+    let t = kelvin.clamp(1000.0, 20000.0) as f64;
+    let u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t * t)
+        / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t * t);
+    let v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t * t)
+        / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t * t);
+    let x = 3.0 * u / (2.0 * u - 8.0 * v + 4.0);
+    let y = 2.0 * v / (2.0 * u - 8.0 * v + 4.0);
+    let (big_x, big_y, big_z) = (x / y, 1.0, (1.0 - x - y) / y);
+    let r = 3.2404542 * big_x - 1.5371385 * big_y - 0.4985314 * big_z;
+    let g = -0.9692660 * big_x + 1.8760108 * big_y + 0.0415560 * big_z;
+    let b = 0.0556434 * big_x - 0.2040259 * big_y + 1.0572252 * big_z;
+    let top = r.max(g).max(b);
+    glam::Vec3::new((r / top).max(0.0) as f32, (g / top).max(0.0) as f32, (b / top).max(0.0) as f32)
 }
 
 fn is_smooth(f: &crate::render::Falloff) -> bool {
@@ -518,6 +542,11 @@ pub struct Sun {
     /// all round, less lets some of the sun in — Unity's Strength.
     #[serde(default = "full", skip_serializing_if = "is_full")]
     pub shadow_strength: f32,
+    /// Its colour temperature, kelvin: the colour of a black body that
+    /// hot laid over `tint` — Unity's light Temperature, which URP always
+    /// uses. None is white light.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
 fn full() -> f32 {
@@ -556,6 +585,7 @@ impl Default for Sun {
             tint: None,
             ambient: None,
             shadow_strength: 1.0,
+            temperature: None,
         }
     }
 }
@@ -622,6 +652,11 @@ impl Sun {
     /// Not physics — the sky is not scattering anything here — but the one
     /// cue that reads as a time of day at a glance, and cheaper than every
     /// scene hand-picking a colour to go with its hour.
+    /// What its temperature does to its colour: white without one.
+    pub fn filter(&self) -> Vec3 {
+        self.temperature.map_or(Vec3::ONE, color_temperature)
+    }
+
     pub fn color(&self) -> Vec3 {
         if let Some(t) = self.tint {
             let l = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
@@ -718,6 +753,7 @@ pub fn look_field(scene: &Scene, field: &str) -> Result<String, String> {
         "sky" => optional(&scene.sky()),
         "post" => optional(&scene.post()),
         "ambient_occlusion" => optional(&scene.ambient_occlusion()),
+        "shadows" => optional(&scene.shadows()),
         "volumetric_fog" => optional(&scene.volumetric_fog()),
         "weather" => optional(&scene.weather()),
         "wind" => optional(&scene.wind()),
@@ -757,6 +793,9 @@ pub fn set_look_field(scene: &mut Scene, field: &str, ron_text: &str) -> Result<
         }
         "ambient_occlusion" => {
             scene.set_part_opt::<crate::ssao::AmbientOcclusion>(optional(field, ron_text)?.as_ref())
+        }
+        "shadows" => {
+            scene.set_part_opt::<crate::render::ShadowSettings>(optional(field, ron_text)?.as_ref())
         }
         "volumetric_fog" => {
             scene.set_part_opt::<crate::volume::VolumetricFog>(optional(field, ron_text)?.as_ref())
@@ -832,6 +871,7 @@ crate::impl_parts! {
         shape::with_fractions(shape::of_field::<crate::post::PostProcess>("post"), crate::post::FRACTIONS)
     };
     crate::ssao::AmbientOcclusion => "ambient_occlusion", fractions ["direct_lighting_strength"];
+    crate::render::ShadowSettings => "shadows", fractions ["cascade_border"];
     crate::ray::RayTracing => "ray_tracing", fractions ["reflection_roughness"];
     VirtualShadows => "virtual_shadows", default if |v| !v.0;
     crate::volume::VolumetricFog => "volumetric_fog";
@@ -976,6 +1016,7 @@ pub trait SceneLook {
     fn sky(&self) -> Option<crate::render::Sky>;
     fn post(&self) -> Option<crate::post::PostProcess>;
     fn ambient_occlusion(&self) -> Option<crate::ssao::AmbientOcclusion>;
+    fn shadows(&self) -> Option<crate::render::ShadowSettings>;
     fn ray_tracing(&self) -> Option<crate::ray::RayTracing>;
     fn volumetric_fog(&self) -> Option<crate::volume::VolumetricFog>;
     fn wind(&self) -> Option<crate::foliage::Wind>;
@@ -1000,6 +1041,9 @@ impl SceneLook for Scene {
         self.part()
     }
     fn ambient_occlusion(&self) -> Option<crate::ssao::AmbientOcclusion> {
+        self.part()
+    }
+    fn shadows(&self) -> Option<crate::render::ShadowSettings> {
         self.part()
     }
     fn ray_tracing(&self) -> Option<crate::ray::RayTracing> {

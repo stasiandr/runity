@@ -645,7 +645,40 @@ fn through_air(color: vec3<f32>, pixel: vec2<f32>, distance: f32) -> vec3<f32> {
 struct Caster {
     view_projection: mat4x4<f32>,
     foliage: Foliage,
+    // URP's shadow bias, for the sun's cascades: the way to the sun (xyz)
+    // and how far the caster is pushed from it (w, metres) ...
+    toward: vec4<f32>,
+    // ... and how far it is shrunk along its normal where edge-on (x,
+    // metres). Zero for a lamp's map, whose bias is the receiver's.
+    inset: vec4<f32>,
 };
+
+/// A caster's point as URP's `ApplyShadowBias` draws it into the sun's
+/// map: away from the sun by the depth bias, and into itself along its
+/// normal by the normal bias, as much as it is edge-on to the sun.
+fn shadow_biased(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let l = caster.toward.xyz;
+    let n = normalize(normal + vec3<f32>(1e-7));
+    let edge_on = 1.0 - clamp(dot(l, n), 0.0, 1.0);
+    return world - l * caster.toward.w - n * (edge_on * caster.inset.x);
+}
+
+/// A normal out of a model's space into the world's: by the inverse
+/// transpose — its cofactors, the scale left for the normalisation — so a
+/// thing squashed flat has its faces turned up, not along.
+fn world_normal(model: mat4x4<f32>, n: vec3<f32>) -> vec3<f32> {
+    let a = model[0].xyz;
+    let b = model[1].xyz;
+    let c = model[2].xyz;
+    let cofactors = mat3x3<f32>(cross(b, c), cross(c, a), cross(a, b));
+    // A mirrored model turns its cofactors inside out. One flattened to
+    // nothing across (a decal's box) keeps its faces' way.
+    let turned = cofactors * n * select(1.0, -1.0, dot(a, cross(b, c)) < 0.0);
+    if dot(turned, turned) < 1e-24 {
+        return (model * vec4<f32>(n, 0.0)).xyz;
+    }
+    return turned;
+}
 @group(0) @binding(3) var<uniform> caster: Caster;
 
 // maps: begin
@@ -794,7 +827,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = frame.view_projection * world;
     out.world_position = world.xyz;
-    out.normal = (model * (skinning * vec4<f32>(in.normal, 0.0))).xyz;
+    out.normal = world_normal(model, (skinning * vec4<f32>(in.normal, 0.0)).xyz);
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -899,7 +932,8 @@ fn trampled(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    return caster.view_projection * vec4<f32>(world, 1.0);
+    let biased = shadow_biased(world, world_normal(model, in.normal));
+    return caster.view_projection * vec4<f32>(biased, 1.0);
 }
 
 struct ClipOut {
@@ -916,7 +950,8 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     var out: ClipOut;
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    out.position = caster.view_projection * vec4<f32>(world, 1.0);
+    let biased = shadow_biased(world, world_normal(model, in.normal));
+    out.position = caster.view_projection * vec4<f32>(biased, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
     out.maps = in.maps;
@@ -1146,11 +1181,9 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
         return 1.0;
     }
 
-    // Offsetting along the normal before the lookup is what handles grazing
-    // angles: there the depth error grows with the slope, and no constant
-    // bias large enough to cover it is small enough to keep contact.
-    let offset = world_position + normal * frame.cascade_bias[cascade];
-    let light_clip = frame.light_view_projection[cascade] * vec4<f32>(offset, 1.0);
+    // The biases were the caster's, as URP's are: the point is looked up
+    // where it is.
+    let light_clip = frame.light_view_projection[cascade] * vec4<f32>(world_position, 1.0);
     let ndc = light_clip.xyz / light_clip.w;
 
     // Clip space is -1..1 across and 0..1 deep; the map is indexed 0..1 with
@@ -1159,26 +1192,119 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
         return 1.0;
     }
+    let lit = shadow_filtered(uv, ndc.z, i32(cascade));
 
-    let reference = ndc.z - frame.cascade_depth_bias[cascade];
+    // Fading out towards the shadow distance, as URP's
+    // GetMainLightShadowFade: linear in the squared distance from the eye,
+    // over the last border's share.
+    let to_eye = world_position - frame.camera_position.xyz;
+    let fade = clamp(dot(to_eye, to_eye) * frame.cascade_depth_bias.x + frame.cascade_depth_bias.y, 0.0, 1.0);
+    return mix(lit, 1.0, fade);
+}
+
+/// The sun's map at `uv` of a cascade, compared with `reference`: URP's
+/// soft shadows (Core RP's ShadowSamplingTent) — one bilinear comparison
+/// hard, four half a texel out Low, a 5x5 tent in nine Medium, a 7x7 in
+/// sixteen High.
+fn shadow_filtered(uv: vec2<f32>, reference: f32, layer: i32) -> f32 {
+    let size = 1.0 / frame.shadow_params.z;
     let texel = frame.shadow_params.z;
-    // Nine taps, each of them already a hardware 2x2, so the edge is soft
-    // enough that the map's resolution stops being visible as stairs.
+    let quality = u32(frame.shadow_params.x + 0.5);
+    if quality == 0u {
+        return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, layer, reference);
+    }
+    if quality == 1u {
+        var sum = 0.0;
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let o = vec2<f32>(f32(i & 1u), f32(i >> 1u)) - 0.5;
+            sum += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o * texel, layer, reference);
+        }
+        return sum * 0.25;
+    }
+    let centre_in_texels = uv * size;
+    let origin = floor(centre_in_texels + 0.5);
+    let offset = centre_in_texels - origin;
     var sum = 0.0;
-    for (var y = -1; y <= 1; y = y + 1) {
-        for (var x = -1; x <= 1; x = x + 1) {
-            let tap = uv + vec2<f32>(f32(x), f32(y)) * texel;
-            sum = sum + textureSampleCompareLevel(shadow_map, shadow_sampler, tap, i32(cascade), reference);
+    if quality == 2u {
+        let u = tent_5x5(offset.x);
+        let v = tent_5x5(offset.y);
+        for (var j = 0u; j < 3u; j = j + 1u) {
+            for (var i = 0u; i < 3u; i = i + 1u) {
+                let at = (origin + vec2<f32>(u.offsets[i], v.offsets[j])) * texel;
+                sum += u.weights[i] * v.weights[j]
+                    * textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference);
+            }
+        }
+        return sum;
+    }
+    let u = tent_7x7(offset.x);
+    let v = tent_7x7(offset.y);
+    for (var j = 0u; j < 4u; j = j + 1u) {
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let at = (origin + vec2<f32>(u.offsets[i], v.offsets[j])) * texel;
+            sum += u.weights[i] * v.weights[j]
+                * textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference);
         }
     }
-    let lit = sum / 9.0;
+    return sum;
+}
 
-    // The last cascade fades to lit over its outer tenth.
-    let last = frame.cascade_spheres[count - 1u];
-    let from_centre = length(world_position - last.xyz);
-    let radius = sqrt(last.w);
-    let fade = clamp((radius - from_centre) / (radius * 0.1), 0.0, 1.0);
-    return mix(1.0, lit, fade);
+/// Core RP's SampleShadow_GetTexelAreas_Tent_3x3: the area of a tent 1.5
+/// texels high and 3 wide over each of the 4 texels it lies on, the tent
+/// `offset` from their middle — as cut by the texels (xyzw), and the middle
+/// two uncut (the second result's yz).
+struct TentAreas {
+    cut: vec4<f32>,
+    uncut: vec4<f32>,
+};
+
+fn tent_areas_3x3(offset: f32) -> TentAreas {
+    var out: TentAreas;
+    let halved = (offset + 0.5) * (offset + 0.5) * 0.5;
+    out.cut.x = halved - offset;
+    out.uncut.x = out.cut.x;
+    out.cut.w = halved;
+    out.uncut.w = halved;
+    out.uncut.y = 1.5 - offset - 0.5;
+    let left = min(offset, 0.0);
+    out.cut.y = out.uncut.y - left * left;
+    out.uncut.z = 1.5 + offset - 0.5;
+    let right = max(offset, 0.0);
+    out.cut.z = out.uncut.z - right * right;
+    return out;
+}
+
+/// Bilinear fetches along one axis: where each goes, in texels from the
+/// fetches' middle, and what it weighs.
+struct Fetches3 {
+    offsets: vec3<f32>,
+    weights: vec3<f32>,
+};
+
+struct Fetches4 {
+    offsets: vec4<f32>,
+    weights: vec4<f32>,
+};
+
+/// SampleShadow_ComputeSamples_Tent_5x5 along one axis.
+fn tent_5x5(offset: f32) -> Fetches3 {
+    let t = tent_areas_3x3(offset);
+    let a = vec3<f32>(t.cut.x, t.uncut.y, t.cut.y + 1.0) * 0.16;
+    let b = vec3<f32>(t.cut.z + 1.0, t.uncut.z, t.cut.w) * 0.16;
+    let weights = vec3<f32>(a.x + a.y, a.z + b.x, b.y + b.z);
+    let offsets = vec3<f32>(a.y, b.x, b.z) / weights + vec3<f32>(-2.5, -0.5, 1.5);
+    return Fetches3(offsets, weights);
+}
+
+/// SampleShadow_ComputeSamples_Tent_7x7 along one axis.
+fn tent_7x7(offset: f32) -> Fetches4 {
+    let t = tent_areas_3x3(offset);
+    let k = 0.081632;
+    let a = vec4<f32>(t.cut.x, t.uncut.y, t.uncut.y + 1.0, t.cut.y + 2.0) * k;
+    let b = vec4<f32>(t.cut.z + 2.0, t.uncut.z + 1.0, t.uncut.z, t.cut.w) * k;
+    let weights = vec4<f32>(a.x + a.y, a.z + a.w, b.x + b.y, b.z + b.w);
+    let offsets = vec4<f32>(a.y, a.w, b.y, b.w) / weights + vec4<f32>(-3.5, -1.5, 0.5, 2.5);
+    return Fetches4(offsets, weights);
 }
 
 /// How much stands between a point and the sun, metres: from the shadow
@@ -1939,10 +2065,7 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = frame.view_projection * world;
     out.world_position = world.xyz;
-    // Assumes uniform scale. A non-uniform one would need the inverse
-    // transpose; scenes that want it can scale at import instead, which is
-    // where scale is settled anyway.
-    out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
+    out.normal = world_normal(model, in.normal);
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -2380,7 +2503,8 @@ fn cs_ddgi_update(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invoca
 
 /// What the probes and the sky give a reflection, without the screen.
 fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
-    let sky = environment(direction, perceptual_roughness);
+    // Unity's reflection intensity: its skybox's reflection, scaled.
+    let sky = environment(direction, perceptual_roughness) * frame.sky_color.w;
     let count = u32(frame.probe_params.x);
     if count == 0u {
         return sky;
@@ -2496,7 +2620,12 @@ fn fs_prepassed(in: VertexOutput, @builtin(front_facing) front: bool) -> @locati
 /// Whether the side seen is the surface's front: what the GPU says, the
 /// other way round for a thing placed mirrored.
 fn seen_front(in: VertexOutput, front: bool) -> bool {
-    return front != ((u32(in.emission.w + 0.5) & 128u) != 0u);
+    let flags = u32(in.emission.w + 0.5);
+    // Its back lit as the front (URP's Render Face Both): never turned.
+    if (flags & 256u) != 0u {
+        return true;
+    }
+    return front != ((flags & 128u) != 0u);
 }
 
 /// A see-through surface lit by nothing — smoke, dust, a glow: its
@@ -2866,8 +2995,10 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let emission = shaped.emission;
     color = color + emission;
 
-    let distance = length(in.world_position - frame.camera_position.xyz);
-    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), storm_curtains(in.world_position, fog_amount(distance)));
+    // How deep the point is in the view, not how far — as URP's fog
+    // measures it (ComputeFogFactor of the clip-space depth).
+    let depth = -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0));
+    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), storm_curtains(in.world_position, fog_amount(depth)));
 
     // Glass by rays: what is behind it, bent through it, where the blend
     // would have laid the unbent picture — the glass's own light over it
@@ -3063,7 +3194,8 @@ fn storm_curtains(p: vec3<f32>, amount: f32) -> f32 {
     return clamp(amount * mix(1.0, 0.45 + 1.1 * curtain, storm), 0.0, 1.0);
 }
 
-/// How much fog stands between the eye and a point this far away.
+/// How much fog stands between the eye and a point this deep in the view:
+/// Unity's fog modes.
 fn fog_amount(distance: f32) -> f32 {
     let mode = u32(frame.fog_range.z + 0.5);
     let density = frame.fog_range.w;

@@ -90,6 +90,7 @@ pub fn sky(unity: &Unity, text: &str) -> Option<scrap::render::Sky> {
         thickness: float("_AtmosphereThickness", 1.0),
         exposure: float("_Exposure", 1.3),
         sun_size,
+        reflection_intensity: b.f32("m_ReflectionIntensity").unwrap_or(1.0),
         ..Default::default()
     })
 }
@@ -357,6 +358,81 @@ fn pipeline_asset(unity: &Unity) -> Option<String> {
         settings("GraphicsSettings.asset").and_then(|g| usable(g.reference("m_CustomRenderPipeline")))
     })?;
     std::fs::read_to_string(unity.guids.get(&pipeline)?).ok()
+}
+
+/// The sun's shadows as the render pipeline asset casts them: URP's
+/// shadow distance, cascades and their splits, last border, depth and
+/// normal bias (in texels, as scrap's are) and soft shadow quality — soft
+/// only when the pipeline allows it and the scene's sun asks for it. Its
+/// cascades share one atlas: past one, each is half its side. URP has no
+/// contact shadows. `None` for a project with no URP pipeline.
+pub fn shadows(unity: &Unity, scene: &str) -> Option<scrap::render::ShadowSettings> {
+    let text = pipeline_asset(unity)?;
+    let p = yaml::documents(&text).into_iter().find(|d| d.body.f32("m_ShadowDistance").is_some())?.body;
+    let mut out = scrap::render::ShadowSettings {
+        contact: 0.0,
+        ..Default::default()
+    };
+    out.enabled = p.i64("m_MainLightShadowsSupported").unwrap_or(1) != 0;
+    out.max_distance = p.f32("m_ShadowDistance").unwrap_or(50.0);
+    out.cascades = p.i64("m_ShadowCascadeCount").unwrap_or(1).clamp(1, 4) as u32;
+    if let Some(split) = p.vec3("m_Cascade4Split") {
+        out.cascade_splits = split;
+    }
+    out.cascade_border = p.f32("m_CascadeBorder").unwrap_or(0.2);
+    out.depth_bias = p.f32("m_ShadowDepthBias").unwrap_or(1.0);
+    out.normal_bias = p.f32("m_ShadowNormalBias").unwrap_or(1.0);
+    let atlas = p.i64("m_MainLightShadowmapResolution").unwrap_or(2048).max(1) as u32;
+    out.resolution = if out.cascades > 1 { atlas / 2 } else { atlas };
+    // The sun's own shadow type: 1 hard, 2 soft.
+    let sun_soft = yaml::documents(scene)
+        .iter()
+        .find(|d| d.kind == "Light" && d.body.i64("m_Type") == Some(1))
+        .and_then(|l| l.body["m_Shadows"].i64("m_Type"))
+        .is_none_or(|t| t == 2);
+    out.soft = if p.i64("m_SoftShadowsSupported").unwrap_or(0) != 0 && sun_soft {
+        match p.i64("m_SoftShadowQuality").unwrap_or(2) {
+            1 => scrap::render::SoftShadows::Low,
+            3 => scrap::render::SoftShadows::High,
+            _ => scrap::render::SoftShadows::Medium,
+        }
+    } else {
+        scrap::render::SoftShadows::Hard
+    };
+    Some(out)
+}
+
+/// The pipeline's default renderer's Screen Space Ambient Occlusion
+/// feature, when it is there and on: URP's SSAO, its numbers as they are.
+/// `None` when the renderer has none.
+pub fn ambient_occlusion(unity: &Unity) -> Option<scrap::ssao::AmbientOcclusion> {
+    let text = pipeline_asset(unity)?;
+    let p = yaml::documents(&text).into_iter().find(|d| d.body.f32("m_ShadowDistance").is_some())?.body;
+    let list = p.list("m_RendererDataList");
+    let index = p.i64("m_DefaultRendererIndex").unwrap_or(0).max(0) as usize;
+    let guid = yaml::reference(list.get(index)?)?.guid?;
+    let renderer = std::fs::read_to_string(unity.guids.get(&guid)?).ok()?;
+    let docs = yaml::documents(&renderer);
+    let feature = docs.iter().find(|d| {
+        d.body.str("m_Name") == Some("ScreenSpaceAmbientOcclusion") && d.body.i64("m_Active") != Some(0)
+    })?;
+    let s = &feature.body["m_Settings"];
+    let defaults = scrap::ssao::AmbientOcclusion::default();
+    Some(scrap::ssao::AmbientOcclusion {
+        enabled: true,
+        intensity: s.f32("Intensity").unwrap_or(3.0),
+        radius: s.f32("Radius").unwrap_or(0.035),
+        direct_lighting_strength: s.f32("DirectLightingStrength").unwrap_or(0.25),
+        falloff_distance: s.f32("Falloff").unwrap_or(100.0),
+        // URP's High, Medium and Low.
+        samples: match s.i64("Samples").unwrap_or(1) {
+            0 => 12,
+            2 => 4,
+            _ => 8,
+        },
+        method: scrap::ssao::Method::Ssao,
+        ..defaults
+    })
 }
 
 /// Where a render pipeline asset grades: its Grading Mode. High dynamic

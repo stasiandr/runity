@@ -258,6 +258,10 @@ pub struct Lighting {
     /// Direction the light travels, i.e. from the sun toward the ground.
     pub sun_direction: Vec3,
     pub sun_color: Vec3,
+    /// What the sun's colour temperature does to its colour, linear:
+    /// Unity's light Temperature, a filter over `sun_color` (URP uses
+    /// it on every light). White when it has none.
+    pub sun_filter: Vec3,
     pub sun_intensity: f32,
     /// Ambient seen by a surface facing straight up.
     pub sky_color: Vec3,
@@ -287,6 +291,7 @@ impl Default for Lighting {
         Self {
             sun_direction: Vec3::new(-0.35, -0.85, -0.4).normalize(),
             sun_color: Vec3::new(1.0, 0.96, 0.88),
+            sun_filter: Vec3::ONE,
             sun_intensity: 1.15,
             sky_color: Vec3::new(0.24, 0.28, 0.34),
             ground_color: Vec3::new(0.10, 0.09, 0.07),
@@ -386,6 +391,9 @@ pub struct Sky {
     pub atmosphere: crate::atmosphere::Atmosphere,
     /// Clouds over it ([`crate::clouds`]); none by default.
     pub clouds: crate::clouds::Clouds,
+    /// How much of the sky polished things reflect: Unity's Environment
+    /// Reflections Intensity Multiplier (the scene's lighting settings).
+    pub reflection_intensity: f32,
 }
 
 impl Default for Sky {
@@ -401,6 +409,7 @@ impl Default for Sky {
             thickness: 1.0,
             atmosphere: crate::atmosphere::Atmosphere::default(),
             clouds: crate::clouds::Clouds::default(),
+            reflection_intensity: 1.0,
         }
     }
 }
@@ -428,27 +437,34 @@ pub struct FrameStats {
     pub batches: u32,
 }
 
-/// How shadows are cast, or that they are not.
+/// How shadows are cast, or that they are not: URP's main light shadows,
+/// with its names and its meaning — a scene says `shadows: (...)`.
 ///
 /// A shadow map is the cheapest way to make something touch the ground, and
 /// nothing else in a renderer does as much for how a frame reads. Everything
 /// here is a knob because the right value depends on the scene's size: a
 /// bias that works over a hundred metres stripes a room.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ShadowSettings {
     pub enabled: bool,
-    /// Side of the square depth map. 2048 is enough for a valley; 1024 for a
-    /// clearing; more costs memory and fill, not detail, once the map is
-    /// finer than the screen.
+    /// Side of each cascade's square depth map. 2048 is enough for a
+    /// valley; 1024 for a clearing; more costs memory and fill, not
+    /// detail, once the map is finer than the screen. (URP packs its
+    /// cascades into one atlas: four in a 2048 atlas are 1024 each.)
     pub resolution: u32,
-    /// Pushes the comparison away from the surface to stop it shadowing
-    /// itself, in metres along the sun's rays, on top of the texel each
-    /// cascade needs cleared anyway. Too little gives acne, too much makes
+    /// URP's Depth Bias, in texels of the cascade: the caster is pushed
+    /// that far away from the sun as it is drawn into the map, so a surface
+    /// does not shadow itself. Too little gives acne, too much makes
     /// shadows float free of what casts them ("peter-panning").
     pub depth_bias: f32,
-    /// Extra offset along the surface normal, in world units. Handles the
-    /// grazing angles a constant bias cannot, because the error there grows
-    /// with the slope rather than with depth.
+    /// URP's Normal Bias, in texels of the cascade: the caster is shrunk
+    /// that far into itself along its normals as it is drawn, most where it
+    /// is edge-on to the sun — where the depth error grows with the slope
+    /// and no depth bias is enough. A thin pole's shadow thins with it.
+    ///
+    /// Both biases grow with the soft filter's reach, as URP's do: its
+    /// kernel looks further from the centre texel.
     pub normal_bias: f32,
     /// How far from the camera shadows are drawn, in metres.
     ///
@@ -467,13 +483,20 @@ pub struct ShadowSettings {
     /// Where the first cascades end, as shares of `max_distance`; the last
     /// ends at it. URP's defaults for four.
     pub cascade_splits: [f32; 3],
+    /// URP's Last Border: the share of the shadow distance over which the
+    /// shadow fades out before it ends (linearly in the squared distance,
+    /// as URP does it).
+    pub cascade_border: f32,
+    /// How the edge of a shadow is filtered: URP's Soft Shadows quality.
+    pub soft: SoftShadows,
     /// Side of each lamp's shadow map — URP's Additional Lights shadow
     /// resolution. A spot has one, a point six.
     pub light_resolution: u32,
     /// Contact shadows: metres a short ray from each point toward the sun
     /// is marched through the depth of what is on the screen, for the small
     /// dark where things meet — a cup on a table, a foot on the ground —
-    /// that a cascade's texel is too coarse to hold. 0 is none.
+    /// that a cascade's texel is too coarse to hold. 0 is none. URP has
+    /// none.
     pub contact: f32,
     /// The sun's shadow from virtual shadow maps instead of the cascades
     /// ([`crate::vsm`]): pages of 1.5 cm texels near, coarser far, each
@@ -482,16 +505,57 @@ pub struct ShadowSettings {
     pub virtual_maps: bool,
 }
 
+/// How a shadow's edge is filtered: URP's hard shadows and its three soft
+/// shadow qualities, each a tent over more texels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SoftShadows {
+    /// One comparison, bilinear between the four texels around it.
+    Hard,
+    /// Four taps half a texel out: a 3x3 tent.
+    Low,
+    /// A 5x5 tent, nine taps.
+    #[default]
+    Medium,
+    /// A 7x7 tent, sixteen taps.
+    High,
+}
+
+impl SoftShadows {
+    /// How far the filter reaches, in texels: what URP scales both biases
+    /// by (`ShadowUtils.GetShadowBias`).
+    pub fn kernel_radius(self) -> f32 {
+        match self {
+            SoftShadows::Hard => 1.0,
+            SoftShadows::Low => 1.5,
+            SoftShadows::Medium => 2.5,
+            SoftShadows::High => 3.5,
+        }
+    }
+
+    fn index(self) -> f32 {
+        match self {
+            SoftShadows::Hard => 0.0,
+            SoftShadows::Low => 1.0,
+            SoftShadows::Medium => 2.0,
+            SoftShadows::High => 3.0,
+        }
+    }
+}
+
 impl Default for ShadowSettings {
+    /// URP's defaults, but for its extras: a 2048 map a cascade and short
+    /// contact shadows.
     fn default() -> Self {
         Self {
             enabled: true,
             resolution: 2048,
-            depth_bias: 0.02,
-            normal_bias: 0.05,
+            depth_bias: 1.0,
+            normal_bias: 1.0,
             max_distance: 50.0,
             cascades: 4,
             cascade_splits: [0.067, 0.2, 0.467],
+            cascade_border: 0.2,
+            soft: SoftShadows::Medium,
             light_resolution: 512,
             contact: 0.35,
             virtual_maps: false,
@@ -508,6 +572,8 @@ impl ShadowSettings {
         max_distance: 0.0,
         cascades: 1,
         cascade_splits: [0.067, 0.2, 0.467],
+        cascade_border: 0.2,
+        soft: SoftShadows::Medium,
         light_resolution: 1,
         contact: 0.0,
         virtual_maps: false,
@@ -529,6 +595,20 @@ impl ShadowSettings {
         ends.push(self.max_distance);
         ends
     }
+}
+
+/// URP's GetScaleAndBiasForLinearDistanceFade: the shadow fades out over
+/// the last `border` of `distance`, linearly in the squared distance from
+/// the eye — `saturate(d² · scale + bias)` is how far it has faded.
+fn shadow_fade(distance: f32, border: f32) -> (f32, f32) {
+    let far = distance * distance;
+    if border < 0.0001 {
+        return (1000.0, -far * 1000.0);
+    }
+    let kept = (1.0 - border) * (1.0 - border);
+    let near = kept * far;
+    let span = (far - near).max(1e-6);
+    (1.0 / span, -near / span)
 }
 
 /// The most shadow cascades a frame has.
@@ -713,9 +793,10 @@ struct FrameUniform {
     camera_position: [f32; 4],
     /// World space to each cascade's clip space.
     light_view_projection: [[[f32; 4]; 4]; MAX_CASCADES],
-    /// `depth_bias`, `normal_bias`, texel size in world units, and `1.0` when
-    /// shadows are on. The last one is what lets the shader skip the lookup
-    /// without a second pipeline.
+    /// The soft filter (0 hard .. 3 high), unused, a texel of a cascade in
+    /// its map's units, and how many cascades there are — 0 when shadows
+    /// are off, which lets the shader skip the lookup without a second
+    /// pipeline.
     shadow_params: [f32; 4],
     /// The camera's view matrix's third row: `-dot(row, p)` is how deep a
     /// point is, which picks its slice of the light clusters.
@@ -740,12 +821,11 @@ struct FrameUniform {
     /// Each cascade's sphere: centre, and its radius squared. A point is
     /// in the first one whose sphere holds it.
     cascade_spheres: [[f32; 4]; MAX_CASCADES],
-    /// Each cascade's offset along the normal: a coarser cascade's texel
-    /// is bigger, and the bias has to clear it.
+    /// Each cascade's texel, metres: how far inside a thing a point is
+    /// looked up to find how thick it is toward the sun.
     cascade_bias: [f32; 4],
-    /// Each cascade's depth bias, in its own map's depth: the same metres
-    /// are a different share of each cascade's depth range, and one number
-    /// for all of them leaves one cascade shadowing itself.
+    /// The shadow's fade toward the shadow distance, URP's: the scale and
+    /// bias of the squared distance from the eye (x, y).
     cascade_depth_bias: [f32; 4],
     /// 1 when there is ambient occlusion to read; the share of the direct
     /// light it darkens too; how far contact shadows' rays go; how far the
@@ -837,6 +917,12 @@ struct CasterUniform {
     view_projection: [[f32; 4]; 4],
     /// Foliage bends in the shadow passes as it does in the frame.
     foliage: crate::foliage::FoliageUniform,
+    /// A sun cascade's URP bias: the way to the sun, and how far the
+    /// caster is pushed from it (w, metres).
+    toward: [f32; 4],
+    /// How far a sun cascade's caster is shrunk along its normal where
+    /// edge-on (x, metres).
+    inset: [f32; 4],
 }
 
 pub use crate::lights::MAX_LIGHTS;
@@ -962,6 +1048,9 @@ const FLAG_CLAY: u32 = 64;
 /// Placed mirrored (a scale of -1): its faces wind the other way, so the
 /// side the GPU calls front is its back.
 const FLAG_INSIDE_OUT: u32 = 128;
+/// Both faces drawn, the back lit as the front: its normal is not turned
+/// ([`RenderFace::BothAsFront`]).
+const FLAG_BACK_AS_FRONT: u32 = 256;
 
 /// What the GPU is told about one draw.
 fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
@@ -987,6 +1076,9 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
     }
     if transform.determinant() < 0.0 {
         flags |= FLAG_INSIDE_OUT;
+    }
+    if material.render_face == RenderFace::BothAsFront {
+        flags |= FLAG_BACK_AS_FRONT;
     }
     if material.is_transparent() && material.blend == Blend::Premultiply {
         flags |= FLAG_PREMULTIPLY;
@@ -1599,7 +1691,7 @@ impl Look {
         if material.shading == Shading::Water {
             return Look {
                 skinned: false,
-                face: if material.render_face == RenderFace::Both {
+                face: if material.render_face.culled() == RenderFace::Both {
                     RenderFace::Both
                 } else {
                     RenderFace::Front
@@ -1614,7 +1706,7 @@ impl Look {
         }
         Look {
             skinned,
-            face: material.render_face,
+            face: material.render_face.culled(),
             blend: material.is_transparent().then_some(material.blend),
             water: false,
             shader: material.shader,
@@ -1642,8 +1734,11 @@ struct Pipelines {
     /// prepass's depth: equal to it, and with nothing to discard.
     prepassed: std::collections::HashMap<Look, wgpu::RenderPipeline>,
     shadow: wgpu::RenderPipeline,
+    /// The same, back faces culled: the sun's cascades' one-sided casters.
+    shadow_front: wgpu::RenderPipeline,
     /// The shadow pass for what is cut out by its alpha.
     shadow_clip: wgpu::RenderPipeline,
+    shadow_clip_front: wgpu::RenderPipeline,
     /// Depth and normals of what is solid, for ambient occlusion: by
     /// skinned and render face.
     prepass: std::collections::HashMap<(bool, RenderFace, bool), wgpu::RenderPipeline>,
@@ -1822,7 +1917,7 @@ fn scene_pipelines(
                     cull_mode: match look.face {
                         RenderFace::Front => Some(wgpu::Face::Back),
                         RenderFace::Back => Some(wgpu::Face::Front),
-                        RenderFace::Both => None,
+                        RenderFace::Both | RenderFace::BothAsFront => None,
                     },
                     ..Default::default()
                 },
@@ -2035,7 +2130,7 @@ fn build_pipelines(
                     cull_mode: match face {
                         RenderFace::Front => Some(wgpu::Face::Back),
                         RenderFace::Back => Some(wgpu::Face::Front),
-                        RenderFace::Both => None,
+                        RenderFace::Both | RenderFace::BothAsFront => None,
                     },
                     ..Default::default()
                 },
@@ -2068,43 +2163,45 @@ fn build_pipelines(
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
     let buffers = vertex_buffers(false);
-    let shadow = gpu
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("scrap::shadow"),
-            layout: Some(layouts.shadow),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_shadow"),
-                compilation_options: Default::default(),
-                buffers: &buffers,
-            },
-            fragment: None,
-            primitive: wgpu::PrimitiveState {
-                // Both sides. Culling front faces here (drawing only the far
-                // side of a thing into the map) hides most acne for free —
-                // and leaves anything one-sided with no shadow at all: a
-                // card, a leaf, a flag, a floor plate faces the sun and has
-                // no far side. The per-cascade normal and depth offsets are
-                // what keep a surface from shadowing itself instead.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
+    let shadow_pipeline = |cull_mode: Option<wgpu::Face>| {
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("scrap::shadow"),
+                layout: Some(layouts.shadow),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_shadow"),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
                 },
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    // Both sides: a card, a leaf, a flag that faces the sun has no far
+    // side, and the lamps' maps and the virtual pages draw everything so.
+    let shadow = shadow_pipeline(None);
+    // Front faces only, for the sun's cascades: what one-sided things
+    // cast, as URP's caster pass culls as the material does. Its normal
+    // bias shrinks a caster only while its back faces stay out.
+    let shadow_front = shadow_pipeline(Some(wgpu::Face::Back));
 
     // Tools, with the same vertex layout, into the tools' own picture
     // (crate::tools): no depth at all, so an overlay neither hides behind
@@ -2247,43 +2344,46 @@ fn build_pipelines(
             cache: None,
         });
 
-    let shadow_clip = gpu
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("scrap::shadow (clipped)"),
-            layout: Some(layouts.shadow_clip),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_shadow_clip"),
-                compilation_options: Default::default(),
-                buffers: &buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_shadow_clip"),
-                compilation_options: Default::default(),
-                targets: &[],
-            }),
-            primitive: wgpu::PrimitiveState {
-                // A cut-out is usually a card seen from both sides.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
+    let shadow_clip_pipeline = |cull_mode: Option<wgpu::Face>| {
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("scrap::shadow (clipped)"),
+                layout: Some(layouts.shadow_clip),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_shadow_clip"),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
                 },
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_shadow_clip"),
+                    compilation_options: Default::default(),
+                    targets: &[],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    // A cut-out is usually a card seen from both sides.
+    let shadow_clip = shadow_clip_pipeline(None);
+    let shadow_clip_front = shadow_clip_pipeline(Some(wgpu::Face::Back));
 
     let compute = |layout: &wgpu::PipelineLayout, entry: &str| {
         gpu.device
@@ -2300,7 +2400,9 @@ fn build_pipelines(
         scene,
         prepassed,
         shadow,
+        shadow_front,
         shadow_clip,
+        shadow_clip_front,
         prepass,
         overlay,
         overlay_samples,
@@ -4334,25 +4436,15 @@ impl Renderer {
         if forward.length_squared() < 0.5 {
             return None;
         }
-        let up = camera.up.normalize_or_zero();
-        let right = forward.cross(up).normalize_or_zero();
-        let up = right.cross(forward);
-
+        // The smallest sphere round the slice, as Unity's cascades have it
+        // (its conservative enclosing sphere): on the view's axis, as far
+        // along as puts the near and far corners at one distance from it —
+        // or at the far end's middle, when the far corners alone are wider.
         let tan = (camera.fov_y_degrees.to_radians() * 0.5).tan();
-        let mut corners = Vec::with_capacity(8);
-        for distance in [near, far] {
-            let half_height = tan * distance;
-            let half_width = half_height * aspect;
-            let centre = camera.position + forward * distance;
-            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                corners.push(centre + right * half_width * sx + up * half_height * sy);
-            }
-        }
-        let centre = corners.iter().copied().sum::<Vec3>() / corners.len() as f32;
-        let radius = corners
-            .iter()
-            .map(|c| (*c - centre).length())
-            .fold(0.0f32, f32::max);
+        let spread = tan * (1.0 + aspect * aspect).sqrt();
+        let along = ((1.0 + spread * spread) * (far + near) * 0.5).clamp(near, far);
+        let radius = ((far - along).powi(2) + (far * spread).powi(2)).sqrt();
+        let centre = camera.position + forward * along;
         // Rounded up, so a radius that wobbles by a hair as the camera
         // turns does not resize every texel under the shadows.
         Some((centre, (radius * 16.0).ceil().max(0.16) / 16.0))
@@ -4403,10 +4495,7 @@ impl Renderer {
             let view = Mat4::look_at_rh(eye, centre, up);
             let depth = behind + radius * 2.0;
             let projection = Mat4::orthographic_rh(-radius, radius, -radius, radius, 0.01, depth);
-            // A texel and a half along the rays, and the scene's own bias, as
-            // a share of this map's depth.
-            let bias = (texel * 1.5 + frame.shadows.depth_bias) / depth;
-            out.push((projection * view, centre, radius, texel, bias));
+            out.push((projection * view, centre, radius, texel, depth));
         }
         out
     }
@@ -5173,15 +5262,20 @@ impl Renderer {
         let mut light_view_projection = [Mat4::IDENTITY.to_cols_array_2d(); MAX_CASCADES];
         let mut cascade_spheres = [[0.0f32; 4]; MAX_CASCADES];
         let mut cascade_bias = [0.0f32; 4];
-        let mut cascade_depth_bias = [0.0f32; 4];
-        for (i, (matrix, centre, radius, texel, depth_bias)) in cascades.iter().enumerate() {
-            cascade_depth_bias[i] = *depth_bias;
+        let mut caster_bias = [[0.0f32; 2]; MAX_CASCADES];
+        for (i, (matrix, centre, radius, texel, _)) in cascades.iter().enumerate() {
             light_view_projection[i] = matrix.to_cols_array_2d();
             cascade_spheres[i] = extend(*centre, radius * radius);
-            // The texel each cascade spends is what the normal offset has
-            // to clear at a grazing angle.
-            cascade_bias[i] = frame.shadows.normal_bias + texel;
+            cascade_bias[i] = *texel;
+            // URP's ShadowUtils.GetShadowBias: the biases in the cascade's
+            // texels, grown by how far its soft filter reaches.
+            let reach = texel * frame.shadows.soft.kernel_radius();
+            caster_bias[i] = [frame.shadows.depth_bias * reach, frame.shadows.normal_bias * reach];
         }
+        let cascade_depth_bias = {
+            let (scale, bias) = shadow_fade(frame.shadows.max_distance, frame.shadows.cascade_border);
+            [scale, bias, 0.0, 0.0]
+        };
         // The fog as the weather leaves it: a sandstorm thickens both.
         let time = frame
             .time
@@ -5276,7 +5370,7 @@ impl Renderer {
             // night sky's own faint light on top of what the air still
             // glows with.
             let (sun, sky) = if frame.lighting.sky_sun.is_some() {
-                let moon = frame.lighting.sun_color * frame.lighting.sun_intensity;
+                let moon = frame.lighting.sun_color * frame.lighting.sun_filter * frame.lighting.sun_intensity;
                 (
                     sun.lerp(moon, (night * 2.0 - 1.0).clamp(0.0, 1.0)),
                     sky + frame.lighting.sky_color * night,
@@ -5289,7 +5383,7 @@ impl Renderer {
             (sun, sky, ground)
         } else {
             (
-                frame.lighting.sun_color * frame.lighting.sun_intensity,
+                frame.lighting.sun_color * frame.lighting.sun_filter * frame.lighting.sun_intensity,
                 frame.lighting.sky_color,
                 frame.lighting.ground_color,
             )
@@ -5311,7 +5405,7 @@ impl Renderer {
             }
             None if frame.sky.mode == SkyMode::Procedural => Some(unity_sky.ambient(
                 sky_to_sun,
-                frame.lighting.sun_color * sky_sun_intensity,
+                frame.lighting.sun_color * frame.lighting.sun_filter * sky_sun_intensity,
                 frame.sky.sun_size,
             )),
             None => None,
@@ -5395,14 +5489,19 @@ impl Renderer {
             );
         }
         foliage.trample = [self.trample.centre.x, self.trample.centre.y, crate::foliage::TRAMPLE_SIZE, 1.0];
+        let to_sun = -sun;
         let casters: Vec<u8> = light_view_projection
             .iter()
-            .chain(light_views.iter())
-            .flat_map(|matrix| {
+            .enumerate()
+            .map(|(i, m)| (m, caster_bias[i]))
+            .chain(light_views.iter().map(|m| (m, [0.0; 2])))
+            .flat_map(|(matrix, [depth, normal])| {
                 let mut slot = vec![0u8; self.caster_stride as usize];
                 let one = CasterUniform {
                     view_projection: *matrix,
                     foliage,
+                    toward: extend(to_sun, depth),
+                    inset: [normal, 0.0, 0.0, 0.0],
                 };
                 slot[..std::mem::size_of::<CasterUniform>()]
                     .copy_from_slice(bytemuck::bytes_of(&one));
@@ -5415,7 +5514,7 @@ impl Renderer {
             view_projection: drawn.to_cols_array_2d(),
             sun_direction: extend(frame.lighting.sun_direction.normalize_or_zero(), 0.0),
             sun_color: extend(sun_light, 1.0 - frame.lighting.sun_shadow_strength.clamp(0.0, 1.0)),
-            sky_color: extend(sky_light, 0.0),
+            sky_color: extend(sky_light, frame.sky.reflection_intensity.max(0.0)),
             ground_color: extend(ground_light, 0.0),
             fog_color: extend(fog.color, 0.0),
             fog_range: [
@@ -5431,8 +5530,8 @@ impl Renderer {
             camera_position: extend(frame.camera.apparent_eye(), 1.0),
             light_view_projection,
             shadow_params: [
-                frame.shadows.depth_bias,
-                frame.shadows.normal_bias,
+                frame.shadows.soft.index(),
+                0.0,
                 1.0 / self.shadow_resolution as f32,
                 cascades.len() as f32,
             ],
@@ -5809,6 +5908,15 @@ impl Renderer {
         let streaming_textures = !self.streams.is_empty() && probe.is_none() && view.is_some() && !self.picturing;
         let mut shadow_index = BatchIndex::default();
         let mut clip_index = BatchIndex::default();
+        // What is drawn on both sides casts from both into the sun's
+        // cascades; the rest from its front faces only, as URP's shadow
+        // caster pass culls as the material does — which is what lets the
+        // normal bias shrink a caster without its back faces, turned
+        // inside out past its middle, swelling it again.
+        let mut shadow_both: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
+        let mut clip_both: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
+        let mut shadow_both_index = BatchIndex::default();
+        let mut clip_both_index = BatchIndex::default();
         let mut colour_index = BatchIndex::default();
         for (draw, prepared) in frame.draws.iter().zip(prepared) {
             let Prepared {
@@ -5836,10 +5944,15 @@ impl Renderer {
             // split by them.
             let maps = self.batch_maps(maps);
             if !draw.material.is_transparent() {
-                if draw.material.alpha_clip > 0.0 {
-                    clip_index.push(&mut clip_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
-                } else {
-                    shadow_index.push(&mut shadow_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
+                let key = (None, level.unwrap_or(draw.mesh), maps);
+                // A mirrored one winds the other way: both, to be safe.
+                let one_sided = draw.material.render_face == RenderFace::Front
+                    && draw.transform.determinant() > 0.0;
+                match (draw.material.alpha_clip > 0.0, one_sided) {
+                    (true, true) => clip_index.push(&mut clip_batches, key, raw),
+                    (true, false) => clip_both_index.push(&mut clip_both, key, raw),
+                    (false, true) => shadow_index.push(&mut shadow_batches, key, raw),
+                    (false, false) => shadow_both_index.push(&mut shadow_both, key, raw),
                 }
                 stats.shadow_casters += 1;
             }
@@ -5856,7 +5969,7 @@ impl Renderer {
                 look.face = match look.face {
                     RenderFace::Front => RenderFace::Back,
                     RenderFace::Back => RenderFace::Front,
-                    RenderFace::Both => RenderFace::Both,
+                    face => face,
                 };
             }
             // The terrain near the camera: its fine grid instead, placed and
@@ -5908,6 +6021,11 @@ impl Renderer {
             .map(|(count, mesh)| self.mesh(mesh).map_or(0, |m| m.index_count as u64 / 3) * count as u64)
             .sum();
         self.stats = stats;
+        // One-sided first, then both: each range with its own culling.
+        let shadow_one_sided = shadow_batches.len();
+        shadow_batches.extend(shadow_both);
+        let clip_one_sided = clip_batches.len();
+        clip_batches.extend(clip_both);
         // Each lamp shadow map's casters: what its own view sees.
         let mut lamp_batches: Vec<(Batches, Batches)> = Vec::new();
         for view in &clustered.shadow_views {
@@ -6253,13 +6371,22 @@ impl Renderer {
                 multiview_mask: None,
             });
             let offset = [(cascade as u64 * self.caster_stride) as u32];
+            let count = |b: &[(BatchKey, Vec<InstanceRaw>)]| b.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
+            let (one, both) = shadow_batches.split_at(shadow_one_sided);
+            pass.set_pipeline(&self.pipelines.shadow_front);
+            pass.set_bind_group(0, &self.shadow_bind_group, &offset);
+            self.draw_batches(&mut pass, one, 0, false);
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_batches(&mut pass, &shadow_batches, 0, false);
+            self.draw_batches(&mut pass, both, count(one), false);
             if !clip_batches.is_empty() {
+                let (one, both) = clip_batches.split_at(clip_one_sided);
+                pass.set_pipeline(&self.pipelines.shadow_clip_front);
+                pass.set_bind_group(0, &self.shadow_bind_group, &offset);
+                self.draw_batches(&mut pass, one, solid_casters, true);
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_batches(&mut pass, &clip_batches, solid_casters, true);
+                self.draw_batches(&mut pass, both, solid_casters + count(one), true);
             }
         }
 
@@ -7385,6 +7512,25 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_shadow_fades_over_the_last_border_of_its_distance_as_urps() {
+        let (scale, bias) = super::shadow_fade(50.0, 0.1);
+        let fade = |d: f32| (d * d * scale + bias).clamp(0.0, 1.0);
+        // Squared: 90% of the way out is 81% of the squared distance.
+        assert!(fade(0.9 * 50.0) < 1e-4);
+        assert!((fade(50.0) - 1.0).abs() < 1e-5);
+        assert!(fade(47.5) > 0.4 && fade(47.5) < 0.6, "{}", fade(47.5));
+    }
+
+    #[test]
+    fn a_lights_temperature_is_unitys_black_body() {
+        let warm = crate::look::color_temperature(4996.0);
+        assert!((warm - glam::Vec3::new(1.0, 0.790, 0.628)).abs().max_element() < 0.01, "{warm}");
+        // Unity's default 6570 K is all but white.
+        let default = crate::look::color_temperature(6570.0);
+        assert!(default.min_element() > 0.93, "{default}");
+    }
+
     use super::*;
 
     #[test]

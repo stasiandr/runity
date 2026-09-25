@@ -83,8 +83,15 @@ pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
         toward: Some(travel),
         tint: tint.filter(|c| *c != [1.0, 1.0, 1.0]),
         shadow_strength: light.body["m_Shadows"].f32("m_Strength").unwrap_or(1.0),
+        temperature: temperature(&light.body),
         ..scrap::scene::Sun::default()
     })
+}
+
+/// A light's colour temperature, when it uses one: URP always honours it
+/// (it sets `GraphicsSettings.lightsUseColorTemperature`).
+fn temperature(light: &yaml_rust2::Yaml) -> Option<f32> {
+    (light.i64("m_UseColorTemperature") == Some(1)).then(|| light.f32("m_ColorTemperature").unwrap_or(6570.0))
 }
 
 /// The roots of a Unity file as entities, children under them.
@@ -1303,6 +1310,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 flare: 0.0,
                 // URP's lamps fall off as the square of the distance.
                 falloff: scrap::render::Falloff::InverseSquare,
+                temperature: temperature(b),
             });
         }
         "Camera" => {

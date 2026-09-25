@@ -559,7 +559,7 @@ impl Clusters {
                     cull_mode: match face {
                         RenderFace::Front => Some(wgpu::Face::Back),
                         RenderFace::Back => Some(wgpu::Face::Front),
-                        RenderFace::Both => None,
+                        RenderFace::Both | RenderFace::BothAsFront => None,
                     },
                     ..Default::default()
                 },
@@ -658,7 +658,7 @@ impl Clusters {
                     match job.face {
                         RenderFace::Front => 0,
                         RenderFace::Back => 1,
-                        RenderFace::Both => 2,
+                        RenderFace::Both | RenderFace::BothAsFront => 2,
                     },
                     0,
                     0,

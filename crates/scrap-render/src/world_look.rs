@@ -353,6 +353,7 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
         return Lighting {
             sun_direction: sun.direction(),
             sun_color: sun.color(),
+            sun_filter: sun.filter(),
             sun_intensity: sun.intensity,
             sky_color: sky,
             ground_color: albedo * (sun_light + sky * 0.5),
@@ -386,6 +387,7 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
     Lighting {
         sun_direction: direction,
         sun_color: color,
+        sun_filter: sun.filter(),
         sun_intensity: intensity,
         sky_color: sky,
         ground_color: albedo * (key + sky * 0.5),
@@ -489,6 +491,9 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     }
     if let Some(ambient_occlusion) = scene.ambient_occlusion() {
         frame.ambient_occlusion = ambient_occlusion;
+    }
+    if let Some(shadows) = scene.shadows() {
+        frame.shadows = shadows;
     }
     if scene.part::<crate::look::VirtualShadows>().is_some_and(|v| v.0) {
         frame.shadows.virtual_maps = true;
@@ -755,6 +760,7 @@ pub fn build_frame_where(
             crate::render::PointLight {
                 position: placed.0.w_axis.truncate(),
                 color: glam::Vec3::new(linear(l.color.0), linear(l.color.1), linear(l.color.2))
+                    * l.temperature.map_or(glam::Vec3::ONE, crate::scene::color_temperature)
                     * l.intensity.max(0.0),
                 range: l.range,
                 spot: l.cone_deg.map(|cone| {

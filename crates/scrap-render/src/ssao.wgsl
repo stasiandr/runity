@@ -191,15 +191,16 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
     let b = cross(n, t);
 
     var ao = 1.0;
-    if ssao.bounce.z > 0.5 {
-        ao = gtao(pixel, p, n, distance, turn);
-    } else {
-        ao = hemisphere_occlusion(p, n, t, b, distance);
-    }
-    ao = pow(clamp(ao, 0.0, 1.0), ssao.params.y);
-    // Fades out with distance, as URP's Falloff Distance.
     let falloff = ssao.params.z;
-    let fade = clamp((falloff - distance) / (falloff * 0.2), 0.0, 1.0);
+    var fade = 1.0;
+    if ssao.bounce.z > 0.5 {
+        ao = pow(clamp(gtao(pixel, p, n, distance, turn), 0.0, 1.0), ssao.params.y);
+        // Fades out with distance, as URP's Falloff Distance.
+        fade = clamp((falloff - distance) / (falloff * 0.2), 0.0, 1.0);
+    } else {
+        // URP's own: its intensity, contrast and falloff are in it.
+        ao = hemisphere_occlusion(p, n, t, b);
+    }
     var light = vec3<f32>(0.0);
     if ssao.bounce.x > 0.0 {
         light = bounced(p, n, t, b, fract(turn * 5.0)) * fade;
@@ -207,15 +208,32 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
     return vec4<f32>(light, mix(1.0, ao, fade));
 }
 
-/// URP's SSAO: the share of points in the hemisphere over `n` that fall
-/// behind what the camera sees, near enough to be what occludes.
-fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>, distance: f32) -> f32 {
+/// URP's SSAO (SSAO.hlsl), what is left of the light all round: points
+/// out to the radius in the hemisphere over `n`, and for each the surface
+/// the camera sees there — how much it stands over the point's plane,
+/// over how far it is (the Alchemy estimator), past a bias that grows with
+/// depth, counted while it is within the radius in depth. Scaled by the
+/// radius, the intensity and the falloff toward the Falloff Distance
+/// squared, raised to URP's contrast 0.6, and taken from one.
+fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>) -> f32 {
     let radius = ssao.params.x;
+    let intensity = ssao.params.y;
+    let falloff_distance = ssao.params.z;
     let count = u32(ssao.params.w);
-    var occluded = 0.0;
+    let depth_o = (ssao.view_projection * vec4<f32>(p, 1.0)).w;
+    if depth_o > falloff_distance {
+        return 1.0;
+    }
+    let beta = 0.002;
+    let epsilon = 0.0001;
+    var ao = 0.0;
     for (var i = 0u; i < count; i = i + 1u) {
-        let k = ssao.kernel[i].xyz;
-        let at = p + (t * k.x + b * k.y + n * k.z) * radius;
+        let k = normalize(ssao.kernel[i].xyz);
+        // URP's blue-noise lengths: from a tenth of the radius, more of
+        // them near.
+        let share = f32(i) / f32(count);
+        let along = mix(0.1, 1.0, share * share) * radius;
+        let at = p + (t * k.x + b * k.y + n * k.z) * along;
         let clip = ssao.view_projection * vec4<f32>(at, 1.0);
         if clip.w <= 0.0 {
             continue;
@@ -225,20 +243,23 @@ fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>, 
         if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
             continue;
         }
-        let there = world_at(vec2<i32>(uv * ssao.size.xy));
-        let seen = length(there - ssao.eye.xyz);
-        let sample_distance = length(at - ssao.eye.xyz);
-        // In front of the sample: it is inside something — past a margin
-        // that grows with distance, so a flat floor's own pixels do not
-        // shadow it. And only if that something is near this point: what
-        // stands a metre in front of a wall does not darken the wall.
-        let margin = max(radius * 0.05, sample_distance * 0.003);
-        if seen < sample_distance - margin {
-            let gap = abs(distance - seen);
-            occluded += 1.0 - smoothstep(radius * 0.5, radius, gap);
+        let pixel = vec2<i32>(uv * ssao.size.xy);
+        if textureLoad(depth, pixel, 0) >= 1.0 {
+            continue;
         }
+        let there = world_at(pixel);
+        let depth_s = (ssao.view_projection * vec4<f32>(there, 1.0)).w;
+        let inside = select(0.0, 1.0, abs(depth_o - depth_s) < radius);
+        let v = there - p;
+        let a1 = max(dot(v, n) - beta * depth_o, 0.0);
+        let a2 = dot(v, v) + epsilon;
+        ao += a1 / a2 * inside;
     }
-    return 1.0 - occluded / max(f32(count), 1.0);
+    ao *= radius;
+    var falloff = 1.0 - depth_o / falloff_distance;
+    falloff = falloff * falloff;
+    ao = pow(clamp(ao * intensity * falloff / max(f32(count), 1.0), 0.0, 1.0), 0.6);
+    return 1.0 - ao;
 }
 
 /// The pixel a world point falls on, unclamped, as floats.

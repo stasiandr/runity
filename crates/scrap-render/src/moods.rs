@@ -16,12 +16,13 @@ pub struct Mood {
 }
 
 /// The scene fields a mood, or the look tool, sets.
-pub const LOOK_FIELDS: [&str; 10] = [
+pub const LOOK_FIELDS: [&str; 11] = [
     "sun",
     "fog",
     "sky",
     "post",
     "ambient_occlusion",
+    "shadows",
     "volumetric_fog",
     "weather",
     "wind",

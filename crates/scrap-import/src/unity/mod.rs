@@ -499,6 +499,8 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         }
         scene.set_part_opt(look::sky(&unity, &text).as_ref());
         scene.set_part_opt((look::post(&unity, &text, &mut report)).as_ref());
+        scene.set_part_opt(look::shadows(&unity, &text).as_ref());
+        scene.set_part_opt(look::ambient_occlusion(&unity).as_ref());
         let name = &unity.names[guid];
         scene
             .save(project.scenes().join(format!("{name}.ron")))

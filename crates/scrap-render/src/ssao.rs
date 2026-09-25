@@ -54,8 +54,10 @@ pub enum Method {
     /// darken as much as they are closed, not as a count of hits.
     #[default]
     Gtao,
-    /// URP's: points in the hemisphere over the surface, the share that
-    /// fall behind what the camera sees.
+    /// URP's own (SSAO.hlsl): points in the hemisphere over the surface,
+    /// and how much what the camera sees there stands over the surface's
+    /// plane, over how far off it is — URP's estimator, contrast and
+    /// squared falloff, so its Intensity means what it means there.
     Ssao,
 }
 

@@ -297,9 +297,10 @@ pub fn shader_look(path: &Path) -> ShaderLook {
             || text.contains("UniversalSpriteLitSubTarget");
         ShaderLook {
             transparent: sprite || number("m_SurfaceType").as_deref() == Some("1"),
-            // URP: 0 both, 1 back, 2 front.
+            // URP: 0 both, 1 back, 2 front. Its back faces keep their
+            // normal (no double-sided normal mode): both as front.
             face: match number("m_RenderFace").as_deref() {
-                Some("0") => Some("Both"),
+                Some("0") => Some("BothAsFront"),
                 Some("1") => Some("Back"),
                 _ => None,
             },
@@ -313,7 +314,7 @@ pub fn shader_look(path: &Path) -> ShaderLook {
         ShaderLook {
             transparent: lower.contains("\"queue\"=\"transparent")
                 || lower.contains("blend srcalpha"),
-            face: lower.contains("cull off").then_some("Both"),
+            face: lower.contains("cull off").then_some("BothAsFront"),
             clip: false,
             unlit: !lower.contains("lightmode\"=\"universalforward"),
             on_top: lower.contains("ztest always"),
@@ -540,7 +541,8 @@ pub fn convert_with(
         ));
     }
     match float(m, "_Cull") {
-        Some(0.0) => fields.push("render_face: Both".into()),
+        // URP never turns a back face's normal: Both as front.
+        Some(0.0) => fields.push("render_face: BothAsFront".into()),
         Some(1.0) => fields.push("render_face: Back".into()),
         _ => {}
     }
@@ -734,7 +736,7 @@ Material:
             shader_look(&graph),
             ShaderLook {
                 transparent: true,
-                face: Some("Both"),
+                face: Some("BothAsFront"),
                 clip: true,
                 unlit: true,
                 on_top: false,
@@ -748,7 +750,7 @@ Material:
         .unwrap();
         let look = shader_look(&hlsl);
         assert!(
-            look.transparent && look.face == Some("Both") && !look.unlit,
+            look.transparent && look.face == Some("BothAsFront") && !look.unlit,
             "{look:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -957,7 +959,7 @@ Material:
         assert!(text.contains("smoothness: 0.8"), "{text}");
         assert!(text.contains(r#"base_map: "stone_albedo""#), "{text}");
         assert!(text.contains("tiling: (2, 2)"), "{text}");
-        assert!(text.contains("render_face: Both"), "{text}");
+        assert!(text.contains("render_face: BothAsFront"), "{text}");
         assert!(text.contains("emission_intensity: 2"), "{text}");
         let source: crate::MaterialSource = ron::from_str(
             text.lines()
