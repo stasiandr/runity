@@ -59,7 +59,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
         | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "distance_field" | "snow_cover" | "ragdoll" | "crawler" | "spline" | "along"
-        | "joint_break" => "None".into(),
+        | "joint_break" | "wires" => "None".into(),
         _ => return None,
     })
 }
@@ -85,7 +85,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 41] = [
+pub const FIELDS: [&str; 42] = [
     "name",
     "model",
     "prefab",
@@ -98,6 +98,7 @@ pub const FIELDS: [&str; 41] = [
     "physics",
     "layer",
     "joint",
+    "wires",
     "camera",
     "light",
     "particles",
@@ -393,6 +394,12 @@ impl Session {
             (
                 "joint_break".into(),
                 desc.joint_break().map_or("None".to_string(), |f| ron(&f)),
+            ),
+            (
+                "wires".into(),
+                desc.part::<scrap::scene::Wires>()
+                    .as_ref()
+                    .map_or("None".to_string(), ron),
             ),
             (
                 "camera".into(),
@@ -936,6 +943,21 @@ impl Session {
         Ok(())
     }
 
+    /// Wire `from`'s body to what `wire` names: one more of its `wires`,
+    /// as one undo step (docs/wires.md). A target that is not in the scene
+    /// is refused, as a joint to nothing would be; what else is off — no
+    /// body, an animator without that trigger — is left to
+    /// [`Session::problems`] to say, as typing it would be.
+    pub fn wire(&mut self, from: EntityId, wire: scrap::scene::Wire) -> EditResult<()> {
+        if self.instanced.scene.get(wire.to).is_none() {
+            return Err(EditError::NoEntity(wire.to));
+        }
+        let line = self.line(from).ok_or(EditError::NoEntity(from))?;
+        let mut wires = line.part::<scrap::scene::Wires>().unwrap_or_default();
+        wires.0.push(wire);
+        self.set_field(from, "wires", &scrap::parts::to_text(&wires))
+    }
+
     /// Set one field from its text, as one undo step — what typing into
     /// the Inspector does. On a prefab's part it is an override, as any
     /// edit of a part is. Text that does not parse costs no step, and an
@@ -975,6 +997,16 @@ impl Session {
             "collider" => next.set_part(&parse::<Collider>(field, text)?),
             "physics" => next.set_part(&parse::<BodyProps>(field, text)?),
             "joint" => next.set_part(&parse::<Joint>(field, text)?),
+            // `None` or `[]`: no wires, and the field goes.
+            "wires" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<scrap::scene::Wires>(field, text)?)
+                })
+                .filter(|w| !w.0.is_empty())
+                .as_ref(),
+            ),
             "joint_break" => next.set_joint_break(if text.trim() == "None" {
                 None
             } else {

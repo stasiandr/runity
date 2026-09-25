@@ -16,6 +16,7 @@ pub use ron;
 
 pub mod asset;
 pub mod components;
+pub mod console;
 pub mod crash;
 pub mod data;
 pub mod files;
@@ -38,10 +39,12 @@ pub mod module;
 pub mod netsim;
 pub mod parts;
 pub mod perf;
+pub mod player;
 pub mod player_loop;
 pub mod player_prefs;
 pub mod prefab;
 pub mod project;
+pub mod records;
 pub mod ron_edit;
 #[doc(hidden)]
 pub mod ron_text;

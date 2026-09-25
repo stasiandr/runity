@@ -426,6 +426,17 @@ fn the_menus_leave_the_toolbar_for_the_system_and_say_their_state() {
     let grid = s.menu_state(&Action::ToggleGrid, "Grid").checked;
     s.run(Action::ToggleGrid);
     assert_ne!(s.menu_state(&Action::ToggleGrid, "Grid").checked, grid);
+    // The player's size is a view toggle as the grid is, and Play from
+    // Here sits under Play.
+    assert!(!s.menu_state(&Action::TogglePlayer, "Player").checked);
+    s.run(Action::TogglePlayer);
+    assert!(s.session.show_player());
+    assert!(s.menu_state(&Action::TogglePlayer, "Player").checked);
+    let bar = scrap_studio::menu::bare_menu_bar();
+    let (_, play) = bar.iter().find(|(name, _)| *name == "Play").unwrap();
+    assert!(play
+        .iter()
+        .any(|i| i.label == "Play from Here" && i.action == Some(Action::PlayFromHere)));
 
     // The system's menus: none in the toolbar, the play buttons stay.
     s.set_native_menu(true);
@@ -1569,6 +1580,54 @@ fn the_profiler_shows_what_frames_cost() {
             .unwrap()
             .to_string();
     assert!(summary.contains("median"), "{summary}");
+    // Each part's numbers, the whole frame's last.
+    let frame = s.ui.find("profiler part frame").unwrap();
+    let cells: Vec<String> =
+        s.ui.children(frame)
+            .into_iter()
+            .flat_map(|c| s.ui.children(c))
+            .filter_map(|n| s.ui.text(n).map(str::to_string))
+            .collect();
+    assert!(cells.iter().any(|c| c.parse::<f32>().is_ok()), "{cells:?}");
+    // No game runs: the systems table says how to get one.
+    let note =
+        s.ui.text(s.ui.find("profiler systems note").unwrap())
+            .unwrap()
+            .to_string();
+    assert!(note.contains("Run Game"), "{note}");
+
+    // Paused, the chart holds still.
+    click(&mut s, "profiler pause");
+    let held = s.ui.children(s.ui.find("profiler bars").unwrap()).len();
+    for _ in 0..3 {
+        s.handle(&InputEvent::MouseMoved { x: 610.0, y: 400.0 });
+        s.frame();
+    }
+    assert_eq!(
+        s.ui.children(s.ui.find("profiler bars").unwrap()).len(),
+        held
+    );
+    // Pointing at a bar spells its frame out.
+    let first = s.ui.children(s.ui.find("profiler bars").unwrap())[0];
+    let (x, y) = s.ui.rect(first).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    let detail =
+        s.ui.text(s.ui.find("profiler detail").unwrap())
+            .unwrap()
+            .to_string();
+    assert!(
+        detail.contains("frames ago") && detail.contains("render"),
+        "{detail}"
+    );
+    click(&mut s, "profiler pause");
+
+    // GPU timing is a switch the renderer hears.
+    assert!(!s.session.profiling_gpu());
+    click(&mut s, "profiler gpu");
+    assert!(s.session.profiling_gpu());
+    click(&mut s, "profiler gpu");
+    assert!(!s.session.profiling_gpu());
 }
 
 #[test]
@@ -2150,6 +2209,54 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
 }
 
 #[test]
+fn the_animator_shows_a_layer_and_edits_it_in_its_own_entry() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("animators/hero.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"(
+    start: "idle",
+    states: {
+        "idle": (clip: "idle"),
+    },
+    layers: [
+        // Waving over whatever the legs do.
+        (name: "arms", mask: ["Spine"], start: "none",
+            states: {
+                "none": (clip: ""),
+            },
+        ),
+    ],
+)
+"#,
+    )
+    .unwrap();
+    click(&mut s, "tab animator");
+    click(&mut s, "animator wide");
+    s.frame();
+    click(&mut s, "animator hero");
+    assert!(s.ui.find("state idle").is_some());
+    click(&mut s, "animator layer arms");
+    assert!(s.ui.find("state none").is_some(), "{}", s.ui.dump());
+    assert!(
+        s.ui.find("state idle").is_none(),
+        "the layer's graph, not the base"
+    );
+    click(&mut s, "animator add state");
+    fill(&mut s, "animator field name", "wave");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let g: scrap::animgraph::Graph = scrap::ron::from_str(&text).unwrap();
+    assert!(g.layers[0].graph.states.contains_key("wave"), "{text}");
+    assert_eq!(g.states.len(), 1, "the base untouched");
+    assert!(text.contains("// Waving"), "{text}");
+    click(&mut s, "animator layer Base");
+    assert!(s.ui.find("state idle").is_some());
+}
+
+#[test]
 fn the_animator_lights_up_the_state_the_running_game_is_in() {
     let Some((mut s, dir)) = studio() else {
         return;
@@ -2611,6 +2718,28 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     s.frame();
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(!text.contains("smoothness"), "{text}");
+    // A number from 0 to 1 is a slider: dragged, the file follows it.
+    s.frame();
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("slide material smoothness").expect("a slider"));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.2,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.3,
+        y: track.y + 3.0,
+    });
+    s.frame();
+    assert!(
+        std::fs::read_to_string(&file).unwrap().contains("smoothness: 0.3"),
+        "mid-drag: {}", std::fs::read_to_string(&file).unwrap()
+    );
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let b = s.ui.find("material smoothness").unwrap();
+    assert_eq!(s.ui.text(b), Some("0.3"));
     fill(&mut s, "material metallic", "lots");
     assert!(
         s.session
@@ -2770,8 +2899,87 @@ fn the_dialogues_window_draws_a_conversation_and_reads_a_line() {
     click(&mut s, "line ask");
     let dump = s.ui.dump();
     assert!(dump.contains("Help me?"), "{dump}");
-    assert!(dump.contains("“No” → bye if not broke"), "{dump}");
-    assert!(dump.contains("sets agreed"), "{dump}");
+    assert!(
+        dump.contains(r#"to: \"bye\", when: [Not(\"broke\")]"#),
+        "the answers as written: {dump}"
+    );
+    assert!(dump.contains(r#"set: [\"agreed\"]"#), "{dump}");
+}
+
+#[test]
+fn the_dialogues_window_edits_a_conversation_and_plays_it() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("dialogues/captain.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"// At the pier.
+(
+    start: "hello",
+    lines: {
+        "hello": (speaker: "Captain", text: "Ahoy.", next: "ask"), // first
+        "ask": (speaker: "Captain", text: "Help me?", choices: [
+            (text: "Yes", to: "thanks", set: ["agreed"]),
+            (text: "No", to: "bye", when: [Not("broke")]),
+        ]),
+        "thanks": (text: "Good."),
+        "bye": (text: "Pity."),
+    },
+)
+"#,
+    )
+    .unwrap();
+    let read = || -> scrap::dialogue::Dialogue {
+        scrap::ron::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap()
+    };
+    click(&mut s, "tab dialogues");
+    click(&mut s, "dialogues wide");
+    s.frame();
+    click(&mut s, "dialogue captain");
+
+    // A line's words, and a condition on it with somewhere else to go.
+    click(&mut s, "line thanks");
+    fill(&mut s, "dialogues field text", "Good man.");
+    fill(&mut s, "dialogues field when", r#"Var("trust", Ge, 1)"#);
+    fill(&mut s, "dialogues field else", "bye");
+    let d = read();
+    assert_eq!(d.lines["thanks"].text, "Good man.");
+    assert_eq!(d.lines["thanks"].otherwise, "bye");
+    // A new line said after it, renamed.
+    click(&mut s, "dialogues add line");
+    fill(&mut s, "dialogues field name", "later");
+    fill(&mut s, "dialogues field text", "See you.");
+    let d = read();
+    assert_eq!(d.lines["thanks"].next, "later", "{d:?}");
+    assert_eq!(d.lines["later"].text, "See you.");
+    // An answer edited as it is written.
+    click(&mut s, "line ask");
+    fill(
+        &mut s,
+        "dialogues answer 0",
+        r#"(text: "Yes", to: "thanks", add: {"trust": 1})"#,
+    );
+    assert_eq!(read().lines["ask"].choices[0].add["trust"], 1);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.starts_with("// At the pier.") && text.contains("// first"),
+        "{text}"
+    );
+
+    // Played here: yes, then the trusted line.
+    click(&mut s, "dialogue captain");
+    click(&mut s, "dialogues play");
+    assert!(s.ui.dump().contains("Ahoy."));
+    click(&mut s, "dialogues next");
+    click(&mut s, "dialogues say 0");
+    let dump = s.ui.dump();
+    assert!(dump.contains("Good man."), "{dump}");
+    assert!(dump.contains("numbers: trust = 1"), "{dump}");
+    click(&mut s, "dialogues next");
+    assert!(s.ui.dump().contains("See you."));
+    click(&mut s, "dialogues stop");
 }
 
 #[test]
@@ -3138,6 +3346,71 @@ fn an_inline_materials_shading_is_a_list_from_the_engine() {
         .value;
     assert!(material.contains("shading:Unlit"), "{material}");
     assert!(material.contains("base_color:(0.5,0.4,0.3)"), "the rest kept: {material}");
+}
+
+#[test]
+fn a_number_from_0_to_1_is_a_slider() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(
+            crate_id,
+            "material",
+            "(base_color: (0.5, 0.4, 0.3), metallic: 0.2)",
+        )
+        .unwrap();
+    click(&mut s, "line crate");
+    click(&mut s, "fold material");
+    assert!(
+        s.ui.find("slide material smoothness").is_some(),
+        "one it leaves out too"
+    );
+    assert!(s.ui.find("slide material alpha_clip").is_some());
+    assert!(s.ui.find("slide material metallic").is_some());
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("slide material metallic").unwrap());
+    let steps = s.session.undo_steps().len();
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.5,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.75,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let material = field_value(&s, crate_id, "material");
+    assert!(material.contains("metallic:0.75"), "{material}");
+    assert!(
+        material.contains("base_color:(0.5,0.4,0.3)"),
+        "the rest kept: {material}"
+    );
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "a drag is one step"
+    );
+    let b = s.ui.find("material metallic").unwrap();
+    assert_eq!(s.ui.text(b), Some("0.75"), "its box says it");
+    // Dragged past the end is the end.
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("slide material metallic").unwrap());
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.5,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width + 40.0,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    assert!(field_value(&s, crate_id, "material").contains("metallic:1.0"));
 }
 
 fn field_value(s: &Studio, id: scrap::EntityId, field: &str) -> String {
@@ -4214,4 +4487,39 @@ fn t_and_y_are_the_rect_and_transform_tools_as_in_unity() {
     // And from the strip in the view's corner.
     click(&mut s, "tool Rect");
     assert_eq!(s.session.tool(), scrap::gizmo::Tool::Rect);
+}
+
+#[test]
+fn the_table_sets_a_cell_of_a_tuning_record_and_sorts_by_a_column() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("tuning/enemies.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let text = "{\n    \"goblin\": (hp: 10, speed: 2.5),\n    \"orc\": (hp: 30), // slow\n}\n";
+    std::fs::write(&file, text).unwrap();
+    click(&mut s, "tab table");
+    click(&mut s, "table source tuning/enemies.ron");
+    let cell = s.ui.find("table cell orc hp").unwrap();
+    assert_eq!(s.ui.text(cell), Some("30"));
+
+    click(&mut s, "table cell orc hp");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "35");
+    key(&mut s, Key::Enter);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        text.replace("hp: 30", "hp: 35"),
+        "that number, and nothing else"
+    );
+
+    // Largest first on the second click.
+    click(&mut s, "table column hp");
+    click(&mut s, "table column hp");
+    s.ui.paint();
+    let y = |s: &Studio, name: &str| s.ui.rect(s.ui.find(name).unwrap()).y;
+    assert!(y(&s, "table row orc") < y(&s, "table row goblin"));
+
+    click(&mut s, "table undo");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
 }

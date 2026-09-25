@@ -4469,6 +4469,12 @@ impl Renderer {
         self.timing = on;
     }
 
+    /// Whether the screen's frame is being timed: [`Self::profile_gpu`],
+    /// or `SCRAP_GPU_TIMES` at the start.
+    pub fn profiling_gpu(&self) -> bool {
+        self.timing
+    }
+
     /// Each pass's time on the GPU, milliseconds, averaged over the last
     /// frames it was timed, in the order the passes run — nothing when
     /// not timing or on a device without timestamps. A frame or two

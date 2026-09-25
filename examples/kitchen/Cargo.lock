@@ -2709,6 +2709,7 @@ dependencies = [
  "scrap-routes",
  "scrap-shell",
  "scrap-steam",
+ "scrap-wires",
  "serde",
  "tracing",
 ]
@@ -2848,6 +2849,19 @@ dependencies = [
  "scrap-net",
  "steamworks",
  "tracing",
+]
+
+[[package]]
+name = "scrap-wires"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "scrap-animation",
+ "scrap-core",
+ "scrap-physics",
+ "serde",
 ]
 
 [[package]]

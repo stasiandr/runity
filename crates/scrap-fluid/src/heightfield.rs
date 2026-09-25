@@ -98,9 +98,9 @@ impl Default for SnowCover {
 }
 
 scrap_core::impl_parts! {
-    ShallowWater => "shallow_water";
+    ShallowWater => "shallow_water", fractions ["friction"];
     Ripples => "ripples";
-    SnowCover => "snow_cover";
+    SnowCover => "snow_cover", fractions ["berm"];
 }
 
 /// The height-field water of a line, read off it.

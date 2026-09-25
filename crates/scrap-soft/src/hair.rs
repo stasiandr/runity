@@ -85,7 +85,7 @@ impl Default for Hair {
 }
 
 scrap_core::impl_parts! {
-    Hair => "hair";
+    Hair => "hair", fractions ["cover", "stiffness", "clump", "lie"];
 }
 
 /// The hair of a line, read off it.

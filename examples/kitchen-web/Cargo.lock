@@ -2721,6 +2721,7 @@ dependencies = [
  "scrap-render",
  "scrap-routes",
  "scrap-shell",
+ "scrap-wires",
  "serde",
  "tracing",
 ]
@@ -2850,6 +2851,19 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "winit",
+]
+
+[[package]]
+name = "scrap-wires"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "scrap-animation",
+ "scrap-core",
+ "scrap-physics",
+ "serde",
 ]
 
 [[package]]

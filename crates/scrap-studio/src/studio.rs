@@ -327,6 +327,7 @@ pub struct Studio {
     screens: Screens,
     animator: Animator,
     dialogues: crate::dialogues::Dialogues,
+    table: crate::table::Table,
     /// The network inspector, the world diff, the saves, the systems.
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
@@ -681,6 +682,8 @@ impl Studio {
         roots.insert(Panel::Animator, animator.root);
         let dialogues = crate::dialogues::Dialogues::new(&mut ui, lower);
         roots.insert(Panel::Dialogues, dialogues.root);
+        let table = crate::table::Table::new(&mut ui, lower);
+        roots.insert(Panel::Table, table.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -739,6 +742,7 @@ impl Studio {
             screens,
             animator,
             dialogues,
+            table,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -1004,6 +1008,7 @@ impl Studio {
         let (enabled, checked) = match action {
             Action::Editor("undo") => (s.can_undo(), false),
             Action::Editor("redo") => (s.can_redo(), false),
+            Action::Editor("carve") => (s.selection().len() >= 2, false),
             Action::Editor("duplicate_entity" | "delete_entity" | "drop_to_ground")
             | Action::Copy
             | Action::Rename
@@ -1019,6 +1024,8 @@ impl Studio {
             Action::ToggleSnap => (true, s.snap().meters > 0.0),
             Action::ToggleColliders => (true, self.colliders),
             Action::ToggleNavigation => (true, self.navigation),
+            Action::TogglePlayer => (true, s.show_player()),
+            Action::PlayFromHere => (true, false),
             Action::GameView(game) => (true, s.is_game_view() == *game),
             Action::TogglePanel(i) => (true, self.panels.get(*i).copied().unwrap_or(false)),
             Action::Maximize => (true, self.maximized == Some(Zoom::View)),
@@ -1417,7 +1424,7 @@ impl Studio {
             });
             let live = self.wants_frame();
             if live && self.docks.is_showing(Panel::Profiler) {
-                self.profiler.update(&mut self.ui);
+                self.profiler.update(&mut self.ui, &self.session);
             }
             if self.docks.is_showing(Panel::Animation) {
                 self.animation.update(&mut self.ui, &self.session);
@@ -1431,6 +1438,9 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Dialogues) {
                 self.dialogues.update(&mut self.ui, &self.session);
+            }
+            if self.docks.is_showing(Panel::Table) {
+                self.table.update(&mut self.ui, &self.session);
             }
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
@@ -1463,6 +1473,8 @@ impl Studio {
             Some(Panel::Screens)
         } else if self.animator.wide && under(Panel::Animator) {
             Some(Panel::Animator)
+        } else if self.dialogues.wide && under(Panel::Dialogues) {
+            Some(Panel::Dialogues)
         } else {
             None
         };
@@ -2710,12 +2722,13 @@ impl Studio {
     fn sync_visible(&mut self) {
         self.show_panels();
         let on = |p| self.docks.is_showing(p);
-        self.bottom.set_visible([
+        let visible = [
             on(Panel::Project),
             on(Panel::Console),
             on(Panel::History),
             on(Panel::Git),
-        ]);
+        ];
+        self.bottom.set_visible(&mut self.ui, &self.session, visible);
     }
 
     fn layout_text_after_paint(&mut self) -> String {
@@ -2962,7 +2975,11 @@ impl Studio {
 
     /// Bring every panel up to date now, whatever the stamp says.
     pub fn refresh(&mut self) {
-        self.seen = None;
+        // What the frame would do for a stamp it has not seen, done now
+        // and once: the stamp is taken as seen, so the frame does not do
+        // it all again.
+        self.inspector.clear_asset();
+        self.seen = Some(Stamp::of(&self.session));
         self.update_panels(false);
     }
 
@@ -3304,11 +3321,10 @@ impl Studio {
             }
         }
         match self.docks.event(&mut self.ui, node, event) {
+            // Nothing the panels show changed: the one come on top is
+            // brought up to date by `sync_visible`, if it needs to be.
             Some(Docked::Handled) => {
                 self.sync_visible();
-                if !matches!(event, Event::Drag { .. }) {
-                    requests.refresh = true;
-                }
                 return;
             }
             Some(Docked::Maximize(panel)) => {
@@ -3388,6 +3404,9 @@ impl Studio {
         } else if self.dialogues.owns(&self.ui, node) {
             self.dialogues
                 .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.table.owns(&self.ui, node) {
+            self.table
+                .event(&mut self.ui, &mut self.session, node, event);
         } else if self.screens.owns(&self.ui, node) {
             self.screens
                 .event(&mut self.ui, &mut self.session, node, event);
@@ -3395,6 +3414,8 @@ impl Studio {
             self.animation
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.profiler.owns(&self.ui, node) {
+            self.profiler
+                .event(&mut self.ui, &mut self.session, node, event);
         } else if self.bottom.owns(&self.ui, node) {
             self.bottom
                 .event(&mut self.ui, &mut self.session, node, event, requests);
@@ -3742,10 +3763,13 @@ impl Studio {
                 }
                 Action::ToggleNavigation => {
                     self.navigation = !self.navigation;
-                    s.set_show_navigation(
-                        self.navigation
-                            .then(scrap::navigation::NavSettings::default),
-                    );
+                    // The project's player, as scrap.ron says it.
+                    let walker = s.walker();
+                    s.set_show_navigation(self.navigation.then_some(walker));
+                }
+                Action::TogglePlayer => {
+                    let on = s.show_player();
+                    s.set_show_player(!on);
                 }
                 Action::Search => self.open_search(),
                 Action::PlaySound(name) => {
@@ -3864,7 +3888,7 @@ impl Studio {
                             "model, texture, sound",
                             &[
                                 "gltf", "glb", "obj", "png", "jpg", "jpeg", "wav", "ogg", "mp3",
-                                "flac", "scrterrain", "scrpoly",
+                                "flac", "scrterrain", "scrpoly", "scrbrush",
                             ],
                         )
                         .pick_files()
@@ -4123,6 +4147,19 @@ impl Studio {
                         s.set_game_view(true);
                         self.ui.focus(Some(self.viewport));
                     }
+                }
+                Action::PlayFromHere => {
+                    // Play, with the player on what the view looks at.
+                    // Whatever plays stops first, as a second Play would.
+                    if s.is_playing() {
+                        s.stop();
+                    }
+                    if self.bottom.clear_on_play {
+                        s.clear_console();
+                    }
+                    s.start_game_from_here().map_err(e)?;
+                    s.set_game_view(true);
+                    self.ui.focus(Some(self.viewport));
                 }
                 Action::Simulate => {
                     // The simulation looks through the game's eyes, as

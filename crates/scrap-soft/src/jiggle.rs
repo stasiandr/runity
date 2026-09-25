@@ -46,7 +46,7 @@ impl Default for Jiggle {
 }
 
 scrap_core::impl_parts! {
-    Jiggle => "jiggle";
+    Jiggle => "jiggle", fractions ["stiffness", "damping", "gravity"];
 }
 
 /// The jiggle of a line, read off it.

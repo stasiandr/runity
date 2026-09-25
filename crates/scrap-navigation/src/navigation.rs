@@ -35,13 +35,23 @@ pub struct NavSettings {
     pub ceiling: f32,
 }
 
+/// The walker the project's player is (`scrap.ron`, `game: (player: …)`):
+/// what the editor shows and a path is asked for, unless a question names
+/// another. The default player's when nothing says.
 impl Default for NavSettings {
     fn default() -> Self {
+        Self::for_player(&scrap_core::player::PlayerMetrics::default())
+    }
+}
+
+impl NavSettings {
+    /// A walker the size of `player`: its radius, step and slope.
+    pub fn for_player(player: &scrap_core::player::PlayerMetrics) -> Self {
         Self {
             cell: 0.25,
-            radius: 0.35,
-            max_slope: 40.0,
-            max_step: 0.3,
+            radius: player.radius,
+            max_slope: player.slope,
+            max_step: player.step,
             ceiling: 100.0,
         }
     }

@@ -64,6 +64,8 @@ struct Names {
     scenes: HashSet<String>,
     /// The graphs in `animators/`, by name.
     animators: HashSet<String>,
+    /// Each graph's parameters, by its name: what a wire may pull.
+    parameters: HashMap<String, std::collections::BTreeSet<String>>,
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
@@ -73,7 +75,7 @@ struct Names {
     shapes: std::collections::BTreeMap<String, scrap::shape::Shape>,
 }
 
-const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "scrterrain"];
+const MODEL_SOURCES: [&str; 6] = ["gltf", "glb", "obj", "scrterrain", "scrpoly", "scrbrush"];
 
 /// Look the whole project over.
 pub fn check(project: &Project) -> Vec<Finding> {
@@ -134,17 +136,10 @@ pub fn check(project: &Project) -> Vec<Finding> {
             keys.extend(scrap::screen::Screen::keys(&layout));
         }
     }
-    // Dialogues: what does not join up, and their texts' keys, checked
-    // against strings/ with the screens'.
-    for path in files(&project.root().join(scrap::dialogue::DIR), "ron") {
-        let file = relative(project, &path);
-        if let Some(dialogue) = parse::<scrap::dialogue::Dialogue>(&path, &file, &mut out) {
-            for problem in dialogue.problems() {
-                out.push(error(&file, problem));
-            }
-            keys.extend(dialogue.keys());
-        }
-    }
+    // Dialogues and quests: what does not join up, their cases played,
+    // the flags between them, and their texts' keys, checked against
+    // strings/ with the screens'.
+    keys.extend(dialogues(project, &mut out));
     let strings = project.root().join(scrap::strings::DIR);
     let mut tables = Vec::new();
     for (language, path) in scrap::strings::tables(&strings) {
@@ -162,6 +157,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
             ),
         ));
     }
+    unused_strings(project, &tables, &keys, &mut out);
     for missing in scrap::strings::missing(&tables, &keys) {
         let (language, rest) = missing.split_once(": ").unwrap_or(("", &missing));
         out.push(error(
@@ -202,9 +198,38 @@ pub fn check(project: &Project) -> Vec<Finding> {
         ));
     }
 
-    for path in files(&project.root().join(scrap::project::TUNING), "ron") {
+    // The numbers are RON, and fit what the game reads them as when it
+    // has said (library/tuning.ron): a misspelt field of one record is
+    // named with the record and the nearest field there is.
+    let tuning = project.root().join(scrap::project::TUNING);
+    let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> =
+        std::fs::read_to_string(project.root().join(scrap::project::TUNING_SHAPES))
+            .ok()
+            .and_then(|text| ron::from_str(&text).ok())
+            .unwrap_or_default();
+    for path in files(&tuning, "ron") {
         let file = relative(project, &path);
-        let _: Option<ron::Value> = parse(&path, &file, &mut out);
+        let Some(_) = parse::<ron::Value>(&path, &file, &mut out) else {
+            continue;
+        };
+        let name = path
+            .strip_prefix(&tuning)
+            .unwrap_or(&path)
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let (Some(shape), Ok(text)) = (shapes.get(&name), std::fs::read_to_string(&path)) else {
+            continue;
+        };
+        for (record, problem) in scrap::records::problems(Some(shape), &text) {
+            out.push(error(
+                &file,
+                match record {
+                    Some(record) => format!("record `{record}`: {problem}"),
+                    None => problem,
+                },
+            ));
+        }
     }
 
     // The modules scrap.ron lists hold together, and Cargo.toml builds
@@ -240,6 +265,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
         scrap::layers::FILE,
         scrap::strings::DIR,
         scrap::dialogue::DIR,
+        scrap::quest::DIR,
         scrap::motion::DIR,
         crate::perf::BUDGETS,
         "Cargo.toml",
@@ -273,7 +299,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
             Some("scrmat") => Some(MATERIALS),
             Some(
                 "gltf" | "glb" | "obj" | "fbx" | "png" | "jpg" | "jpeg" | "wav" | "ogg" | "mp3"
-                | "flac" | "scrterrain",
+                | "flac" | "scrterrain" | "scrpoly" | "scrbrush",
             ) => Some(ASSETS),
             Some("ron") => Some(SCENES),
             _ => None,
@@ -426,13 +452,27 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             ids.insert(id);
         }
     }
-    let animators = files(&project.root().join(scrap::project::ANIMATORS), "ron")
-        .iter()
+    let graphs: Vec<PathBuf> = files(&project.root().join(scrap::project::ANIMATORS), "ron")
+        .into_iter()
         .filter(|p| !p.to_string_lossy().ends_with(".cases.ron"))
+        .collect();
+    let animators = graphs
+        .iter()
         .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    // Read quietly: `animators` says what does not read.
+    let parameters = graphs
+        .iter()
+        .filter_map(|p| {
+            let name = p.file_stem()?.to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(p).ok()?;
+            let graph: scrap::animgraph::Graph = ron::from_str(&text).ok()?;
+            Some((name, graph.parameters()))
+        })
         .collect();
     Names {
         animators,
+        parameters,
         models,
         materials,
         prefabs,
@@ -459,9 +499,12 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
     // Every id in the file, for joints to be checked against: a joint names
     // a body in the same file.
     let mut all: HashSet<EntityId> = HashSet::new();
+    // And by id, for wires: a wire names a thing in the same file too.
+    let mut by_id: HashMap<EntityId, &EntityDesc> = HashMap::new();
     let mut walk: Vec<&EntityDesc> = entities.iter().collect();
     while let Some(e) = walk.pop() {
         all.insert(e.id);
+        by_id.insert(e.id, e);
         walk.extend(e.children.iter());
     }
     let mut seen: HashSet<EntityId> = HashSet::new();
@@ -583,6 +626,29 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                     format!(
                         "{who}: no layer `{layer}` in layers.ron{}",
                         suggest(layer, names.layers.layers.iter().map(String::as_str))
+                    ),
+                ));
+            }
+        }
+        for problem in scrap::wires::problems(
+            entity,
+            |id| by_id.get(&id).copied(),
+            |graph| names.parameters.get(graph).cloned(),
+            |link| {
+                link.id.is_some_and(|id| names.ids.contains(&id))
+                    || names.prefabs.contains(link.as_str())
+            },
+        ) {
+            out.push(error(file, format!("{who}: {problem}")));
+        }
+        for wire in entity.wires() {
+            if !wire.only.is_empty() && names.layers.index(&wire.only).is_none() {
+                out.push(error(
+                    file,
+                    format!(
+                        "{who}: a wire only for layer `{}`, which is not in layers.ron{}",
+                        wire.only,
+                        suggest(&wire.only, names.layers.layers.iter().map(String::as_str))
                     ),
                 ));
             }
@@ -728,7 +794,7 @@ fn check_model(
         out.push(error(
             file,
             format!(
-                "{who}: no model named `{model}` — a model is a .gltf, .glb, .obj or .scrterrain in assets/, named by its file name without the extension{}",
+                "{who}: no model named `{model}` — a model is a .gltf, .glb, .obj, .scrterrain, .scrpoly or .scrbrush in assets/, named by its file name without the extension{}",
                 suggest(model, known)
             ),
         ));
@@ -826,19 +892,10 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
     if graphs.is_empty() {
         return;
     }
+    // What the scenes' and prefabs' wires pull: set, as by the code.
+    let wired = wired_parameters(project);
     // The game's code, as text: a parameter is set by name.
-    let mut code = String::new();
-    let mut stack = vec![project.root().join("src")];
-    while let Some(folder) = stack.pop() {
-        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                code.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
-        }
-    }
+    let code = game_code(project);
     for path in graphs {
         if path.to_string_lossy().ends_with(".cases.ron") {
             continue;
@@ -868,17 +925,212 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
             continue;
         }
         for parameter in graph.parameters() {
-            if !code.contains(&format!("\"{parameter}\"")) {
+            if !code.contains(&format!("\"{parameter}\"")) && !wired.contains(&parameter) {
                 out.push(Finding {
                     severity: Severity::Warning,
                     file: file.clone(),
                     message: format!(
-                        "parameter `{parameter}` is never set: no \"{parameter}\" in src/"
+                        "parameter `{parameter}` is never set: no \"{parameter}\" in src/, and no wire pulls it"
                     ),
                 });
             }
         }
     }
+}
+
+/// The game's code under `src/`, as one text: what names a flag, a
+/// parameter or an event in a string is looked for in.
+fn game_code(project: &Project) -> String {
+    let mut code = String::new();
+    let mut stack = vec![project.root().join("src")];
+    while let Some(folder) = stack.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                code.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+    code
+}
+
+/// Dialogues and quests: each file's own problems, a dialogue's line
+/// written twice, its cases played, and then between them all — a flag
+/// or number read that nothing sets, one set that nothing reads, an
+/// event nothing hears (the game's code counts as setting, reading and
+/// hearing when it names it in a string). The keys they ask `strings/`
+/// for.
+fn dialogues(project: &Project, out: &mut Vec<Finding>) -> Vec<String> {
+    use scrap::dialogue::{named_twice, Cases, Dialogue};
+    use std::collections::BTreeSet;
+    let dir = project.root().join(scrap::dialogue::DIR);
+    let mut keys = Vec::new();
+    let mut found: Vec<(String, Dialogue)> = Vec::new();
+    for path in files(&dir, "ron") {
+        if crate::lines::is_cases(&path) {
+            continue;
+        }
+        let file = relative(project, &path);
+        for twice in named_twice(&std::fs::read_to_string(&path).unwrap_or_default()) {
+            out.push(error(&file, twice));
+        }
+        let Some(mut dialogue) = parse::<Dialogue>(&path, &file, out) else {
+            continue;
+        };
+        dialogue.name = crate::lines::name(&dir, &path);
+        for problem in dialogue.problems() {
+            out.push(error(&file, problem));
+        }
+        let cases_path = path.with_extension("cases.ron");
+        if cases_path.is_file() {
+            let cases_file = relative(project, &cases_path);
+            if let Some(cases) = parse::<Cases>(&cases_path, &cases_file, out) {
+                for failed in cases.run(&dialogue) {
+                    out.push(error(&cases_file, failed));
+                }
+            }
+        }
+        keys.extend(dialogue.keys());
+        found.push((file, dialogue));
+    }
+    let mut quests: Vec<(String, scrap::quest::Quest)> = Vec::new();
+    for path in files(&project.root().join(scrap::quest::DIR), "ron") {
+        let file = relative(project, &path);
+        if let Some(quest) = parse::<scrap::quest::Quest>(&path, &file, out) {
+            for problem in quest.problems() {
+                out.push(error(&file, problem));
+            }
+            keys.extend(quest.keys());
+            quests.push((file, quest));
+        }
+    }
+    if found.is_empty() && quests.is_empty() {
+        return keys;
+    }
+    let code = game_code(project);
+    let named = |n: &str| code.contains(&format!("\"{n}\""));
+    let set: BTreeSet<String> = found.iter().flat_map(|(_, d)| d.writes()).collect();
+    let read: BTreeSet<String> = found
+        .iter()
+        .flat_map(|(_, d)| d.reads())
+        .chain(quests.iter().flat_map(|(_, q)| q.reads()))
+        .collect();
+    let warn = |out: &mut Vec<Finding>, file: &str, message: String| {
+        out.push(Finding {
+            severity: Severity::Warning,
+            file: file.to_string(),
+            message,
+        })
+    };
+    let readers: Vec<(&String, BTreeSet<String>)> = found
+        .iter()
+        .map(|(f, d)| (f, d.reads()))
+        .chain(
+            quests
+                .iter()
+                .map(|(f, q)| (f, q.reads().into_iter().collect())),
+        )
+        .collect();
+    for (file, reads) in readers {
+        for name in reads.iter().filter(|n| !set.contains(*n) && !named(n)) {
+            warn(
+                out,
+                file,
+                format!("`{name}` is read and nothing sets it: no dialogue does, and no \"{name}\" in src/"),
+            );
+        }
+    }
+    for (file, dialogue) in &found {
+        for name in dialogue
+            .writes()
+            .iter()
+            .filter(|n| !read.contains(*n) && !named(n))
+        {
+            warn(
+                out,
+                file,
+                format!("`{name}` is set and nothing reads it: no dialogue or quest does, and no \"{name}\" in src/"),
+            );
+        }
+        if code.is_empty() {
+            continue;
+        }
+        for event in dialogue.events().iter().filter(|e| !named(e)) {
+            warn(
+                out,
+                file,
+                format!("event `{event}` is told and nothing hears it: no \"{event}\" in src/"),
+            );
+        }
+    }
+    keys
+}
+
+/// Words in `strings/` nothing asks for: no screen, dialogue or quest, and
+/// no `"key"` or `"@key"` in the game's code. A warning on the first
+/// language that has it — a key's words may still be wanted, or be put
+/// together in code.
+fn unused_strings(
+    project: &Project,
+    tables: &[(String, scrap::strings::Table)],
+    used: &[String],
+    out: &mut Vec<Finding>,
+) {
+    if tables.is_empty() {
+        return;
+    }
+    let code = game_code(project);
+    let used: HashSet<&str> = used.iter().map(String::as_str).collect();
+    let mut told: HashSet<&str> = HashSet::new();
+    for (language, table) in tables {
+        for key in table.keys() {
+            if used.contains(key.as_str())
+                || code.contains(&format!("\"{key}\""))
+                || code.contains(&format!("\"@{key}\""))
+                || !told.insert(key)
+            {
+                continue;
+            }
+            out.push(Finding {
+                severity: Severity::Warning,
+                file: format!("{}/{language}.ron", scrap::strings::DIR),
+                message: format!(
+                    "`{key}` is asked for by no screen, dialogue or quest, and no \"{key}\" in src/"
+                ),
+            });
+        }
+    }
+}
+
+/// Every animator parameter a wire in a scene or a prefab pulls.
+fn wired_parameters(project: &Project) -> HashSet<String> {
+    let mut lines: Vec<EntityDesc> = Vec::new();
+    for path in files(&project.scenes(), "ron") {
+        if let Some(scene) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| ron::from_str::<Scene>(&t).ok())
+        {
+            lines.extend(scene.entities);
+        }
+    }
+    for path in files(&project.prefabs(), "prefab") {
+        if let Some(desc) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| ron::from_str::<EntityDesc>(&t).ok())
+        {
+            lines.push(desc);
+        }
+    }
+    let mut out = HashSet::new();
+    while let Some(line) = lines.pop() {
+        for wire in line.wires() {
+            out.extend(wire.act.parameter().map(str::to_string));
+        }
+        lines.extend(line.children);
+    }
+    out
 }
 
 fn error(file: &str, message: impl fmt::Display) -> Finding {

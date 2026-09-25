@@ -45,6 +45,84 @@ pub struct Animator {
     /// Two clips mixed by a weight, in step: a blend tree's output, in
     /// place of `current` while it is set.
     blend: Option<Blend>,
+    /// What is playing started from nothing, and fades in from nothing:
+    /// a layer that had no clip. See [`Self::presence`].
+    from_empty: bool,
+    /// Layers over the pose, in order: each its own clips and crossfade,
+    /// laid on the joints its mask names (see [`Layer`]).
+    layers: Vec<Layer>,
+}
+
+/// How a layer lays its pose on the one below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum LayerBlend {
+    /// The layer's pose instead of the one below, by the weight: an arm
+    /// waving over a walk.
+    #[default]
+    Override,
+    /// The layer's offset from its clip's first frame on top of the pose
+    /// below: a breath or a lean over whatever the body does.
+    Additive,
+}
+
+/// A layer of an animator: an animator of its own on the same skeleton,
+/// the joints it moves (a mask, 0..1 each), how and how much.
+///
+/// Unity's Animator Controller layer with its Avatar Mask: an upper body
+/// that aims or waves while the legs below walk.
+#[derive(Clone)]
+pub struct Layer {
+    pub animator: Animator,
+    /// Per joint of the skeleton, how much of the layer it takes.
+    pub mask: Vec<f32>,
+    pub blend: LayerBlend,
+    /// The whole layer's weight, 0..1.
+    pub weight: f32,
+}
+
+/// Each joint's share of a layer from its mask: a name takes that joint
+/// and everything under it (`Spine` is the upper body), matched without a
+/// rig's prefix, as [`crate::animation::Clip::retarget`] matches. No names
+/// is the whole skeleton. Returns the weights and the names no joint has.
+pub fn mask_weights(skeleton: &Skeleton, names: &[String]) -> (Vec<f32>, Vec<String>) {
+    use crate::animation::bare_joint_name;
+    let n = skeleton.joints.len();
+    if names.is_empty() {
+        return (vec![1.0; n], Vec::new());
+    }
+    let mut weights = vec![0.0; n];
+    let mut unknown = Vec::new();
+    for name in names {
+        let wanted = bare_joint_name(name);
+        let Some(root) = skeleton
+            .joints
+            .iter()
+            .position(|j| j.name == *name || bare_joint_name(&j.name) == wanted)
+        else {
+            unknown.push(name.clone());
+            continue;
+        };
+        weights[root] = 1.0;
+    }
+    // Down the tree: a joint under a masked one is masked. Parents come
+    // first in a sorted skeleton; an unsorted one goes round until nothing
+    // changes.
+    loop {
+        let mut changed = false;
+        for (i, joint) in skeleton.joints.iter().enumerate() {
+            if let Some(p) = joint.parent {
+                let from = weights.get(p as usize).copied().unwrap_or(0.0);
+                if from > weights[i] {
+                    weights[i] = from;
+                    changed = true;
+                }
+            }
+        }
+        if !changed || skeleton.is_sorted() {
+            break;
+        }
+    }
+    (weights, unknown)
 }
 
 /// Two clips playing in step and mixed: idle and walk at half a metre a
@@ -74,6 +152,76 @@ impl Animator {
             fade_remaining: 0.0,
             fade_length: 0.0,
             blend: None,
+            from_empty: false,
+            layers: Vec::new(),
+        }
+    }
+
+    /// Add a layer over what plays now, masked to the joints `mask` names
+    /// ([`mask_weights`]), at full weight, playing nothing yet. An additive
+    /// layer plays its clips as offsets from their first frames
+    /// ([`crate::animation::Clip::additive`]), made once here. Returns the
+    /// layer's index and the mask's names no joint has.
+    pub fn add_layer(&mut self, mask: &[String], blend: LayerBlend) -> (usize, Vec<String>) {
+        let (weights, unknown) = mask_weights(&self.skeleton, mask);
+        let clips = match blend {
+            LayerBlend::Override => self.clips.clone(),
+            LayerBlend::Additive => Arc::new(
+                self.clips
+                    .iter()
+                    .map(|c| c.additive(&self.skeleton))
+                    .collect(),
+            ),
+        };
+        self.layers.push(Layer {
+            animator: Animator::new(self.skeleton.clone(), clips),
+            mask: weights,
+            blend,
+            weight: 1.0,
+        });
+        (self.layers.len() - 1, unknown)
+    }
+
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    pub fn layer_mut(&mut self, index: usize) -> Option<&mut Layer> {
+        self.layers.get_mut(index)
+    }
+
+    /// Stop playing, fading out over `fade` seconds: a layer's empty
+    /// state, which gives the joints back to the layer below.
+    pub fn stop(&mut self, fade: f32) {
+        if self.current.is_none() && self.blend.is_none() {
+            return;
+        }
+        self.previous = self.freeze_blend().or(self.current);
+        self.current = None;
+        self.blend = None;
+        self.from_empty = false;
+        self.fade_length = fade.max(0.0);
+        self.fade_remaining = self.fade_length;
+    }
+
+    /// How much of its pose this animator has to give, 0..1: 1 while a
+    /// clip plays, rising from 0 over the fade when it started from
+    /// nothing, falling to 0 over the fade after [`Self::stop`]. What a
+    /// layer's weight is multiplied by, so a layer going empty lets the
+    /// body below come back smoothly rather than snap.
+    pub fn presence(&self) -> f32 {
+        let fading = self.fade_remaining > 0.0 && self.fade_length > 0.0;
+        let t = if fading {
+            1.0 - self.fade_remaining / self.fade_length
+        } else {
+            1.0
+        };
+        let playing = self.current.is_some() || self.blend.is_some();
+        match (playing, self.previous.is_some() && fading) {
+            (true, _) if self.from_empty => t,
+            (true, _) => 1.0,
+            (false, true) => 1.0 - t,
+            (false, false) => 0.0,
         }
     }
 
@@ -108,6 +256,7 @@ impl Animator {
         if self.blend.is_none() && self.current.map(|p| p.clip) == Some(clip) {
             return;
         }
+        self.from_empty = self.current.is_none() && self.blend.is_none();
         self.previous = self.freeze_blend().or(self.current);
         self.blend = None;
         self.fade_length = fade.max(0.0);
@@ -170,6 +319,7 @@ impl Animator {
             (blend.a, blend.b, blend.weight, blend.third) = (a, b, weight, third);
             return;
         }
+        self.from_empty = self.current.is_none();
         self.previous = self.current;
         self.fade_length = fade.max(0.0);
         self.fade_remaining = self.fade_length;
@@ -221,8 +371,34 @@ impl Animator {
         }
     }
 
-    /// Advance by a timestep and return the pose.
+    /// Advance by a timestep and return the pose: what plays, then each
+    /// layer laid over it on the joints of its mask, in order.
     pub fn advance(&mut self, dt: f32) -> Vec<PoseTransform> {
+        let mut pose = self.advance_own(dt);
+        for layer in &mut self.layers {
+            // A layer keeps its time at no weight, as Unity's does: turned
+            // back up, its wave is where it would have been.
+            let own = layer.animator.advance(dt);
+            let weight = layer.weight.clamp(0.0, 1.0) * layer.animator.presence();
+            if weight <= 0.0 {
+                continue;
+            }
+            for (j, slot) in pose.iter_mut().enumerate() {
+                let w = weight * layer.mask.get(j).copied().unwrap_or(0.0);
+                let (Some(with), true) = (own.get(j), w > 0.0) else {
+                    continue;
+                };
+                *slot = match layer.blend {
+                    LayerBlend::Override => slot.lerp(with, w),
+                    LayerBlend::Additive => slot.add(with, &self.skeleton.joints[j].rest, w),
+                };
+            }
+        }
+        pose
+    }
+
+    /// This animator's own clips' pose, its layers not laid on.
+    fn advance_own(&mut self, dt: f32) -> Vec<PoseTransform> {
         if let Some(playing) = &mut self.current {
             playing.time += dt * playing.speed;
         }
@@ -279,7 +455,12 @@ impl Animator {
             None => self.current.and_then(sample),
         };
         let Some(current) = current else {
-            return self.skeleton.rest_pose();
+            // Stopped: what fades out is held until it is gone; how much
+            // of it shows is the presence's to say.
+            return self
+                .previous
+                .and_then(sample)
+                .unwrap_or_else(|| self.skeleton.rest_pose());
         };
         let Some(previous) = self.previous.and_then(sample) else {
             return current;
@@ -312,6 +493,7 @@ impl std::fmt::Debug for Animator {
             .field("clips", &self.clips.len())
             .field("current", &self.current)
             .field("fading", &self.previous.is_some())
+            .field("layers", &self.layers.len())
             .finish()
     }
 }
@@ -428,9 +610,53 @@ pub fn pose_bound_skins(world: &mut World) {
 /// the frame delta plays at a different speed on a faster machine, and two
 /// machines replaying the same inputs stop agreeing about where a limb is.
 pub fn advance_animations(world: &mut World, dt: f32) {
+    advance_animations_on(world, dt, &crate::ik::no_ground);
+}
+
+/// [`advance_animations`], each skeleton with an [`crate::ik::Ik`] bent by
+/// it between its clips and its skinning, its feet on `ground`.
+pub fn advance_animations_on(world: &mut World, dt: f32, ground: crate::ik::Ground) {
+    use crate::ik::{Ik, LookingAt};
+    use crate::world::WorldTransform;
+    // What each look is at, found once and kept.
+    let unfound: Vec<(hecs::Entity, crate::id::EntityRef)> = world
+        .query::<(hecs::Entity, &Ik)>()
+        .without::<&LookingAt>()
+        .iter()
+        .filter(|(_, ik)| !ik.look_at.is_off() && ik.look_at.target.0.is_some())
+        .map(|(e, ik)| (e, ik.look_at.target))
+        .collect();
+    for (entity, target) in unfound {
+        if let Some(found) = target.get(world) {
+            let _ = world.insert_one(entity, LookingAt(found));
+        }
+    }
+    let at = |e: hecs::Entity| world.get::<&WorldTransform>(e).ok().map(|t| t.0);
+    let looks: Vec<(hecs::Entity, Option<glam::Vec3>)> = world
+        .query::<(hecs::Entity, &LookingAt)>()
+        .iter()
+        .map(|(e, l)| (e, at(l.0).map(|m| m.w_axis.truncate())))
+        .collect();
     let mut posed: Vec<(hecs::Entity, Vec<Mat4>)> = Vec::new();
-    for (entity, animator) in world.query::<(hecs::Entity, &mut Animator)>().iter() {
-        posed.push((entity, animator.advance_to_matrices(dt)));
+    for (entity, animator, ik, placed) in world
+        .query::<(
+            hecs::Entity,
+            &mut Animator,
+            Option<&Ik>,
+            Option<&WorldTransform>,
+        )>()
+        .iter()
+    {
+        let mut pose = animator.advance(dt);
+        if let Some(ik) = ik {
+            let look = looks
+                .iter()
+                .find(|(e, _)| *e == entity)
+                .and_then(|(_, p)| *p);
+            let placed = placed.map_or(Mat4::IDENTITY, |p| p.0);
+            crate::ik::solve(&animator.skeleton, &mut pose, placed, ik, look, ground);
+        }
+        posed.push((entity, animator.skeleton.skinning_matrices(&pose)));
     }
     for (entity, matrices) in posed {
         let _ = world.insert_one(entity, Posed(matrices));
@@ -604,6 +830,105 @@ mod tests {
             "the old clip should have advanced, sat at {}",
             outgoing.time
         );
+    }
+
+    /// Hips at the root, a leg under them, and a spine with an arm under
+    /// it; two clips, each holding every joint at its own height: 1 for
+    /// "walk", 5 for "wave".
+    fn body() -> Animator {
+        let joint = |name: &str, parent: Option<u16>| Joint {
+            name: format!("mixamorig:{name}"),
+            parent,
+            inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+            rest: PoseTransform::default(),
+        };
+        let skeleton = Arc::new(Skeleton {
+            joints: vec![
+                joint("Hips", None),
+                joint("LeftLeg", Some(0)),
+                joint("Spine", Some(0)),
+                joint("LeftArm", Some(2)),
+            ],
+        });
+        let at = |name: &str, height: f32| Clip {
+            name: name.into(),
+            duration: 1.0,
+            channels: (0..4)
+                .map(|j| Channel {
+                    joint: j,
+                    path: Path::Translation,
+                    times: vec![0.0, 1.0],
+                    values: vec![0.0, height, 0.0, 0.0, height, 0.0],
+                })
+                .collect(),
+        };
+        Animator::new(skeleton, Arc::new(vec![at("walk", 1.0), at("wave", 5.0)]))
+    }
+
+    fn heights(pose: &[PoseTransform]) -> Vec<f32> {
+        pose.iter().map(|p| p.translation[1]).collect()
+    }
+
+    #[test]
+    fn a_layer_moves_only_the_joints_under_its_mask() {
+        let mut a = body();
+        a.play(0, 0.0);
+        let (upper, unknown) = a.add_layer(&["Spine".into(), "Tail".into()], LayerBlend::Override);
+        assert_eq!(unknown, ["Tail"], "a name no joint has is said");
+        a.layer_mut(upper).unwrap().animator.play(1, 0.0);
+        assert_eq!(
+            heights(&a.advance(0.1)),
+            [1.0, 1.0, 5.0, 5.0],
+            "the spine and the arm under it wave; the hips and leg walk"
+        );
+        a.layer_mut(upper).unwrap().weight = 0.5;
+        assert_eq!(heights(&a.advance(0.1)), [1.0, 1.0, 3.0, 3.0], "half way");
+        a.layer_mut(upper).unwrap().weight = 0.0;
+        assert_eq!(heights(&a.advance(0.1)), [1.0; 4], "no weight: all walk");
+    }
+
+    #[test]
+    fn a_layer_with_nothing_playing_fades_in_and_out_over_the_body() {
+        let mut a = body();
+        a.play(0, 0.0);
+        let (upper, _) = a.add_layer(&[], LayerBlend::Override);
+        assert_eq!(
+            heights(&a.advance(0.1)),
+            [1.0; 4],
+            "an empty layer is nothing"
+        );
+        a.layer_mut(upper).unwrap().animator.play(1, 1.0);
+        let half = heights(&a.advance(0.5));
+        assert!((half[0] - 3.0).abs() < 1e-4, "half faded in: {half:?}");
+        assert_eq!(heights(&a.advance(0.6)), [5.0; 4]);
+        a.layer_mut(upper).unwrap().animator.stop(1.0);
+        let half = heights(&a.advance(0.5));
+        assert!((half[3] - 3.0).abs() < 1e-4, "half faded out: {half:?}");
+        assert_eq!(heights(&a.advance(0.6)), [1.0; 4], "the body back");
+    }
+
+    #[test]
+    fn an_additive_layer_adds_its_move_since_its_first_frame() {
+        let mut a = body();
+        a.play(0, 0.0);
+        // A clip that rises from 5 to 7: an additive layer adds the 2, not
+        // the 7.
+        let mut clips = (*a.clips).clone();
+        for channel in &mut clips[1].channels {
+            channel.values[4] = 7.0;
+        }
+        a.clips = Arc::new(clips);
+        let (lean, _) = a.add_layer(&["Spine".into()], LayerBlend::Additive);
+        a.layer_mut(lean).unwrap().animator.play(1, 0.0);
+        a.layer_mut(lean).unwrap().weight = 0.5;
+        let pose = heights(&a.advance(0.0));
+        assert_eq!(pose, [1.0; 4], "nothing added at the clip's start");
+        let pose = heights(&a.advance(0.5));
+        assert!(
+            (pose[2] - 1.5).abs() < 1e-4 && (pose[3] - 1.5).abs() < 1e-4,
+            "{pose:?}"
+        );
+        assert_eq!(pose[..2], [1.0, 1.0]);
     }
 
     #[test]

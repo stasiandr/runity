@@ -34,9 +34,11 @@ pub use import_settings::IMPORT_FIELDS;
 pub mod history;
 pub mod panels;
 pub mod pickers;
+mod player;
 pub mod prefs;
 mod scene_view;
 mod surface;
+pub mod table;
 mod thumbnail;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
@@ -88,6 +90,9 @@ pub struct Session {
     target: OffscreenTarget,
     world: hecs::World,
     history: scrap::edit::History,
+    /// Cells set in tuning files, oldest first: what
+    /// [`Session::undo_cell`] takes back (`table`).
+    cell_edits: Vec<table::CellEdit>,
     scene_path: Option<PathBuf>,
     /// The project the open scene is in. Where prefabs, materials and the
     /// library are is the project's to say, so the editor finds exactly what
@@ -181,6 +186,11 @@ pub struct Session {
     /// The grid on the ground (on the wall, in a side view): on until
     /// turned off, as Unity's is.
     show_grid: bool,
+    /// The player's size and jump drawn in the view, where the pointer is
+    /// (docs/player.md): a view setting.
+    show_player: bool,
+    /// Where the pointer is over the view; `None` off it.
+    hover_at: Option<(u32, u32)>,
     /// Set while the scene is being simulated rather than edited.
     play: Option<Play>,
     /// The scene as its file last had it — read or written by this session
@@ -246,7 +256,14 @@ pub enum SceneReload {
 /// if there is one, the list added before the closing bracket if not. The
 /// rest of the file — comments, layout — is left as it was.
 fn add_edit(text: &str, edit: &str) -> String {
-    if let Some(at) = text.find("edits:") {
+    add_to_list(text, "edits", edit)
+}
+
+/// A source with one more line in its list `key` (`edits`, `brushes`):
+/// added to the list if there is one, the list added before the closing
+/// bracket if not. The rest of the file is left as it was.
+pub(crate) fn add_to_list(text: &str, key: &str, edit: &str) -> String {
+    if let Some(at) = text.find(&format!("{key}:")) {
         if let Some(open) = text[at..].find('[').map(|i| at + i) {
             let mut depth = 0;
             for (i, c) in text[open..].char_indices() {
@@ -282,7 +299,7 @@ fn add_edit(text: &str, edit: &str) -> String {
                 ","
             };
             format!(
-                "{before}{comma}\n    edits: [\n        {edit},\n    ],\n{}",
+                "{before}{comma}\n    {key}: [\n        {edit},\n    ],\n{}",
                 &text[close..]
             )
         }
@@ -327,6 +344,7 @@ impl Session {
             target,
             world: hecs::World::new(),
             history: scrap::edit::History::new(Scene::default(), 64),
+            cell_edits: Vec::new(),
             scene_path: None,
             project: None,
             library: None,
@@ -365,6 +383,8 @@ impl Session {
             label: None,
             show_colliders: false,
             show_grid: true,
+            show_player: false,
+            hover_at: None,
             play: None,
             on_disk: None,
             merge: None,
@@ -1217,12 +1237,13 @@ impl Session {
     /// the same conflicts `scrap merge` reported — with the values, so each
     /// can be shown and settled here instead of in a text editor.
     pub fn merge_conflicts(&mut self) -> EditResult<Vec<scrap::merge::Conflict>> {
-        let stages = (
-            self.scene_at(":1"),
-            self.scene_at(":2"),
-            self.scene_at(":3"),
-        );
-        let (Ok(base), Ok(ours), Ok(theirs)) = stages else {
+        // One stage at a time: with no merge the first is missing, and
+        // each asked is a `git` run.
+        let stages = self.scene_at(":1").and_then(|base| {
+            let ours = self.scene_at(":2")?;
+            Ok((base, ours, self.scene_at(":3")?))
+        });
+        let Ok((base, ours, theirs)) = stages else {
             self.merge = None;
             return Ok(Vec::new());
         };
@@ -1517,6 +1538,32 @@ impl Session {
         let models = names_of(scrap::asset::MESH);
         let materials = names_of(scrap::asset::MATERIAL);
         let components = self.project.as_ref().and_then(|p| p.component_names());
+        // An animator's parameters, read from its graph when a wire pulls
+        // one: seldom, so from the file each time.
+        let parameters = |graph: &str| -> Option<std::collections::BTreeSet<String>> {
+            let path = self
+                .project
+                .as_ref()?
+                .root()
+                .join(scrap::project::ANIMATORS)
+                .join(format!("{graph}.ron"));
+            let text = std::fs::read_to_string(path).ok()?;
+            let graph: scrap::animgraph::Graph = scrap::ron::from_str(&text).ok()?;
+            Some(graph.parameters())
+        };
+        for (desc, _) in self.instanced.scene.flatten() {
+            for problem in scrap::wires::problems(
+                desc,
+                |id| self.instanced.scene.get(id),
+                parameters,
+                |prefab| self.prefabs.find(prefab).is_some(),
+            ) {
+                out.push(Diagnostic {
+                    entity: Some(desc.id),
+                    message: format!("`{}` ({}): {problem}", desc.name, desc.id),
+                });
+            }
+        }
         for (desc, _) in self.instanced.scene.flatten() {
             if let Some(to) = desc.joint().to().filter(|to| !to.is_unassigned()) {
                 if self.instanced.scene.get(to).is_none() {
@@ -2073,6 +2120,15 @@ impl Session {
     /// edited and saved, as every running game does. The editor's own
     /// [`Session::play`] simulates physics in place without the game.
     pub fn game_command(&mut self) -> EditResult<std::process::Command> {
+        self.game_command_at(None)
+    }
+
+    /// [`Session::game_command`] with the player to start at `start`
+    /// (`SCRAP_START`, Play from Here), or with no start at all.
+    pub fn game_command_at(
+        &mut self,
+        start: Option<scrap::player::Start>,
+    ) -> EditResult<std::process::Command> {
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         if !project.root().join("Cargo.toml").is_file() {
             return Err(EditError::Scene(format!(
@@ -2117,6 +2173,10 @@ impl Session {
             .env("SCRAP_SCENE", &name)
             .env(game::LIVE_VAR, &live)
             .env(scrap::live::STATE_VAR, &state);
+        match start {
+            Some(start) => command.env(scrap::player::START_VAR, start.to_env()),
+            None => command.env_remove(scrap::player::START_VAR),
+        };
         self.say(
             console::Level::Info,
             format!("playing scenes/{name}.ron in the game"),
@@ -3350,6 +3410,11 @@ impl Session {
                     pose: None,
                 }));
         }
+        // The player's size and jump, standing where the pointer is.
+        if self.show_player {
+            let draws = self.player_draws();
+            frame.draws.extend(draws);
+        }
         // Every camera the game can look through, as its frustum.
         {
             let arm = self.gizmo_arm_mesh();
@@ -3441,6 +3506,31 @@ impl Session {
                         thickness,
                         gizmo::selection_color(),
                     ));
+                }
+                // What a selected trigger's wires act on: a line to each.
+                let wires = desc
+                    .part::<scrap::scene::Wires>()
+                    .map(|w| w.0)
+                    .unwrap_or_default();
+                if !wires.is_empty() {
+                    let from = placed.w_axis.truncate();
+                    let places: std::collections::HashMap<EntityId, Vec3> = self
+                        .instanced
+                        .scene
+                        .flatten()
+                        .into_iter()
+                        .map(|(d, m)| (d.id, m.w_axis.truncate()))
+                        .collect();
+                    for wire in wires {
+                        if let Some(to) = places.get(&wire.to) {
+                            frame.overlay_draws.extend(gizmo::polyline_draws(
+                                arm,
+                                &[from, *to],
+                                thickness,
+                                gizmo::selection_color(),
+                            ));
+                        }
+                    }
                 }
                 if let Some(route) = &desc.route() {
                     // Where a selected thing travels, as a line.
@@ -3714,6 +3804,16 @@ impl Session {
     /// `SCRAP_GPU_TIMES` is set (see `Renderer::gpu_times`).
     pub fn gpu_times(&self) -> Vec<(String, f32)> {
         self.renderer.gpu_times()
+    }
+
+    /// Time each pass of the Scene view on the GPU, or stop: the
+    /// Profiler's switch for [`Self::gpu_times`]. Off costs nothing.
+    pub fn profile_gpu(&mut self, on: bool) {
+        self.renderer.profile_gpu(on);
+    }
+
+    pub fn profiling_gpu(&self) -> bool {
+        self.renderer.profiling_gpu()
     }
 
     /// The GPU the session renders with: a window that wants to show the
@@ -4315,6 +4415,7 @@ impl Session {
         if let Some((x, y)) = at {
             self.pointer = (x, y);
         }
+        self.hover_at = at;
         self.hovered
     }
 
@@ -4548,6 +4649,19 @@ impl Session {
         // The scene's wind carries what it says is `blown`.
         physics.wind = self.instanced.scene.wind().unwrap_or_default();
         physics.sync_from_world(&mut self.world);
+        // Animators are content, as the physics is: a door a wire opens
+        // swings here, without the game's code.
+        let (motions, mut problems) = self
+            .project
+            .as_ref()
+            .map(|p| scrap::motion::Motions::load(p.root()))
+            .unwrap_or_default();
+        let library = self.library.as_ref();
+        let skins = |model: &scrap::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+        problems.extend(scrap::motion::attach(&mut self.world, &motions, skins));
+        for problem in problems {
+            self.console.say(console::Level::Warning, problem);
+        }
         self.play = Some(Play {
             physics,
             clock: scrap::Time::new(scrap::TimeSettings::default()),
@@ -4579,6 +4693,7 @@ impl Session {
             Self::fixed_step(&mut self.world, &mut play.physics, fixed);
             steps += 1;
         }
+        self.unspawned();
         // Animation runs on the frame rather than the step: a pose
         // interpolates and does not need to be deterministic the way a
         // solver does.
@@ -4586,10 +4701,34 @@ impl Session {
         steps
     }
 
-    /// One fixed step: what travels by itself moves first, and physics
-    /// sees it where it went — a platform carries what stands on it.
+    /// A wire's spawn is the game's to do — it holds the prefabs as the
+    /// game spawns them — so play says so, once per prefab asked for, and
+    /// lets the order go.
+    fn unspawned(&mut self) {
+        let asked: Vec<(hecs::Entity, String)> = self
+            .world
+            .query::<(hecs::Entity, &scrap::wires::SpawnOrder)>()
+            .iter()
+            .map(|(e, o)| (e, o.prefab.to_string()))
+            .collect();
+        for (order, prefab) in asked {
+            let _ = self.world.despawn(order);
+            self.console.say(
+                console::Level::Info,
+                format!(
+                    "a wire spawns `{prefab}`: the game does, with start_game; play here does not"
+                ),
+            );
+        }
+    }
+
+    /// One fixed step: the wires first, on what the last step touched;
+    /// what travels by itself and what animators move, then physics sees
+    /// it where it went — a platform carries what stands on it.
     fn fixed_step(world: &mut hecs::World, physics: &mut scrap::PhysicsWorld, fixed: f32) {
+        scrap::wires::run_wires(world, fixed);
         scrap::routes::run_routes(world, fixed);
+        scrap::motion::run(world, fixed);
         scrap::world::apply_hierarchy(world);
         scrap::fluid::float(world, physics);
         scrap::character::step(world, physics, fixed);
@@ -4626,6 +4765,7 @@ impl Session {
         let fixed = play.clock.settings().fixed_delta;
         Self::fixed_step(&mut self.world, &mut play.physics, fixed);
         scrap::advance_animations(&mut self.world, fixed);
+        self.unspawned();
         true
     }
 

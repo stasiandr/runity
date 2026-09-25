@@ -462,6 +462,7 @@ pub fn toggles(action: &Action) -> bool {
             | Action::ToggleColliders
             | Action::ToggleSnap
             | Action::ToggleNavigation
+            | Action::TogglePlayer
             | Action::GameView(_)
             | Action::TogglePanel(_)
             | Action::Maximize

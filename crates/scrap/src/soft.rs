@@ -15,6 +15,60 @@ use crate::render::MeshHandle;
 use crate::scene::EntityDesc;
 use crate::world::{Changed, Copies, Dress, LiveMesh, Surface, Unresolved, WorldTransform};
 
+/// The ground under a point for the feet of animated skeletons
+/// (`scrap_animation::ik`): the scene's solid colliders as soft things
+/// meet them, less the character's own — the entity with the IK and those
+/// it hangs from, whose capsule its feet are inside. Straight down from
+/// `from` at most `depth`, in 5 cm steps to the first solid, then halved
+/// to a millimetre: a step's top, not the far side of it.
+#[cfg(feature = "animation")]
+pub fn feet_ground(world: &World) -> scrap_animation::ik::Probe {
+    use crate::world::Parent;
+    let mut own = std::collections::HashSet::new();
+    for (entity, _) in world
+        .query::<(hecs::Entity, &scrap_animation::ik::Ik)>()
+        .iter()
+    {
+        let mut at = Some(entity);
+        while let Some(e) = at.filter(|e| own.insert(*e)) {
+            at = world.get::<&Parent>(e).ok().map(|p| p.0);
+        }
+    }
+    let all = Obstacles::new(obstacles_but(world, |e| own.contains(&e)));
+    Box::new(move |from: Vec3, depth: f32| {
+        let mut near = Vec::new();
+        all.near(
+            from - Vec3::Y * (depth + 0.1),
+            from + Vec3::splat(0.1),
+            &mut near,
+        );
+        let solid = |p: Vec3| near.iter().find_map(|o| o.contact(p, 0.0));
+        if near.is_empty() || solid(from).is_some() {
+            return None;
+        }
+        let steps = (depth / 0.05).ceil().max(1.0) as usize;
+        let mut above = from;
+        for i in 1..=steps {
+            let below = from - Vec3::Y * (depth * i as f32 / steps as f32);
+            if solid(below).is_some() {
+                let (mut hi, mut lo) = (above, below);
+                while hi.y - lo.y > 1e-3 {
+                    let mid = (hi + lo) * 0.5;
+                    if solid(mid).is_some() {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let normal = solid(lo).map_or(Vec3::Y, |(n, _)| n);
+                return Some((hi, normal));
+            }
+            above = below;
+        }
+        None
+    })
+}
+
 /// The physics' solid colliders, as what soft things lie on and wrap
 /// round. Triggers are solid to nothing, and a model's own triangles are
 /// left out: a soft thing meets primitives.
@@ -329,6 +383,38 @@ impl Dress for SoftLookDress<'_> {
 mod tests {
     use super::*;
     use crate::scene::Scene;
+
+    #[test]
+    #[cfg(feature = "animation")]
+    fn feet_find_a_crates_top_and_look_through_their_own_capsule() {
+        let scene: Scene = ron::from_str(
+            r#"(entities: [
+                (name: "crate", transform: (position: (0.0, 0.5, 0.0)),
+                 body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+                (name: "slope", transform: (position: (5.0, 0.0, 0.0), rotation_deg: (0.0, 0.0, 20.0)),
+                 body: Static, collider: Box(half: (2.0, 0.5, 2.0))),
+                (name: "hero", transform: (position: (0.0, 1.0, 0.0)), body: Kinematic,
+                 collider: Capsule(half_height: 0.6, radius: 0.3),
+                 ik: (feet: (left: "LeftFoot", right: "RightFoot"))),
+            ])"#,
+        )
+        .unwrap();
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        crate::world::apply_hierarchy(&mut world);
+        let ground = feet_ground(&world);
+        let (top, up) = ground(Vec3::new(0.1, 1.4, 0.0), 0.8).expect("the crate, through the hero");
+        assert!((top.y - 1.0).abs() < 2e-3 && up.y > 0.99, "{top} {up}");
+        let (_, tilted) = ground(Vec3::new(5.0, 1.5, 0.0), 2.0).expect("the slope");
+        assert!(
+            (tilted.angle_between(Vec3::Y).to_degrees() - 20.0).abs() < 1.0,
+            "{tilted}"
+        );
+        assert!(
+            ground(Vec3::new(20.0, 1.0, 0.0), 0.8).is_none(),
+            "nothing there"
+        );
+    }
 
     #[test]
     fn a_rope_on_a_line_hangs_over_a_crate_and_is_drawn_in_its_material() {

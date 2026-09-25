@@ -74,6 +74,8 @@ pub fn dressers<'a>(
     out.push(Box::new(crate::motion::MotionDress));
     #[cfg(feature = "routes")]
     out.push(Box::new(crate::routes::RouteDress));
+    #[cfg(feature = "wires")]
+    out.push(Box::new(crate::wires::WireDress));
     out.push(Box::new(crate::appearance::LookDress { resolve, palette }));
     out.push(Box::new(crate::streaming::StreamDress));
     #[cfg(feature = "soft")]

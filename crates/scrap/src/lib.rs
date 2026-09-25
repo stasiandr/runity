@@ -24,6 +24,9 @@ pub use scrap_core::impl_parts;
 pub use scrap_animation::animator;
 #[cfg(feature = "animation")]
 pub use scrap_animation::animgraph;
+/// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
+#[cfg(feature = "animation")]
+pub use scrap_animation::ik as pose_ik;
 /// The asset archive as the core has it: its header, its ID.
 pub use scrap_core::asset as asset_core;
 pub use scrap_geometry::animation;
@@ -63,6 +66,7 @@ pub mod asset {
 #[cfg(feature = "audio")]
 pub use scrap_audio::audio;
 pub use scrap_core::components;
+pub mod console;
 pub use scrap_core::crash;
 pub use scrap_core::edit;
 pub use scrap_core::embed;
@@ -70,12 +74,20 @@ pub use scrap_core::files;
 pub use scrap_core::web_time;
 #[cfg(feature = "dialogue")]
 pub use scrap_dialogue::dialogue;
+#[cfg(feature = "dialogue")]
+pub use scrap_dialogue::quest;
+/// A dialogue as the files are written by hand, patched where it changed.
+#[cfg(feature = "dialogue")]
+pub use scrap_dialogue::text as dialogue_text;
 #[cfg(feature = "discord")]
 pub use scrap_discord::discord;
 pub use scrap_geometry::builtin;
+pub use scrap_geometry::ease;
+pub use scrap_geometry::solid;
 #[cfg(feature = "physics")]
 pub use scrap_net::bench;
 pub use scrap_render::atmosphere;
+pub use scrap_render::cameras;
 pub use scrap_render::clouds;
 pub use scrap_render::cluster;
 pub use scrap_render::decals;
@@ -85,6 +97,7 @@ pub use scrap_render::floaters;
 pub use scrap_render::foliage;
 pub use scrap_render::footprints;
 #[cfg(feature = "physics")]
+pub mod debug_overlay;
 pub mod gizmo;
 #[cfg(feature = "animation")]
 pub use scrap_animation::graph_text;
@@ -133,8 +146,52 @@ pub mod motion {
         })
     }
 }
+
+/// Tweens from game code: the animation module's, with a sound's volume
+/// and particles' rate read and written by the modules that own them, as
+/// a motion clip's are (docs/feel.md).
+#[cfg(feature = "animation")]
+pub mod tween {
+    pub use scrap_animation::tween::*;
+
+    use scrap_animation::motion::Property;
+
+    /// Every tween one step on ([`run_tweens`]).
+    pub fn run(world: &mut hecs::World, dt: f32) {
+        let get = |world: &hecs::World, entity: hecs::Entity, what: Property| match what {
+            Property::Volume => world
+                .get::<&crate::world::Sounding>(entity)
+                .ok()
+                .map(|s| s.0.volume),
+            Property::ParticleRate => world
+                .get::<&crate::particles::Emitting>(entity)
+                .ok()
+                .map(|p| p.emitter.rate),
+            _ => None,
+        };
+        run_tweens(
+            world,
+            dt,
+            &get,
+            &mut |world, entity, what, value| match what {
+                Property::Volume => {
+                    if let Ok(mut s) = world.get::<&mut crate::world::Sounding>(entity) {
+                        s.0.volume = value;
+                    }
+                }
+                Property::ParticleRate => {
+                    if let Ok(mut p) = world.get::<&mut crate::particles::Emitting>(entity) {
+                        p.emitter.rate = value;
+                    }
+                }
+                _ => {}
+            },
+        )
+    }
+}
 pub use scrap_core::parts;
 pub use scrap_core::perf;
+pub use scrap_core::player;
 pub use scrap_core::player_prefs;
 pub use scrap_core::prefab;
 pub use scrap_core::project;
@@ -157,17 +214,26 @@ pub mod player_loop {
     pub use scrap_core::player_loop::*;
 
     /// The build's modules' systems, in the order a frame needs them: in
-    /// the fixed step routes, motion clips and characters' animation, then
+    /// the fixed step the wires first, so what they pull moves in the same
+    /// step, then routes, motion clips, tweens and characters' animation, then
     /// the hierarchy placed; cameras following in LateUpdate; particles
     /// and footprints as the frame is built. A game runs a phase where its
     /// own systems want it.
     pub fn modules() -> PlayerLoop {
         let mut player_loop = PlayerLoop::new();
+        #[cfg(feature = "wires")]
+        scrap_wires::systems(&mut player_loop);
         #[cfg(feature = "routes")]
         scrap_routes::systems(&mut player_loop);
         #[cfg(feature = "animation")]
-        player_loop.add(Phase::FixedUpdate, "motion", crate::motion::run);
-        #[cfg(feature = "animation")]
+        player_loop
+            .add(Phase::FixedUpdate, "motion", crate::motion::run)
+            .add(Phase::FixedUpdate, "tweens", crate::tween::run);
+        // Feet of animated skeletons stand on the scene's colliders, as a
+        // crawler's do.
+        #[cfg(all(feature = "animation", feature = "soft"))]
+        scrap_animation::systems_on(&mut player_loop, crate::soft::feet_ground);
+        #[cfg(all(feature = "animation", not(feature = "soft")))]
         scrap_animation::systems(&mut player_loop);
         scrap_core::player_loop::systems(&mut player_loop);
         // Ropes swing once everything they hang from is placed, and are
@@ -205,7 +271,10 @@ pub mod player_loop {
         fn the_modules_put_their_systems_where_unity_would() {
             let player_loop = super::modules();
             use super::Phase;
-            let mut fixed = vec!["routes", "motion", "animation", "hierarchy"];
+            let mut fixed = vec!["routes", "motion", "tweens", "animation", "hierarchy"];
+            if cfg!(feature = "wires") {
+                fixed.insert(0, "wires");
+            }
             if cfg!(feature = "soft") {
                 fixed.push("soft");
             }
@@ -243,6 +312,7 @@ pub mod modules {
         "routes",
         "soft",
         "spline",
+        "wires",
     ];
 
     /// The sets `scrap new` offers (DNA, postulate 8), by name: `bare`,
@@ -283,6 +353,7 @@ pub mod modules {
             include_str!("../../scrap-input/module.ron"),
             include_str!("../../scrap-spline/module.ron"),
             include_str!("../../scrap-routes/module.ron"),
+            include_str!("../../scrap-wires/module.ron"),
             include_str!("../../scrap-dialogue/module.ron"),
             include_str!("../../scrap-reports/module.ron"),
             include_str!("../../scrap-discord/module.ron"),
@@ -320,6 +391,7 @@ pub mod modules {
             "input" => cfg!(feature = "input"),
             "spline" => cfg!(feature = "spline"),
             "routes" => cfg!(feature = "routes"),
+            "wires" => cfg!(feature = "wires"),
             "dialogue" => cfg!(feature = "dialogue"),
             "soft" => cfg!(feature = "soft"),
             "destruction" => cfg!(feature = "destruction"),
@@ -356,6 +428,7 @@ pub use scrap_render::reflections;
 pub mod refs;
 pub mod shot;
 pub mod streaming;
+pub use scrap_core::records;
 pub use scrap_core::ron_edit;
 pub use scrap_core::ron_text;
 /// Saving a game in progress, as the core has it.
@@ -367,6 +440,8 @@ pub use scrap_render::render;
 pub use scrap_reports::reports;
 #[cfg(feature = "routes")]
 pub use scrap_routes::routes;
+#[cfg(feature = "wires")]
+pub use scrap_wires::wires;
 
 /// Saving a game in progress, and the report a running game sends the
 /// editor: the core's save with what the modules add to it.
@@ -446,6 +521,8 @@ pub mod scene {
     pub use crate::sound::*;
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
+    #[cfg(feature = "wires")]
+    pub use crate::wires::{Act, On, Wire, Wires};
     pub use scrap_geometry::line::*;
 
     /// Every field of a line, an override or a scene's look the modules
@@ -458,11 +535,14 @@ pub mod scene {
         kinds.extend(scrap_geometry::line::part_kinds());
         kinds.extend(scrap_core::wind::part_kinds());
         kinds.extend(scrap_core::stream::part_kinds());
+        kinds.extend(scrap_core::player::part_kinds());
         kinds.extend(crate::look::part_kinds());
         #[cfg(feature = "animation")]
         kinds.extend(crate::motion::part_kinds());
         #[cfg(feature = "routes")]
         kinds.extend(crate::routes::part_kinds());
+        #[cfg(feature = "wires")]
+        kinds.extend(crate::wires::part_kinds());
         kinds.extend(crate::sound::part_kinds());
         #[cfg(feature = "spline")]
         kinds.extend(crate::spline::part_kinds());
@@ -504,6 +584,8 @@ pub mod prelude {
     pub use crate::sound::SoundLine;
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
+    #[cfg(feature = "wires")]
+    pub use crate::wires::WireLine;
     pub use scrap_geometry::line::{GeometryLine, GeometryOverride};
 }
 pub use scrap_core::shape;

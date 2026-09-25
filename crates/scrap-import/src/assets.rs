@@ -75,7 +75,15 @@ enum Kind {
     Other,
 }
 
-const MODEL_EXTENSIONS: [&str; 6] = ["gltf", "glb", "blend", "obj", "scrterrain", "scrpoly"];
+const MODEL_EXTENSIONS: [&str; 7] = [
+    "gltf",
+    "glb",
+    "blend",
+    "obj",
+    "scrterrain",
+    "scrpoly",
+    "scrbrush",
+];
 
 fn extension(path: &Path) -> String {
     path.extension()

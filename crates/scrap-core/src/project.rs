@@ -93,6 +93,13 @@ pub const TUNING: &str = "tuning";
 /// without linking the game.
 pub const SHAPES: &str = "library/components.ron";
 
+/// What the game reads each file of `tuning/` as, written beside
+/// [`SHAPES`] by the same call: the columns of the editor's Table and what
+/// `scrap check` holds the files to.
+pub const TUNING_SHAPES: &str = "library/tuning.ron";
+/// [`TUNING_SHAPES`]'s file name, beside [`SHAPES`].
+pub const TUNING_SHAPES_FILE: &str = "tuning.ron";
+
 /// Where a built game keeps its project data, beside the executable.
 pub const DATA: &str = "data";
 
@@ -178,6 +185,10 @@ pub struct GameSettings {
     pub steps_per_second: u32,
     /// The table in `strings/` the game speaks.
     pub language: String,
+    /// How big the player is and how far it jumps: what the Scene view's
+    /// reference shows, navigation bakes for and the game's controller
+    /// reads (docs/player.md).
+    pub player: crate::player::PlayerMetrics,
 }
 
 impl Default for GameSettings {
@@ -189,6 +200,7 @@ impl Default for GameSettings {
             height: 720,
             steps_per_second: 60,
             language: "en".into(),
+            player: Default::default(),
         }
     }
 }
@@ -694,6 +706,8 @@ const INPUT_RON: &str = "\
     actions: {
         \"quit\": [Key(Escape)],
         \"profile\": [Key(F3)],
+        \"console\": [Key(Backquote)],
+        \"debug\": [Key(Quote)],
         \"jump\": [Key(Space), Pad(South)],
     },
     axes: {
@@ -761,6 +775,11 @@ struct Game {
     strings: scrap::strings::Strings,
     profile: scrap::perf::Profiler,
     show_profile: bool,
+    /// ` : the game's console — `help`, `set world.gravity -3`, the cheats
+    /// in [`cheats`]; the editor's Console types into it too.
+    console: scrap::console::Console,
+    /// ' : what the thing looked at is doing, written over it.
+    debug: scrap::debug_overlay::DebugOverlay,
     widgets: Widgets,
     /// Materials' own shaders, put in and reloaded as they are saved.
     shaders: scrap::render::MaterialShaders,
@@ -826,6 +845,25 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop,
     // @destruction }
 }
 
+/// The game's console commands besides the engine's `help`, `get` and
+/// `set` — its cheats. Each is a function of the world and the words typed
+/// after its name (Unreal's CheatManager); add yours here. The console is
+/// on in a debug build, and in a release one run with SCRAP_CONSOLE=1.
+fn cheats() -> scrap::console::Commands {
+    let tuning = scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning");
+    let mut commands = scrap::console::Commands::new().with_tuning(tuning);
+    commands.add("spin", "spin DEGREES: everything that spins turns this fast", |world, words| {
+        let speed: f32 = words.first().and_then(|w| w.parse().ok()).ok_or("spin DEGREES, as: spin 90")?;
+        let mut turned = 0;
+        for spin in world.query_mut::<&mut components::Spin>() {
+            spin.degrees_per_second = speed;
+            turned += 1;
+        }
+        Ok(format!("{turned} spinning at {speed} degrees a second"))
+    });
+    commands
+}
+
 /// In the project, write what the components look like, for the editor's
 /// Inspector and `scrap check` (library/components.ron). Nothing in a build.
 fn write_shapes() {
@@ -841,12 +879,20 @@ fn write_shapes() {
 fn game_components() -> Components {
     let mut components = Components::new();
     components::register(&mut components);
+    // What tuning/ is read as: the editor's Table shows its columns and
+    // `scrap check` its misspelt fields.
+    components.register_tuning::<WorldNumbers>("world");
     components
 }
 
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
+            eprintln!("{line}");
+        }
+        // Play from Here in the editor: what the scene marks
+        // `player_start: true` stands where the editor was looking.
+        for line in self.live.start_here(&mut self.world) {
             eprintln!("{line}");
         }
         self.start_physics(ctx);
@@ -868,35 +914,43 @@ impl shell::Game for Game {
         let seconds = ctx.time.settings().fixed_delta;
         self.physics.gravity.y = self.tuning.gravity;
         tick(&mut self.world, &mut self.physics, &mut self.modules, &mut self.profile, seconds);
+        // Slow motion or a hit-stop the step's systems asked for
+        // (`scrap::time::hit_stop`), to the clock.
+        ctx.ask_time(scrap::time::sync(&mut self.world, ctx.time));
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
         if let Some(Err(problem)) = self.actions.reload_if_changed() {
             eprintln!("{problem}");
         }
-        if let Some(Err(problem)) = self.tuning.poll(ctx.time.delta()) {
+        if let Some(Err(problem)) = self.tuning.poll(ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
-        match self.layers.poll(ctx.time.delta()) {
+        match self.layers.poll(ctx.time.unscaled_delta()) {
             Some(Ok(())) => self.physics.set_layers((*self.layers).clone(), &self.world),
             Some(Err(problem)) => eprintln!("{problem}"),
             None => {}
         }
-        if let Some(Err(problem)) = self.hud.poll(ctx.time.delta()) {
+        if let Some(Err(problem)) = self.hud.poll(ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
         self.ui.clear();
         let size = scrap::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
-        if let Some(Err(problem)) = self.strings.poll(ctx.time.delta()) {
+        if let Some(Err(problem)) = self.strings.poll(ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
         // The pad's moves between the screen's widgets, before they draw.
         self.widgets.begin_frame(ctx.input);
         let done = self.hud.draw_localized(&mut self.widgets, &mut self.ui, ctx.input, size, &self.strings);
-        if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
+        // The console: typed into here, or sent from the editor's Console.
+        // While it has the keyboard, the game's keys are not the game's.
+        let toggled = self.actions.pressed(ctx.input, "console");
+        self.console.frame(&mut self.world, ctx.input, toggled, ctx.commands, &mut self.ui, size);
+        let keys = !self.console.has_keyboard();
+        if done.clicked("quit") || (keys && self.actions.pressed(ctx.input, "quit")) {
             ctx.quit();
         }
-        let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
+        let reload = self.live.poll(ctx.time.unscaled_delta(), &mut self.world, ctx.gpu, ctx.renderer);
         for line in reload.lines() {
             eprintln!("{line}");
         }
@@ -917,7 +971,7 @@ impl shell::Game for Game {
         // Played together: what the others own comes in, what this player
         // owns goes out, and whatever they spawn is spawned here too.
         let (live, gpu, renderer) = (&mut self.live, ctx.gpu, &mut *ctx.renderer);
-        let events = self.party.update(&mut self.world, &self.components, ctx.time.delta(), |world, prefab, at| {
+        let events = self.party.update(&mut self.world, &self.components, ctx.time.unscaled_delta(), |world, prefab, at| {
             live.spawn_prefab(prefab, at, None, world, gpu, renderer).ok().map(|i| i.root)
         });
         for event in events {
@@ -954,12 +1008,15 @@ impl shell::Game for Game {
         // Started from the editor: tell it where things are, who this is
         // and what the systems cost.
         self.live.note(self.party.me().0, &self.profile);
-        if let Err(problem) = self.live.report(&self.world, ctx.time.delta()) {
+        if let Err(problem) = self.live.report(&self.world, ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
         // F3: what each part costs, over the game.
-        if self.actions.pressed(ctx.input, "profile") {
+        if keys && self.actions.pressed(ctx.input, "profile") {
             self.show_profile = !self.show_profile;
+        }
+        if keys && self.actions.pressed(ctx.input, "debug") {
+            self.debug.toggle();
         }
         if self.show_profile {
             // The game's parts, then the loop's own: steps, frame, drawing and
@@ -970,8 +1027,12 @@ impl shell::Game for Game {
                 self.ui.text(TextRun::new(20.0, at, 16.0, scrap::glam::Vec4::ONE, line));
             }
         }
+        // The clock into the world — the real delta a camera's blend and
+        // shake run on — and what the systems asked of it, to the clock.
+        ctx.ask_time(scrap::time::sync(&mut self.world, ctx.time));
         // The modules' late systems: cameras that follow keep after their
-        // targets; sparks and dust move on the frame's time.
+        // targets and blend and shake; sparks and dust move on the frame's
+        // time.
         let delta = ctx.time.delta();
         for phase in [Phase::Update, Phase::LateUpdate, Phase::PostLateUpdate] {
             self.modules.run(phase, &mut self.world, delta, Some(&mut self.profile));
@@ -992,7 +1053,9 @@ impl shell::Game for Game {
         let scene = self.live.scene();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
-        let frame = self.profile.time("frame", || scrap::world::scene_frame(&self.world, camera, scene));
+        let mut frame = self.profile.time("frame", || scrap::world::scene_frame(&self.world, camera, scene));
+        // ' : the state of the thing in the middle of the view, over it.
+        self.debug.draw(&self.world, &self.components, &camera, size, &mut self.ui, &mut frame, ctx.gpu, ctx.renderer);
         // The scene's sounds, heard from where the camera is.
         if let (Some(audio), Some(library)) = (self.audio.as_mut(), self.live.library()) {
             audio.set_listener(camera.position);
@@ -1077,6 +1140,8 @@ fn main() -> anyhow::Result<()> {
         strings,
         profile: scrap::perf::Profiler::new(600),
         show_profile: false,
+        console: scrap::console::Console::for_build(cheats(), cfg!(debug_assertions)),
+        debug: scrap::debug_overlay::DebugOverlay::new(),
         widgets: Widgets::new(),
         shaders: scrap::render::MaterialShaders::new(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
         ui: Ui::new(),
@@ -1492,7 +1557,8 @@ input.ron    actions by name (\"jump\"), and the keys for each
 tuning/      the game's numbers, RON, typed in code with scrap::Tuned
 ui/          the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
 strings/     the game's words, one file per language; a screen says `@key`
-dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue)
+dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue); <name>.cases.ron played by check
+quests/      rows of stages done by the dialogues' flags (scrap::quest)
 animators/   which animation plays when: states and transitions, RON (scrap::animgraph)
 clips/       clips that move things, not bones — a line's `animator` plays them (scrap::motion)
 shaders/     materials' own looks: one WGSL `surface` function a file
@@ -1553,6 +1619,13 @@ src/systems/     one system per file: `pub fn run(world, seconds)`
   list of them: the folder is the list. `scrap check` reports a component
   name no file answers to. Editing a value while the game runs changes that
   component and nothing else.
+* The player's size is `game: (player: (height, radius, step, slope,
+  jump_height, speed, gravity))` in `scrap.ron`: navigation bakes for it,
+  the editor draws it (View › Player), and a controller should read the
+  same numbers (`scrap::project::GameSettings::load`). The line the player
+  starts as — or an empty the game spawns it at — says
+  `player_start: true`; Play › Play from Here moves it where the editor
+  looks (`LiveScene::start_here` in `start`).
 * Everything a person makes is text and is committed; `library/` and
   `target/` are not.
 * Binary sources are in Git LFS and lockable — lock before editing one.

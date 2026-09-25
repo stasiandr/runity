@@ -42,13 +42,20 @@ jobs:
       # there is, and it has to be deliberate.
       - name: Clippy (desktop shell)
         run: cargo clippy --workspace --all-targets --features desktop-shell -- -D warnings
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # Fast and medium tests (.config/nextest.toml); the slow ones run once
+      # a day (daily.yml). nextest does not run doctests, so they go apart.
       - name: Test
-        run: cargo test --workspace
+        run: cargo nextest run --workspace -P ci
+      - name: Doctests
+        run: cargo test --workspace --doc
       # Sound is behind a feature and off by default — the engine is built on
       # greybox and nobody is listening yet. Tested here anyway, with kira's
       # mock backend, so that the day it is turned back on it still works.
       - name: Test (audio)
-        run: cargo test --workspace --features scrap/audio
+        run: cargo nextest run --workspace -P ci --features scrap/audio
       # "Switching a subsystem off is one line" is only true while the engine
       # still builds with it off. Checked here, because nothing else builds
       # the engine bare and the first to notice would be a game that tried.

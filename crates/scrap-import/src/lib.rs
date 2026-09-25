@@ -26,6 +26,7 @@
 
 pub mod assets;
 pub mod blend;
+pub mod brush;
 pub mod poly;
 pub mod scene;
 pub mod terrain;
@@ -1798,6 +1799,14 @@ pub fn import_to(
                 scrap::asset::MESH,
             )
         }
+        "scrbrush" => {
+            let mesh = brush::mesh_from_brushes(source, &settings)?;
+            (
+                scrap::asset::to_bytes(&mesh, scrap::asset::MESH)?,
+                mesh.id,
+                scrap::asset::MESH,
+            )
+        }
         "scrterrain" => {
             let mesh = terrain::mesh_from_terrain(source, &settings)?;
             (
@@ -2244,6 +2253,7 @@ pub fn importable(path: &Path) -> bool {
                 | "obj"
                 | "scrterrain"
                 | "scrpoly"
+                | "scrbrush"
                 | "wav"
                 | "mp3"
                 | "ogg"

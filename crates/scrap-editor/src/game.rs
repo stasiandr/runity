@@ -339,7 +339,14 @@ impl Session {
     /// [`Session::players`] of them playing together. One game at a time;
     /// starting again stops the one running.
     pub fn start_game(&mut self) -> EditResult<()> {
-        let mut command = self.game_command()?;
+        self.start_game_at(None)
+    }
+
+    /// [`Session::start_game`], told where the player starts (Play from
+    /// Here, [`Session::start_game_from_here`]): `SCRAP_START`, which every
+    /// player's game is given, as it is given the scene.
+    pub fn start_game_at(&mut self, start: Option<scrap::player::Start>) -> EditResult<()> {
+        let mut command = self.game_command_at(start)?;
         // The host plays in the Game view; the others, when several play,
         // each in a window of its own.
         let (embed, address) = crate::embedded::Embedded::listen()?;
@@ -369,10 +376,13 @@ impl Session {
                 scrap::party::tile(0, count, size),
             );
         // What every player shares with the host: the scene, the file it
-        // watches. What is each one's own: its window, its state, its folder.
+        // watches, where the player starts. What is each one's own: its
+        // window, its state, its folder.
         let shared: Vec<(OsString, OsString)> = command
             .get_envs()
-            .filter(|(k, _)| *k == "SCRAP_SCENE" || *k == LIVE_VAR)
+            .filter(|(k, _)| {
+                *k == "SCRAP_SCENE" || *k == LIVE_VAR || *k == scrap::player::START_VAR
+            })
             .filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string())))
             .collect();
         let state = command
@@ -540,6 +550,17 @@ impl Session {
             .find(|s| s.id == id)
             .map(|s| s.animator)
             .filter(|a| !a.is_empty())
+    }
+
+    /// The last transitions the running game says an entity's graph
+    /// took, oldest first: the base graph's as `#12 idle → walk (…)`, a
+    /// layer's with its name before, `arms: #14 none → wave (…)`.
+    pub fn game_animator_trail(&self, id: scrap::EntityId) -> Vec<String> {
+        self.game_state()
+            .and_then(|s| s.diagnostics)
+            .and_then(|d| d.animators.into_iter().find(|(e, _)| *e == id))
+            .map(|(_, trail)| trail)
+            .unwrap_or_default()
     }
 
     /// Every player's report while a game started from here runs: player

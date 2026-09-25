@@ -248,16 +248,16 @@
         (id: "01d7425638602ab6", name: "counter 21", model: "", transform: (position: (5.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
 (id: "96a402f23ae8cc93", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "0f1259e0a18ff6b6", name: "cook 1", model: "character-male-a", transform: (position: (-2.000, 0.000, 0.000), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 0, speed: 4.2) }, children: [
+        (id: "0f1259e0a18ff6b6", name: "cook 1", model: "character-male-a", transform: (position: (-2.000, 0.000, 0.000), scale: (1.350, 1.350, 1.350)), animator: "cook", player_start: true, components: { "player": (index: 0, speed: 4.2) }, children: [
 (id: "b535106e122c9a56", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
 ]),
-        (id: "080aadfbe7c99b26", name: "cook 2", model: "character-female-b", transform: (position: (2.000, 0.000, 0.000), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 1, speed: 4.2) }, children: [
+        (id: "080aadfbe7c99b26", name: "cook 2", model: "character-female-b", transform: (position: (2.000, 0.000, 0.000), scale: (1.350, 1.350, 1.350)), animator: "cook", player_start: true, components: { "player": (index: 1, speed: 4.2) }, children: [
 (id: "114125c63a9bedd4", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
 ]),
-        (id: "839fbc501223b513", name: "cook 3", model: "character-male-c", transform: (position: (-2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 2, speed: 4.2) }, children: [
+        (id: "839fbc501223b513", name: "cook 3", model: "character-male-c", transform: (position: (-2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", player_start: true, components: { "player": (index: 2, speed: 4.2) }, children: [
 (id: "5496f63cdc1110c1", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
 ]),
-        (id: "7c441fe7ab4220a7", name: "cook 4", model: "character-female-d", transform: (position: (2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 3, speed: 4.2) }, children: [
+        (id: "7c441fe7ab4220a7", name: "cook 4", model: "character-female-d", transform: (position: (2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", player_start: true, components: { "player": (index: 3, speed: 4.2) }, children: [
 (id: "474a493b3ceddf2d", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
 ]),
         (id: "8a0b3c3336d8393a", name: "customer 1", model: "character-male-e", transform: (position: (-4.500, 0.000, 4.100), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (7.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 1.5), components: { "mark": (name: "customer") }),

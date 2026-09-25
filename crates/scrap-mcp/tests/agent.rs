@@ -113,6 +113,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "push_face",
         "paint_foliage",
         "fence",
+        "wire",
         "array",
         "edits",
         "measure",
@@ -126,12 +127,16 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "to_view",
         "override_field",
         "console",
+        "game_console",
         "group",
         "thumbnail",
         "drop",
         "add_component",
         "import_settings",
         "fit_collider",
+        "table",
+        "set_cell",
+        "undo_cell",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -357,6 +362,30 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         json!({ "what": "builtin:cylinder", "points": [[0.0, 0.0, 5.0], [6.0, 0.0, 5.0]], "spacing": 2.0 }),
     );
     assert!(said.contains("fence of builtin:cylinder"), "{said}");
+    // A porch wired to a lamp: the lamp goes out when the last one leaves.
+    let porch = agent.text(
+        "add_entity",
+        json!({ "name": "porch", "body": "Trigger", "collider": "Box(half: (1.0, 1.0, 1.0))" }),
+    );
+    let lamp = agent.text(
+        "add_entity",
+        json!({ "name": "lamp", "model": "builtin:sphere" }),
+    );
+    let said = agent.text(
+        "wire",
+        json!({ "from": porch, "to": lamp, "do": "Deactivate", "on": "Empty" }),
+    );
+    assert!(
+        said.contains("on:Empty") && said.contains("do:Deactivate"),
+        "{said}"
+    );
+    let err = agent
+        .call(
+            "wire",
+            json!({ "from": porch, "to": "123", "do": "Activate" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("0000000000000123"), "{err}");
     let err = agent
         .call("render", json!({ "from_game": true }))
         .unwrap_err();
@@ -524,6 +553,7 @@ fn the_scene_and_the_project_files_are_readable_resources() {
         .map(|r| r["name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"scenes/main.ron"), "{names:?}");
+    assert!(names.contains(&"tuning/world.ron"), "{names:?}");
 
     let document = agent.request("resources/read", json!({ "uri": "scrap://document" }));
     let text = document["result"]["contents"][0]["text"].as_str().unwrap();
@@ -586,6 +616,52 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
         .call("new_scene", json!({ "name": "main" }))
         .unwrap_err();
     assert!(err.contains("already there"), "{err}");
+    // No game running: the game's console says what to do first.
+    let err = agent
+        .call("game_console", json!({ "command": "help" }))
+        .unwrap_err();
+    assert!(err.contains("start_game first"), "{err}");
+}
+
+#[test]
+fn an_agent_sees_the_player_s_size_and_is_told_where_it_cannot_start() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-player");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    // The capsule and the jump stand where the view looks: a picture.
+    let shot = agent
+        .call(
+            "render",
+            json!({ "eye": [0.0, 3.0, 6.0], "target": [0.0, 0.5, 0.0], "player": true }),
+        )
+        .unwrap();
+    assert!(shot.iter().any(|c| c["type"] == "image"), "{shot:?}");
+    // A walk across the ground, for the project's player.
+    let way = agent.text(
+        "path",
+        json!({ "from": [-5.0, 0.0, 0.0], "to": [5.0, 0.0, 0.0] }),
+    );
+    assert!(way.starts_with("a way"), "{way}");
+    // Looking at the sky from over nothing: nowhere to stand, said so, and
+    // nothing started.
+    agent
+        .call(
+            "render",
+            json!({ "eye": [100.0, 3.0, 0.0], "target": [110.0, 3.0, 0.0] }),
+        )
+        .unwrap();
+    let e = agent
+        .call("start_game", json!({ "from_here": true }))
+        .unwrap_err();
+    assert!(e.contains("nothing to stand on"), "{e}");
 }
 
 #[test]
@@ -699,4 +775,142 @@ fn an_agent_reads_connects_and_renames_in_an_animator_graph() {
     assert!(agent
         .text("graph", json!({ "name": "hero" }))
         .contains("never reached"));
+}
+
+#[test]
+fn an_agent_balances_records_in_a_table() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-table");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    let file = root.join("tuning/enemies.ron");
+    let text = "{\n    \"goblin\": (hp: 10, speed: 2.5),\n    \"orc\": (hp: 30), // slow\n}\n";
+    std::fs::write(&file, text).unwrap();
+
+    let sources = agent.text("table", json!({}));
+    assert!(sources.contains("tuning/enemies.ron"), "{sources}");
+    let table = agent.text("table", json!({ "source": "tuning/enemies.ron" }));
+    assert!(table.starts_with("key\tlabel\thp\tspeed"), "{table}");
+    assert!(table.contains("orc\torc\t30\t"), "{table}");
+
+    agent.text(
+        "set_cell",
+        json!({ "source": "tuning/enemies.ron", "row": "orc", "column": "speed", "value": "1.5" }),
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        text.replace("(hp: 30)", "(hp: 30, speed: 1.5)")
+    );
+    let e = agent
+        .call(
+            "set_cell",
+            json!({ "source": "tuning/enemies.ron", "row": "orcc", "column": "hp", "value": "1" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("did you mean `orc`?"), "{e}");
+    assert!(agent.text("undo_cell", json!({})).contains("orc.speed"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+    // The world's numbers: one struct, one row.
+    agent.text(
+        "set_cell",
+        json!({ "source": "tuning/world.ron", "column": "gravity", "value": "-3.7" }),
+    );
+    let world = std::fs::read_to_string(root.join("tuning/world.ron")).unwrap();
+    assert!(world.contains("gravity: -3.7"), "{world}");
+    assert!(
+        world.starts_with("// The world's numbers."),
+        "comments stay: {world}"
+    );
+}
+
+#[test]
+fn an_agent_writes_plays_and_renames_in_a_dialogue() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-dialogue");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    // A dialogue made a line at a time; the first is its start.
+    agent.text(
+        "dialogue_line",
+        json!({ "name": "trader", "line": "hello", "entry": "(speaker: \"Trader\", text: \"Buying?\", choices: [(text: \"Yes\", to: \"sold\", when: [Var(\"coins\", Ge, 3)], add: {\"coins\": -3}), (text: \"No\", to: \"bye\")])" }),
+    );
+    let said = agent.text(
+        "dialogue_line",
+        json!({ "name": "trader", "line": "sold", "entry": "(text: \"Done.\", event: \"sold\")" }),
+    );
+    assert!(said.contains("leads to `bye`"), "{said}");
+    agent.text(
+        "dialogue_line",
+        json!({ "name": "trader", "line": "bye", "entry": "(text: \"Bye.\")" }),
+    );
+    let file = root.join("dialogues/trader.ron");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("start: \"hello\""), "{text}");
+    assert!(
+        text.contains("        \"bye\": (text: \"Bye.\"),"),
+        "a line a line: {text}"
+    );
+    let read = agent.text("dialogue", json!({ "name": "trader" }));
+    assert!(
+        read.contains("answer 1: “Yes” → sold if coins ≥ 3"),
+        "{read}"
+    );
+    assert!(!read.contains("problem"), "{read}");
+
+    // Played without the game: poor, then with coins.
+    let poor = agent.text(
+        "dialogue_play",
+        json!({ "name": "trader", "answers": ["Yes"] }),
+    );
+    assert!(poor.contains("answers on offer: “No”"), "{poor}");
+    assert!(poor.contains("“Yes” is not on offer"), "{poor}");
+    let rich = agent.text(
+        "dialogue_play",
+        json!({ "name": "trader", "answers": ["Yes"], "vars": { "coins": 5 } }),
+    );
+    assert!(
+        rich.contains("tells `sold`") && rich.contains("coins = 2"),
+        "{rich}"
+    );
+
+    // Cases follow a rename; check plays them.
+    std::fs::write(
+        root.join("dialogues/trader.cases.ron"),
+        "(cases: [(name: \"buys\", vars: {\"coins\": 3}, steps: [Choose(\"Yes\", \"sold\"), Told(\"sold\")])])\n",
+    )
+    .unwrap();
+    agent.text(
+        "dialogue_rename",
+        json!({ "name": "trader", "from": "sold", "to": "done" }),
+    );
+    let cases = std::fs::read_to_string(root.join("dialogues/trader.cases.ron")).unwrap();
+    assert!(cases.contains("Choose(\"Yes\", \"done\")"), "{cases}");
+    assert!(agent
+        .text("dialogue", json!({ "name": "trader" }))
+        .contains("cases: 1 of 1 pass"));
+    let err = agent
+        .call("dialogue", json!({ "name": "tradr" }))
+        .unwrap_err();
+    assert!(err.contains("did you mean `trader`"), "{err}");
+
+    let wrote = agent.text("export_lines", json!({}));
+    assert!(wrote.contains("build/lines/en.csv"), "{wrote}");
+    let sheet = std::fs::read_to_string(root.join("build/lines/en.csv")).unwrap();
+    assert!(sheet.contains("trader/hello,Trader,,Buying?"), "{sheet}");
+    assert!(sheet.contains("trader/hello/1,,,Yes"), "{sheet}");
 }

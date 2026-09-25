@@ -281,6 +281,83 @@ fn a_joint_in_a_prefab_spawned_at_run_time_holds_its_parts_together() {
     assert!(lowest > 3.0, "the shade hangs from its post, not fallen: {lowest}");
 }
 
+/// A hatch spawned twice: a ball dropped into one opens that one's lid and
+/// drops a crate out of that one's spout — its wires find its own parts,
+/// and the crate it asks for is spawned where the spout is.
+#[cfg(feature = "wires")]
+#[test]
+fn a_wire_in_a_prefab_spawned_at_run_time_works_its_own_parts_and_spawns_a_crate() {
+    let project = project("spawn-wires");
+    write(
+        &project.prefabs().join("crate.prefab"),
+        r#"(id: "0000000000000c01", name: "crate", model: "builtin:cube")"#,
+    );
+    write(
+        &project.prefabs().join("hatch.prefab"),
+        r#"(id: "0000000000000d01", name: "hatch", body: Trigger, collider: Box(half: (1.0, 0.5, 1.0)),
+            wires: [
+                (on: Enter, to: "0000000000000d02", do: Deactivate),
+                (on: Enter, to: "0000000000000d03", do: Spawn(prefab: "crate")),
+            ],
+            children: [
+                (id: "0000000000000d02", name: "lid", model: "builtin:cube"),
+                (id: "0000000000000d03", name: "spout", transform: (position: (0.0, -2.0, 0.0))),
+            ])"#,
+    );
+    write(
+        &project.scenes().join("main.ron"),
+        r#"(entities: [(id: "e1", name: "ball", transform: (position: (0.0, 6.0, 0.0)), body: Dynamic, collider: Sphere(radius: 0.25))])"#,
+    );
+    let (live, _) = LiveScene::open(project.scenes().join("main.ron")).unwrap();
+    let mut live = live;
+    let mut world = hecs::World::new();
+    live.spawn_headless(&mut world);
+    let at = |x: f32| scrap::Transform {
+        position: scrap::glam::Vec3::new(x, 3.0, 0.0),
+        ..scrap::Transform::default()
+    };
+    let one = live
+        .spawn_prefab_headless("hatch", at(0.0), None, &mut world)
+        .unwrap()
+        .root;
+    let two = live
+        .spawn_prefab_headless("hatch", at(5.0), None, &mut world)
+        .unwrap()
+        .root;
+    let mut physics = scrap::PhysicsWorld::new(1.0 / 60.0);
+    let mut problems = Vec::new();
+    for _ in 0..90 {
+        scrap::wires::run_wires(&mut world, 1.0 / 60.0);
+        problems.extend(live.spawn_ordered_headless(&mut world));
+        scrap::world::apply_hierarchy(&mut world);
+        physics.run(&mut world);
+    }
+    assert!(problems.is_empty(), "{problems:?}");
+    let lid = |hatch: hecs::Entity| {
+        world
+            .query::<(hecs::Entity, &scrap::world::Parent, &scrap::world::LineName)>()
+            .iter()
+            .find(|(_, p, n)| p.0 == hatch && n.0 == "lid")
+            .map(|(e, _, _)| e)
+            .unwrap()
+    };
+    let off = |e: hecs::Entity| world.get::<&scrap::world::Inactive>(e).is_ok();
+    assert!(off(lid(one)), "the ball fell into the first hatch");
+    assert!(!off(lid(two)), "and not into the second");
+    let crates: Vec<scrap::glam::Vec3> = world
+        .query::<(&scrap::world::LineName, &scrap::world::WorldTransform)>()
+        .iter()
+        .filter(|(n, _)| n.0 == "crate")
+        .map(|(_, t)| t.0.w_axis.truncate())
+        .collect();
+    assert_eq!(crates.len(), 1, "one crate, from the one hatch");
+    assert!(
+        (crates[0] - scrap::glam::Vec3::new(0.0, 1.0, 0.0)).length() < 1e-3,
+        "out of its spout: {:?}",
+        crates[0]
+    );
+}
+
 #[test]
 fn two_scenes_share_a_world_and_each_reloads_and_unloads_only_its_own() {
     let Ok(gpu) = Gpu::headless_blocking(false) else {
@@ -450,4 +527,34 @@ fn a_game_changes_level_keeping_what_it_spawned_itself() {
     );
     assert!(world.contains(player), "the game's own things cross over");
     assert!(live.path().ends_with("scenes/cave.ron"));
+}
+
+#[test]
+fn played_from_here_the_line_marked_player_start_stands_where_the_editor_said() {
+    let project = project("start");
+    let path = project.scenes().join("main.ron");
+    write(
+        &path,
+        r#"(entities: [
+    (id: "a1", name: "hero", model: "builtin:cube", player_start: true),
+    (id: "b2", name: "rock", model: "builtin:cube", transform: (position: (3.0, 0.0, 0.0))),
+])"#,
+    );
+    let (mut live, _) = LiveScene::open(&path).unwrap();
+    let mut world = hecs::World::new();
+    live.spawn_headless(&mut world);
+    let start =
+        scrap::player::Start::looking(scrap::glam::Vec3::new(5.0, 1.0, -2.0), scrap::glam::Vec3::X);
+    let said = live.start_at(&mut world, start);
+    assert!(said[0].contains("1 marked player_start"), "{said:?}");
+    let at = |id: &str| {
+        world
+            .get::<&scrap::world::WorldTransform>(entity(&world, id))
+            .unwrap()
+            .0
+            .w_axis
+            .truncate()
+    };
+    assert!(at("a1").distance(start.position) < 1e-4, "{}", at("a1"));
+    assert!(at("b2").distance(scrap::glam::Vec3::new(3.0, 0.0, 0.0)) < 1e-4);
 }

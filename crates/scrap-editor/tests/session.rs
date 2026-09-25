@@ -3606,6 +3606,122 @@ fn the_view_shows_where_a_walker_can_go_and_keeps_up_with_edits() {
     assert_eq!(session.walkable_cells(), None);
 }
 
+/// A floor to stand on, twenty metres a side, its top at y = 0.
+const FLOOR: &str = r#"(
+    entities: [
+        (name: "floor", model: "builtin:cube", transform: (position: (0.0, -0.1, 0.0), scale: (20.0, 0.2, 20.0)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (name: "hero", model: "builtin:cube", transform: (position: (-5.0, 0.5, 5.0)), player_start: true),
+    ],
+)"#;
+
+#[test]
+fn the_player_is_the_one_scrap_ron_describes_and_navigation_walks_for_it() {
+    let Some((session, path)) = open_with("player-metrics", FLOOR) else {
+        return;
+    };
+    assert_eq!(
+        session.player_metrics(),
+        scrap::player::PlayerMetrics::default()
+    );
+    assert_eq!(session.walker(), scrap::navigation::NavSettings::default());
+    // A bigger player, written where Project Settings writes it: seen at
+    // once, and only what was written changes.
+    let manifest = root_of(&path).join("scrap.ron");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("radius: 0.35"), "a new project writes its player: {text}");
+    let text = text
+        .replacen("radius: 0.35", "radius: 0.6", 1)
+        .replacen("step: 0.3,", "step: 0.45,", 1);
+    std::fs::write(&manifest, text).unwrap();
+    let player = session.player_metrics();
+    assert_eq!((player.radius, player.step), (0.6, 0.45));
+    assert_eq!(
+        player.height,
+        scrap::player::PlayerMetrics::default().height
+    );
+    let walker = session.walker();
+    assert_eq!(
+        (walker.radius, walker.max_step, walker.max_slope),
+        (0.6, 0.45, player.slope)
+    );
+}
+
+#[test]
+fn play_from_here_stands_the_player_on_what_the_view_looks_at() {
+    let Some((mut session, _)) = open_with("play-here", FLOOR) else {
+        return;
+    };
+    // Looking down at the floor: there, facing the way the view looks.
+    session.set_camera(Vec3::new(2.0, 6.0, 10.0), Vec3::new(2.0, 0.0, 0.0));
+    let start = session.start_here().unwrap();
+    assert!(
+        // Within a pixel of it.
+        start.position.distance(Vec3::new(2.0, 0.0, 0.0)) < 0.15,
+        "{start:?}"
+    );
+    assert!(
+        start.facing().distance(Vec3::NEG_Z) < 1e-4,
+        "{:?}",
+        start.facing()
+    );
+    // Looking at the horizon: on the floor under the camera.
+    session.set_camera(Vec3::new(1.0, 3.0, 0.0), Vec3::new(11.0, 3.0, 0.0));
+    let start = session.start_here().unwrap();
+    assert!(
+        start.position.distance(Vec3::new(1.0, 0.0, 0.0)) < 0.05,
+        "{start:?}"
+    );
+    assert!(start.facing().distance(Vec3::X) < 1e-4);
+    // The game is told, and reads back the same place; Play alone tells
+    // it nothing, even when this process was given a start.
+    let command = session.game_command_at(Some(start)).unwrap();
+    let given = command
+        .get_envs()
+        .find(|(k, _)| *k == scrap::player::START_VAR)
+        .and_then(|(_, v)| v)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let read: scrap::player::Start = scrap::ron::from_str(&given).unwrap();
+    assert_eq!(read, start);
+    let plain = session.game_command().unwrap();
+    assert!(plain
+        .get_envs()
+        .any(|(k, v)| k == scrap::player::START_VAR && v.is_none()));
+    // Off the edge, over nothing and looking at the sky: refused.
+    session.set_camera(Vec3::new(50.0, 3.0, 0.0), Vec3::new(60.0, 3.0, 0.0));
+    let e = session.start_here().unwrap_err().to_string();
+    assert!(e.contains("nothing to stand on"), "{e}");
+}
+
+#[test]
+fn the_player_reference_is_drawn_where_the_player_would_start() {
+    let Some((mut session, _)) = open_with("player-view", FLOOR) else {
+        return;
+    };
+    session.set_show_grid(false);
+    session.set_camera(Vec3::new(0.0, 3.0, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    session.render();
+    let without = session.frame_pixels().to_vec();
+    assert!(!session.show_player(), "off until asked");
+    session.set_show_player(true);
+    session.render();
+    let with = session.frame_pixels().to_vec();
+    // The capsule stands in the middle of the view, where the view looks.
+    let (w, h) = session.size();
+    let changed = |x0: u32, x1: u32| {
+        (h / 4..h * 3 / 4)
+            .flat_map(|y| (x0..x1).map(move |x| ((y * w + x) * 4) as usize))
+            .filter(|&i| with[i..i + 3] != without[i..i + 3])
+            .count()
+    };
+    assert!(changed(w * 2 / 5, w * 3 / 5) > 20, "the capsule is drawn");
+    assert_eq!(
+        session.start_here().unwrap(),
+        session.player_reference().unwrap()
+    );
+}
+
 #[test]
 fn a_thumbnail_pictures_an_asset_alone_and_changes_nothing() {
     let Some((mut session, _)) = open("thumbnail") else {
@@ -4317,6 +4433,206 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("snake_case"), "{e}");
+}
+
+fn grey(session: &mut Session, name: &str, model: &str, t: Transform) -> EntityId {
+    session
+        .add_entity(
+            None,
+            scrap::EntityDesc {
+                name: name.into(),
+                transform: t,
+                ..Default::default()
+            }
+            .with(scrap::scene::ModelRef(model.into())),
+        )
+        .unwrap()
+}
+
+#[test]
+fn carving_grey_shapes_out_of_a_slab_leaves_a_hole_things_fall_through() {
+    let Some((mut session, path)) = open("carve") else {
+        return;
+    };
+    // A slab two metres up, 6 by 6 and half a metre thick; a box through
+    // it where the well goes, and a cylinder lying along one edge.
+    let slab = grey(
+        &mut session,
+        "Upper Floor",
+        "builtin:cube",
+        transform([0.0, 2.0, 0.0], [0.0, 0.0, 0.0], [6.0, 0.5, 6.0]),
+    );
+    let well = grey(
+        &mut session,
+        "well",
+        "builtin:cube",
+        transform([0.0, 2.0, 0.0], [0.0, 45.0, 0.0], [1.5, 2.0, 1.5]),
+    );
+    let pipe = grey(
+        &mut session,
+        "pipe",
+        "builtin:cylinder",
+        transform([-2.5, 2.0, -2.5], [0.0, 0.0, 90.0], [0.5, 8.0, 0.5]),
+    );
+    let steps = session.undo_steps().len();
+    let asset = session.carve(slab, &[well, pipe], None).unwrap();
+    assert_eq!(asset, "upper_floor", "named after the solid");
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert!(session.scene().get(well).is_none() && session.scene().get(pipe).is_none());
+    assert_eq!(session.selected(), Some(slab));
+    let line = session.scene().get(slab).unwrap().clone();
+    assert_eq!(line.name, "Upper Floor");
+    assert_eq!(
+        line.transform.scale,
+        Vec3::ONE,
+        "the scale went into the brush"
+    );
+    assert_eq!(line.collider(), scrap::scene::Collider::Model);
+    assert_eq!(line.body(), scrap::Body::Static);
+    let text = std::fs::read_to_string(root_of(&path).join("assets/upper_floor.scrbrush")).unwrap();
+    assert!(
+        text.contains("(shape: Box, scale: (6.0, 0.5, 6.0))"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "(op: Subtract, shape: Box, rotation_deg: (0.0, 45.0, 0.0), scale: (1.5, 2.0, 1.5))"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("(op: Subtract, shape: Cylinder, position: (-2.5, 0.0, -2.5), rotation_deg: (0.0, 0.0, 90.0), scale: (0.5, 8.0, 0.5))"),
+        "{text}"
+    );
+    let (low, high) = session.world_bounds(slab).unwrap();
+    assert!(
+        (low - Vec3::new(-3.0, 1.75, -3.0)).length() < 1e-3
+            && (high - Vec3::new(3.0, 2.25, 3.0)).length() < 1e-3,
+        "{low} {high}"
+    );
+
+    // Solid in its shape: a box over the well falls through, one beside
+    // it stands on the slab.
+    let dropped = |session: &mut Session, x: f32, z: f32| {
+        session
+            .add_entity(
+                None,
+                scrap::EntityDesc {
+                    name: format!("box {x}"),
+                    transform: transform([x, 4.0, z], [0.0; 3], [1.0; 3]),
+                    ..Default::default()
+                }
+                .with(scrap::scene::ModelRef("builtin:cube".into()))
+                .with(scrap::Body::Dynamic)
+                .with(scrap::scene::Collider::Box {
+                    half: Vec3::splat(0.2),
+                    center: Vec3::ZERO,
+                }),
+            )
+            .unwrap()
+    };
+    let (over_well, over_slab) = (
+        dropped(&mut session, 0.0, 0.0),
+        dropped(&mut session, 2.0, 1.0),
+    );
+    session.play();
+    for _ in 0..120 {
+        session.step(1.0 / 60.0);
+    }
+    let y = |id| session.world_position(id).unwrap().y;
+    assert!(y(over_well) < 1.5, "through the well: {}", y(over_well));
+    assert!(
+        (y(over_slab) - 2.45).abs() < 0.1,
+        "on the slab: {}",
+        y(over_slab)
+    );
+    session.stop();
+
+    // Carving into a brush solid adds to its file; undo gives the grey
+    // shapes back.
+    let slot = grey(
+        &mut session,
+        "slot",
+        "builtin:cube",
+        transform([2.0, 2.0, 0.0], [0.0; 3], [0.5, 4.0, 3.0]),
+    );
+    assert_eq!(session.carve(slab, &[slot], None).unwrap(), "upper_floor");
+    assert_eq!(session.brushes("upper_floor").unwrap().brushes.len(), 4);
+    session.undo().unwrap();
+    assert!(session.scene().get(slot).is_some(), "the cutter is back");
+
+    // What cannot be carved says why.
+    let ball = grey(
+        &mut session,
+        "ball",
+        "builtin:sphere",
+        transform([0.0; 3], [0.0; 3], [1.0; 3]),
+    );
+    let e = session.carve(slab, &[ball], None).unwrap_err().to_string();
+    assert!(e.contains("cube, ramp, cylinder or stairs"), "{e}");
+    let e = session.carve(ball, &[slot], None).unwrap_err().to_string();
+    assert!(e.contains("carve cuts"), "{e}");
+    let e = session.carve(slab, &[], None).unwrap_err().to_string();
+    assert!(e.contains("something to cut with"), "{e}");
+    let everything = grey(
+        &mut session,
+        "everything",
+        "builtin:cube",
+        transform([0.0, 2.0, 0.0], [0.0; 3], [10.0; 3]),
+    );
+    let e = session
+        .carve(slab, &[everything], None)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("leave nothing"), "{e}");
+    assert_eq!(
+        session.brushes("upper_floor").unwrap().brushes.len(),
+        4,
+        "the file kept"
+    );
+}
+
+#[test]
+fn a_brush_solid_is_made_and_cut_by_the_agent_line_by_line() {
+    use scrap_import::brush::{Brush, BrushSource, Op};
+    let Some((mut session, path)) = open("brushes") else {
+        return;
+    };
+    let wall = BrushSource {
+        brushes: vec![Brush::cuboid(
+            Op::Add,
+            Vec3::new(-2.0, 0.0, -0.125),
+            Vec3::new(2.0, 3.0, 0.125),
+        )],
+    };
+    let id = session
+        .brush_shape("wall", &wall, Vec3::new(0.0, 0.0, -5.0))
+        .unwrap();
+    // Written by hand in between: a comment the next line must not lose.
+    let file = root_of(&path).join("assets/wall.scrbrush");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("// the back wall\n{text}")).unwrap();
+    let door = Brush::cuboid(
+        Op::Subtract,
+        Vec3::new(-0.5, -0.5, -1.0),
+        Vec3::new(0.5, 2.0, 1.0),
+    );
+    session.add_brush("wall", &door).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("// the back wall\n"), "{text}");
+    assert_eq!(session.brushes("wall").unwrap().brushes[1], door);
+    let (low, high) = session.world_bounds(id).unwrap();
+    assert!(
+        (low - Vec3::new(-2.0, 0.0, -5.125)).length() < 1e-3
+            && (high - Vec3::new(2.0, 3.0, -4.875)).length() < 1e-3,
+        "{low} {high}"
+    );
+    // A cut that leaves nothing is refused, the file as it was.
+    let all = Brush::cuboid(Op::Subtract, Vec3::splat(-9.0), Vec3::splat(9.0));
+    assert!(session.add_brush("wall", &all).is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    let e = session.add_brush("nowhere", &door).unwrap_err().to_string();
+    assert!(e.contains("no nowhere.scrbrush"), "{e}");
 }
 
 #[test]
@@ -5577,4 +5893,276 @@ fn the_selection_is_outlined_round_its_shape_and_its_children_in_blue() {
         "and its child's, in blue: {}",
         count(&session, blue)
     );
+}
+
+#[test]
+fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Enemy {
+        hp: u32,
+        #[serde(default)]
+        speed: f32,
+    }
+    let Some((mut session, path)) = open("table-tuning") else {
+        return;
+    };
+    let root = root_of(&path);
+    let file = root.join("tuning/enemies.ron");
+    let text = "// Who the player meets.\n{\n    \"goblin\": (hp: 10, speed: 2.5), // small\n    \"orc\": (hp: 30),\n}\n";
+    std::fs::write(&file, text).unwrap();
+    assert!(session
+        .table_sources()
+        .contains(&"tuning/enemies.ron".to_string()));
+
+    // Before the game says what it reads: the fields the records write.
+    let table = session.table("tuning/enemies.ron").unwrap();
+    let columns: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(columns, ["hp", "speed"]);
+    let rows: Vec<(&str, Vec<String>)> = table
+        .rows
+        .iter()
+        .map(|r| (r.key.as_str(), r.cells.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("goblin", vec!["10".to_string(), "2.5".to_string()]),
+            ("orc", vec!["30".to_string(), String::new()]),
+        ]
+    );
+
+    // One cell: that number changes, the comments and the rest stay.
+    session
+        .set_cell("tuning/enemies.ron", "orc", "hp", "35")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        text.replace("hp: 30", "hp: 35")
+    );
+    assert_eq!(
+        session.undo_cell_label().as_deref(),
+        Some("set enemies orc.hp")
+    );
+    session.undo_cell().unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+    // The game says what it reads them as: a typo and a wrong kind of
+    // value are refused, and the file is left as it was.
+    let mut components = scrap::Components::new();
+    components.register_tuning::<std::collections::BTreeMap<String, Enemy>>("enemies");
+    components
+        .write_shapes(root.join(scrap::project::SHAPES))
+        .unwrap();
+    let table = session.table("tuning/enemies").unwrap();
+    assert_eq!(table.columns[0].shape, "whole number");
+    let e = session
+        .set_cell("tuning/enemies.ron", "orc", "hpp", "1")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("did you mean `hp`?"), "{e}");
+    let e = session
+        .set_cell("tuning/enemies.ron", "orc", "hp", "\"lots\"")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("whole number"), "{e}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+    // A column for several rows at once, as one step back.
+    session
+        .set_cells(
+            "tuning/enemies.ron",
+            &["goblin".into(), "orc".into()],
+            "speed",
+            "3.0",
+        )
+        .unwrap();
+    let now = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        now.contains("\"goblin\": (hp: 10, speed: 3.0), // small"),
+        "{now}"
+    );
+    assert!(now.contains("\"orc\": (hp: 30, speed: 3.0)"), "{now}");
+    session.undo_cell().unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    assert_eq!(session.undo_cell().unwrap(), None);
+
+    // A record that does not fit says so on its row.
+    std::fs::write(&file, "{ \"orc\": (hp: 30, sped: 1.0) }").unwrap();
+    let table = session.table("tuning/enemies.ron").unwrap();
+    assert!(
+        table.rows[0].problems[0].contains("did you mean `speed`?"),
+        "{table:?}"
+    );
+}
+
+#[test]
+fn entities_with_a_component_are_a_table_of_its_fields() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Door {
+        open_angle: f32,
+        #[serde(default)]
+        locked: bool,
+    }
+    let Some((mut session, path)) = open("table-scene") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let lid = id(&session, "lid");
+    session
+        .set_component(crate_id, "door", Some("(open_angle: 1.0)"))
+        .unwrap();
+    session
+        .set_component(lid, "door", Some("(open_angle: 2.0, locked: true)"))
+        .unwrap();
+    assert!(session.table_sources().contains(&"c:door".to_string()));
+
+    let table = session.table("c:door").unwrap();
+    let columns: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(columns, ["name", "open_angle", "locked"], "from the text");
+    assert_eq!(table.rows.len(), 2);
+    assert_eq!(table.rows[0].cells, ["crate", "1.0", ""]);
+
+    let mut components = scrap::Components::new();
+    components.register::<Door>("door");
+    components
+        .write_shapes(root_of(&path).join(scrap::project::SHAPES))
+        .unwrap();
+    let steps = session.undo_steps().len();
+    session
+        .set_cell("c:door", &crate_id.to_string(), "open_angle", "90.0")
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(session.table("c:door").unwrap().rows[0].cells[1], "90.0");
+    let e = session
+        .set_cell("c:door", &crate_id.to_string(), "locked", "3")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("true or false"), "{e}");
+
+    // A column of both, one step; undo takes both back.
+    session
+        .set_cells(
+            "c:door",
+            &[crate_id.to_string(), lid.to_string()],
+            "locked",
+            "false",
+        )
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 2);
+    let table = session.table("c:door").unwrap();
+    assert_eq!(table.rows[1].cells[2], "false");
+    session.undo().unwrap();
+    let table = session.table("c:door").unwrap();
+    assert_eq!(table.rows[1].cells[2], "true");
+    assert_eq!(table.rows[0].cells[2], "", "left out again");
+
+    // The name is the entity's.
+    session
+        .set_cell("c:door", &crate_id.to_string(), "name", "gate")
+        .unwrap();
+    assert_eq!(session.entity_name(crate_id).as_deref(), Some("gate"));
+}
+
+const WIRED: &str = r#"(
+    entities: [
+        (id: "f1", name: "floor", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0)),
+         body: Static, collider: Box(half: (10.0, 0.05, 10.0))),
+        (id: "20", name: "porch", transform: (position: (0.0, 2.0, 0.0)), body: Trigger, collider: Box(half: (1.0, 0.5, 1.0))),
+        (id: "30", name: "ball", model: "builtin:sphere", transform: (position: (0.0, 5.0, 0.0)),
+         body: Dynamic, collider: Sphere(radius: 0.25)),
+        (id: "d0", name: "door", model: "builtin:cube", transform: (position: (5.0, 1.0, 0.0)), animator: "door"),
+    ],
+)"#;
+
+/// A porch wired to a door, the way a designer does it: the wire is a
+/// field with a picker, a wrong trigger is a problem with a suggestion,
+/// and play slides the door open when the ball drops onto the porch —
+/// the door's animator, without the game's code.
+#[test]
+fn a_ball_onto_a_wired_porch_slides_the_door_open_in_play() {
+    let Some((mut session, path)) = open_with("wires", WIRED) else {
+        return;
+    };
+    let root = root_of(&path);
+    std::fs::create_dir_all(root.join("animators")).unwrap();
+    std::fs::create_dir_all(root.join("clips")).unwrap();
+    std::fs::write(
+        root.join("animators/door.ron"),
+        r#"(start: "shut", states: {
+            "shut": (clip: "door_shut", transitions: [(to: "open", when: [Trigger("open")])]),
+            "open": (clip: "door_open", looping: false),
+        })"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("clips/door_shut.ron"),
+        "(length: 0.5, tracks: [(what: X, keys: [(0.0, 5.0)])])",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("clips/door_open.ron"),
+        "(length: 0.5, tracks: [(what: X, keys: [(0.0, 5.0), (0.5, 7.0)])])",
+    )
+    .unwrap();
+    let (porch, door) = (id(&session, "porch"), id(&session, "door"));
+    let wire = |to: EntityId, trigger: &str| scrap::scene::Wire {
+        on: scrap::scene::On::Enter,
+        only: String::new(),
+        to,
+        act: scrap::scene::Act::Trigger(trigger.into()),
+        once: false,
+    };
+
+    // To nothing: refused.
+    let nowhere: EntityId = "123".parse().unwrap();
+    assert_eq!(
+        session.wire(porch, wire(nowhere, "open")),
+        Err(EditError::NoEntity(nowhere))
+    );
+    // A trigger the door's graph does not have: said, with the one it has.
+    session.wire(porch, wire(door, "opne")).unwrap();
+    let said: Vec<String> = session.problems().into_iter().map(|d| d.message).collect();
+    assert!(
+        said.iter()
+            .any(|m| m.contains("porch") && m.contains("did you mean `open`")),
+        "{said:?}"
+    );
+    assert!(session.undo().unwrap());
+    session.wire(porch, wire(door, "open")).unwrap();
+    assert!(session
+        .problems()
+        .iter()
+        .all(|d| !d.message.contains("wire")));
+    let fields = session.inspect(porch).unwrap();
+    let wires = fields.iter().find(|f| f.name == "wires").unwrap();
+    assert_eq!(
+        wires.value,
+        r#"[(on:Enter,to:"00000000000000d0",do:Trigger("open"))]"#
+    );
+    assert!(
+        session.field_shape("wires").is_some(),
+        "a form, with a picker for `to`"
+    );
+
+    let x = |session: &Session| session.world_position(door).unwrap().x;
+    session.play();
+    for _ in 0..30 {
+        session.step(1.0 / 60.0);
+    }
+    assert!(
+        (x(&session) - 5.0).abs() < 1e-3,
+        "shut while the ball falls"
+    );
+    for _ in 0..120 {
+        session.step(1.0 / 60.0);
+    }
+    assert!(
+        (x(&session) - 7.0).abs() < 1e-2,
+        "slid open: {}",
+        x(&session)
+    );
+    session.stop();
+    assert!((x(&session) - 5.0).abs() < 1e-3, "and back when play stops");
 }

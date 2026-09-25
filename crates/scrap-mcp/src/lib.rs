@@ -144,8 +144,9 @@ impl Server {
     }
 
     /// What there is to read: the open document as it stands — unsaved
-    /// edits included — and the project's scenes, prefabs and materials as
-    /// files. Empty until something is open; listing never makes a GPU.
+    /// edits included — and the project's scenes, prefabs, materials and
+    /// tuning numbers as files. Empty until something is open; listing
+    /// never makes a GPU.
     fn resources(&self) -> Vec<Value> {
         let Some(session) = &self.session else {
             return Vec::new();
@@ -164,6 +165,7 @@ impl Server {
             (project.scenes(), "ron"),
             (project.prefabs(), "prefab"),
             (project.materials(), "scrmat"),
+            (project.root().join(scrap::project::TUNING), "ron"),
         ] {
             scrap_import::walk(&dir, &mut |path| {
                 if path.extension().is_some_and(|e| e == extension) {

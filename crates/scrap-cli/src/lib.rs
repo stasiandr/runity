@@ -4,6 +4,7 @@
 pub mod add;
 pub mod build;
 pub mod check;
+pub mod lines;
 pub mod merge;
 pub mod modules;
 pub mod perf;

@@ -252,6 +252,46 @@ fn a_joint_to_nothing_is_named() {
 }
 
 #[test]
+fn a_wire_to_nothing_or_to_a_trigger_the_animator_lacks_is_named() {
+    let project = project("wires");
+    let root = project.root();
+    write(
+        &root.join("animators/door.ron"),
+        r#"(start: "shut", states: {
+            "shut": (clip: "", transitions: [(to: "open", when: [Trigger("open")])]),
+            "open": (clip: "", transitions: [(to: "shut", when: [Trigger("close")])]),
+        })"#,
+    );
+    write(
+        &root.join("scenes/porch.ron"),
+        r#"(entities: [
+            (id: "d1", name: "door", model: "builtin:cube", animator: "door"),
+            (id: "a1", name: "porch", body: Trigger, collider: Box(half: (1.0, 1.0, 1.0)), wires: [
+                (on: Enter, to: "d1", do: Trigger("open")),
+                (on: Empty, only: "playr", to: "d1", do: Trigger("clsoe")),
+                (to: "d9", do: Activate),
+            ]),
+            (id: "a2", name: "mat", wires: [(to: "d1", do: Spawn(prefab: "crate"))]),
+        ])"#,
+    );
+    let findings = check(&project);
+    let errors = errors(&findings);
+    assert_eq!(errors.len(), 5, "{errors:#?}");
+    assert!(one_containing(&errors, "clsoe").contains("did you mean `close`?"));
+    assert!(one_containing(&errors, "`playr`").contains("`porch`"));
+    assert!(one_containing(&errors, "00000000000000d9").contains("not there"));
+    assert!(one_containing(&errors, "no body").contains("`mat`"));
+    assert!(one_containing(&errors, "`crate`").contains("no such prefab"));
+    // `open` is pulled by a wire, not by the game's code: it is set.
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.message.contains("`open` is never set")),
+        "{findings:#?}"
+    );
+}
+
+#[test]
 fn a_layer_no_file_names_is_found() {
     let project = project("layers");
     write(
@@ -429,6 +469,104 @@ fn a_dialogue_that_does_not_join_up_is_found() {
 }
 
 #[test]
+fn dialogues_cases_flags_and_quests_are_checked_together() {
+    let project = project("dialogue-flow");
+    let root = project.root();
+    write(
+        &root.join("dialogues/harbour/captain.ron"),
+        r#"(start: "hello", lines: {
+            "hello": (text: "Ahoy.", when: [Is("met")], else: "first", next: "ask"),
+            "first": (text: "New here?", set: ["met", "waved"], next: "ask"),
+            "ask": (text: "Help me?", choices: [
+                (text: "Yes", to: "thanks", add: {"trust": 1}),
+                (text: "Pay", to: "thanks", when: [Var("coins", Ge, 3)]),
+            ]),
+            "thanks": (text: "Good."),
+            "thanks": (text: "Good!"),
+        })"#,
+    );
+    write(
+        &root.join("dialogues/harbour/captain.cases.ron"),
+        r#"(cases: [
+            (name: "first time", steps: [At("first"), Next("ask"), Choose("Yes", "thanks")]),
+            (name: "pays", steps: [Next("ask"), Choose("Pay", "thanks")]),
+        ])"#,
+    );
+    write(
+        &root.join("quests/help.ron"),
+        r#"(stages: [(name: "ask", done_when: [Var("trust", Ge, 1)]), (name: "ask", done_when: [])])"#,
+    );
+    let findings = check(&project);
+    let lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    let file = "dialogues/harbour/captain.ron";
+    let twice = one_containing(&lines, "`thanks` is written twice");
+    assert!(
+        twice.starts_with("error") && twice.contains(file),
+        "{twice}"
+    );
+    let case = one_containing(&lines, "case `pays`");
+    assert!(
+        case.contains("captain.cases.ron") && case.contains("“Pay” is not on offer"),
+        "{case}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("case `first time`")),
+        "{lines:#?}"
+    );
+    // Coins are read and nothing sets them; waved is set and nothing reads
+    // it; trust is read by the quest, met by the captain himself.
+    let coins = one_containing(&lines, "`coins` is read and nothing sets it");
+    assert!(
+        coins.starts_with("warning") && coins.contains(file),
+        "{coins}"
+    );
+    one_containing(&lines, "`waved` is set and nothing reads it");
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("`trust`") || l.contains("`met`")),
+        "{lines:#?}"
+    );
+    one_containing(&lines, "stage `ask` is named twice");
+    one_containing(&lines, "stage `ask` has no done_when");
+    // The game's code saying a flag's name counts as reading it.
+    write(
+        &root.join("src/talk.rs"),
+        r#"fn f() { let _ = "waved"; let _ = "coins"; }"#,
+    );
+    let lines: Vec<String> = check(&project).iter().map(ToString::to_string).collect();
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("`waved`") || l.contains("`coins`")),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn the_dialogues_lines_are_written_as_a_sheet_per_language() {
+    let project = project("dialogue-lines");
+    let root = project.root();
+    write(
+        &root.join("dialogues/chef.ron"),
+        r#"(start: "hello", lines: {"hello": (speaker: "@chef", text: "@chef.hello")})"#,
+    );
+    write(
+        &root.join("strings/en.ron"),
+        r#"{"chef": "Chef", "chef.hello": "Morning"}"#,
+    );
+    write(
+        &root.join("strings/ru.ron"),
+        r#"{"chef": "Шеф", "chef.hello": "Утро"}"#,
+    );
+    let out = root.join("build/lines");
+    let written = scrap_cli::lines::export(&project, &out).unwrap();
+    assert_eq!(written.len(), 2, "{written:?}");
+    let ru = std::fs::read_to_string(out.join("ru.csv")).unwrap();
+    assert_eq!(ru, "id,speaker,key,text\nchef/hello,Шеф,chef.hello,Утро\n");
+}
+
+#[test]
 fn an_animators_cases_are_played_by_check() {
     let project = project("animator-cases");
     write(
@@ -519,4 +657,37 @@ fn the_modules_scrap_ron_lists_and_what_cargo_builds_are_held_together() {
     let features = scrap_cli::modules::sync(&project).unwrap();
     assert_eq!(features, ["desktop-shell", "physics"]);
     assert!(errors(&check(&project)).is_empty());
+}
+
+#[test]
+fn a_tuning_record_that_does_not_fit_the_game_s_type_is_found() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Enemy {
+        hp: u32,
+        #[serde(default)]
+        speed: f32,
+    }
+    let project = project("tuning-records");
+    let mut components = scrap::Components::new();
+    components.register_tuning::<std::collections::BTreeMap<String, Enemy>>("enemies");
+    components
+        .write_shapes(project.root().join(scrap::project::SHAPES))
+        .unwrap();
+    let file = project.root().join("tuning/enemies.ron");
+    write(
+        &file,
+        r#"{ "goblin": (hp: 10, speed: 2.5), "orc": (hp: 30) }"#,
+    );
+    assert!(errors(&check(&project)).is_empty(), "the records fit");
+    write(
+        &file,
+        r#"{ "goblin": (hp: 10, sped: 2.5), "orc": (hp: "lots") }"#,
+    );
+    let found = errors(&check(&project));
+    let typo = one_containing(&found, "record `goblin`");
+    assert!(typo.contains("tuning/enemies.ron"), "{typo}");
+    assert!(typo.contains("did you mean `speed`?"), "{typo}");
+    let wrong = one_containing(&found, "record `orc`");
+    assert!(wrong.contains("whole number"), "{wrong}");
 }

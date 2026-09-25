@@ -54,6 +54,7 @@ fn entity_fields() -> Value {
         "particles": { "type": "string", "description": "RON: particles given off along its up — (rate: 30.0, life: 0.8, speed: 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6, 0.2)) — sparks, dust, spray; or None" },
         "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it; add cone_deg: 30.0 for a spot along its +z — or None" },
         "physics": { "type": "string", "description": "RON, only what differs: (friction: 0.5, bounce: 0.0, density: 1.0) — a ball is (bounce: 0.8), iron is (density: 8.0); freeze_turn: \"xz\" keeps it upright, freeze_move: \"y\" at its height" },
+        "wires": { "type": "string", "description": "RON, on a Trigger (or any body): what it does to other things when something comes in or goes out — [(on: Enter|Leave|Empty, to: \"<id>\", do: Trigger(\"open\")|Set(\"lit\", true)|Activate|Deactivate|Toggle|Spawn(prefab: \"crate\"), only: \"player\", once: true)]; Empty is when the last one left; Trigger and Set pull the target's animator; Spawn puts the prefab where the target stands; only is a layer; or None. No conditions or sequences: logic is the game's code" },
         "joint": { "type": "string", "description": "RON, on the body that moves: None, Hinge(to: \"<id>\", anchor: (x, y, z), axis: (x, y, z), limits_deg: (min, max)), Ball(to: \"<id>\", anchor: (x, y, z)), Fixed(to: \"<id>\"), Slider(to: \"<id>\", axis: (x, y, z), limits: (min, max)). Anchor and axis in its own space; leave out `to` to hang from the world" },
         "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
     })
@@ -74,7 +75,8 @@ pub fn list() -> Vec<Value> {
         "height": { "type": "integer" },
         "from_game": { "type": "boolean", "description": "look through the game's camera — the entity with `camera` — instead of the editor's" },
         "colliders": { "type": "boolean", "description": "draw every collider as an outline — green static, blue dynamic, orange kinematic, yellow trigger — until turned off" },
-        "navigation": { "type": "boolean", "description": "show where a walker (0.35 m radius, 40° slope, 0.3 m step) can go, in blue on the ground, until turned off" },
+        "navigation": { "type": "boolean", "description": "show where the project's player (scrap.ron, game.player: radius, slope, step) can go, in blue on the ground, until turned off" },
+        "player": { "type": "boolean", "description": "draw the project's player (scrap.ron, game.player) in green — a capsule its height and width, and the arc its feet take in a running jump — standing where start_game's from_here would start it, until turned off: is this door tall enough, this gap jumpable" },
         "grid": { "type": "boolean", "description": "the Scene view's grid on the ground (on the wall in a side view), spaced as drags snap; on by default, stays until changed" },
         "view": { "type": "string", "enum": ["top", "bottom", "front", "back", "left", "right", "perspective", "orthographic"], "description": "look along an axis, orthographic, showing as much as before — `top` is the level's plan — or switch projection; stays until changed" },
     });
@@ -89,7 +91,7 @@ pub fn list() -> Vec<Value> {
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
         tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic, has:light|camera|particles|probe|decal|route|joint|collider, layer:debris; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
         tool("inspect", "The Inspector for an entity: every field as text, and for a prefab's part which ones this instance overrides. With `ids`, for several at once: — where they disagree.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } } }), &[]),
-        tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, camera, components.<name>. One undo step; on a prefab's part, an override. With `ids` instead of `id`, the same field of all of them, still one step.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "value": { "type": "string" } }), &["field", "value"]),
+        tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, wires, camera, components.<name>. One undo step; on a prefab's part, an override. With `ids` instead of `id`, the same field of all of them, still one step.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "value": { "type": "string" } }), &["field", "value"]),
         tool("get_entity", "One entity's line in the scene's RON, children included.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("add_entity", "Add an entity, as one undo step. Returns its id.", add, &[]),
         tool("update_entity", "Change any fields of an entity, as one undo step.", update, &["id"]),
@@ -120,6 +122,17 @@ pub fn list() -> Vec<Value> {
             "erase": { "type": "boolean" },
             "seed": { "type": "integer" },
         }), &["what", "centre", "radius"]),
+        tool("table", "Many things of one kind as a table — what a designer balances in. `source` is a tuning file, tuning/enemies.ron (a map { \"goblin\": (hp: 10), … } is a row a record; a struct is one row), or a scene search like find's, c:enemy (a row an entity; with c:<component> the columns are its fields, else name, model, material, position…). Without `source`, lists the sources there are. Returns tab-separated rows under a header: key, label, then a cell per column as the file writes it (empty: left at its default), with problems on the lines after a record that does not fit the game's type.", json!({ "source": { "type": "string" } }), &[]),
+        tool("set_cell", "Set one cell of a table from RON text (35, 2.5, true, \"fast\") — only that field changes in the file; empty `value` takes the field out, back to its default. `row` is the key table shows (a record's name, an entity's id; empty for a tuning file that is one struct); `rows` for the same value in several at once. Scene cells are one undo step; a tuning file is written at once (the running game reloads it) and undo_cell takes it back. A value that does not fit what the game reads changes nothing and says why.", json!({ "source": { "type": "string" }, "row": { "type": "string" }, "rows": { "type": "array", "items": { "type": "string" } }, "column": { "type": "string" }, "value": { "type": "string" } }), &["source", "column", "value"]),
+        tool("undo_cell", "Take back the last cell set in a tuning file: the file as it was before. Refused when the file changed since.", json!({}), &[]),
+        tool("wire", "Wire a trigger to what it does, without code (docs/wires.md): when something comes into `from`'s body (on: Enter), goes out (Leave) or the last one has gone (Empty), `to` gets `do` — Trigger(\"open\") or Set(\"lit\", true) on its animator, Activate, Deactivate, Toggle, or Spawn(prefab: \"crate\") where it stands. only: a layer (the player, not a crate); once: the first time only. Appended to `from`'s `wires`, one undo step; `problems` then says if its animator lacks that trigger or it has no body. Play (simulate) runs wires, animators and physics without the game.", json!({
+            "from": { "type": "string", "description": "the trigger's id" },
+            "to": { "type": "string", "description": "the id of what it acts on" },
+            "do": { "type": "string", "description": "RON: Trigger(\"open\"), Set(\"lit\", true), Activate, Deactivate, Toggle, Spawn(prefab: \"crate\")" },
+            "on": { "type": "string", "enum": ["Enter", "Leave", "Empty"] },
+            "only": { "type": "string", "description": "a collision layer from layers.ron; empty for anything" },
+            "once": { "type": "boolean" },
+        }), &["from", "to", "do"]),
         tool("fence", "Copies of a model along a line through points — a fence, a row of lamps, a colonnade — as one entity with a spline and a spacing. The copies are built from those two and rebuilt when either changes (set_field `spline` or `along`); the file keeps only the line. One undo step; returns the entity's id.", json!({
             "what": { "type": "string", "description": "a model; builtin:cylinder makes posts" },
             "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
@@ -142,9 +155,10 @@ pub fn list() -> Vec<Value> {
         tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
         tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — and what a game started with start_game printed (cargo's compile errors, the game's own lines, a panic), each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
-        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, SCRAP_SCENE), drawing in the editor's Game view (the other players, when several, in windows of their own). What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" } }), &[]),
+        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, SCRAP_SCENE), drawing in the editor's Game view (the other players, when several, in windows of their own). What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" }, "from_here": { "type": "boolean", "description": "Play from Here: the player starts on the ground the view looks at (render's eye and target), facing its way — the game moves the lines its scene marks player_start: true there (SCRAP_START). Refused when there is nothing to stand on." } }), &[]),
         tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, what was spawned at run time, and each animator's last transitions (from → to, and the conditions that held). The Inspector shows the same as game.* fields.", json!({}), &[]),
         tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
+        tool("game_console", "Type a line into the running game's own console (Unreal's ~ console), as a player would over the game, and get its answer: `help` lists the commands; `get world.gravity` reads tuning/world.ron; `set world.gravity -3` changes that value in the file itself (only its text, comments kept) and the game reloads it — the file is the truth, so keep or git-checkout the change; everything else is the game's own cheats (`spin 90` in the template). The answer is the console entry: `> line`, then what the game said, `error: …` when it could not. Needs a game started with start_game that has drawn (built and running); the console is on in debug builds.", json!({ "command": { "type": "string" }, "wait_seconds": { "type": "number", "description": "How long to wait for the answer; 5 by default." } }), &["command"]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
@@ -153,15 +167,19 @@ pub fn list() -> Vec<Value> {
         tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.scrpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" }, "standing": { "type": "boolean", "description": "stand it up: points are [x, y], a wall seen from the front, and height is its thickness along z — a U of points is a wall with a doorway" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
         tool("set_poly", "Change a Poly Shape's outline and/or height: its .scrpoly is rewritten and rebuilt, and every placement of it changes. Omitted parts stay. Refused, with why, for an outline that cannot be a floor.", json!({ "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "height": { "type": "number" }, "standing": { "type": "boolean" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" } }), &["name"]),
         tool("push_poly_edge", "Push one wall of a Poly Shape out by `metres` (negative pulls it in): both ends of edge `edge` — from point `edge` to the next — move along its outward normal; the walls beside it follow. push_face for an outline.", json!({ "name": { "type": "string" }, "edge": { "type": "integer" }, "metres": { "type": "number" } }), &["name", "edge", "metres"]),
+        tool("brush_shape", "Greybox with brushes, as in Hammer or TrenchBroom: boxes, ramps, cylinders and stairs, each added or cut out (op: subtract) of everything before it, in order — a wall with a doorway, a room with a corridor through it. Writes assets/<name>.scrbrush (a line a brush), imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id. To cut grey shapes already in the scene out of another, use `carve`.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "brushes": { "type": "array", "items": { "type": "object", "properties": { "op": { "type": "string", "enum": ["add", "subtract"] } }, "required": ["shape"], "description": "a brush: op, shape, position, rotation_deg, scale, sides" }, "description": "in order; the first is usually an add" }, "at": vec3("where its origin goes") }), &["name", "brushes"]),
+        tool("brush_add", "Add a brush to a brush solid (assets/<name>.scrbrush): what it covers becomes solid, even where earlier brushes were cut away. One line added to the file, rebuilt at once; every placement changes.", { let mut p = brush_fields(); p["name"] = json!({ "type": "string" }); p }, &["name", "shape"]),
+        tool("brush_subtract", "Cut a brush out of a brush solid (assets/<name>.scrbrush): everything added before it loses what it covers — a doorway, a window, a tunnel. In the solid's own space. One line added to the file, rebuilt at once; every placement changes. Refused, with why, when nothing would be left.", { let mut p = brush_fields(); p["name"] = json!({ "type": "string" }); p }, &["name", "shape"]),
+        tool("set_brushes", "Replace a brush solid's whole list of brushes (to move, change or take one away): the .scrbrush is rewritten and rebuilt, and every placement changes. Refused, with why, when nothing would be left.", json!({ "name": { "type": "string" }, "brushes": { "type": "array", "items": { "type": "object", "required": ["shape"], "description": "a brush: op (add|subtract), shape, position, rotation_deg, scale, sides" } } }), &["name", "brushes"]),
         tool("snap_selection", "Put the selection on the grid: positions to the nearest snap step (a metre when snapping is off), turns to the nearest angle step when there is one — Unity's Snap All Axes. One undo step; says how many moved.", json!({}), &[]),
         tool("fit_collider", "Give an entity a box collider that fits its model — size and centre from the model's bounds — as Unity does when a BoxCollider is added. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
             "from": vec3("start, on or above the ground"),
             "to": vec3("goal"),
-            "radius": { "type": "number", "description": "the walker's radius, metres (0.35)" },
-            "max_step": { "type": "number", "description": "the highest step it climbs, metres (0.3)" },
-            "max_slope": { "type": "number", "description": "the steepest slope it walks, degrees (40)" },
+            "radius": { "type": "number", "description": "the walker's radius, metres (the project player's: scrap.ron game.player.radius)" },
+            "max_step": { "type": "number", "description": "the highest step it climbs, metres (the player's step)" },
+            "max_slope": { "type": "number", "description": "the steepest slope it walks, degrees (the player's slope)" },
         }), &["from", "to"]),
         tool("locks", "Who holds which Git LFS lock in the project: lock binary sources (textures, models, sounds) before editing them.", json!({}), &[]),
         tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
@@ -194,7 +212,7 @@ pub fn list() -> Vec<Value> {
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("problems", "What is wrong with the open document right now, unsaved edits included: models, materials and prefabs nothing answers to, stale overrides — each with the entity id and the likely intended name. Empty means clean.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
-        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, the parameters it reads, what is wrong with its shape, and what changed since the last commit.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
+        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, each layer (mask, blend, weight) with its own states and transitions, the parameters it reads, what is wrong with its shape, and what changed since the last commit.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
         tool("graph_connect", "Add a transition to an animator graph, written into the file where it goes (in the state it leaves). `from` is a state, or \"*\" for any state.", json!({
             "name": { "type": "string" },
             "from": { "type": "string" },
@@ -204,6 +222,22 @@ pub fn list() -> Vec<Value> {
         }), &["name", "from", "to"]),
         tool("graph_disconnect", "Remove the transitions from one state to another in an animator graph.", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
         tool("graph_rename", "Rename a state in an animator graph, and everything that names it: the start, the transitions, and the graph's cases (animators/<name>.cases.ron).", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
+        tool("dialogue", "A dialogue (dialogues/<name>.ron): its start, every line with who says it, what, when, and where it goes, every answer, what is wrong with it, its cases (dialogues/<name>.cases.ron) played, and what changed since the last commit. An empty name lists the dialogues.", json!({ "name": { "type": "string", "description": "the dialogue's path in dialogues/ without .ron" } }), &["name"]),
+        tool("dialogue_line", "Write one line of a dialogue, into the file where it goes (the rest of the file as it was). `entry` is the line as RON — (speaker: \"@chef\", text: \"@chef.hi\", next: \"ask\"), with when: [Is(\"f\"), Not(\"f\"), Var(\"n\", Ge, 3)], else, set: [\"f\"], add: {\"n\": 1}, put: {\"n\": 0}, event, choices: [(text, to, when, once: true, set, add, put, event)]; an empty entry removes the line. A dialogue that is not there is made, starting at this line.", json!({
+            "name": { "type": "string" },
+            "line": { "type": "string" },
+            "entry": { "type": "string" },
+            "start": { "type": "boolean", "description": "make it the line the dialogue starts at" },
+        }), &["name", "line", "entry"]),
+        tool("dialogue_rename", "Rename a line of a dialogue, and everything that names it: the start, next, else, answers' to, and the dialogue's cases.", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
+        tool("dialogue_play", "Play a dialogue without the game: from the start (or `from`), on through lines, answering with `answers` (by the answer's text) in turn, until an answer is wanted and none is left, or it is over. Says every line, the answers on offer, the events told, and the flags and numbers at the end.", json!({
+            "name": { "type": "string" },
+            "answers": { "type": "array", "items": { "type": "string" } },
+            "flags": { "type": "array", "items": { "type": "string" }, "description": "flags set before it begins" },
+            "vars": { "type": "object", "description": "numbers before it begins, {\"coins\": 3}" },
+            "from": { "type": "string", "description": "a line to begin at instead of the start" },
+        }), &["name"]),
+        tool("export_lines", "Everything the dialogues say as a CSV sheet per language of strings/ (id <dialogue>/<line>, speaker, key, text), for recording voices and for translators — what `scrap lines` writes.", json!({ "out": { "type": "string", "description": "folder relative to the project; build/lines by default" } }), &[]),
         tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed, except the entities in `keep`, which stay where they fell (one undo step).", simulate, &["seconds"]),
     ]
     .into_iter()
@@ -339,6 +373,77 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .set_field(id, &field, &value)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{id} {field} = {value}"))])
+        }
+        "table" => {
+            let session = server.session()?;
+            let Some(source) = optional_string(args, "source")? else {
+                let sources = session.table_sources();
+                return Ok(vec![text(if sources.is_empty() {
+                    "no tables: no tuning/*.ron and no components in the scene".to_string()
+                } else {
+                    sources.join("\n")
+                })]);
+            };
+            let table = session.table(&source).map_err(|e| e.to_string())?;
+            let mut out = String::new();
+            for problem in &table.problems {
+                let _ = writeln!(out, "problem: {problem}");
+            }
+            let header: Vec<String> = table
+                .columns
+                .iter()
+                .map(|c| {
+                    if c.shape.is_empty() {
+                        c.name.clone()
+                    } else {
+                        format!("{} ({})", c.name, c.shape)
+                    }
+                })
+                .collect();
+            let _ = writeln!(out, "key\tlabel\t{}", header.join("\t"));
+            for row in &table.rows {
+                let _ = writeln!(out, "{}\t{}\t{}", row.key, row.label, row.cells.join("\t"));
+                for problem in &row.problems {
+                    let _ = writeln!(out, "  problem: {problem}");
+                }
+            }
+            if table.rows.is_empty() {
+                out.push_str("no rows\n");
+            }
+            Ok(vec![text(out.trim_end_matches('\n').to_string())])
+        }
+        "set_cell" => {
+            let (source, column, value) = (
+                string(args, "source")?,
+                string(args, "column")?,
+                string(args, "value")?,
+            );
+            let rows: Vec<String> = match args.get("rows").and_then(Value::as_array) {
+                Some(rows) => rows
+                    .iter()
+                    .map(|r| {
+                        r.as_str()
+                            .map(str::to_string)
+                            .ok_or("rows are strings".to_string())
+                    })
+                    .collect::<Result<_, _>>()?,
+                None => vec![optional_string(args, "row")?.unwrap_or_default()],
+            };
+            server
+                .session()?
+                .set_cells(&source, &rows, &column, &value)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "{} {column} = {value}",
+                rows.join(", ")
+            ))])
+        }
+        "undo_cell" => {
+            let undone = server.session()?.undo_cell().map_err(|e| e.to_string())?;
+            Ok(vec![text(match undone {
+                Some(what) => format!("undone: {what}"),
+                None => "no cell to take back".to_string(),
+            })])
         }
         "get_entity" => {
             let id = id(args, "id")?;
@@ -538,6 +643,41 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .get(group)
                 .map_or(0, |g| g.children.len());
             Ok(vec![text(format!("{group}: {placed} placed"))])
+        }
+        "wire" => {
+            let from = id(args, "from")?;
+            let act: scrap::scene::Act =
+                ron::from_str(&string(args, "do")?).map_err(|e| format!("do: {e}"))?;
+            let on = match optional_string(args, "on")? {
+                Some(on) => ron::from_str(&on)
+                    .map_err(|_| format!("on is Enter, Leave or Empty, not {on}"))?,
+                None => scrap::scene::On::Enter,
+            };
+            let wire = scrap::scene::Wire {
+                on,
+                only: optional_string(args, "only")?.unwrap_or_default(),
+                to: id(args, "to")?,
+                act,
+                once: args.get("once").and_then(Value::as_bool).unwrap_or(false),
+            };
+            let session = server.session()?;
+            session.wire(from, wire).map_err(|e| e.to_string())?;
+            let problems: Vec<String> = session
+                .problems()
+                .into_iter()
+                .filter(|d| d.entity == Some(from))
+                .map(|d| d.message)
+                .collect();
+            let wires = session
+                .inspect(from)
+                .and_then(|f| f.into_iter().find(|f| f.name == "wires"))
+                .map(|f| f.value)
+                .unwrap_or_default();
+            let mut said = format!("{from} wires = {wires}");
+            for problem in problems {
+                said.push_str(&format!("\n{problem}"));
+            }
+            Ok(vec![text(said)])
         }
         "fence" => {
             let what = string(args, "what")?;
@@ -803,7 +943,16 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             if let Some(link) = args.get("link").and_then(|v| v.as_str()) {
                 session.set_link(link).map_err(|e| e.to_string())?;
             }
-            session.start_game().map_err(|e| e.to_string())?;
+            let from_here = args
+                .get("from_here")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let start = if from_here {
+                Some(session.start_game_from_here().map_err(|e| e.to_string())?)
+            } else {
+                session.start_game().map_err(|e| e.to_string())?;
+                None
+            };
             let players = session.players();
             let link = session.link();
             let over = if link.is_empty() {
@@ -811,10 +960,21 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             } else {
                 format!(", the others over a `{link}` link")
             };
+            let here = match start {
+                Some(start) => {
+                    let marked = scrap::player::player_starts(session.scene()).len();
+                    format!(
+                        " from {} facing {:.0}° ({marked} lines marked player_start)",
+                        triple(start.position),
+                        start.yaw_deg
+                    )
+                }
+                None => String::new(),
+            };
             Ok(vec![text(if players > 1 {
-                format!("started with {players} players{over}; their output goes to the console as it comes")
+                format!("started with {players} players{over}{here}; their output goes to the console as it comes")
             } else {
-                "started; its output goes to the console as it comes".to_string()
+                format!("started{here}; its output goes to the console as it comes")
             })])
         }
         "game_state" => {
@@ -876,6 +1036,19 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             } else {
                 "no game was running".to_string()
             };
+            Ok(vec![text(answer)])
+        }
+        "game_console" => {
+            let command = string(args, "command")?;
+            let wait = args
+                .get("wait_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(5.0)
+                .clamp(0.1, 60.0);
+            let session = server.session()?;
+            let answer = session
+                .game_console(&command, std::time::Duration::from_secs_f64(wait))
+                .map_err(|e| e.to_string())?;
             Ok(vec![text(answer)])
         }
         "console" => {
@@ -976,6 +1149,57 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!(
                 "{source}: scale {}, recompute_normals {}, srgb {}, origin_to_base {}",
                 s.scale, s.recompute_normals, s.srgb, s.origin_to_base
+            ))])
+        }
+        "brush_shape" | "set_brushes" => {
+            let making = name == "brush_shape";
+            let name = string(args, "name")?;
+            let brushes = args
+                .get("brushes")
+                .and_then(Value::as_array)
+                .ok_or("brushes is a list of {shape, op, position, rotation_deg, scale}")?
+                .iter()
+                .map(|b| brush_of(b, None))
+                .collect::<Result<Vec<_>, _>>()?;
+            let source = scrap_import::brush::BrushSource { brushes };
+            let session = server.session()?;
+            if making {
+                let at = optional_vec3(args, "at")?.unwrap_or(Vec3::ZERO);
+                let id = session
+                    .brush_shape(&name, &source, at)
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![text(format!("{id} {name:?}, assets/{name}.scrbrush"))])
+            } else {
+                session
+                    .set_brushes(&name, &source)
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![text(format!(
+                    "{name}: {} brushes",
+                    source.brushes.len()
+                ))])
+            }
+        }
+        "brush_add" | "brush_subtract" => {
+            let op = if name == "brush_add" {
+                scrap_import::brush::Op::Add
+            } else {
+                scrap_import::brush::Op::Subtract
+            };
+            let name = string(args, "name")?;
+            let brush = brush_of(args, Some(op))?;
+            let session = server.session()?;
+            session
+                .add_brush(&name, &brush)
+                .map_err(|e| e.to_string())?;
+            let count = session
+                .brushes(&name)
+                .map_err(|e| e.to_string())?
+                .brushes
+                .len();
+            Ok(vec![text(format!(
+                "{name}: {} as brush {}",
+                brush.to_line(),
+                count - 1
             ))])
         }
         "poly_shape" | "set_poly" => {
@@ -1095,7 +1319,8 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "path" => {
             let from = optional_vec3(args, "from")?.ok_or("from is required")?;
             let to = optional_vec3(args, "to")?.ok_or("to is required")?;
-            let defaults = scrap::navigation::NavSettings::default();
+            // The project's player, unless the question names another.
+            let defaults = server.session()?.walker();
             let number = |key: &str, default: f32| {
                 args.get(key)
                     .and_then(Value::as_f64)
@@ -1369,6 +1594,9 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "graph" | "graph_connect" | "graph_disconnect" | "graph_rename" => {
             graph_tool(server, name, args)
         }
+        "dialogue" | "dialogue_line" | "dialogue_rename" | "dialogue_play" | "export_lines" => {
+            dialogue_tool(server, name, args)
+        }
         other => Err(format!("no tool `{other}`")),
     }
 }
@@ -1590,6 +1818,20 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
             .as_ref(),
         );
     }
+    if let Some(wires) = optional_string(args, "wires")? {
+        desc.set_part_opt(
+            (if wires.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<scrap::scene::Wires>(&wires)
+                        .map_err(|e| format!("wires: {e}"))?,
+                )
+            })
+            .filter(|w| !w.0.is_empty())
+            .as_ref(),
+        );
+    }
     if let Some(route) = optional_string(args, "route")? {
         desc.set_part_opt(
             (if route.trim() == "None" {
@@ -1774,7 +2016,11 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
         session.set_show_grid(show);
     }
     if let Some(show) = args.get("navigation").and_then(Value::as_bool) {
-        session.set_show_navigation(show.then(scrap::navigation::NavSettings::default));
+        let walker = session.walker();
+        session.set_show_navigation(show.then_some(walker));
+    }
+    if let Some(show) = args.get("player").and_then(Value::as_bool) {
+        session.set_show_player(show);
     }
     if width.is_some() || height.is_some() {
         let (w, h) = session.size();
@@ -1947,6 +2193,44 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
                     t.fade
                 ));
             }
+            // Each layer: how it lays on the body, then its own graph.
+            for layer in &graph.layers {
+                let mask = if layer.mask.is_empty() {
+                    "the whole body".to_string()
+                } else {
+                    layer.mask.join(", ")
+                };
+                let weight = match &layer.weight_from {
+                    Some(p) => format!("{} × {p}", layer.weight),
+                    None => layer.weight.to_string(),
+                };
+                out.push_str(&format!(
+                    "layer {}: {:?} over {mask}, weight {weight}, start {}\n",
+                    layer.name, layer.blend, layer.graph.start
+                ));
+                for (state_name, state) in &layer.graph.states {
+                    let plays = if state.clip.is_empty()
+                        && state.blend.is_empty()
+                        && state.directional.is_empty()
+                    {
+                        "nothing (the body below shows)".to_string()
+                    } else if state.blend.is_empty() && state.directional.is_empty() {
+                        state.clip.clone()
+                    } else {
+                        format!("blend by {}", state.blend_by)
+                    };
+                    out.push_str(&format!("  state {state_name}: {plays}\n"));
+                }
+                for t in &layer.graph.transitions {
+                    out.push_str(&format!(
+                        "  {} → {} when {} (fade {})\n",
+                        t.from,
+                        t.to,
+                        scrap::animgraph::describe(&t.when),
+                        t.fade
+                    ));
+                }
+            }
             let parameters: Vec<String> = graph.parameters().into_iter().collect();
             out.push_str(&format!("parameters: {}\n", parameters.join(", ")));
             for problem in graph.shape_problems() {
@@ -2031,6 +2315,273 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
     }
 }
 
+/// The dialogue tools: read one, write a line, rename a line, play it,
+/// and the sheets of what they all say.
+fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+    use scrap::dialogue::{describe, named_twice, Cases, Conversation, Dialogue, State};
+    let session = server.session()?;
+    let project = session.project().ok_or("the open scene is in no project")?;
+    if tool == "export_lines" {
+        let out = optional_string(args, "out")?.unwrap_or_else(|| "build/lines".into());
+        let written = scrap_cli::lines::export(project, &project.root().join(out))?;
+        let files: Vec<String> = written
+            .iter()
+            .map(|p| {
+                project
+                    .relative(p)
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect();
+        return Ok(vec![text(format!("wrote {}", files.join(", ")))]);
+    }
+    let dir = project.root().join(scrap::dialogue::DIR);
+    let name = string(args, "name")?;
+    let (all, _) = scrap_cli::lines::dialogues(project);
+    if tool == "dialogue" && name.is_empty() {
+        let names: Vec<String> = all.iter().map(|(_, d)| d.name.clone()).collect();
+        return Ok(vec![text(if names.is_empty() {
+            "no dialogues yet: dialogue_line makes one".to_string()
+        } else {
+            names.join("\n")
+        })]);
+    }
+    let path = dir.join(format!("{name}.ron"));
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut dialogue: Dialogue = if old.is_empty() && tool == "dialogue_line" {
+        Dialogue::default()
+    } else if old.is_empty() {
+        let near = scrap::spelling::closest(&name, all.iter().map(|(_, d)| d.name.as_str()))
+            .map(|n| format!(" — did you mean `{n}`?"))
+            .unwrap_or_default();
+        return Err(format!("no dialogue `{name}` in dialogues/{near}"));
+    } else {
+        scrap::ron::from_str(&old).map_err(|e| format!("{}: {e}", path.display()))?
+    };
+    dialogue.name = name.clone();
+    let save = |d: &Dialogue| -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, scrap::dialogue_text::write(&old, d)).map_err(|e| e.to_string())
+    };
+    let cases_path = path.with_extension("cases.ron");
+    match tool {
+        "dialogue" => {
+            let mut out = format!("start: {}\n", dialogue.start);
+            for (line_name, line) in &dialogue.lines {
+                let who = if line.speaker.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}: ", line.speaker)
+                };
+                out.push_str(&format!("line {line_name}: {who}{}", line.text));
+                if !line.when.is_empty() {
+                    let otherwise = if line.otherwise.is_empty() {
+                        &line.next
+                    } else {
+                        &line.otherwise
+                    };
+                    out.push_str(&format!(
+                        " (said if {}, else → {otherwise})",
+                        describe(&line.when)
+                    ));
+                }
+                if !line.next.is_empty() {
+                    out.push_str(&format!(" → {}", line.next));
+                }
+                if !line.set.is_empty() {
+                    out.push_str(&format!(", sets {}", line.set.join(", ")));
+                }
+                if !line.event.is_empty() {
+                    out.push_str(&format!(", tells `{}`", line.event));
+                }
+                out.push('\n');
+                for (i, c) in line.choices.iter().enumerate() {
+                    out.push_str(&format!("  answer {}: “{}” → {}", i + 1, c.text, c.to));
+                    if !c.when.is_empty() {
+                        out.push_str(&format!(" if {}", describe(&c.when)));
+                    }
+                    if c.once {
+                        out.push_str(", once");
+                    }
+                    if !c.set.is_empty() {
+                        out.push_str(&format!(", sets {}", c.set.join(", ")));
+                    }
+                    if !c.event.is_empty() {
+                        out.push_str(&format!(", tells `{}`", c.event));
+                    }
+                    out.push('\n');
+                }
+            }
+            for problem in named_twice(&old).into_iter().chain(dialogue.problems()) {
+                out.push_str(&format!("problem: {problem}\n"));
+            }
+            if let Ok(cases_text) = std::fs::read_to_string(&cases_path) {
+                match scrap::ron::from_str::<Cases>(&cases_text) {
+                    Ok(cases) => {
+                        let failed = cases.run(&dialogue);
+                        out.push_str(&format!(
+                            "cases: {} of {} pass\n",
+                            cases.cases.len().saturating_sub(failed.len()),
+                            cases.cases.len()
+                        ));
+                        for f in failed {
+                            out.push_str(&format!("case failed: {f}\n"));
+                        }
+                    }
+                    Err(e) => out.push_str(&format!("cases: {e}\n")),
+                }
+            }
+            if let Some(head) = scrap_editor::history::show(&path, "HEAD")
+                .ok()
+                .and_then(|t| scrap::ron::from_str::<Dialogue>(&t).ok())
+            {
+                let mut head = head;
+                head.name = name.clone();
+                for change in scrap::dialogue::diff(&head, &dialogue) {
+                    out.push_str(&format!("since the last commit: {change}\n"));
+                }
+            }
+            Ok(vec![text(out)])
+        }
+        "dialogue_line" => {
+            let line = string(args, "line")?;
+            let entry = string(args, "entry")?;
+            if line.is_empty() {
+                return Err("a line needs a name".into());
+            }
+            let said = if entry.trim().is_empty() {
+                if dialogue.lines.remove(&line).is_none() {
+                    return Err(format!("{name} has no line `{line}`"));
+                }
+                format!("`{line}` removed from {name}")
+            } else {
+                let parsed: scrap::dialogue::Line =
+                    scrap::ron::from_str(&entry).map_err(|e| format!("entry: {e}"))?;
+                let was = dialogue.lines.insert(line.clone(), parsed).is_some();
+                if dialogue.start.is_empty() {
+                    dialogue.start = line.clone();
+                }
+                format!(
+                    "`{line}` {} in {name}",
+                    if was { "written" } else { "added" }
+                )
+            };
+            if args.get("start").and_then(Value::as_bool) == Some(true) {
+                dialogue.start = line.clone();
+            }
+            save(&dialogue)?;
+            let problems = dialogue.problems();
+            Ok(vec![text(if problems.is_empty() {
+                said
+            } else {
+                format!("{said}; now: {}", problems.join("; "))
+            })])
+        }
+        "dialogue_rename" => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            scrap::dialogue::rename(&mut dialogue, &from, &to)
+                .map_err(|e| format!("{name}: {e}"))?;
+            save(&dialogue)?;
+            // The dialogue's cases name lines too.
+            let mut also = String::new();
+            if let Ok(cases) = std::fs::read_to_string(&cases_path) {
+                let renamed = cases
+                    .replace(&format!("At({from:?})"), &format!("At({to:?})"))
+                    .replace(&format!("Next({from:?})"), &format!("Next({to:?})"))
+                    .replace(&format!(", {from:?})"), &format!(", {to:?})"));
+                if renamed != cases {
+                    std::fs::write(&cases_path, renamed).map_err(|e| e.to_string())?;
+                    also = format!(", and in {name}.cases.ron");
+                }
+            }
+            Ok(vec![text(format!("`{from}` is `{to}` in {name}{also}"))])
+        }
+        _ => {
+            let mut state = State::default();
+            if let Some(flags) = args.get("flags").and_then(Value::as_array) {
+                state
+                    .flags
+                    .extend(flags.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+            if let Some(vars) = args.get("vars").and_then(Value::as_object) {
+                for (k, v) in vars {
+                    let n = v
+                        .as_i64()
+                        .ok_or_else(|| format!("vars: {k} is a whole number, not {v}"))?;
+                    state.vars.insert(k.clone(), n);
+                }
+            }
+            let mut answers: std::collections::VecDeque<String> = args
+                .get("answers")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut talk = match optional_string(args, "from")? {
+                Some(from) => Conversation::begin_at(dialogue.clone(), &from, &mut state),
+                None => Conversation::begin(dialogue.clone(), &mut state),
+            };
+            let mut out = String::new();
+            for _ in 0..1000 {
+                let Some(line) = talk.line().cloned() else {
+                    out.push_str("— over\n");
+                    break;
+                };
+                let who = if line.speaker.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}: ", line.speaker)
+                };
+                out.push_str(&format!(
+                    "{} — {who}{}\n",
+                    talk.at().unwrap_or(""),
+                    line.text
+                ));
+                for event in talk.events() {
+                    out.push_str(&format!("  tells `{event}`\n"));
+                }
+                if line.choices.is_empty() {
+                    talk.next(&mut state);
+                    continue;
+                }
+                let offered: Vec<(usize, String)> = talk
+                    .choices(&state)
+                    .map(|(i, c)| (i, c.text.clone()))
+                    .collect();
+                let words: Vec<String> = offered.iter().map(|(_, t)| format!("“{t}”")).collect();
+                out.push_str(&format!("  answers on offer: {}\n", words.join(", ")));
+                let Some(answer) = answers.pop_front() else {
+                    out.push_str("— waits for an answer\n");
+                    break;
+                };
+                let Some((index, _)) = offered.iter().find(|(_, t)| *t == answer) else {
+                    out.push_str(&format!("— “{answer}” is not on offer\n"));
+                    break;
+                };
+                out.push_str(&format!("  answers “{answer}”\n"));
+                talk.choose(*index, &mut state);
+            }
+            let flags: Vec<&str> = state.flags.iter().map(String::as_str).collect();
+            let vars: Vec<String> = state
+                .vars
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect();
+            out.push_str(&format!(
+                "flags: {}\nnumbers: {}\n",
+                flags.join(", "),
+                vars.join(", ")
+            ));
+            Ok(vec![text(out)])
+        }
+    }
+}
+
 fn string(args: &Value, key: &str) -> Result<String, String> {
     optional_string(args, key)?.ok_or_else(|| format!("{key} is required"))
 }
@@ -2069,6 +2620,53 @@ fn optional_integer(args: &Value, key: &str) -> Result<Option<u32>, String> {
             .map(Some)
             .ok_or_else(|| format!("{key} is a whole number, not {v}")),
     }
+}
+
+/// A brush's fields, for the tools that take one or a list.
+fn brush_fields() -> Value {
+    json!({
+        "shape": { "type": "string", "enum": ["box", "ramp", "cylinder", "stairs"], "description": "a unit in size and centred, like builtin:cube|ramp|cylinder|stairs; a ramp is high at the back (-z)" },
+        "position": vec3("metres, in the solid's own space"),
+        "rotation_deg": vec3("Euler degrees, applied Y then X then Z"),
+        "scale": vec3("its size in metres along each axis; [1, 1, 1] when left out"),
+        "sides": { "type": "integer", "description": "a cylinder's sides, 3 to 64; 24 when left out" },
+    })
+}
+
+/// A brush from a tool's arguments; `op` given by the tool, or read from
+/// an `op` field of a list's item.
+fn brush_of(
+    value: &Value,
+    op: Option<scrap_import::brush::Op>,
+) -> Result<scrap_import::brush::Brush, String> {
+    use scrap_import::brush::{Brush, Op, Shape};
+    let shape = match string(value, "shape")?.to_ascii_lowercase().as_str() {
+        "box" | "cube" => Shape::Box,
+        "ramp" => Shape::Ramp,
+        "cylinder" => Shape::Cylinder,
+        "stairs" => Shape::Stairs,
+        other => {
+            return Err(format!(
+                "shape is box, ramp, cylinder or stairs, not {other:?}"
+            ))
+        }
+    };
+    let op = match op {
+        Some(op) => op,
+        None => match optional_string(value, "op")?.as_deref() {
+            None | Some("add") | Some("Add") => Op::Add,
+            Some("subtract") | Some("Subtract") => Op::Subtract,
+            Some(other) => return Err(format!("op is add or subtract, not {other:?}")),
+        },
+    };
+    Ok(Brush {
+        op,
+        shape,
+        position: optional_vec3(value, "position")?.unwrap_or(Vec3::ZERO),
+        rotation_deg: optional_vec3(value, "rotation_deg")?.unwrap_or(Vec3::ZERO),
+        scale: optional_vec3(value, "scale")?.unwrap_or(Vec3::ONE),
+        sides: optional_integer(value, "sides")?.unwrap_or(scrap_import::brush::CYLINDER_SIDES),
+    })
 }
 
 fn optional_vec3(args: &Value, key: &str) -> Result<Option<Vec3>, String> {

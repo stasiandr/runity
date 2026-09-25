@@ -388,7 +388,7 @@ pub struct JointBreak(pub f32);
 crate::impl_parts! {
     Body => "body", default if |b| *b == Body::None;
     Collider => "collider", default if |c| *c == Collider::None;
-    BodyProps => "physics", default if |p| p.is_default();
+    BodyProps => "physics", default if |p| p.is_default(), fractions ["bounce", "blown"];
     Joint => "joint", default if |j| j.is_none();
     JointBreak => "joint_break";
     CollisionModel => "collision_model", default if |m| m.0.is_empty();

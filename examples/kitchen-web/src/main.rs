@@ -562,8 +562,10 @@ impl shell::Game for Game {
         scrap::particles::run_particles(&mut self.world, ctx.time.delta());
         let scene = self.live.scene();
         // Cameras that follow keep after their targets, then the one that
-        // looks is found.
-        scrap::world::follow_cameras(&mut self.world, ctx.time.delta());
+        // looks is found, blended and shaken on real time (docs/feel.md);
+        // what the systems asked of the clock goes to it.
+        ctx.ask_time(scrap::time::sync(&mut self.world, ctx.time));
+        scrap::world::run_cameras(&mut self.world, ctx.time.delta());
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         // What the fixed steps move is drawn between the last two of
