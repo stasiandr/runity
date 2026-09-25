@@ -424,6 +424,9 @@ pub struct PhysicsWorld {
     broken: Vec<hecs::Entity>,
     /// A body's speed when it went kinematic, for when it goes dynamic.
     held_speed: std::collections::HashMap<RigidBodyHandle, (Vector<Real>, Vector<Real>)>,
+    /// When a still body falls asleep: slower than this (m/s, rad/s) for
+    /// so long (s). `None` is rapier's own (0.4 m/s, 0.5 rad/s, 2 s).
+    sleep: Option<(f32, f32, f32)>,
     pipeline: PhysicsPipeline,
     islands: IslandManager,
     broad_phase: DefaultBroadPhase,
@@ -492,6 +495,30 @@ impl PhysicsWorld {
         self.parameters.num_solver_iterations = std::num::NonZeroUsize::new(iterations).unwrap_or(std::num::NonZeroUsize::MIN);
     }
 
+    /// When a still body falls asleep: slower than `linear` m/s and
+    /// `angular` rad/s for `seconds`. PhysX (Unity) sleeps a body after 0.4 s
+    /// under about a tenth of a metre a second; rapier waits two seconds,
+    /// long enough for a standing thing's last drift to topple it.
+    pub fn set_sleep(&mut self, linear: f32, angular: f32, seconds: f32) {
+        self.sleep = Some((linear, angular, seconds));
+        for (_, body) in self.bodies.iter_mut() {
+            let a = body.activation_mut();
+            a.normalized_linear_threshold = linear;
+            a.angular_threshold = angular;
+            a.time_until_sleep = seconds;
+        }
+    }
+
+    /// Wake a body through the islands, so what it is joined to or rests
+    /// on wakes with it — PhysX wakes a joined chain when one link is
+    /// pushed; a body woken by itself stays held by its sleeping neighbours
+    /// as by a wall.
+    fn wake(&mut self, world: &World, entity: hecs::Entity) {
+        if let Some(handle) = self.body_of(world, entity) {
+            self.islands.wake_up(&mut self.bodies, handle, true);
+        }
+    }
+
     /// `fixed_delta` must be the simulation clock's step, not a frame delta.
     pub fn new(fixed_delta: f32) -> Self {
         let parameters = IntegrationParameters {
@@ -509,6 +536,7 @@ impl PhysicsWorld {
             colliders: ColliderSet::new(),
             broken: Vec::new(),
             held_speed: Default::default(),
+            sleep: None,
             parameters,
             pipeline: PhysicsPipeline::new(),
             islands: IslandManager::new(),
@@ -851,6 +879,12 @@ impl PhysicsWorld {
             .build();
             let mut body = body;
             body.user_data = entity.to_bits().get() as u128;
+            if let Some((linear, angular, seconds)) = self.sleep {
+                let a = body.activation_mut();
+                a.normalized_linear_threshold = linear;
+                a.angular_threshold = angular;
+                a.time_until_sleep = seconds;
+            }
             let handle = self.bodies.insert(body);
             let solid_own = shape.0 != ColliderShape::None;
             self.colliders
@@ -1708,6 +1742,7 @@ impl PhysicsWorld {
     /// Set how fast a body moves — Unity's `Rigidbody.velocity`. `false`
     /// when the entity has no body yet.
     pub fn set_velocity(&mut self, world: &World, entity: hecs::Entity, velocity: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
@@ -1721,6 +1756,7 @@ impl PhysicsWorld {
     /// Set how fast a body turns, radians a second about each axis: a
     /// thrown plank's tumble. Unity's `angularVelocity`.
     pub fn set_spin(&mut self, world: &World, entity: hecs::Entity, spin: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
@@ -1766,6 +1802,7 @@ impl PhysicsWorld {
     /// explosion's shove. Heavier bodies move less for the same kick.
     /// Unity's `AddForce(…, ForceMode.Impulse)`.
     pub fn add_impulse(&mut self, world: &World, entity: hecs::Entity, impulse: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
@@ -1787,6 +1824,7 @@ impl PhysicsWorld {
     /// the world: it turns the body as well as moving it — water lifting
     /// one end of a boat. Unity's `AddForceAtPosition`.
     pub fn add_force_at(&mut self, world: &World, entity: hecs::Entity, force: Vec3, at: Vec3) -> bool {
+        self.wake(world, entity);
         let dt = self.parameters.dt;
         let Some(body) = self
             .body_of(world, entity)
@@ -1808,6 +1846,7 @@ impl PhysicsWorld {
     /// what a rope's end did to the hand holding it over the last step.
     /// Unity's `AddForceAtPosition` with `ForceMode.Impulse`.
     pub fn add_impulse_at(&mut self, world: &World, entity: hecs::Entity, impulse: Vec3, at: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
@@ -1827,6 +1866,7 @@ impl PhysicsWorld {
     /// A twist for the coming step, in newton-metres, in the world: what a
     /// muscle does to a limb. Unity's `AddTorque`.
     pub fn add_torque(&mut self, world: &World, entity: hecs::Entity, torque: Vec3) -> bool {
+        self.wake(world, entity);
         let dt = self.parameters.dt;
         let Some(body) = self
             .body_of(world, entity)
