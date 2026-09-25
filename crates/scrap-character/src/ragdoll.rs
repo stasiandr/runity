@@ -185,9 +185,9 @@ pub fn spawn_parts(world: &mut hecs::World, owner: hecs::Entity, id: EntityId, p
                 let anchor = part.joint * scale - middle;
                 let to = part_id(id, p);
                 if part.hinge {
-                    Joint::Hinge { to, anchor, axis: Vec3::X, limits_deg: None, motor: None }
+                    Joint::Hinge { to, anchor, axis: Vec3::X, limits_deg: None, motor: None, connected: None }
                 } else {
-                    Joint::Ball { to, anchor }
+                    Joint::Ball { to, anchor, connected: None, limits_deg: None }
                 }
             });
             let entity = world.spawn((

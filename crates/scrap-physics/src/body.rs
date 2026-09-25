@@ -107,6 +107,12 @@ pub enum Joint {
         /// angle like a spring — a door that swings shut.
         #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
         motor: Option<Motor>,
+        /// Where the joint meets the other body, in its own space (scaled
+        /// with it): Unity's connected anchor, when not configured from
+        /// where the two stand. Unset, it is wherever `anchor` is when the
+        /// joint is made.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        connected: Option<Vec3>,
     },
     /// Turns any way about the anchor: a chain, a ball-and-socket.
     Ball {
@@ -114,6 +120,17 @@ pub enum Joint {
         to: EntityId,
         #[serde(default)]
         anchor: Vec3,
+        /// Where the joint meets the other body, in its own space (scaled
+        /// with it): Unity's connected anchor, when not configured from
+        /// where the two stand. Unset, it is wherever `anchor` is when the
+        /// joint is made.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        connected: Option<Vec3>,
+        /// How far it may turn about each of its axes (its x along the
+        /// joint's frame), degrees low to high: Unity's ConfigurableJoint
+        /// angular limits — a rope's segment that bends only so far.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        limits_deg: Option<[(f32, f32); 3]>,
     },
     /// Pulls its anchor toward the other body's, like a rubber band:
     /// Unity's SpringJoint. `stiffness` is how hard, `damping` how fast the
@@ -127,6 +144,12 @@ pub enum Joint {
         stiffness: f32,
         #[serde(default = "spring_damping")]
         damping: f32,
+        /// Where the joint meets the other body, in its own space (scaled
+        /// with it): Unity's connected anchor, when not configured from
+        /// where the two stand. Unset, it is wherever `anchor` is when the
+        /// joint is made.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        connected: Option<Vec3>,
     },
     /// Slides along one axis, within limits in metres if given.
     Slider {

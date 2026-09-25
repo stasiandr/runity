@@ -1161,6 +1161,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 .map(|go| entity_id(*go))
                 .unwrap_or(EntityId::UNASSIGNED);
             let anchor = b.vec3("m_Anchor").map(position).unwrap_or(Vec3::ZERO);
+            // Set by hand, the other body's end is where Unity says, not
+            // where the two happen to stand: a rope's links held apart.
+            let connected = (b.i64("m_AutoConfigureConnectedAnchor") == Some(0))
+                .then(|| b.vec3("m_ConnectedAnchor").map(position))
+                .flatten();
             desc.set_part(&match c.kind.as_str() {
                 "FixedJoint" => Joint::Fixed { to },
                 "HingeJoint" => Joint::Hinge {
@@ -1175,16 +1180,42 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                         (l.f32("min").unwrap_or(0.0), l.f32("max").unwrap_or(0.0))
                     }),
                     motor: hinge_drive(b),
+                    connected,
                 },
                 "SpringJoint" => Joint::Spring {
                     to,
                     anchor,
                     stiffness: b.f32("m_Spring").unwrap_or(10.0),
                     damping: b.f32("m_Damper").unwrap_or(0.2),
+                    connected,
                 },
+                "ConfigurableJoint" => {
+                    // Its turns, each locked (0), limited (1) or free (2):
+                    // x between its low and high limits, y and z within
+                    // their one limit either way.
+                    let motion = |k: &str| b.i64(k).unwrap_or(2);
+                    let limit = |k: &str| b[k].f32("limit").unwrap_or(0.0);
+                    let about = |m: i64, low: f32, high: f32| match m {
+                        0 => (0.0, 0.0),
+                        1 => (low, high),
+                        _ => (-180.0, 180.0),
+                    };
+                    let (mx, my, mz) = (motion("m_AngularXMotion"), motion("m_AngularYMotion"), motion("m_AngularZMotion"));
+                    let limits_deg = (mx != 2 || my != 2 || mz != 2).then(|| {
+                        [
+                            about(mx, limit("m_LowAngularXLimit"), limit("m_HighAngularXLimit")),
+                            about(my, -limit("m_AngularYLimit"), limit("m_AngularYLimit")),
+                            about(mz, -limit("m_AngularZLimit"), limit("m_AngularZLimit")),
+                        ]
+                    });
+                    if [motion("m_XMotion"), motion("m_YMotion"), motion("m_ZMotion")] != [0, 0, 0] {
+                        report.skip("a ConfigurableJoint that slides (brought over as a ball joint)");
+                    }
+                    Joint::Ball { to, anchor, connected, limits_deg }
+                }
                 _ => {
                     report.skip(format!("{} (brought over as a ball joint)", c.kind));
-                    Joint::Ball { to, anchor }
+                    Joint::Ball { to, anchor, connected, limits_deg: None }
                 }
             });
             // Unity writes an unbreakable joint's force as infinity.

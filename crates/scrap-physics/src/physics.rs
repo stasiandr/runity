@@ -1062,7 +1062,11 @@ impl PhysicsWorld {
             let (Some(one), Some(two)) = (self.bodies.get(other), self.bodies.get(body)) else {
                 continue;
             };
-            let data = joint_data(&joint, placed, one.position(), two.position());
+            // The other body's scale, which its end's anchor is given in.
+            let one_scale = hecs::Entity::from_bits(one.user_data as u64)
+                .and_then(|e| world.get::<&WorldTransform>(e).ok().map(|t| t.0.to_scale_rotation_translation().0))
+                .unwrap_or(Vec3::ONE);
+            let data = joint_data(&joint, placed, one.position(), two.position(), one_scale);
             let Some(data) = data else {
                 continue;
             };
@@ -1952,24 +1956,25 @@ fn same_but_drive(a: &crate::scene::Joint, b: &crate::scene::Joint) -> bool {
     match (*a, *b) {
         (
             Joint::Hinge {
-                to, anchor, axis, ..
+                to, anchor, axis, connected, ..
             },
             Joint::Hinge {
                 to: t,
                 anchor: n,
                 axis: x,
+                connected: c,
                 ..
             },
-        ) => to == t && anchor == n && axis == x,
+        ) => to == t && anchor == n && axis == x && connected == c,
         (Joint::Slider { to, axis, .. }, Joint::Slider { to: t, axis: x, .. }) => {
             to == t && axis == x
         }
         (
-            Joint::Spring { to, anchor, .. },
+            Joint::Spring { to, anchor, connected, .. },
             Joint::Spring {
-                to: t, anchor: n, ..
+                to: t, anchor: n, connected: c, ..
             },
-        ) => to == t && anchor == n,
+        ) => to == t && anchor == n && connected == c,
         _ => false,
     }
 }
@@ -2044,6 +2049,7 @@ fn joint_data(
     placed: glam::Mat4,
     one: &Isometry<Real>,
     two: &Isometry<Real>,
+    one_scale: Vec3,
 ) -> Option<GenericJoint> {
     use crate::scene::Joint;
     let (_, rotation, _) = placed.to_scale_rotation_translation();
@@ -2073,8 +2079,20 @@ fn joint_data(
         Joint::Spring { .. } => JointAxesMask::empty(),
         Joint::None => return None,
     };
+    // The other body's end: where the anchor is now, or where the joint
+    // says in that body's own space — Unity's connected anchor, which holds
+    // a rope's links a set length apart however they were laid out.
+    let connected = match *joint {
+        Joint::Ball { connected, .. } | Joint::Hinge { connected, .. } | Joint::Spring { connected, .. } => connected,
+        _ => None,
+    };
+    let mut frame1 = one.inverse() * frame;
+    if let Some(c) = connected {
+        let c = c * one_scale;
+        frame1.translation = nalgebra::Translation3::new(c.x, c.y, c.z);
+    }
     let mut builder = GenericJointBuilder::new(locked)
-        .local_frame1(one.inverse() * frame)
+        .local_frame1(frame1)
         .local_frame2(two.inverse() * frame)
         .contacts_enabled(false);
     match *joint {
@@ -2089,6 +2107,14 @@ fn joint_data(
             ..
         } => {
             builder = builder.limits(JointAxis::LinX, [low, high]);
+        }
+        Joint::Ball {
+            limits_deg: Some(limits),
+            ..
+        } => {
+            for (axis, (low, high)) in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ].into_iter().zip(limits) {
+                builder = builder.limits(axis, [low.to_radians(), high.to_radians()]);
+            }
         }
         _ => {}
     }
@@ -3577,6 +3603,7 @@ mod tests {
             anchor: Vec3::ZERO,
             stiffness: 400.0,
             damping: 20.0,
+            connected: None,
         };
         run_for(&mut physics, &mut world, 1);
         assert_eq!(

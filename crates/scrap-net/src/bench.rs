@@ -586,12 +586,14 @@ impl Scenario {
                         axis,
                         limits_deg: None,
                         motor: None,
+                        connected: None,
                     },
                     JointKind::Spring { stiffness, damping } => Joint::Spring {
                         to,
                         anchor: Vec3::ZERO,
                         stiffness,
                         damping,
+                        connected: None,
                     },
                 };
                 desc.set_part(&made);
