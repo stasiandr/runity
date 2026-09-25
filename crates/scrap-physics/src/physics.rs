@@ -3835,6 +3835,45 @@ mod tests {
         assert!((door - 45.0).abs() < 6.0, "held at 45°: {door}");
     }
 
+    /// A known fault of rapier 0.26, kept to show it: a hinge on a moving
+    /// kinematic body (a lever on the train) is dragged back as if by
+    /// wind. For a joint to a body the solver does not move, rapier puts
+    /// that body's end of the joint where it stood at the start of the step
+    /// (`JointOneBodyConstraintBuilder::generate`) and never moves it over
+    /// the substeps, while the dynamic end does move: the joint's position
+    /// correction pulls the lever back toward where the train was. Joined
+    /// to a heavy dynamic body instead, the same lever keeps up. Unity's
+    /// PhysX does not do this; Dacha's train lever returns to centre in
+    /// half a second where ours takes three.
+    #[test]
+    #[ignore = "rapier 0.26 drags a joint to a moving kinematic body"]
+    fn a_lever_on_a_moving_kinematic_body_is_not_dragged() {
+        let (_, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f0", name: "train", model: "m", body: Kinematic,
+                 collider: Box(half: (1.0, 0.1, 3.0)), transform: (position: (0.0, 1.0, 0.0))),
+                (id: "00000000000000f1", name: "lever", model: "m", body: Dynamic,
+                 collider: Box(half: (0.05, 0.5, 0.05)), transform: (position: (0.0, 2.0, 0.0)),
+                 physics: (gravity: 0.0, mass: Some(1.0)),
+                 joint: Hinge(to: "00000000000000f0", anchor: (0.0, -0.5, 0.0), axis: (-1.0, 0.0, 0.0),
+                              motor: (hold: 0.0, strength: 100.0, damping: 10.0))),
+            ])"#,
+        );
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        let lever = by_id(&world, "00000000000000f1".parse().unwrap());
+        let train = by_id(&world, "00000000000000f0".parse().unwrap());
+        // Up to speed gently, then two seconds at 9 m/s.
+        let (mut z, mut v) = (0.0f32, 0.0f32);
+        for _ in 0..120 {
+            v = (v + 3.0 / 30.0).min(9.0);
+            z -= v / 30.0;
+            world.get::<&mut Transform>(train).unwrap().position.z = z;
+            run_for(&mut physics, &mut world, 1);
+        }
+        let angle = physics.hinge_angle(&world, lever).unwrap();
+        assert!(angle.abs() < 2.0, "a spring holding it upright on a steady train: {angle}°");
+    }
+
     #[test]
     fn a_box_collider_sits_around_its_center() {
         // A model whose origin is at its foot: its box is half its height up.
