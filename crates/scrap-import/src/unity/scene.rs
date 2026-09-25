@@ -1362,10 +1362,37 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                             about(mz, -limit("m_AngularZLimit"), limit("m_AngularZLimit")),
                         ]
                     });
-                    if [motion("m_XMotion"), motion("m_YMotion"), motion("m_ZMotion")] != [0, 0, 0] {
-                        report.skip("a ConfigurableJoint that slides (brought over as a ball joint)");
+                    let slides = [motion("m_XMotion"), motion("m_YMotion"), motion("m_ZMotion")];
+                    let free: Vec<usize> = (0..3).filter(|i| slides[*i] != 0).collect();
+                    if free.len() == 1 && [mx, my, mz] == [0, 0, 0] {
+                        // Slides along one of its axes and turns not at
+                        // all: a slider. Its axes as Unity has them: x the
+                        // joint's axis, y its secondary, z the two crossed;
+                        // a direction, so mirrored as a place is.
+                        let i = free[0];
+                        let primary = Vec3::from_array(b.vec3("m_Axis").unwrap_or([1.0, 0.0, 0.0])).normalize_or(Vec3::X);
+                        let secondary = Vec3::from_array(b.vec3("m_SecondaryAxis").unwrap_or([0.0, 1.0, 0.0])).normalize_or(Vec3::Y);
+                        let along = [primary, secondary, primary.cross(secondary)][i].normalize_or(Vec3::X);
+                        let reach = limit("m_LinearLimit");
+                        let limits = (slides[i] == 1).then_some((-reach, reach));
+                        // Its drive along that axis, held at the target —
+                        // which Unity drives the joint toward negated.
+                        let drive = &b[["m_XDrive", "m_YDrive", "m_ZDrive"][i]];
+                        let spring = drive.f32("positionSpring").unwrap_or(0.0);
+                        let target = b.vec3("m_TargetPosition").map_or(0.0, |t| -t[i]);
+                        let motor = (spring > 0.0).then(|| scrap::scene::Motor {
+                            speed: 0.0,
+                            hold: Some(target),
+                            strength: spring,
+                            damping: Some(drive.f32("positionDamper").unwrap_or(0.0)),
+                        });
+                        Joint::Slider { to, axis: Vec3::new(along.x, along.y, -along.z), limits, motor }
+                    } else {
+                        if slides != [0, 0, 0] {
+                            report.skip("a ConfigurableJoint that slides and turns (brought over as a ball joint)");
+                        }
+                        Joint::Ball { to, anchor, connected, limits_deg }
                     }
-                    Joint::Ball { to, anchor, connected, limits_deg }
                 }
                 _ => {
                     report.skip(format!("{} (brought over as a ball joint)", c.kind));

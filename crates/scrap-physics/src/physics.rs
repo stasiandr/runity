@@ -1149,11 +1149,13 @@ impl PhysicsWorld {
                     joint,
                     handle,
                     bodies: (other, body),
-                    // Only a hinge — a door set flush in the sand. A thing
+                    // Only a hinge or a slider — a door set flush in the
+                    // sand, a handle in its slot. A thing
                     // tethered on a spring (a ripe sponge in its bed) stands
                     // on what it was set into: freed of it, it fell through
                     // and tore its tether.
-                    fresh: Some(other) == self.ground && matches!(joint, crate::scene::Joint::Hinge { .. }),
+                    fresh: Some(other) == self.ground
+                        && matches!(joint, crate::scene::Joint::Hinge { .. } | crate::scene::Joint::Slider { .. }),
                 },
             );
         }
@@ -1412,7 +1414,7 @@ impl PhysicsWorld {
         );
     }
 
-    /// A thing just hinged on the world — a door — stops
+    /// A thing just hinged or slid on the world — a door, a handle — stops
     /// colliding with the still things it was put into: a door set flush
     /// in the sand would otherwise grind against it, and a stiff solver
     /// hold it shut by that friction. What it only comes to touch later (a
