@@ -1,0 +1,62 @@
+name: Daily
+
+# Every test, the slow ones too (.config/nextest.toml): fluids that run for
+# seconds, networks over awful links, shaders compiled from scratch. Too long
+# for every push, and they must not rot unseen, so once a day — and by hand
+# before merging something that touches them.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: all tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same as ci.yml: a software Vulkan device, and what cpal needs to
+      # build on Linux.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mesa-vulkan-drivers libasound2-dev libdbus-1-dev libudev-dev
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Test (fast, medium and slow)
+        run: cargo nextest run --workspace -P daily
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-${{ matrix.os }}
+          path: target/nextest/daily/junit.xml
+
+  # Which tests have outgrown their tier. Timed one at a time: side by side
+  # a test can run twenty times slower than alone, and that says nothing
+  # about the test. One machine is enough; a runner is about twice as slow
+  # as a developer's.
+  tiers:
+    name: tests slower than their tier
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Every test, one at a time
+        run: cargo nextest run --workspace -P daily -j 1 || true
+      - name: Tests slower than their tier
+        run: python3 tools/test-tiers.py target/nextest/daily/junit.xml --scale 2 | tee -a "$GITHUB_STEP_SUMMARY"
