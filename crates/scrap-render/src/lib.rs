@@ -29,6 +29,7 @@ pub mod graph;
 pub mod lens;
 pub mod lights;
 pub mod lod;
+mod lean;
 pub mod look;
 pub mod material;
 pub mod moods;

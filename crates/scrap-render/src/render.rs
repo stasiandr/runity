@@ -1371,6 +1371,11 @@ pub struct Renderer {
     timer: Option<crate::gpu_timer::GpuTimer>,
     /// The Frame Debugger's recording and picture ([`crate::frame_debugger`]).
     debugger: crate::frame_debugger::Debugger,
+    /// The lit pipelines built lean, for frames that may be drawn so
+    /// ([`crate::lean`]), and the shader modules they are built from: the
+    /// standard one's (`None`) and each material shader's.
+    lean: crate::lean::Lean<Look>,
+    lean_modules: std::collections::HashMap<Option<crate::asset::AssetId>, wgpu::ShaderModule>,
     /// Meshes' and textures' names from their assets, for the debugger to
     /// call a draw by.
     mesh_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
@@ -1378,6 +1383,9 @@ pub struct Renderer {
     timing: bool,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
+    /// What Unity's procedural sky was last baked into the sky-view table
+    /// for: the way to the sun and the sky's numbers.
+    unity_sky_baked: Option<[f32; 11]>,
     /// One texel of depth, bound in place of the prepass's while it draws.
     blank_depth: wgpu::TextureView,
     /// The clouds' picture.
@@ -1642,6 +1650,21 @@ struct Look {
 }
 
 impl Look {
+    /// What its scene pipeline is built from.
+    fn describe(self, prepassed: bool, samples: u32) -> crate::lean::Describe {
+        crate::lean::Describe {
+            skinned: self.skinned,
+            terrain: self.terrain,
+            water: self.water,
+            unlit: self.unlit,
+            prepassed,
+            on_top: self.on_top,
+            face: self.face,
+            blend: self.blend.map(blend_state),
+            samples,
+        }
+    }
+
     fn all() -> Vec<Look> {
         let mut out = Vec::new();
         for skinned in [false, true] {
@@ -1807,7 +1830,7 @@ fn white_buffer(gpu: &Gpu, count: u64) -> wgpu::Buffer {
     })
 }
 
-fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
+pub(crate) fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
     let mut out = vec![
         Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
@@ -1893,87 +1916,14 @@ fn scene_pipelines(
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
 ) {
-    let format = crate::post::HDR_FORMAT;
-    let multisample = wgpu::MultisampleState {
-        count: samples,
-        ..Default::default()
-    };
     let scene_pipeline = |look: Look, prepassed: bool| {
-        let buffers = vertex_buffers(look.skinned);
-        gpu.device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(if look.skinned {
-                    "scrap::skinned"
-                } else {
-                    "scrap::render"
-                }),
-                layout: Some(if look.skinned {
-                    layouts.skinned
-                } else {
-                    layouts.main
-                }),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some(if look.terrain {
-                        "vs_terrain"
-                    } else if look.skinned {
-                        "vs_skinned"
-                    } else {
-                        "vs"
-                    }),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some(if look.water {
-                        "fs_water"
-                    } else if look.unlit {
-                        "fs_unlit"
-                    } else if prepassed {
-                        "fs_prepassed"
-                    } else {
-                        "fs"
-                    }),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: look.blend.map(blend_state),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    // Back faces are dropped unless a material asks for
-                    // them, which is why the importer cares about winding:
-                    // a model wound inside out disappears.
-                    cull_mode: match look.face {
-                        RenderFace::Front => Some(wgpu::Face::Back),
-                        RenderFace::Back => Some(wgpu::Face::Front),
-                        RenderFace::Both | RenderFace::BothAsFront => None,
-                    },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    // What is see-through does not hide what is drawn
-                    // after it; it is tested against the solid world only.
-                    depth_write_enabled: Some(look.blend.is_none()),
-                    // Equal passes: the prepass's own depth may be there
-                    // already.
-                    depth_compare: Some(if look.on_top {
-                        wgpu::CompareFunction::Always
-                    } else if prepassed {
-                        wgpu::CompareFunction::Equal
-                    } else {
-                        wgpu::CompareFunction::LessEqual
-                    }),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample,
-                multiview_mask: None,
-                cache: None,
-            })
+        crate::lean::scene_pipeline(
+            &gpu.device,
+            shader,
+            if look.skinned { layouts.skinned } else { layouts.main },
+            look.describe(prepassed, samples),
+            false,
+        )
     };
     let scene = looks.iter().map(|&look| (look, scene_pipeline(look, false))).collect();
     let prepassed = looks
@@ -2522,6 +2472,8 @@ impl Renderer {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
+        self.lean_modules.insert(None, shader.clone());
+        self.lean.forget();
         self.clusters.pipelines = cluster_pipelines;
         (self.ddgi.trace, self.ddgi.update) = ddgi_pipelines;
         (self.restir.initial, self.restir.spatial) = restir_pipelines;
@@ -2583,6 +2535,7 @@ impl Renderer {
         };
         self.other_samples = Some(kept);
         self.depth_size = (0, 0);
+        self.lean.forget();
     }
 
     /// The pipeline for a look: a material's own shader's, or the standard
@@ -2590,22 +2543,52 @@ impl Renderer {
     /// Over the prepass's depth ([`Renderer::depth_prepassed`]), a solid
     /// look takes its equal-depth pipeline.
     fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
-        let map = if self.depth_prepassed && look.blend.is_none() && !self.cuts(look) {
-            &self.pipelines.prepassed
-        } else {
-            &self.pipelines.scene
-        };
-        // A material's own shader has no `fs_unlit` looks (their shade()
-        // returns early for unlit anyway): its standard one, then the
-        // standard shader's.
-        map.get(&look)
-            .or_else(|| map.get(&Look { unlit: false, ..look }))
-            .or_else(|| {
-                map.get(&Look {
-                    shader: None,
-                    ..look
-                })
-            })
+        let (key, prepassed) = self.scene_key(look)?;
+        if self.lean.on {
+            if let Some(lean) = self.lean.ready.get(&(key, prepassed)) {
+                return Some(lean);
+            }
+        }
+        let map = if prepassed { &self.pipelines.prepassed } else { &self.pipelines.scene };
+        map.get(&key)
+    }
+
+    /// Which pipeline draws a look: the look it is filed under (a
+    /// material's own shader has no `fs_unlit` looks — its shade()
+    /// returns early for unlit anyway — so its standard one, then the
+    /// standard shader's), and whether over the prepass's depth.
+    fn scene_key(&self, look: Look) -> Option<(Look, bool)> {
+        let prepassed = self.depth_prepassed && look.blend.is_none() && !self.cuts(look);
+        let map = if prepassed { &self.pipelines.prepassed } else { &self.pipelines.scene };
+        [look, Look { unlit: false, ..look }, Look { shader: None, ..look }]
+            .into_iter()
+            .find(|l| map.contains_key(l))
+            .map(|l| (l, prepassed))
+    }
+
+    /// Ask for the lean pipelines of the looks this frame draws, both over
+    /// the prepass's depth and not, where they would be drawn so.
+    fn ask_lean(&mut self, gpu: &Gpu, looks: impl Iterator<Item = Look>) {
+        let was = self.depth_prepassed;
+        let mut wanted = Vec::new();
+        for look in looks {
+            for prepassed in [false, true] {
+                self.depth_prepassed = prepassed;
+                if let Some(key) = self.scene_key(look) {
+                    if !self.lean.asked(&key) && !wanted.contains(&key) {
+                        wanted.push(key);
+                    }
+                }
+            }
+        }
+        self.depth_prepassed = was;
+        for (look, prepassed) in wanted {
+            let Some(module) = self.lean_modules.get(&look.shader).cloned() else {
+                continue;
+            };
+            let layout = if look.skinned { self.skinned_layout.clone() } else { self.pipeline_layout.clone() };
+            self.lean.ask(&gpu.device, (look, prepassed), module, layout, look.describe(prepassed, self.samples));
+        }
     }
 
     /// Whether a look's own shader cuts its surface out (`discard`): the
@@ -2684,6 +2667,8 @@ impl Renderer {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines.scene.extend(built.0);
+        self.lean_modules.insert(Some(id), shader.clone());
+        self.lean.forget();
         self.pipelines.prepassed.extend(built.1);
         self.material_shaders.insert(id, surface.to_string());
         self.shader_textures.insert(id, declared_textures(surface));
@@ -3499,10 +3484,13 @@ impl Renderer {
             lod_meshes: Vec::new(),
             timer: None,
             debugger: Default::default(),
+            lean: Default::default(),
+            lean_modules: [(None, shader.clone())].into_iter().collect(),
             mesh_names: Default::default(),
             texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
             atmosphere,
+            unity_sky_baked: None,
             clouds,
             terrain_heights,
             trample: crate::foliage::TrampleMap::default(),
@@ -4855,6 +4843,23 @@ impl Renderer {
         self.gpu_particles.slots()
     }
 
+    /// Draw frames that may be by the lean lit shaders ([`crate::lean`]),
+    /// or always by the standard ones: on by default (`SCRAP_LEAN=0` starts
+    /// it off).
+    pub fn set_lean_shaders(&mut self, on: bool) {
+        self.lean.enabled = on;
+    }
+
+    /// How many of the last frame's lit pipelines were lean ones in: 0 when
+    /// it was not drawn lean, or none was built yet. For tests and tools.
+    pub fn lean_pipelines(&self) -> usize {
+        if self.lean.on {
+            self.lean.ready.len()
+        } else {
+            0
+        }
+    }
+
     /// Record the screen's frames for the Frame Debugger
     /// ([`crate::frame_debugger`]) — every frame from now until
     /// [`Self::stop_debugging`], each stopped at event `stop` (none: drawn
@@ -5000,6 +5005,7 @@ impl Renderer {
             }
             None => frame,
         };
+        self.bake_unity_sky(gpu, frame);
         if frame.live_meshes.is_empty() {
             self.bake_probes(gpu, frame);
             self.render_view(gpu, Some(view), width, height, frame, None);
@@ -5204,6 +5210,70 @@ impl Renderer {
         }
         let replaced = self.gpu_mesh(gpu, vertices, &[], indices, true, true);
         self.meshes[mesh.0 as usize] = replaced;
+    }
+
+    /// Unity's procedural sky into the sky-view table, when the frame's sky
+    /// is it: what reflections read, a texel for what the shader would work
+    /// out twice a pixel. Only when the sun or the sky's numbers moved —
+    /// the table is a few thousand texels, worked out on every core.
+    fn bake_unity_sky(&mut self, gpu: &Gpu, frame: &Frame) {
+        if frame.sky.mode != SkyMode::Procedural {
+            self.unity_sky_baked = None;
+            return;
+        }
+        let to_sun = -frame.lighting.sun_direction.normalize_or(Vec3::NEG_Y);
+        let sky = crate::procedural_sky::UnitySky::new(&frame.sky);
+        let key = [
+            to_sun.x,
+            to_sun.y,
+            to_sun.z,
+            sky.inv_wavelength.x,
+            sky.inv_wavelength.y,
+            sky.inv_wavelength.z,
+            sky.rayleigh,
+            sky.ground.x,
+            sky.ground.y,
+            sky.ground.z,
+            sky.exposure,
+        ];
+        // A tenth of a degree of sun is no change a reflection shows.
+        let close = self.unity_sky_baked.is_some_and(|old| {
+            Vec3::new(old[0], old[1], old[2]).dot(to_sun) > 0.999_998 && old[3..] == key[3..]
+        });
+        if close {
+            return;
+        }
+        self.unity_sky_baked = Some(key);
+        let (w, h) = crate::atmosphere::SKY_VIEW;
+        let rows = scrap_core::jobs::map_range(h as usize, 4, |y| {
+            let mut row = Vec::with_capacity(w as usize * 4);
+            for x in 0..w {
+                // The table's own mapping (physical_sky in render.wgsl):
+                // azimuth across, the square root of latitude up.
+                let u = (x as f32 + 0.5) / w as f32;
+                let v = (y as f32 + 0.5) / h as f32;
+                let azimuth = (u - 0.5) * std::f32::consts::TAU;
+                let t = v * 2.0 - 1.0;
+                let latitude = t.signum() * t * t * std::f32::consts::FRAC_PI_2;
+                let d = Vec3::new(latitude.cos() * azimuth.cos(), latitude.sin(), latitude.cos() * azimuth.sin());
+                let c = sky.radiance(d, to_sun);
+                for channel in [c.x, c.y, c.z, 1.0] {
+                    row.push(half_bits(channel));
+                }
+            }
+            row
+        });
+        let texels: Vec<u16> = rows.into_iter().flatten().collect();
+        gpu.queue.write_texture(
+            self.atmosphere.sky_view.texture().as_image_copy(),
+            bytemuck::cast_slice(&texels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 8),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
     }
 
     /// The probes' pictures, when the probes are not the ones they are of:
@@ -6128,6 +6198,10 @@ impl Renderer {
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+        // Lean, when nothing the lean shader leaves out is asked for.
+        self.lean.collect();
+        self.lean.on = self.lean.enabled && lean_allowed(&uniform, frame, decals.is_empty());
+
         if fine_terrain.is_some() && self.terrain_mesh_group.is_some() {
             let t = TerrainFrameUniform {
                 view_projection: uniform.view_projection,
@@ -6329,6 +6403,15 @@ impl Renderer {
             .map(|(count, mesh)| self.mesh(mesh).map_or(0, |m| m.index_count as u64 / 3) * count as u64)
             .sum();
         self.stats = stats;
+        if self.lean.on {
+            let looks: Vec<Look> = batches
+                .iter()
+                .filter_map(|((look, _, _), _)| *look)
+                .chain(singles.iter().map(|s| s.0))
+                .chain(transparent.iter().map(|t| t.1))
+                .collect();
+            self.ask_lean(gpu, looks.into_iter());
+        }
         // One-sided first, then both: each range with its own culling.
         let shadow_one_sided = shadow_batches.len();
         shadow_batches.extend(shadow_both);
@@ -7627,6 +7710,48 @@ fn caster_cascades(bounds: crate::asset::Bounds, transform: Mat4, cascades: &[(M
     mask
 }
 
+/// Whether a frame may be drawn by the lean shaders (`LEAN`, render.wgsl):
+/// every switch of what they leave out is off in its uniform, and no draw
+/// is of sand, clay or a surface lit from under its skin — what the lit
+/// shader does whatever the weather.
+fn lean_allowed(u: &FrameUniform, frame: &Frame, no_decals: bool) -> bool {
+    let off = |v: f32| v <= 0.5;
+    let calm = u.weather[0] == [0.0; 4]
+        && u.weather[1][1] <= 0.0
+        && u.weather[1][2] <= 0.0
+        // Drift, drying and mud; the mud's height (w) means nothing
+        // without mud.
+        && u.weather[2][..3] == [0.0; 3]
+        && off(u.dust[0]);
+    let clear = u.clouds[0][0] <= 0.0 || u.clouds[1][3] <= 0.0;
+    let dry = (0..4).all(|i| off(u.waters[i * 2][1]));
+    let plain = u.ambient_occlusion[2] <= 0.0
+        && off(u.vsm[3][0])
+        && off(u.ddgi[1][3])
+        && off(u.ssr[0])
+        && off(u.air[0])
+        && off(u.volume[0])
+        && u.probe_params[0] == 0.0
+        && off(u.probe_params[2])
+        && off(u.distance[0][3])
+        && off(u.ray[0])
+        && off(u.ray[1])
+        && off(u.ray[2])
+        && off(u.restir[0])
+        && off(u.glass[0]);
+    let materials = frame.draws.iter().all(|d| {
+        let m = &d.material;
+        m.shading != Shading::Sand && !m.clay && m.subsurface == [0.0; 3]
+    });
+    if std::env::var_os("SCRAP_LEAN_WHY").is_some() {
+        eprintln!(
+            "lean: calm {calm} clear {clear} dry {dry} plain {plain} decals {no_decals} materials {materials}; weather {:?} dust {:?} ao {:?} vsm {:?} ddgi {:?} ssr {:?} air {:?} volume {:?} probes {:?} distance {:?} ray {:?} restir {:?} glass {:?}",
+            u.weather, u.dust, u.ambient_occlusion, u.vsm[3], u.ddgi[1], u.ssr, u.air, u.volume, u.probe_params, u.distance[0], u.ray, u.restir, u.glass
+        );
+    }
+    calm && clear && dry && plain && no_decals && materials
+}
+
 fn aabb_in_frustum(
     planes: &[glam::Vec4; 6],
     bounds: crate::asset::Bounds,
@@ -8014,3 +8139,44 @@ mod tests {
     }
 }
 
+
+/// An `f32` as a half float's bits, rounded to nearest: what an
+/// `Rgba16Float` texture written from the CPU wants.
+fn half_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        // Infinity or NaN.
+        return sign | 0x7c00 | if mantissa != 0 { 0x200 } else { 0 };
+    }
+    let e = exponent - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = (mantissa | 0x0080_0000) >> (1 - e);
+        return sign | ((m + 0x1000) >> 13) as u16;
+    }
+    let rounded = ((e as u32) << 10 | (mantissa >> 13)) + ((mantissa >> 12) & 1);
+    sign | rounded as u16
+}
+
+#[cfg(test)]
+mod half_float_tests {
+    #[test]
+    fn half_floats_are_what_a_sky_table_holds() {
+        assert_eq!(super::half_bits(0.0), 0);
+        assert_eq!(super::half_bits(1.0), 0x3c00);
+        assert_eq!(super::half_bits(-2.0), 0xc000);
+        assert_eq!(super::half_bits(0.5), 0x3800);
+        assert_eq!(super::half_bits(65504.0), 0x7bff);
+        assert_eq!(super::half_bits(1e6), 0x7c00);
+        assert_eq!(super::half_bits(6.103_515_6e-5), 0x0400);
+        assert_eq!(super::half_bits(5.960_464_5e-8), 0x0001);
+    }
+}
