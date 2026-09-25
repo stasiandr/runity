@@ -749,11 +749,14 @@ pub fn build_frame_where(
             draws.extend(emitting.draws_facing(Some(camera.position)));
         }
     }
+    // A lamp on something moving (a torch in a hand) lights from where it
+    // is drawn this frame, not where the last step left it.
     let lights = world
-        .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&SceneId>)>()
+        .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&crate::world::Shown>, Option<&SceneId>)>()
         .iter()
-        .filter(|(entity, _, _, line)| on(*entity) && keep(line.map(|l| l.0)))
-        .map(|(_, light, placed, _)| {
+        .filter(|(entity, _, _, _, line)| on(*entity) && keep(line.map(|l| l.0)))
+        .map(|(_, light, placed, shown, _)| {
+            let placed = WorldTransform(crate::world::drawn_at(placed, shown));
             let l = light.0;
             let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
             crate::render::PointLight {
@@ -794,10 +797,11 @@ pub fn build_frame_where(
         )
         .collect();
     let flares = world
-        .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&SceneId>)>()
+        .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&crate::world::Shown>, Option<&SceneId>)>()
         .iter()
-        .filter(|(entity, light, _, line)| light.0.flare > 0.0 && on(*entity) && keep(line.map(|l| l.0)))
-        .map(|(_, light, placed, _)| {
+        .filter(|(entity, light, _, _, line)| light.0.flare > 0.0 && on(*entity) && keep(line.map(|l| l.0)))
+        .map(|(_, light, placed, shown, _)| {
+            let placed = WorldTransform(crate::world::drawn_at(placed, shown));
             let l = light.0;
             let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
             crate::render::Flare {

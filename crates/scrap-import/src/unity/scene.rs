@@ -1349,6 +1349,13 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 mass: Some(b.f32("m_Mass").unwrap_or(1.0)),
                 // Continuous, speculative or dynamic: checked between steps.
                 fast: b.i64("m_CollisionDetection").is_some_and(|m| m != 0),
+                // How a frame between steps draws it, as authored: None,
+                // Interpolate, Extrapolate. Unity's own default is None.
+                drawn: match b.i64("m_Interpolate") {
+                    Some(1) => scrap::scene::Drawn::Between,
+                    Some(2) => scrap::scene::Drawn::Ahead,
+                    _ => scrap::scene::Drawn::AtStep,
+                },
                 ..BodyProps::default()
             });
         }
@@ -3043,6 +3050,22 @@ Rigidbody:
         let solid = volume.replace("m_IsTrigger: 1", "m_IsTrigger: 0");
         let roots = convert_file(&unity(), &solid, &mut report);
         assert_eq!(roots[0].body(), Body::Kinematic);
+    }
+
+    #[test]
+    fn a_rigidbody_is_drawn_between_its_steps_as_its_interpolation_says() {
+        use scrap::scene::Drawn;
+        let drawn = |scene: &str| {
+            let roots = convert_file(&unity(), scene, &mut Report::default());
+            let crate_ = roots.iter().find(|r| r.name == "Crate").unwrap();
+            crate_.parts.try_get::<BodyProps>().ok().flatten().unwrap_or_default().drawn
+        };
+        // Unity's own default, None: where the step left it.
+        assert_eq!(drawn(SCENE), Drawn::AtStep);
+        let with = |mode: &str| SCENE.replace("  m_UseGravity: 1\n", &format!("  m_UseGravity: 1\n  m_Interpolate: {mode}\n"));
+        assert_eq!(drawn(&with("1")), Drawn::Between);
+        assert_eq!(drawn(&with("2")), Drawn::Ahead);
+        assert_eq!(drawn(&with("0")), Drawn::AtStep);
     }
 
     #[test]

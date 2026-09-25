@@ -304,6 +304,20 @@ fn solved(asked: Body, replica: bool) -> Body {
 }
 
 /// What a line's `freeze_move` and `freeze_turn` hold still.
+/// Where a step took a body from and to, for a frame between steps to
+/// draw it by ([`crate::world::interpolate`]); drawn [`AtStep`], both are
+/// where it is now, and it is drawn there.
+///
+/// [`AtStep`]: crate::scene::Drawn::AtStep
+fn stepped(from: glam::Mat4, to: glam::Mat4, drawn: crate::scene::Drawn) -> crate::world::Stepped {
+    use crate::scene::Drawn;
+    crate::world::Stepped {
+        from: if drawn == Drawn::AtStep { to } else { from },
+        to,
+        ahead: drawn == Drawn::Ahead,
+    }
+}
+
 fn locked(props: &crate::scene::BodyProps) -> LockedAxes {
     let mut out = LockedAxes::empty();
     for (on, axis) in [
@@ -698,7 +712,7 @@ impl PhysicsWorld {
                 && matches!(body, Body::Dynamic | Body::Kinematic)
                 && built.collider == shape.0
                 && built.mesh == mesh
-                && built.props == props
+                && built.props.solved() == props.solved()
                 && built.layer == layer;
             if switch {
                 switched.push((entity, handle.0, body));
@@ -713,7 +727,7 @@ impl PhysicsWorld {
             if built.body != body
                 || built.collider != shape.0
                 || built.mesh != mesh
-                || built.props != props
+                || built.props.solved() != props.solved()
                 || built.layer != layer
             {
                 stale.push(entity);
@@ -1495,8 +1509,12 @@ impl PhysicsWorld {
     /// writing rapier's copy back over it would let rounding walk the world
     /// a fraction at a time.
     pub fn sync_to_world(&self, world: &mut World) {
-        let mut moved: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, Option<hecs::Entity>)> = Vec::new();
-        for (entity, handle, physics, placed, parent, replica) in world
+        let mut moved: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, Option<hecs::Entity>, crate::scene::Drawn)> = Vec::new();
+        // What the game moves (a kinematic body, a train, a lift): where it
+        // is now, drawn between there and where the last step left it.
+        let mut carried: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, crate::scene::Drawn)> = Vec::new();
+        let mut unstepped: Vec<hecs::Entity> = Vec::new();
+        for (entity, handle, physics, placed, parent, replica, props, stepped) in world
             .query::<(
                 hecs::Entity,
                 &BodyHandle,
@@ -1504,10 +1522,23 @@ impl PhysicsWorld {
                 &WorldTransform,
                 Option<&Parent>,
                 Option<&crate::world::Replica>,
+                Option<&Props>,
+                Option<&crate::world::Stepped>,
             )>()
             .iter()
         {
-            if solved(physics.0, replica.is_some()) != Body::Dynamic {
+            let drawn = props.map(|p| p.0.drawn).unwrap_or_default();
+            let kind = solved(physics.0, replica.is_some());
+            // A replica is shown by the network, between the poses its
+            // owner sent, every frame.
+            if kind == Body::Kinematic && replica.is_none() && drawn != crate::scene::Drawn::AtStep {
+                carried.push((entity, stepped.map_or(placed.0, |s| s.to), placed.0, drawn));
+                continue;
+            }
+            if kind != Body::Dynamic {
+                if stepped.is_some() {
+                    unstepped.push(entity);
+                }
                 continue;
             }
             let Some(body) = self.bodies.get(handle.0) else {
@@ -1527,9 +1558,16 @@ impl PhysicsWorld {
                 placed.0,
                 glam::Mat4::from_scale_rotation_translation(scale, rotation, translation),
                 parent.map(|p| p.0),
+                drawn,
             ));
         }
-        for (entity, was, matrix, parent) in moved {
+        for entity in unstepped {
+            let _ = world.remove_one::<crate::world::Stepped>(entity);
+        }
+        for (entity, from, to, drawn) in carried {
+            let _ = world.insert_one(entity, stepped(from, to, drawn));
+        }
+        for (entity, was, matrix, parent, drawn) in moved {
             // The local transform too, relative to the parent: it is what
             // the hierarchy is recomputed from, and what a reload compares
             // with the file. Writing only the world one would let the next
@@ -1581,7 +1619,7 @@ impl PhysicsWorld {
             let _ = world.insert_one(entity, WorldTransform(matrix));
             // Where the step took it from and to: a frame between steps
             // draws it between them (`world::interpolate`).
-            let _ = world.insert_one(entity, crate::world::Stepped { from: was, to: matrix });
+            let _ = world.insert_one(entity, stepped(was, matrix, drawn));
             let _ = world.insert_one(entity, local);
             if let Ok(mut built) = world.get::<&mut Built>(entity) {
                 built.local = local;
@@ -3524,6 +3562,81 @@ mod tests {
             "the zone is not a surface: {:?}",
             hit.point
         );
+    }
+
+    /// 30 steps a second drawn at 144 frames: a body gliding at a steady
+    /// speed is drawn a steady distance further on every frame — not still
+    /// for four frames and then a step's worth at once — and so is what
+    /// hangs from it, and a lift the game moves. Drawn `AtStep`, it
+    /// stair-steps, as Unity's `None` does. The simulation is the same
+    /// either way.
+    #[test]
+    fn a_moving_body_is_drawn_smoothly_between_steps_at_any_frame_rate() {
+        use crate::scene::{BodyProps, Drawn};
+        use scrap_core::time::{Time, TimeSettings};
+        const SPEED: f32 = 3.0;
+        const FRAME: f32 = 1.0 / 144.0;
+        let run = |drawn: Drawn| {
+            let floating = BodyProps { gravity: 0.0, drawn, ..BodyProps::default() };
+            let mut glider = entity("glider", 5.0, Body::Dynamic, ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO }).with(floating);
+            // A lamp riding on it.
+            glider.children.push(EntityDesc { name: "lamp".into(), transform: Transform { position: Vec3::Y, ..Default::default() }, ..Default::default() });
+            let lift = entity("lift", -5.0, Body::Kinematic, ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO })
+                .with(BodyProps { drawn, ..BodyProps::default() });
+            let scene = Scene { entities: vec![glider, lift], ..Default::default() };
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            crate::world::apply_hierarchy(&mut world);
+            let named = |world: &World, name: &str| {
+                world.query::<(hecs::Entity, &crate::world::LineName)>().iter().find(|(_, n)| n.0 == name).map(|(e, _)| e).unwrap()
+            };
+            let (glider, lamp, lift) = (named(&world, "glider"), named(&world, "lamp"), named(&world, "lift"));
+            let mut time = Time::new(TimeSettings { fixed_delta: 1.0 / 30.0, ..Default::default() });
+            let mut physics = PhysicsWorld::new(1.0 / 30.0);
+            physics.sync_from_world(&mut world);
+            physics.set_velocity(&world, glider, Vec3::new(SPEED, 0.0, 0.0));
+            let mut drawn_x = Vec::new();
+            let mut stepped_x = Vec::new();
+            for _ in 0..288 {
+                time.advance(FRAME);
+                while time.next_step().is_some() {
+                    // The game moves the lift up at the same speed.
+                    world.get::<&mut Transform>(lift).unwrap().position.y += SPEED / 30.0;
+                    crate::world::apply_hierarchy(&mut world);
+                    physics.run(&mut world);
+                    crate::world::apply_hierarchy(&mut world);
+                }
+                crate::world::interpolate(&mut world, time.interpolation());
+                let at = |e| crate::world::drawn(&world, e).unwrap().w_axis;
+                drawn_x.push((at(glider).x, at(lamp).x, at(lift).y));
+                stepped_x.push(world.get::<&WorldTransform>(glider).unwrap().0.w_axis.x);
+            }
+            (drawn_x, stepped_x)
+        };
+        // From the third step on: a lift the game has only just started
+        // moving is drawn where its first step put it.
+        let deltas = |xs: &[f32]| xs.windows(2).skip(12).map(|w| w[1] - w[0]).collect::<Vec<f32>>();
+        let each = SPEED * FRAME;
+        let (between, simulated) = run(Drawn::Between);
+        for (what, xs) in [
+            ("the body", between.iter().map(|d| d.0).collect::<Vec<_>>()),
+            ("the lamp on it", between.iter().map(|d| d.1).collect()),
+            ("the lift", between.iter().map(|d| d.2).collect()),
+        ] {
+            let d = deltas(&xs);
+            let (lo, hi) = d.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+            assert!(
+                (lo - each).abs() < each * 0.02 && (hi - each).abs() < each * 0.02,
+                "{what} moves {each} a frame, drawn between steps: from {lo} to {hi}"
+            );
+        }
+        // Where it is drawn is only drawing: the steps are the same.
+        let (at_step, simulated_at_step) = run(Drawn::AtStep);
+        assert_eq!(simulated, simulated_at_step);
+        let d = deltas(&at_step.iter().map(|d| d.0).collect::<Vec<_>>());
+        let still = d.iter().filter(|x| x.abs() < 1e-6).count();
+        let jumps = d.iter().filter(|x| (**x - SPEED / 30.0).abs() < 1e-3).count();
+        assert!(still > d.len() / 2 && jumps + still == d.len(), "drawn at its steps it stands and jumps: {d:?}");
     }
 
     #[test]
