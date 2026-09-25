@@ -643,7 +643,9 @@ impl Frame {
     /// sheet of water, are the largest thing in a frame) and the cameras'
     /// frames (drawn into their textures before this one). Every field is
     /// named, so a new one is a compile error here rather than a copy that
-    /// quietly leaves it out.
+    /// quietly leaves it out. `clone` on every field, `Copy` or not, so a
+    /// field that stops being `Copy` does not break it.
+    #[allow(clippy::clone_on_copy)]
     fn shallow(&self) -> Frame {
         let Frame {
             camera,
