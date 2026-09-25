@@ -1375,6 +1375,11 @@ pub struct Renderer {
     /// ([`crate::lean`]), and the shader modules they are built from: the
     /// standard one's (`None`) and each material shader's.
     lean: crate::lean::Lean<LeanKey>,
+    /// The screen's shadow cascades as last drawn, and whose turn it is of
+    /// the far ones; off by `SCRAP_SHADOW_STAGGER=0`.
+    cascade_cache: Option<CascadeCache>,
+    shadow_turn: bool,
+    shadow_stagger: bool,
     /// Unlit see-through things at half size ([`crate::lowres`]).
     lowres: crate::lowres::LowRes,
     /// Whether the last screen frame used it.
@@ -3509,6 +3514,9 @@ impl Renderer {
             lean: Default::default(),
             lowres: crate::lowres::LowRes::new(gpu),
             lowres_drawn: false,
+            cascade_cache: None,
+            shadow_turn: false,
+            shadow_stagger: std::env::var("SCRAP_SHADOW_STAGGER").map_or(true, |v| v != "0"),
             lean_modules: [(None, shader.clone())].into_iter().collect(),
             mesh_names: Default::default(),
             texture_names: Default::default(),
@@ -4878,6 +4886,13 @@ impl Renderer {
         self.lean.enabled = on;
     }
 
+    /// Draw the far shadow cascades every other frame, in turn (on by
+    /// default; `SCRAP_SHADOW_STAGGER=0` starts it off), or every frame.
+    pub fn set_shadow_stagger(&mut self, on: bool) {
+        self.shadow_stagger = on;
+        self.cascade_cache = None;
+    }
+
     /// Draw unlit see-through things — smoke, dust, glows — at half size
     /// and lay them over the picture ([`crate::lowres`]) where the frame
     /// allows, or always at full size: on by default
@@ -5674,11 +5689,44 @@ impl Renderer {
         if restir_on && self.restir.resize(gpu, (width, height)) {
             self.rebind(gpu);
         }
-        let cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
+        let mut cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
             self.cascades(frame, sun, aspect)
         } else {
             Vec::new()
         };
+        // The far cascades drawn every other frame, each on its turn: the
+        // one not drawn keeps its map and the view it was drawn from, so
+        // the lit pass reads it as it was made. Something far that moves
+        // is a frame late in its shadow; the near cascades, where a
+        // shadow is looked at, are drawn every frame. Only the screen's
+        // own maps are kept: a probe's face or a picture draws into the
+        // same layers, and then everything is drawn again.
+        let mut kept_cascades = [false; MAX_CASCADES];
+        if !cascades.is_empty() {
+            let own = screen && self.shadow_stagger;
+            let fits = self.cascade_cache.as_ref().is_some_and(|c| {
+                c.settings == frame.shadows
+                    && c.resolution == self.shadow_resolution
+                    && c.views.len() == cascades.len()
+                    && c.sun.dot(sun) > 0.9999
+            });
+            if own && fits && cascades.len() >= 3 {
+                self.shadow_turn = !self.shadow_turn;
+                let cache = self.cascade_cache.as_ref().expect("fits");
+                for i in 2..cascades.len() {
+                    if (i % 2 == 0) == self.shadow_turn {
+                        cascades[i] = cache.views[i];
+                        kept_cascades[i] = true;
+                    }
+                }
+            }
+            self.cascade_cache = own.then(|| CascadeCache {
+                settings: frame.shadows,
+                resolution: self.shadow_resolution,
+                sun,
+                views: cascades.clone(),
+            });
+        }
         let mut light_view_projection = [Mat4::IDENTITY.to_cols_array_2d(); MAX_CASCADES];
         let mut cascade_spheres = [[0.0f32; 4]; MAX_CASCADES];
         let mut cascade_bias = [0.0f32; 4];
@@ -6812,6 +6860,9 @@ impl Renderer {
             })
             .collect();
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
+            if kept_cascades[cascade] {
+                continue;
+            }
             let mark = crate::frame_debugger::mark();
             {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -7809,6 +7860,15 @@ fn caster_cascades(bounds: crate::asset::Bounds, transform: Mat4, cascades: &[(M
         }
     }
     mask
+}
+
+/// The screen's cascades as their maps were last drawn: what a frame that
+/// does not draw a far one again reads it by.
+struct CascadeCache {
+    settings: ShadowSettings,
+    resolution: u32,
+    sun: Vec3,
+    views: Vec<(Mat4, Vec3, f32, f32, f32)>,
 }
 
 /// A lean pipeline ([`crate::lean`]): a look's, over the prepass's depth
