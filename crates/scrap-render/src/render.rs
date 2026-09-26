@@ -7188,20 +7188,18 @@ fn frustum_planes(view_projection: Mat4) -> [glam::Vec4; 6] {
 /// seen costs a draw; dropping one that can costs a hole.
 /// A mesh's box, placed: the world box round its eight corners.
 fn world_box(bounds: crate::asset::Bounds, transform: Mat4) -> (Vec3, Vec3) {
+    // The box round all eight corners, without the eight (Arvo): the
+    // centre carried over, and each axis of the box reaching as far along
+    // the world's axes as its turned and scaled column says. Run for every
+    // draw several times a frame; the same box as the corners give, to the
+    // last bits of rounding.
     let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for i in 0..8 {
-        let corner = Vec3::new(
-            if i & 1 == 0 { lo.x } else { hi.x },
-            if i & 2 == 0 { lo.y } else { hi.y },
-            if i & 4 == 0 { lo.z } else { hi.z },
-        );
-        let p = transform.transform_point3(corner);
-        min = min.min(p);
-        max = max.max(p);
-    }
-    (min, max)
+    let centre = transform.transform_point3((lo + hi) * 0.5);
+    let half = (hi - lo) * 0.5;
+    let reach = transform.x_axis.truncate().abs() * half.x
+        + transform.y_axis.truncate().abs() * half.y
+        + transform.z_axis.truncate().abs() * half.z;
+    (centre - reach, centre + reach)
 }
 
 fn aabb_in_frustum(
@@ -7209,19 +7207,7 @@ fn aabb_in_frustum(
     bounds: crate::asset::Bounds,
     transform: Mat4,
 ) -> bool {
-    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for i in 0..8 {
-        let corner = Vec3::new(
-            if i & 1 == 0 { lo.x } else { hi.x },
-            if i & 2 == 0 { lo.y } else { hi.y },
-            if i & 4 == 0 { lo.z } else { hi.z },
-        );
-        let world = transform.transform_point3(corner);
-        min = min.min(world);
-        max = max.max(world);
-    }
+    let (min, max) = world_box(bounds, transform);
     planes.iter().all(|plane| {
         // The corner furthest along the plane's normal. If even that one is
         // behind, the whole box is.
@@ -7497,6 +7483,36 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_world_box_is_the_box_round_its_eight_corners() {
+        let bounds = crate::asset::Bounds { min: [-0.3, -1.0, 0.2], max: [0.7, 2.0, 0.9] };
+        for transform in [
+            Mat4::IDENTITY,
+            Mat4::from_translation(Vec3::new(3.0, -2.0, 10.0)),
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0, 0.5, 3.0),
+                glam::Quat::from_euler(glam::EulerRot::YXZ, 0.7, -1.2, 0.3),
+                Vec3::new(-40.0, 5.0, 12.5),
+            ),
+            Mat4::from_cols_array(&[1.0, 0.2, 0.0, 0.0, -0.4, 1.5, 0.3, 0.0, 0.0, 0.1, -2.0, 0.0, 7.0, 8.0, 9.0, 1.0]),
+        ] {
+            let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+            let (mut min, mut max) = (Vec3::INFINITY, Vec3::NEG_INFINITY);
+            for i in 0..8 {
+                let corner = Vec3::new(
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                );
+                let p = transform.transform_point3(corner);
+                min = min.min(p);
+                max = max.max(p);
+            }
+            let (a, b) = world_box(bounds, transform);
+            assert!(a.abs_diff_eq(min, 1e-4) && b.abs_diff_eq(max, 1e-4), "{a} {b} vs {min} {max}");
+        }
+    }
 
     #[test]
     fn a_shader_names_its_texture_slots_on_a_line_of_its_own() {
