@@ -329,10 +329,12 @@ pub(crate) fn reach_leg(
         world[knee].w_axis.truncate(),
         world[foot].w_axis.truncate(),
     );
-    // The knee bends the way it already does; a straight leg forward.
+    // The knee bends the way it already does, leaning forward a little: a
+    // leg near straight has almost no bend to say which way, and without
+    // the lean the knee could flip between steps.
     let along = (f - h).normalize_or(-up);
     let out = (k - h) - along * (k - h).dot(along);
-    let pole = if out.length() > 1e-4 { k + out } else { k + forward };
+    let pole = k + out + forward.normalize_or_zero() * 0.03;
     let (knee_to, foot_to) = crate::geometry_ik::two_bone(h, h.distance(k), k.distance(f), target, pole);
     turn_joint(
         skeleton,

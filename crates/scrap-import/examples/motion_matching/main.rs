@@ -16,6 +16,8 @@
 //! `$SCRAP_LAFAN1` or `~/.cache/scrap/lafan1` — kept out of the repository
 //! and out of every build.
 
+mod eval;
+
 use std::path::PathBuf;
 
 use scrap::glam::{Mat4, Quat, Vec3};
@@ -48,7 +50,12 @@ fn database() -> anyhow::Result<Database> {
     let mut skeleton = None;
     let mut clips = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    for name in CLIPS {
+    let asked = std::env::var("MM_CLIPS").ok();
+    let chosen: Vec<&str> = match &asked {
+        Some(list) => list.split(',').collect(),
+        None => CLIPS.to_vec(),
+    };
+    for name in &chosen {
         match name.strip_suffix('*') {
             Some(prefix) => {
                 let mut found: Vec<String> = std::fs::read_dir(&dir)?
@@ -71,14 +78,21 @@ fn database() -> anyhow::Result<Database> {
         skeleton.get_or_insert(s);
         clips.push(clip);
     }
-    let db = Database::build(&skeleton.unwrap(), &clips, Setup::default()).map_err(anyhow::Error::msg)?;
+    let mut setup = Setup::default();
+    // `MM_WEIGHTS=0.75,1,1,1,1.5,1.5,0.5,0.4`: the feature groups' weights.
+    if let Ok(weights) = std::env::var("MM_WEIGHTS") {
+        for (w, v) in setup.weights.iter_mut().zip(weights.split(',')) {
+            *w = v.parse().unwrap_or(*w);
+        }
+    }
+    let db = Database::build(&skeleton.unwrap(), &clips, setup).map_err(anyhow::Error::msg)?;
     eprintln!("{} frames of {} clips in {:.1?}", db.len(), clips.len(), started.elapsed());
     Ok(db)
 }
 
 /// The yard: a wall across the way, a flight of stairs up to a landing
 /// and down again, a box and a ledge to get over. `(centre, half size)`.
-fn yard() -> Vec<(Vec3, Vec3)> {
+pub fn yard() -> Vec<(Vec3, Vec3)> {
     let mut boxes = vec![
         (Vec3::new(0.0, 1.0, 4.25), Vec3::new(2.0, 1.0, 0.25)),
         (Vec3::new(-6.0, 0.25, 4.0), Vec3::new(1.0, 0.25, 0.5)),
@@ -97,7 +111,7 @@ fn yard() -> Vec<(Vec3, Vec3)> {
 }
 
 /// The yard's boxes and a floor, as a physics world.
-fn physics(boxes: &[(Vec3, Vec3)]) -> scrap::PhysicsWorld {
+pub fn physics(boxes: &[(Vec3, Vec3)]) -> scrap::PhysicsWorld {
     let mut world = scrap::hecs::World::new();
     let floor = (Vec3::new(0.0, -0.5, 0.0), Vec3::new(200.0, 0.5, 200.0));
     for &(centre, half) in boxes.iter().chain([&floor]) {
@@ -138,24 +152,44 @@ fn draw(mesh: MeshHandle, transform: Mat4, material: Material) -> Draw {
 }
 
 /// The character: its matcher, what it was last asked, its pose.
-struct Walker {
-    db: Database,
-    matcher: Matcher,
+pub struct Walker {
+    pub db: std::sync::Arc<Database>,
+    pub matcher: Matcher,
     ask: Ask,
-    world: Vec<Mat4>,
-    boxes: Vec<(Vec3, Vec3)>,
-    physics: scrap::PhysicsWorld,
+    pub world: Vec<Mat4>,
+    pub boxes: Vec<(Vec3, Vec3)>,
+    pub physics: scrap::PhysicsWorld,
 }
 
 impl Walker {
-    fn new(db: Database) -> Self {
-        let matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
-        let boxes = yard();
+    pub fn new(db: std::sync::Arc<Database>, boxes: Vec<(Vec3, Vec3)>, at: Vec3) -> Self {
+        let mut matcher = Matcher::new(&db, at, Vec3::Z);
+        // Knobs for measuring, from the environment: `MM_FEEL=lock_feet=0,search_every=5`.
+        if let Ok(knobs) = std::env::var("MM_FEEL") {
+            for knob in knobs.split(',') {
+                let Some((name, value)) = knob.split_once('=') else { continue };
+                let v: f32 = value.parse().unwrap_or(0.0);
+                let feel = &mut matcher.feel;
+                match name {
+                    "lock_feet" => feel.lock_feet = v != 0.0,
+                    "search_every" => feel.search_every = v,
+                    "switch_margin" => feel.switch_margin = v,
+                    "lock_reach" => feel.lock_reach = v,
+                    "lock_creep" => feel.lock_creep = v,
+                    "blend_halflife" => feel.blend_halflife = v,
+                    "hold_halflife" => feel.hold_halflife = v,
+                    "leash" => feel.leash = v,
+                    "velocity_halflife" => feel.velocity_halflife = v,
+                    "facing_halflife" => feel.facing_halflife = v,
+                    _ => eprintln!("no knob {name}"),
+                }
+            }
+        }
         let physics = physics(&boxes);
         Self { db, matcher, ask: Ask::default(), world: Vec::new(), boxes, physics }
     }
 
-    fn step(&mut self, velocity: Vec3, dt: f32) {
+    pub fn step(&mut self, velocity: Vec3, dt: f32) {
         self.ask = Ask { velocity, facing: None };
         let pose = self.matcher.advance_in(&self.db, &self.ask, dt, &Among(&self.physics));
         self.world = self.matcher.world(&self.db, &pose);
@@ -227,7 +261,7 @@ impl Walker {
         let at = self.matcher.root.0 + Vec3::Y * 0.9;
         let back = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         // Pulled in front of whatever is between it and the character.
-        let away = -back * 4.5 + Vec3::Y * 1.6;
+        let away = -back * 3.2 + Vec3::Y * 1.0;
         let reach = match self.physics.cast_ray(at, away, away.length()) {
             Some(hit) => (hit.distance - 0.3).max(0.5),
             None => away.length(),
@@ -274,7 +308,7 @@ impl Game for Drive {
 /// The path `--video` drives, leg by leg: where to, how fast, and for no
 /// longer than so many seconds. Into the wall (it stops), over a box and
 /// a ledge, then up the stairs, over the landing and down.
-const LEGS: &[([f32; 2], f32, f32)] = &[
+pub const LEGS: &[([f32; 2], f32, f32)] = &[
     ([0.0, 0.0], 0.0, 1.5),
     ([0.0, 6.0], 1.4, 4.0),
     ([-6.0, 1.0], 1.4, 5.0),
@@ -284,20 +318,11 @@ const LEGS: &[([f32; 2], f32, f32)] = &[
     ([6.0, 0.5], 0.0, 2.0),
 ];
 
-/// The velocity the legs ask for at a place and time; `None` past the end.
-fn scripted(at: Vec3, t: f32) -> Option<Vec3> {
-    let mut start = 0.0;
-    for &([x, z], speed, seconds) in LEGS {
-        if t < start + seconds {
-            let to = Vec3::new(x, 0.0, z) - Vec3::new(at.x, 0.0, at.z);
-            return Some(if to.length() < 0.3 { Vec3::ZERO } else { to.normalize() * speed });
-        }
-        start += seconds;
-    }
-    None
-}
-
-fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
+/// `--video FILE [--course NAME] [--from S] [--to S]`: a course driven and
+/// filmed, all of it or the stretch asked for.
+fn video(db: std::sync::Arc<Database>, course: &str, out: &str, from: f32, to: Option<f32>) -> anyhow::Result<()> {
+    let course = eval::course(course).ok_or_else(|| anyhow::anyhow!("no course {course}"))?;
+    let mut walker = Walker::new(db, course.boxes.clone(), course.start);
     use std::io::Write;
     let (width, height, fps) = (1280u32, 720u32, 30u32);
     let gpu = Gpu::headless_blocking(false)?;
@@ -312,7 +337,7 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
         .spawn()?;
     let stdin = ffmpeg.stdin.as_mut().unwrap();
     let dt = 1.0 / 60.0;
-    let seconds: f32 = LEGS.iter().map(|l| l.2).sum();
+    let seconds: f32 = to.unwrap_or(course.seconds).min(course.seconds);
     let mut yaw: f32 = 0.6;
     let frames = (seconds * fps as f32) as usize;
     let mut stepping = std::time::Duration::ZERO;
@@ -320,8 +345,11 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
         for sub in 0..2 {
             let t = (frame * 2 + sub) as f32 * dt;
             let clock = std::time::Instant::now();
-            walker.step(scripted(walker.matcher.root.0, t).unwrap_or_default(), dt);
+            walker.step((course.stick)(t, walker.matcher.root.0), dt);
             stepping += clock.elapsed();
+        }
+        if (frame as f32) < from * fps as f32 {
+            continue;
         }
         // The camera swings slowly round behind the direction of travel.
         let v = walker.matcher.spring.1;
@@ -338,13 +366,14 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
         if std::env::var_os("MM_TRACE").is_some() && frame % 8 == 0 {
             let m = &walker.matcher;
             eprintln!(
-                "{:5.1}s root {:.2?} spring {:.2?} {} {} committed {}",
+                "{:5.1}s root {:.2?} spring {:.2?} {} {} committed {} feet off {:.2}",
                 frame as f32 / fps as f32,
                 m.root.0,
                 m.spring.0,
                 walker.db.clips[walker.db.clip_of(m.frame)].0,
                 m.frame - walker.db.clips[walker.db.clip_of(m.frame)].1.start,
-                m.committed()
+                m.committed(),
+                m.feet_off
             );
         }
     }
@@ -360,11 +389,18 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let walker = Walker::new(database()?);
-    if let Some(i) = args.iter().position(|a| a == "--video") {
-        let out = args.get(i + 1).map(String::as_str).unwrap_or("motion_matching.mp4");
-        return video(walker, out);
+    let db = std::sync::Arc::new(database()?);
+    if args.iter().any(|a| a == "--eval") {
+        return eval::run(db, args.iter().any(|a| a == "--verbose"));
     }
+    let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    if let Some(out) = arg("--video") {
+        let course = arg("--course").unwrap_or_else(|| "yard".into());
+        let from = arg("--from").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let to = arg("--to").and_then(|v| v.parse().ok());
+        return video(db, &course, &out, from, to);
+    }
+    let walker = Walker::new(db, yard(), Vec3::ZERO);
     println!("WASD walks, shift runs, the left mouse button turns the view, Escape quits.");
     run(
         WindowConfig { title: "scrap — motion matching (LAFAN1)".into(), ..Default::default() },

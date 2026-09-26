@@ -40,16 +40,28 @@ pub struct Setup {
     /// grandparents are the thighs, which say which way the character
     /// faces.
     pub feet: [String; 2],
+    /// The hands, left then right, by name less the rig's prefix: where
+    /// they are and how they move are matched too, or a jump between
+    /// frames swings the arms. A rig without them matches without.
+    pub hands: [String; 2],
     /// Frames ahead the trajectory is matched at.
     pub ahead: [usize; 3],
     /// Weights of the feature groups: foot positions, foot velocities, hip
     /// velocity, trajectory positions, trajectory directions, and the
-    /// height of the ground along the trajectory.
-    pub weights: [f32; 6],
+    /// height of the ground along the trajectory, hand positions and hand
+    /// velocities.
+    pub weights: [f32; 8],
     /// Frames with the hips lower than this over the ground — crawling,
     /// ducking under — are played on to, never jumped to: nothing here
     /// asks for them yet. Metres; `0.0` keeps them all.
     pub lowest_hips: f32,
+    /// Frames bent further than this from upright (hips to neck, degrees),
+    /// or with a hand lower than `lowest_hands` over the ground, are not
+    /// jumped to either, unless they are part of a climb: catching breath
+    /// hands on knees, a hand on a step, going up stairs on all fours are
+    /// not walking. `180.0` and `0.0` keep them.
+    pub steepest_lean: f32,
+    pub lowest_hands: f32,
 }
 
 impl Default for Setup {
@@ -57,17 +69,20 @@ impl Default for Setup {
         Self {
             rate: 30.0,
             feet: ["LeftFoot".into(), "RightFoot".into()],
+            hands: ["LeftHand".into(), "RightHand".into()],
             ahead: [10, 20, 30],
-            weights: [0.75, 1.0, 1.0, 1.0, 1.5, 1.5],
+            weights: [0.75, 1.0, 1.0, 1.0, 1.5, 1.5, 0.5, 0.4],
             lowest_hips: 0.7,
+            steepest_lean: 30.0,
+            lowest_hands: 0.6,
         }
     }
 }
 
 /// Floats in one frame's features.
-pub const FEATURES: usize = 30;
+pub const FEATURES: usize = 42;
 /// Where each group starts in a frame's features, and its length.
-const GROUPS: [Range<usize>; 6] = [0..6, 6..12, 12..15, 15..21, 21..27, 27..30];
+const GROUPS: [Range<usize>; 8] = [0..6, 6..12, 12..15, 15..21, 21..27, 27..30, 30..36, 36..42];
 
 /// Every frame of the clips, ready to search.
 #[derive(Debug, Clone)]
@@ -130,6 +145,7 @@ impl Database {
                 .ok_or_else(|| format!("no joint {name} in the skeleton"))
         };
         let feet = [find(&setup.feet[0])?, find(&setup.feet[1])?];
+        let hands = [find(&setup.hands[0]).ok(), find(&setup.hands[1]).ok()];
         let thigh = |foot: usize| {
             let knee = skeleton.joints[foot].parent.ok_or("a foot with no knee")? as usize;
             Ok::<usize, String>(skeleton.joints[knee].parent.ok_or("a knee with no thigh")? as usize)
@@ -294,6 +310,13 @@ impl Database {
                     f[6 + side * 3..9 + side * 3].copy_from_slice(&velocity_of(foot).to_array());
                 }
                 f[12..15].copy_from_slice(&velocity_of(root).to_array());
+                for (side, hand) in hands.iter().enumerate() {
+                    if let Some(hand) = *hand {
+                        let p = into.transform_point3(world[i][hand].w_axis.truncate());
+                        f[30 + side * 3..33 + side * 3].copy_from_slice(&p.to_array());
+                        f[36 + side * 3..39 + side * 3].copy_from_slice(&velocity_of(hand).to_array());
+                    }
+                }
                 for (k, &ahead) in setup.ahead.iter().enumerate() {
                     let later = (i + ahead).min(count - 1);
                     let (there, facing_there) = roots[later];
@@ -311,7 +334,29 @@ impl Database {
             return Err("no clip long enough to match".into());
         }
         let floor = ankles.iter().map(|a| a.0).sum::<f32>() / ankles.len() as f32;
-        let open = (0..raw.len()).map(|f| poses[f * joints + root].translation[1] >= setup.lowest_hips).collect();
+        let neck = skeleton.joints.iter().position(|j| bare_joint_name(&j.name) == "Neck");
+        let open = (0..raw.len())
+            .map(|f| {
+                let pose = &poses[f * joints..(f + 1) * joints];
+                if pose[root].translation[1] < setup.lowest_hips {
+                    return false;
+                }
+                // Part of a climb onto a ledge: the ground changes by nearly
+                // half a metre within two thirds of a second either way —
+                // bending is what that is. Stairs rise slower, and are
+                // walked upright.
+                let clip = ranges.iter().find(|(_, r)| r.contains(&f)).map(|(_, r)| r.clone()).unwrap_or(f..f + 1);
+                let near = clip.start.max(f.saturating_sub(20))..clip.end.min(f + 20);
+                if near.clone().any(|g| (support[g] - support[f]).abs() > 0.45) {
+                    return true;
+                }
+                let world = skeleton.world_matrices(pose);
+                let at = |j: usize| world[j].w_axis.truncate();
+                let lean = neck.map_or(0.0, |n| (at(n) - at(root)).normalize_or(Vec3::Y).dot(Vec3::Y).clamp(-1.0, 1.0).acos().to_degrees());
+                let hands_low = hands.iter().flatten().any(|&h| at(h).y < setup.lowest_hands);
+                lean <= setup.steepest_lean && !hands_low
+            })
+            .collect();
         let toe_height = ankles.iter().map(|a| a.1).sum::<f32>() / ankles.len() as f32;
 
         // Each group divided by its own spread, then weighed: a centimetre
@@ -503,7 +548,9 @@ pub struct Capsule {
 
 impl Default for Capsule {
     fn default() -> Self {
-        Self { radius: 0.3, height: 1.75, step: 0.35, slope: 50f32.to_radians() }
+        // A little wider than the body: standing at a wall, a head leaning
+        // forward stays out of it.
+        Self { radius: 0.35, height: 1.75, step: 0.35, slope: 50f32.to_radians() }
     }
 }
 
@@ -552,6 +599,10 @@ pub struct Feel {
     pub facing_halflife: f32,
     /// How often to search, seconds.
     pub search_every: f32,
+    /// How much better another frame must match than playing on, as a
+    /// share of playing on's cost: jumps that buy little cost a visible
+    /// blend.
+    pub switch_margin: f32,
     /// How fast a jump's difference fades.
     pub blend_halflife: f32,
     /// How fast the animation's root is pulled to the spring, and how far
@@ -561,8 +612,10 @@ pub struct Feel {
     /// Whether a foot that is down stays where it was put, the leg bent to
     /// it, until it lifts.
     pub lock_feet: bool,
-    /// How far a locked foot may be left behind before it lets go, metres.
+    /// How far a locked foot may be left behind before it lets go, metres,
+    /// and how fast it creeps after the animation while held, m/s.
     pub lock_reach: f32,
+    pub lock_creep: f32,
     /// The body that collides.
     pub body: Capsule,
     /// How fast the shown character follows its capsule up and down a
@@ -580,14 +633,18 @@ impl Default for Feel {
             velocity_halflife: 0.27,
             facing_halflife: 0.27,
             search_every: 0.1,
+            switch_margin: 0.0,
             blend_halflife: 0.1,
             hold_halflife: 0.2,
             leash: 0.15,
             lock_feet: true,
-            lock_reach: 0.2,
+            lock_reach: 0.12,
+            lock_creep: 0.1,
             body: Capsule::default(),
             climb_halflife: 0.08,
-            climb: 1.3,
+            // LAFAN1's highest ledge is a metre; a little over is still a
+            // metre's climb, warped.
+            climb: 1.15,
         }
     }
 }
@@ -623,8 +680,15 @@ pub struct Matcher {
     plan_end: usize,
     /// How high the checked climb gets, in the world.
     plan_top: f32,
-    /// Jumps made, for tests and the debug view.
+    /// How far the feet were moved off the animation this step, metres —
+    /// the most of the two. A foot held far from where the animation has
+    /// it bends the leg into a pose nobody captured.
+    pub feet_off: f32,
+    /// Jumps made, for tests and the debug view, and the last: how far
+    /// off its pose was (the largest joint's turn, radians), from which
+    /// frame to which.
     pub jumps: usize,
+    pub last_jump: Option<(f32, usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -632,6 +696,10 @@ struct FootLock {
     at: Option<Vec3>,
     /// Where the toe is held while the heel lifts.
     toe_at: Option<Vec3>,
+    /// How far the ground lifts the foot off the animation's height,
+    /// smoothed while it swings: over a step's edge the ground under it
+    /// jumps, and the foot should not.
+    lift: Option<f32>,
     fading: (Vec3, Vec3),
     last: Option<Vec3>,
 }
@@ -654,6 +722,8 @@ impl Matcher {
             fall: 0.0,
             grounded: true,
             climbing_on: false,
+            last_jump: None,
+            feet_off: 0.0,
             warp: 1.0,
             plan_end: 0,
             plan_top: 0.0,
@@ -674,6 +744,28 @@ impl Matcher {
         let (q, w) = self.spring_turn;
         let (turn, _) = turn_to(q, w, goal_turn, self.feel.facing_halflife, seconds);
         (at, turn)
+    }
+
+    /// What of `ask` the world allows: the stick's velocity swept a third
+    /// of a second through the world by a climber's capsule. Along a wall
+    /// it slides along it; straight at one it is nothing, the character
+    /// standing facing it. What can be got onto is not in the way.
+    pub fn possible(&self, ask: &Ask, world: &dyn Surroundings) -> Ask {
+        let wanted = flat(ask.velocity);
+        if wanted.length() < 0.05 {
+            return *ask;
+        }
+        const AHEAD: f32 = 0.3;
+        let climber = Capsule { step: self.feel.climb, ..self.feel.body };
+        let from = self.spring.0;
+        let (to, _) = world.walk(from, wanted * AHEAD, &climber, AHEAD);
+        let can = flat(to - from) / AHEAD;
+        if can.length() < wanted.length() * 0.25 {
+            Ask { velocity: Vec3::ZERO, facing: Some(ask.facing.unwrap_or(wanted)) }
+        } else {
+            // As fast as asked, along where it can go.
+            Ask { velocity: can.normalize() * wanted.length().min(can.length() * 1.5), facing: ask.facing }
+        }
     }
 
     fn goal_turn(&self, ask: &Ask) -> Quat {
@@ -754,6 +846,18 @@ impl Matcher {
             Vec3::from_array(from[root].translation) - Vec3::from_array(dest[root].translation),
             self.shift.1 + from_shift - to_shift,
         );
+        let hardest = self.turns.iter().map(|t| t.0.length()).fold(0.0f32, f32::max);
+        if std::env::var_os("MM_DEBUG").is_some() && hardest > 0.5 {
+            let j = self.turns.iter().enumerate().max_by(|a, b| a.1 .0.length().total_cmp(&b.1 .0.length())).unwrap().0;
+            let raw = |f: usize| -> [f32; FEATURES] { std::array::from_fn(|d| db.features[f][d] * db.scale[d] + db.offset[d]) };
+            let (a, b) = (raw(self.frame), raw(to));
+            let hand = |f: &[f32; FEATURES], side: usize| Vec3::new(f[30 + side * 3], f[31 + side * 3], f[32 + side * 3]);
+            let wa = db.skeleton.world_matrices(db.pose(self.frame));
+            let wb = db.skeleton.world_matrices(db.pose(to));
+            let elbow = |w: &[Mat4]| w[j].w_axis.truncate();
+            eprintln!("hard {hardest:.2} joint {} hands off {:.2} {:.2} joint pos off {:.2}", db.skeleton.joints[j].name, hand(&a, 0).distance(hand(&b, 0)), hand(&a, 1).distance(hand(&b, 1)), elbow(&wa).distance(elbow(&wb)));
+        }
+        self.last_jump = Some((hardest, self.frame, to));
         self.frame = to;
         self.between = 0.0;
         self.jumps += 1;
@@ -790,6 +894,7 @@ impl Matcher {
     /// steps up stairs and falls off edges, the path asked for stops where
     /// the world stops it, and feet stand on the ground that is there.
     pub fn advance_in(&mut self, db: &Database, ask: &Ask, dt: f32, world: &dyn Surroundings) -> Vec<PoseTransform> {
+        let ask = &self.possible(ask, world);
         let goal = self.goal_turn(ask);
         // On the ground, snapping keeps it there (down steps too); pushing
         // down as well drags it along the floor.
@@ -858,9 +963,12 @@ impl Matcher {
             self.since_search = 0.0;
             let query = self.query(db, ask, world);
             let (best, cost) = db.search(&query);
-            let current = if forced { f32::INFINITY } else { db.cost(self.frame, &query) };
-            let near = db.clip_of(best) == db.clip_of(self.frame) && best.abs_diff(self.frame) <= 3;
-            if cost < current && !near {
+            // Played on into a frame that is not walking: away from it.
+            let current = if forced || !db.open[self.frame] { f32::INFINITY } else { db.cost(self.frame, &query) };
+            // Not to a frame of the same take within half a second either
+            // way: back a few frames is a stutter, and round again a loop.
+            let near = db.clip_of(best) == db.clip_of(self.frame) && best.abs_diff(self.frame) <= 15;
+            if cost < current * (1.0 - self.feel.switch_margin) && !near {
                 self.jump(db, best);
             }
         }
@@ -1018,7 +1126,15 @@ impl Matcher {
                 }
             }
             foot.at = match foot.at {
-                Some(at) if down[side] && flat(at - free).length() <= self.feel.lock_reach => Some(at),
+                Some(at) if down[side] && flat(at - free).length() <= self.feel.lock_reach => {
+                    // Held, but creeping after the animation: a stance the
+                    // animation has moved a foot of — another take's idle, a
+                    // shift of weight — is taken up slowly rather than held
+                    // off with bent knees.
+                    let gap = free - at;
+                    let creep = self.feel.lock_creep * dt;
+                    Some(at + if gap.length() > creep { gap.normalize() * creep } else { gap })
+                }
                 Some(at) => {
                     // Let go: from where it was held, fading to the animation.
                     foot.fading = (at - free, -velocity);
@@ -1067,8 +1183,20 @@ impl Matcher {
                     target.y = target.y.max(y + db.toe + (a.y - toe.y) - 0.01);
                 }
             }
+            if foot.at.is_some() || foot.toe_at.is_some() {
+                foot.lift = Some(target.y - a.y);
+            } else {
+                let raw = target.y - a.y;
+                let was = foot.lift.unwrap_or(raw);
+                // Up quickly — the next step is in the way — down gently.
+                let halflife = if raw > was { 0.03 } else { 0.08 };
+                let lift = was + (raw - was) * (1.0 - (-std::f32::consts::LN_2 * dt / halflife).exp());
+                foot.lift = Some(lift);
+                target.y = a.y + lift;
+            }
             targets[side] = target;
         }
+        self.feet_off = (0..2).map(|s| targets[s].distance(animated[s])).fold(0.0f32, f32::max);
         // The hips go down for the foot that has further down to go.
         let root = db.skeleton.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
         let drop = (0..2).map(|s| targets[s].y - animated[s].y).fold(0.0f32, f32::min).max(-self.feel.body.step * 1.5);
@@ -1079,17 +1207,20 @@ impl Matcher {
         for side in 0..2 {
             let leg = db.legs[side];
             let now = world[leg.0].w_axis.truncate();
-            // Out of the leg's reach: kept as high, brought in along the
-            // ground — a trailing foot lifts early rather than dragging
-            // through the step it is leaving.
+            // Soft near full stretch (Autodesk's soft IK): the last few
+            // per cent of the leg's length are approached ever more slowly,
+            // so a knee near straight does not snap between straight and
+            // bent as the target moves by a millimetre.
             let hip = world[leg.2].w_axis.truncate();
             let knee = world[leg.1].w_axis.truncate();
-            let length = (hip.distance(knee) + knee.distance(now)) * 0.999;
+            let length = hip.distance(knee) + knee.distance(now);
             let to = targets[side] - hip;
-            if to.length() > length && to.y.abs() < length {
-                let across = (length * length - to.y * to.y).sqrt();
-                let along = flat(to).normalize_or_zero() * across;
-                targets[side] = hip + Vec3::new(along.x, to.y, along.z);
+            let soft = length * 0.95;
+            let far = to.length();
+            if far > soft {
+                let give = length - soft;
+                let eased = soft + give * (1.0 - (-(far - soft) / give).exp());
+                targets[side] = hip + to * (eased / far);
             }
             if targets[side].distance(now) > 1e-4 {
                 let kept = crate::ik::turn_of(world[leg.0]);
@@ -1110,6 +1241,7 @@ impl Matcher {
     /// Where the trajectory is asked to go, in the world: the spring now
     /// and at each matched horizon. For the debug view.
     pub fn wanted(&self, db: &Database, ask: &Ask, world: &dyn Surroundings) -> Vec<(Vec3, Vec3)> {
+        let ask = &self.possible(ask, world);
         let goal = self.goal_turn(ask);
         std::iter::once(0)
             .chain(db.setup.ahead)
