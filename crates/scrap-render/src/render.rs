@@ -1791,6 +1791,7 @@ fn scene_pipelines(
 ) -> (
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    Option<wgpu::Error>,
 ) {
     let format = crate::post::HDR_FORMAT;
     let multisample = wgpu::MultisampleState {
@@ -1883,7 +1884,7 @@ fn scene_pipelines(
             .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
             .map(|&look| (look, true)),
     );
-    let built = scrap_core::jobs::map(&wanted, 1, |&(look, prepassed)| scene_pipeline(look, prepassed));
+    let (built, error) = compiled(gpu, &wanted, |&(look, prepassed)| scene_pipeline(look, prepassed));
     let (mut scene, mut prepassed) = (std::collections::HashMap::new(), std::collections::HashMap::new());
     for ((look, pre), pipeline) in wanted.into_iter().zip(built) {
         if pre {
@@ -1892,7 +1893,37 @@ fn scene_pipelines(
             scene.insert(look, pipeline);
         }
     }
-    (scene, prepassed)
+    (scene, prepassed, error)
+}
+
+/// `make` over `items` on the workers, each under an error scope of its
+/// own — wgpu's scopes are the thread's, so one the caller pushed would not
+/// see what went wrong on another — and the first error back with the
+/// results, for the caller to report as its own scope would have.
+fn compiled<T: Sync, R: Send>(
+    gpu: &Gpu,
+    items: &[T],
+    make: impl Fn(&T) -> R + Sync,
+) -> (Vec<R>, Option<wgpu::Error>) {
+    let made = scrap_core::jobs::map(items, 1, |item| scoped(gpu, || make(item)));
+    let mut first = None;
+    let out = made
+        .into_iter()
+        .map(|(result, error)| {
+            if first.is_none() {
+                first = error;
+            }
+            result
+        })
+        .collect();
+    (out, first)
+}
+
+/// `make` under a validation error scope of its own, on this thread.
+fn scoped<R>(gpu: &Gpu, make: impl FnOnce() -> R) -> (R, Option<wgpu::Error>) {
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let result = make();
+    (result, pollster::block_on(scope.pop()))
 }
 
 /// Every pipeline the renderer draws with, from one shader module: at
@@ -2034,13 +2065,13 @@ fn build_pipelines(
     output: wgpu::TextureFormat,
     samples: u32,
     layouts: &Layouts,
-) -> Pipelines {
+) -> (Pipelines, Option<wgpu::Error>) {
     let format = crate::post::HDR_FORMAT;
     let multisample = wgpu::MultisampleState {
         count: samples,
         ..Default::default()
     };
-    let (scene, prepassed) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
+    let (scene, prepassed, error) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
     let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
@@ -2334,7 +2365,7 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    Pipelines {
+    let pipelines = Pipelines {
         scene,
         prepassed,
         shadow,
@@ -2348,7 +2379,8 @@ fn build_pipelines(
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
         fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
         terrain_mesh: terrain_mesh_pipelines(gpu, source, samples, layouts),
-    }
+    };
+    (pipelines, error)
 }
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -2402,7 +2434,7 @@ impl Renderer {
                 label: Some("scrap::render (reloaded)"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-        let pipelines = build_pipelines(
+        let (pipelines, built_error) = build_pipelines(
             gpu,
             &shader,
             source,
@@ -2422,7 +2454,7 @@ impl Renderer {
         let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
         let ddgi_pipelines = self.ddgi.make_pipelines(gpu, &shader, self.ray.is_some());
         let restir_pipelines = self.restir.make_pipelines(gpu, &shader, self.ray.is_some());
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = built_error.or(pollster::block_on(scope.pop())) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
@@ -2576,7 +2608,7 @@ impl Renderer {
             },
             looks,
         );
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = built.2.or(pollster::block_on(scope.pop())) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines.scene.extend(built.0);
@@ -3258,7 +3290,7 @@ impl Renderer {
             },
             bindless_on,
         );
-        let pipelines = build_pipelines(
+        let (pipelines, built_error) = build_pipelines(
             gpu,
             &shader,
             &shader_source,
@@ -3286,9 +3318,26 @@ impl Renderer {
 
         let vsm = crate::vsm::VirtualShadows::new(gpu, &shadow_layout, caster_stride, DEPTH_FORMAT, shadow_resolution, vsm_table);
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
-        clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
-        (ddgi.trace, ddgi.update) = ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing);
-        (restir.initial, restir.spatial) = restir.make_pipelines(gpu, &shader, gpu.ray_tracing);
+        // Each of these compiles the renderer's shader again: side by side,
+        // each under its own error scope (see `compiled`).
+        let ((made_clusters, e1), ((made_ddgi, e2), (made_restir, e3))) = scrap_core::jobs::join(
+            || scoped(gpu, || clusters.make_pipelines(gpu, &shader, samples)),
+            || {
+                scrap_core::jobs::join(
+                    || scoped(gpu, || ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing)),
+                    || scoped(gpu, || restir.make_pipelines(gpu, &shader, gpu.ray_tracing)),
+                )
+            },
+        );
+        // The renderer's own shader not building for its own pipelines is
+        // a bug in the engine, not in a game: said as loudly as wgpu says
+        // an error nobody scoped.
+        if let Some(error) = built_error.or(e1).or(e2).or(e3) {
+            panic!("the renderer's own pipelines do not build: {error}");
+        }
+        clusters.pipelines = made_clusters;
+        (ddgi.trace, ddgi.update) = made_ddgi;
+        (restir.initial, restir.spatial) = made_restir;
 
         let fog_bind_group = bind_group.clone();
         let mut renderer = Self {

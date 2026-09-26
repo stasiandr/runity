@@ -118,6 +118,17 @@ pub fn for_each_chunk_mut<T: Send>(items: &mut [T], size: usize, f: impl Fn(usiz
     }
 }
 
+/// `a` and `b` side by side on the workers, both results: two unlike
+/// jobs that do not wait on each other — pipelines compiled from one
+/// shader for two parts of the renderer. One after the other on the web.
+pub fn join<A: Send, B: Send>(a: impl FnOnce() -> A + Send, b: impl FnOnce() -> B + Send) -> (A, B) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if workers() > 1 {
+        return rayon::join(a, b);
+    }
+    (a(), b())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
