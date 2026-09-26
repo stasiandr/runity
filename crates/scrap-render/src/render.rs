@@ -2095,7 +2095,7 @@ fn lit_keys(looks: impl IntoIterator<Item = Look>) -> std::collections::HashSet<
 /// own — wgpu's scopes are the thread's, so one the caller pushed would not
 /// see what went wrong on another — and the first error back with the
 /// results, for the caller to report as its own scope would have.
-fn compiled<T: Sync, R: Send>(
+pub(crate) fn compiled<T: Sync, R: Send>(
     gpu: &Gpu,
     items: &[T],
     make: impl Fn(&T) -> R + Sync,
@@ -2317,19 +2317,17 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    let mut prepass = std::collections::HashMap::new();
-    for skinned in [false, true] {
-        for face in [RenderFace::Front, RenderFace::Back, RenderFace::Both] {
-            prepass.insert(
-                (skinned, face, false),
-                prepass_pipeline(skinned, face, false),
-            );
+    let make_prepass = || {
+        let mut keys: Vec<(bool, RenderFace, bool)> = Vec::new();
+        for skinned in [false, true] {
+            for face in [RenderFace::Front, RenderFace::Back, RenderFace::Both] {
+                keys.push((skinned, face, false));
+            }
         }
-    }
-    prepass.insert(
-        (false, RenderFace::Front, true),
-        prepass_pipeline(false, RenderFace::Front, true),
-    );
+        keys.push((false, RenderFace::Front, true));
+        let (made, error) = compiled(gpu, &keys, |&(skinned, face, terrain)| prepass_pipeline(skinned, face, terrain));
+        (keys.into_iter().zip(made).collect::<std::collections::HashMap<_, _>>(), error)
+    };
 
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
@@ -2368,11 +2366,11 @@ fn build_pipelines(
     };
     // Both sides: a card, a leaf, a flag that faces the sun has no far
     // side, and the lamps' maps and the virtual pages draw everything so.
-    let shadow = shadow_pipeline(None);
+    let shadow = || shadow_pipeline(None);
     // Front faces only, for the sun's cascades: what one-sided things
     // cast, as URP's caster pass culls as the material does. Its normal
     // bias shrinks a caster only while its back faces stay out.
-    let shadow_front = shadow_pipeline(Some(wgpu::Face::Back));
+    let shadow_front = || shadow_pipeline(Some(wgpu::Face::Back));
 
     // Tools, with the same vertex layout, into the tools' own picture
     // (crate::tools): no depth at all, so an overlay neither hides behind
@@ -2423,7 +2421,7 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    let overlay = tool_pipeline(
+    let overlay = || tool_pipeline(
         "scrap::overlay",
         "fs_tool",
         output,
@@ -2433,7 +2431,7 @@ fn build_pipelines(
     );
     // What is outlined, into the mask: the nearest outlined surface a
     // pixel's, whatever else is in front of it.
-    let outline_mask = tool_pipeline(
+    let outline_mask = || tool_pipeline(
         "scrap::outline mask",
         "fs_outline_mask",
         crate::tools::MASK_FORMAT,
@@ -2450,7 +2448,7 @@ fn build_pipelines(
 
     // The sky: one triangle over the screen at the far plane, drawn after
     // the opaque things so only what they left uncovered is shaded.
-    let sky = gpu
+    let sky = || gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scrap::sky"),
@@ -2481,7 +2479,7 @@ fn build_pipelines(
         });
 
     // Rain and snow: over everything, added, depth left alone.
-    let precipitation = gpu
+    let precipitation = || gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scrap::precipitation"),
@@ -2553,8 +2551,8 @@ fn build_pipelines(
             })
     };
     // A cut-out is usually a card seen from both sides.
-    let shadow_clip = shadow_clip_pipeline(None);
-    let shadow_clip_front = shadow_clip_pipeline(Some(wgpu::Face::Back));
+    let shadow_clip = || shadow_clip_pipeline(None);
+    let shadow_clip_front = || shadow_clip_pipeline(Some(wgpu::Face::Back));
 
     let compute = |layout: &wgpu::PipelineLayout, entry: &str| {
         gpu.device
@@ -2567,22 +2565,48 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    let pipelines = Pipelines {
-        shadow,
-        shadow_front,
-        shadow_clip,
-        shadow_clip_front,
-        prepass,
-        overlay,
-        overlay_samples,
-        outline_mask,
-        sky,
-        precipitation,
-        fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
-        fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
-        terrain_mesh: terrain_mesh_pipelines(gpu, source, samples, layouts),
-    };
-    (pipelines, error)
+    // Each the driver compiling a shader: all of them side by side, each
+    // under its own error scope, the first error said for them all.
+    std::thread::scope(|s| {
+        fn made<T>(h: std::thread::ScopedJoinHandle<'_, (T, Option<wgpu::Error>)>, error: &mut Option<wgpu::Error>) -> T {
+            let (made, e) = h.join().expect("a pipeline's build panicked");
+            if error.is_none() {
+                *error = e;
+            }
+            made
+        }
+        let prepass = s.spawn(|| scoped(gpu, make_prepass));
+        let shadow = s.spawn(|| scoped(gpu, shadow));
+        let shadow_front = s.spawn(|| scoped(gpu, shadow_front));
+        let shadow_clip = s.spawn(|| scoped(gpu, shadow_clip));
+        let shadow_clip_front = s.spawn(|| scoped(gpu, shadow_clip_front));
+        let overlay = s.spawn(|| scoped(gpu, overlay));
+        let outline_mask = s.spawn(|| scoped(gpu, outline_mask));
+        let sky = s.spawn(|| scoped(gpu, sky));
+        let precipitation = s.spawn(|| scoped(gpu, precipitation));
+        let fog_inject = s.spawn(|| scoped(gpu, || compute(layouts.fog_inject, "cs_fog_inject")));
+        let fog_integrate = s.spawn(|| scoped(gpu, || compute(layouts.fog_integrate, "cs_fog_integrate")));
+        let terrain_mesh = s.spawn(|| scoped(gpu, || terrain_mesh_pipelines(gpu, source, samples, layouts)));
+        let mut error = error;
+        let (prepass, prepass_error) = made(prepass, &mut error);
+        error = error.or(prepass_error);
+        let pipelines = Pipelines {
+            shadow: made(shadow, &mut error),
+            shadow_front: made(shadow_front, &mut error),
+            shadow_clip: made(shadow_clip, &mut error),
+            shadow_clip_front: made(shadow_clip_front, &mut error),
+            prepass,
+            overlay: made(overlay, &mut error),
+            overlay_samples,
+            outline_mask: made(outline_mask, &mut error),
+            sky: made(sky, &mut error),
+            precipitation: made(precipitation, &mut error),
+            fog_inject: made(fog_inject, &mut error),
+            fog_integrate: made(fog_integrate, &mut error),
+            terrain_mesh: made(terrain_mesh, &mut error),
+        };
+        (pipelines, error)
+    })
 }
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -2653,10 +2677,10 @@ impl Renderer {
                 terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
-        let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
+        let (cluster_pipelines, cluster_error) = self.clusters.make_pipelines(gpu, &shader);
         let ddgi_pipelines = self.ddgi.make_pipelines(gpu, &shader, self.ray.is_some());
         let restir_pipelines = self.restir.make_pipelines(gpu, &shader, self.ray.is_some());
-        if let Some(error) = built_error.or(pollster::block_on(scope.pop())) {
+        if let Some(error) = built_error.or(cluster_error).or(pollster::block_on(scope.pop())) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
@@ -2819,14 +2843,25 @@ impl Renderer {
     }
 
     /// Ask for the lean pipelines drawing culled clusters of these faces.
-    fn ask_lean_clusters(&mut self, gpu: &Gpu, wanted: impl Iterator<Item = (RenderFace, bool)>) {
+    /// Ask for the pipelines drawing culled clusters of these faces: as
+    /// they are (here and now when `wait`), and lean when the frame is.
+    fn ask_clusters(&mut self, gpu: &Gpu, wanted: impl Iterator<Item = (RenderFace, bool)>, wait: bool) {
         let Some(module) = self.lean_modules.get(&None).cloned() else {
             return;
         };
         for (face, water) in wanted {
             let key = LeanKey::Cluster(face, water);
-            if !self.lean.asked(&key) {
-                let build = self.clusters.lean_build(&module, face, water, self.samples);
+            if !self.full.asked(&key) {
+                let build = self.clusters.colour_build(&module, face, water, self.samples, false);
+                if wait {
+                    let pipeline = build(&gpu.device);
+                    self.full.put(key, pipeline);
+                } else {
+                    self.full.ask(&gpu.device, key, build);
+                }
+            }
+            if self.lean.on && !self.lean.asked(&key) {
+                let build = self.clusters.colour_build(&module, face, water, self.samples, true);
                 self.lean.ask(&gpu.device, key, build);
             }
         }
@@ -3582,45 +3617,70 @@ impl Renderer {
             },
             bindless_on,
         );
-        let (pipelines, built_error) = build_pipelines(
-            gpu,
-            &shader,
-            &shader_source,
-            format,
-            samples,
-            &Layouts {
-                main: &pipeline_layout,
-                shadow: &shadow_pipeline_layout,
-                shadow_clip: &shadow_clip_layout,
-                skinned: &skinned_layout,
-                sky: &sky_layout,
-                fog_inject: &fog_inject_layout,
-                fog_integrate: &fog_integrate_layout,
-                terrain_mesh: terrain_mesh_layouts.as_ref().map(|(_, p)| p),
-            },
-        );
-
-
         let white_capacity = 4096;
         let white_colors = white_buffer(gpu, white_capacity);
 
         let vsm = crate::vsm::VirtualShadows::new(gpu, &shadow_layout, caster_stride, DEPTH_FORMAT, shadow_resolution, vsm_table);
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
-        // Each of these compiles the renderer's shader again: side by side,
-        // each under its own error scope (see `compiled`).
-        let ((made_clusters, e1), ((made_ddgi, e2), (made_restir, e3))) = scrap_core::jobs::join(
-            || scoped(gpu, || clusters.make_pipelines(gpu, &shader, samples)),
-            || {
+        let layouts = Layouts {
+            main: &pipeline_layout,
+            shadow: &shadow_pipeline_layout,
+            shadow_clip: &shadow_clip_layout,
+            skinned: &skinned_layout,
+            sky: &sky_layout,
+            fog_inject: &fog_inject_layout,
+            fog_integrate: &fog_integrate_layout,
+            terrain_mesh: terrain_mesh_layouts.as_ref().map(|(_, p)| p),
+        };
+        // Every pipeline made now is the driver compiling a shader: from an
+        // empty shader cache most of a second each for the renderer's own.
+        // None waits for another, so they are made side by side — the
+        // renderer's own under their error scopes (see `compiled`), the
+        // passes' own as they always were.
+        let (
+            ((pipelines, e0), e0_scope),
+            ((made_clusters, e1), ((made_ddgi, e2), (made_restir, e3))),
+            (post, lens, taa, upscaler, smoke_sim, occlusion, lowres, gpu_particles),
+        ) = std::thread::scope(|s| {
+            let built = s.spawn(|| scoped(gpu, || build_pipelines(gpu, &shader, &shader_source, format, samples, &layouts)));
+            let (ddgi, restir) = (&ddgi, &restir);
+            let shader = &shader;
+            let clusters = &clusters;
+            let others = s.spawn(move || {
                 scrap_core::jobs::join(
-                    || scoped(gpu, || ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing)),
-                    || scoped(gpu, || restir.make_pipelines(gpu, &shader, gpu.ray_tracing)),
+                    || {
+                        let ((made, inner), outer) = scoped(gpu, || clusters.make_pipelines(gpu, shader));
+                        (made, inner.or(outer))
+                    },
+                    || {
+                        scrap_core::jobs::join(
+                            || scoped(gpu, || ddgi.make_pipelines(gpu, shader, gpu.ray_tracing)),
+                            || scoped(gpu, || restir.make_pipelines(gpu, shader, gpu.ray_tracing)),
+                        )
+                    },
                 )
-            },
-        );
+            });
+            let post = s.spawn(|| crate::post::PostRenderer::new(gpu, format));
+            let lens = s.spawn(|| crate::lens::LensRenderer::new(gpu));
+            let taa = s.spawn(|| crate::taa::Taa::new(gpu));
+            let upscaler = s.spawn(|| crate::upscale::Upscaler::new(gpu));
+            let smoke = s.spawn(|| crate::smoke_gpu::SmokeSim::new(gpu));
+            let occlusion = s.spawn(|| crate::occlusion::Occlusion::new(gpu));
+            let lowres = s.spawn(|| crate::lowres::LowRes::new(gpu));
+            let particles = s.spawn(|| crate::particles_gpu::GpuParticles::new(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples));
+            fn made<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
+                h.join().expect("a pass's pipelines panicked")
+            }
+            (
+                made(built),
+                made(others),
+                (made(post), made(lens), made(taa), made(upscaler), made(smoke), made(occlusion), made(lowres), made(particles)),
+            )
+        });
         // The renderer's own shader not building for its own pipelines is
         // a bug in the engine, not in a game: said as loudly as wgpu says
         // an error nobody scoped.
-        if let Some(error) = built_error.or(e1).or(e2).or(e3) {
+        if let Some(error) = e0.or(e0_scope).or(e1).or(e2).or(e3) {
             panic!("the renderer's own pipelines do not build: {error}");
         }
         clusters.pipelines = made_clusters;
@@ -3653,18 +3713,18 @@ impl Renderer {
             depth_prepassed: false,
             tools: None,
             occlusion_always: false,
-            smoke_sim: crate::smoke_gpu::SmokeSim::new(gpu),
+            smoke_sim,
             other_samples: None,
             scene: scene_targets(gpu, width, height, samples),
-            post: crate::post::PostRenderer::new(gpu, format),
-            lens: crate::lens::LensRenderer::new(gpu),
+            post,
+            lens,
             previous_view_projection: None,
             reflections,
             decal_buffer,
             decal_atlases,
             ssao,
-            taa: crate::taa::Taa::new(gpu),
-            upscaler: crate::upscale::Upscaler::new(gpu),
+            taa,
+            upscaler,
             picturing: false,
             metered_at: None,
             clipmap: None,
@@ -3723,19 +3783,14 @@ impl Renderer {
             kept_groups,
             started: web_time::Instant::now(),
             bolt: None,
-            occlusion: crate::occlusion::Occlusion::new(gpu),
-            gpu_particles: crate::particles_gpu::GpuParticles::new(
-                gpu,
-                crate::post::HDR_FORMAT,
-                DEPTH_FORMAT,
-                samples,
-            ),
+            occlusion,
+            gpu_particles,
             lods: scrap_core::hash::FastMap::default(),
             lod_meshes: Vec::new(),
             timer: None,
             debugger: Default::default(),
             lean: Default::default(),
-            lowres: crate::lowres::LowRes::new(gpu),
+            lowres,
             lowres_drawn: false,
             cascade_cache: None,
             cluster_error: 1.0,
@@ -4434,7 +4489,7 @@ impl Renderer {
                         .ready
                         .get(&LeanKey::Cluster(look.face, look.water))
                         .filter(|_| self.lean.on)
-                        .or_else(|| pipelines.scene.get(&(look.face, look.water)))
+                        .or_else(|| self.full.ready.get(&LeanKey::Cluster(look.face, look.water)))
                 };
                 if let (Some(pipeline), true) = (pipeline, self.clusters.this_frame.contains_key(&k)) {
                     if !crate::frame_debugger::draw(|| self.describe(*handle, Some(look), texture, count, true, prepass, textured)) {
@@ -6813,7 +6868,7 @@ impl Renderer {
         // A probe's face or a picture is drawn once and kept: it waits.
         let wait = self.wait_for_pipelines || probe.is_some() || self.picturing;
         self.ask_scene(gpu, looks.into_iter(), wait);
-        if self.lean.on {
+        {
             let faces: Vec<(RenderFace, bool)> = batches
                 .iter()
                 .filter_map(|((look, handle, _), _)| {
@@ -6822,7 +6877,7 @@ impl Renderer {
                     Some((look.face, look.water))
                 })
                 .collect();
-            self.ask_lean_clusters(gpu, faces.into_iter());
+            self.ask_clusters(gpu, faces.into_iter(), wait);
         }
         // One-sided first, then both: each range with its own culling.
         let shadow_one_sided = shadow_batches.len();

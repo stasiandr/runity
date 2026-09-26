@@ -506,7 +506,8 @@ pub(crate) struct Hiz<'a> {
 /// not) and the prepass's (by face).
 #[derive(Clone)]
 pub(crate) struct ClusterPipelines {
-    pub(crate) scene: std::collections::HashMap<(RenderFace, bool), wgpu::RenderPipeline>,
+    /// The prepass's, one a face; the colour ones are the renderer's
+    /// `full` and `lean`, built as frames draw them.
     pub(crate) prepass: std::collections::HashMap<RenderFace, wgpu::RenderPipeline>,
 }
 
@@ -671,39 +672,27 @@ impl Clusters {
 
     /// The drawing pipelines, from the renderer's shader module: at start
     /// and when it is reloaded.
-    pub(crate) fn make_pipelines(&self, gpu: &Gpu, shader: &wgpu::ShaderModule, samples: u32) -> Option<ClusterPipelines> {
+    pub(crate) fn make_pipelines(&self, gpu: &Gpu, shader: &wgpu::ShaderModule) -> (Option<ClusterPipelines>, Option<wgpu::Error>) {
         if !self.can {
-            return None;
+            return (None, None);
         }
-        let pipeline = |face: RenderFace, fragment: &str, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32| {
-            cluster_pipeline(&gpu.device, &self.pipeline_layout, shader, face, fragment, format, depth, samples, false)
-        };
+        // Each the renderer's shader compiled again: made side by side.
+        // Only the prepass's: the colour ones are built as frames draw
+        // their faces, as the lit looks are (`Renderer::ask_clusters`).
         let faces = [RenderFace::Front, RenderFace::Back, RenderFace::Both];
-        let mut scene = std::collections::HashMap::new();
-        let mut prepass = std::collections::HashMap::new();
-        for face in faces {
-            for water in [false, true] {
-                let fragment = if water { "fs_water" } else { "fs" };
-                scene.insert(
-                    (face, water),
-                    pipeline(face, fragment, crate::post::HDR_FORMAT, crate::render::DEPTH_FORMAT, samples),
-                );
-            }
-            prepass.insert(
-                face,
-                pipeline(face, "fs_normals", crate::ssao::NORMAL_FORMAT, crate::ssao::PREPASS_DEPTH, 1),
-            );
-        }
-        Some(ClusterPipelines { scene, prepass })
+        let (made, error) = crate::render::compiled(gpu, &faces, |&face| {
+            cluster_pipeline(&gpu.device, &self.pipeline_layout, shader, face, "fs_normals", crate::ssao::NORMAL_FORMAT, crate::ssao::PREPASS_DEPTH, 1, false)
+        });
+        (Some(ClusterPipelines { prepass: faces.into_iter().zip(made).collect() }), error)
     }
 
-    /// How a lean colour pipeline of `face` (and water or not) is built —
-    /// on the lean worker ([`crate::lean`]).
-    pub(crate) fn lean_build(&self, shader: &wgpu::ShaderModule, face: RenderFace, water: bool, samples: u32) -> crate::lean::Build {
+    /// How a colour pipeline of `face` (and water or not) is built, lean
+    /// or as it is — on a worker ([`crate::lean`]), or here.
+    pub(crate) fn colour_build(&self, shader: &wgpu::ShaderModule, face: RenderFace, water: bool, samples: u32, lean: bool) -> crate::lean::Build {
         let (layout, shader) = (self.pipeline_layout.clone(), shader.clone());
         Box::new(move |device: &wgpu::Device| {
             let fragment = if water { "fs_water" } else { "fs" };
-            cluster_pipeline(device, &layout, &shader, face, fragment, crate::post::HDR_FORMAT, crate::render::DEPTH_FORMAT, samples, true)
+            cluster_pipeline(device, &layout, &shader, face, fragment, crate::post::HDR_FORMAT, crate::render::DEPTH_FORMAT, samples, lean)
         })
     }
 
