@@ -1692,10 +1692,12 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 text_mesh_pro(desc, b, None, report);
                 return;
             }
-            let Some(path) = script.guid.as_deref().and_then(|g| refs.unity.guids.get(g)) else {
+            let package = script.guid.as_deref().and_then(|g| PACKAGE_SCRIPTS.iter().find(|(guid, _)| *guid == g)).map(|(_, name)| *name);
+            let Some(path) = script.guid.as_deref().and_then(|g| refs.unity.guids.get(g)).cloned().or_else(|| package.map(std::path::PathBuf::from)) else {
                 report.skip("a MonoBehaviour whose script is not in Assets/ (a package's)");
                 return;
             };
+            let path = &path;
             // Dacha's planar mirror: scrap's own, a camera reflected in
             // the plane the mirror's material shows.
             if super::stem(path) == "PlanarReflectionMirror" {
@@ -1795,6 +1797,19 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
 /// Timeline package).
 const ACTIVATION_TRACK: i64 = 46519060;
 
+/// Timeline's AnimationTrack.
+const ANIMATION_TRACK: i64 = 1467732076;
+
+/// Cinemachine's timeline track and its shot, by their scripts' GUIDs.
+const CINEMACHINE_TRACK: &str = "05acc715f855ced458d76ee6f8ac6c61";
+const CINEMACHINE_SHOT: &str = "90fb794a295e73545af71bcdb7375791";
+
+/// Scripts of packages (not in Assets/) brought over as a game's
+/// component like the project's own, by their GUIDs, which a package
+/// keeps across its versions: Cinemachine's virtual camera, whose Look
+/// At, lens and priority a timeline's shots and a game's camera read.
+const PACKAGE_SCRIPTS: &[(&str, &str)] = &[("45e653bab7fb20e499bda25e1b646fea", "CinemachineVirtualCamera")];
+
 /// A PlayableDirector as a `playable_director` component: its timeline's
 /// name and length, whether it plays on its own, how it ends (Unity's
 /// DirectorWrapMode: 0 hold, 1 loop, 2 none), and what each of its
@@ -1846,28 +1861,114 @@ fn playable_director(desc: &mut EntityDesc, b: &Yaml, refs: &Refs, report: &mut 
     }
     // Which object each track drives, as the scene binds it.
     let mut activations = Vec::new();
+    let mut moves = Vec::new();
     for binding in b.list("m_SceneBindings") {
         let (Some(key), Some(value)) = (yaml::reference(&binding["key"]), yaml::reference(&binding["value"])) else { continue };
-        let Some((from, to, post)) = tracks.get(&key.file_id) else { continue };
         let Some(target) = link(&value, refs) else { continue };
-        activations.push(format!("(target: {target}, from: {from:?}, to: {to:?}, after: {post})"));
+        if let Some((from, to, post)) = tracks.get(&key.file_id) {
+            activations.push(format!("(target: {target}, from: {from:?}, to: {to:?}, after: {post})"));
+        }
+        if let Some(keys) = docs.iter().find(|d| d.file_id == key.file_id).and_then(|track| recorded_move(&docs, track)) {
+            moves.push(format!("(target: {target}, keys: [{}])", keys.join(", ")));
+        }
+    }
+    // Cinemachine's shots: which virtual camera looks, from when to when
+    // (the director names it by an exposed reference).
+    let exposed: HashMap<String, Ref> = b["m_ExposedReferences"]["m_References"]
+        .as_vec()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_hash()?.iter().next().and_then(|(k, v)| Some((k.as_str()?.to_string(), yaml::reference(v)?))))
+        .collect();
+    let mut shots = Vec::new();
+    for track in docs.iter().filter(|d| d.body.reference("m_Script").is_some_and(|r| r.guid.as_deref() == Some(CINEMACHINE_TRACK))) {
+        for c in track.body.list("m_Clips") {
+            let Some(asset) = yaml::reference(&c["m_Asset"]) else { continue };
+            let Some(shot) = docs.iter().find(|d| d.file_id == asset.file_id && d.body.reference("m_Script").is_some_and(|r| r.guid.as_deref() == Some(CINEMACHINE_SHOT))) else { continue };
+            let camera = shot.body["VirtualCamera"]["exposedName"].as_str().and_then(|n| exposed.get(n)).and_then(|r| link(r, refs));
+            let Some(camera) = camera else { continue };
+            let start = c.f32("m_Start").unwrap_or(0.0);
+            shots.push(format!("(camera: {camera}, from: {start:?}, to: {:?})", start + c.f32("m_Duration").unwrap_or(0.0)));
+        }
     }
     let name = refs.unity.named(asset.guid.as_deref().unwrap_or("")).map(|(_, n)| n.to_string()).unwrap_or_else(|| {
         path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     });
     let value = format!(
-        "(timeline: {name:?}, length: {length:?}, play_on_awake: {}, wrap: {}, activations: [{}])",
+        "(timeline: {name:?}, length: {length:?}, play_on_awake: {}, wrap: {}, activations: [{}], shots: [{}], moves: [{}])",
         b.i64("m_InitialState").unwrap_or(0) != 0,
         b.i64("m_WrapMode").unwrap_or(0),
         activations.join(", "),
+        shots.join(", "),
+        moves.join(", "),
     );
     match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
         Ok(raw) => {
             desc.components.insert("playable_director".into(), raw);
-            report.skip("a timeline's tracks but its activations (its animation, camera, audio)");
+            report.skip("a timeline's clips of animation and audio (its activations, camera shots and recorded moves come over)");
         }
         Err(_) => report.skip("a PlayableDirector whose fields did not make RON"),
     }
+}
+
+/// An AnimationTrack's recorded clip of its own (Timeline's infinite
+/// clip, "Recorded") moving the object it is bound to: its place and turn
+/// at each key, as the object's own (its local transform), the clip's
+/// travel laid from where the track's open clip starts it. Keys as
+/// `(time, (x, y, z), (x, y, z, w))`, mirrored as the scene is; between
+/// them straight, as clips' keys are. `None` for a track with no such clip.
+fn recorded_move(docs: &[yaml::Doc], track: &yaml::Doc) -> Option<Vec<String>> {
+    if !track.body.reference("m_Script").is_some_and(|r| r.file_id == ANIMATION_TRACK) {
+        return None;
+    }
+    let clip = yaml::reference(&track.body["m_AnimClip"]).filter(|r| !r.is_none())?;
+    let clip = docs.iter().find(|d| d.file_id == clip.file_id)?;
+    let own = |list: &str| -> Vec<(f32, [f32; 3])> {
+        clip.body
+            .list(list)
+            .iter()
+            .filter(|c| c.str("path").unwrap_or("").is_empty())
+            .flat_map(|c| c["curve"].list("m_Curve").iter().filter_map(|k| Some((k.f32("time")?, k.vec3("value")?))).collect::<Vec<_>>())
+            .collect()
+    };
+    let (places, turns) = (own("m_PositionCurves"), own("m_EulerCurves"));
+    if places.is_empty() && turns.is_empty() {
+        return None;
+    }
+    let from = Vec3::from_array(track.body.vec3("m_OpenClipOffsetPosition").unwrap_or([0.0; 3]));
+    let euler = |e: [f32; 3]| {
+        // Unity's order: z, then x, then y.
+        Quat::from_rotation_y(e[1].to_radians()) * Quat::from_rotation_x(e[0].to_radians()) * Quat::from_rotation_z(e[2].to_radians())
+    };
+    let facing = euler(track.body.vec3("m_OpenClipOffsetEulerAngles").unwrap_or([0.0; 3]));
+    let at = |keys: &[(f32, [f32; 3])], t: f32| -> [f32; 3] {
+        let Some(first) = keys.first() else { return [0.0; 3] };
+        if t <= first.0 {
+            return first.1;
+        }
+        for pair in keys.windows(2) {
+            let ((t0, a), (t1, b)) = (pair[0], pair[1]);
+            if t <= t1 {
+                let k = if t1 > t0 { (t - t0) / (t1 - t0) } else { 1.0 };
+                return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+            }
+        }
+        keys.last().map_or([0.0; 3], |k| k.1)
+    };
+    let mut times: Vec<f32> = places.iter().chain(&turns).map(|k| k.0).collect();
+    times.sort_by(f32::total_cmp);
+    times.dedup();
+    Some(
+        times
+            .into_iter()
+            .map(|t| {
+                let place = from + facing * Vec3::from_array(at(&places, t));
+                let turn = facing * euler(at(&turns, t));
+                let (p, q) = (position(place.to_array()), rotation([turn.x, turn.y, turn.z, turn.w]));
+                format!("({t:?}, ({:?}, {:?}, {:?}), ({:?}, {:?}, {:?}, {:?}))", p.x, p.y, p.z, q.x, q.y, q.z, q.w)
+            })
+            .collect(),
+    )
 }
 
 /// A NavMeshAgent as a `nav_mesh_agent` component: how the thing walks —
@@ -2757,6 +2858,37 @@ mod tests {
         let v: f32 = scrap::ron::from_str(&inf).unwrap();
         let w: f32 = scrap::ron::from_str(&minus).unwrap();
         assert!(v.is_infinite() && v > 0.0 && w.is_infinite() && w < 0.0, "{inf} {minus}");
+    }
+
+    #[test]
+    fn a_timelines_recorded_move_is_laid_from_where_its_track_starts() {
+        let text = "%YAML 1.1
+--- !u!114 &10
+MonoBehaviour:
+  m_Script: {fileID: 1467732076, guid: 6a10b2909283487f913b00d94cd3faf5, type: 3}
+  m_AnimClip: {fileID: 20}
+  m_OpenClipOffsetPosition: {x: 1, y: 2, z: 3}
+  m_OpenClipOffsetEulerAngles: {x: 0, y: 90, z: 0}
+--- !u!74 &20
+AnimationClip:
+  m_EulerCurves: []
+  m_PositionCurves:
+  - curve:
+      m_Curve:
+      - time: 0
+        value: {x: 0, y: 0, z: 0}
+      - time: 2
+        value: {x: 0, y: 0, z: 1}
+    path: 
+";
+        let docs = yaml::documents(text);
+        let track = docs.iter().find(|d| d.file_id == 10).unwrap();
+        let keys = recorded_move(&docs, track).expect("a move");
+        assert_eq!(keys.len(), 2);
+        // Forward (z) under a quarter turn about y is +x in Unity; the z
+        // mirrored.
+        assert!(keys[0].starts_with("(0.0, (1.0, 2.0, -3.0)"), "{}", keys[0]);
+        assert!(keys[1].starts_with("(2.0, (2.0, 2.0, -3.0)"), "{}", keys[1]);
     }
 
     #[test]
