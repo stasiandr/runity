@@ -131,6 +131,11 @@ pub struct Database {
     contacts: Vec<[bool; 2]>,
     /// Whether each toe is down, each frame: the heel may be lifting.
     toe_contacts: Vec<[bool; 2]>,
+    /// Whether each hand is laid on something higher than the feet stand
+    /// on, each frame: a hand on a ledge's top, climbing.
+    hand_contacts: Vec<[bool; 2]>,
+    /// Each hand with its forearm and upper arm.
+    arms: [Option<(usize, usize, usize)>; 2],
     /// How high an ankle is over the floor it stands on, and a toe.
     ankle: f32,
     toe: f32,
@@ -148,6 +153,8 @@ struct Plan {
     edge: usize,
     /// The run-up could not be made to fit: a last resort.
     poor: bool,
+    /// A point on the edge's face and the way the climb goes into it.
+    face: (Vec3, Vec3),
 }
 
 /// A run of frames and the box its features lie in.
@@ -309,6 +316,7 @@ impl Database {
         let mut support = Vec::new();
         let mut contacts = Vec::new();
         let mut toe_contacts = Vec::new();
+        let mut hand_contacts = Vec::new();
         let mut raw = Vec::new();
         let mut ranges = Vec::new();
         let mut ankles = Vec::new();
@@ -438,6 +446,15 @@ impl Database {
                     let (Some(toe), Some(floor)) = (toes[side], toe_floor[side]) else { return false };
                     let (a, b) = if i + 1 < count { (i, i + 1) } else { (i - 1, i) };
                     (at(b, toe) - at(a, toe)).length() * rate < 0.4 && at(i, toe).y - floor - ground[i] < 0.05
+                }));
+                // A hand still, on the top the take climbs to within a second
+                // either way, while the feet are still below it.
+                let top = (i.saturating_sub(30)..(i + 30).min(count)).map(|g| ground[g]).fold(f32::MIN, f32::max);
+                hand_contacts.push(std::array::from_fn(|side| {
+                    let Some(hand) = hands[side] else { return false };
+                    let (a, b) = if i + 1 < count { (i, i + 1) } else { (i - 1, i) };
+                    let still = (at(b, hand) - at(a, hand)).length() * rate < 0.5;
+                    top - ground[i] > 0.25 && still && (at(i, hand).y - top - 0.06).abs() < 0.12
                 }));
 
                 let velocity_of = |joint: usize| {
@@ -611,6 +628,13 @@ impl Database {
             toes,
             contacts,
             toe_contacts,
+            hand_contacts,
+            arms: hands.map(|h| {
+                let h = h?;
+                let fore = skeleton.joints[h].parent? as usize;
+                let upper = skeleton.joints[fore].parent? as usize;
+                Some((h, fore, upper))
+            }),
             ankle: floor,
             toe: toe_height,
         })
@@ -971,6 +995,11 @@ pub struct Matcher {
     /// How high the checked climb gets, in the world, and from where.
     plan_top: f32,
     plan_base: f32,
+    plan_face: (Vec3, Vec3),
+    /// How far each hand is laid on a ledge (0 to 1), eased, and how far
+    /// the body is kept back from a ledge's face.
+    hands_on: [f32; 2],
+    face_push: f32,
     /// How far the feet were moved off the animation this step, metres —
     /// the most of the two. A foot held far from where the animation has
     /// it bends the leg into a pose nobody captured.
@@ -1035,6 +1064,9 @@ impl Matcher {
             plan_end: 0,
             plan_top: 0.0,
             plan_base: 0.0,
+            plan_face: (Vec3::ZERO, Vec3::Z),
+            hands_on: [0.0; 2],
+            face_push: 0.0,
             jumps: 0,
         }
     }
@@ -1244,6 +1276,7 @@ impl Matcher {
                         self.stretch = (plan.stretch, plan.edge);
                         self.plan_end = plan.end;
                         self.plan_top = plan.top;
+                        self.plan_face = plan.face;
                         self.plan_base = self.spring.0.y;
                         true
                     }
@@ -1432,10 +1465,70 @@ impl Matcher {
             self.root = (Vec3::new(ground.x, height, ground.z), turn);
         }
         let mut pose = self.blended(db);
+        // Climbing, the knees and the hips kept out of the ledge's face: the
+        // body is moved back from it by as far as they went in.
+        let rising = self.climbing_on && self.plan_top > self.plan_base;
+        let mut depth = 0.0f32;
+        if rising {
+            let (face, into) = self.plan_face;
+            let placed = Mat4::from_rotation_translation(self.root.1, self.root.0);
+            let world = db.skeleton.world_matrices(&pose);
+            let root_joint = db.skeleton.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
+            for joint in db.legs.iter().map(|l| l.1).chain([root_joint]) {
+                let p = placed.transform_point3(world[joint].w_axis.truncate());
+                if p.y < self.plan_top - 0.02 {
+                    depth = depth.max((p - face).dot(into) + 0.05);
+                }
+            }
+        }
+        let ease = 1.0 - (-std::f32::consts::LN_2 * dt / 0.05).exp();
+        self.face_push += (depth - self.face_push) * ease;
+        if self.face_push > 1e-4 {
+            let into = flat(self.plan_face.1).normalize_or_zero();
+            self.root.0 -= into * self.face_push;
+        }
         if self.feel.lock_feet {
             self.lock_feet(db, &mut pose, dt, world);
         }
+        self.place_hands(db, &mut pose, dt);
         pose
+    }
+
+    /// Climbing, a hand the take lays on the top it climbs to is laid on
+    /// this ledge's top: at its height, a hand's breadth past its face —
+    /// the arm bent to it, eased on and off.
+    fn place_hands(&mut self, db: &Database, pose: &mut [PoseTransform], dt: f32) {
+        let rising = self.climbing_on && self.plan_top > self.plan_base;
+        let placed = Mat4::from_rotation_translation(self.root.1, self.root.0);
+        let back = -(self.root.1 * Vec3::Z);
+        let ease = 1.0 - (-std::f32::consts::LN_2 * dt / 0.06).exp();
+        let mut world = crate::ik::placed_joints(&db.skeleton, pose, placed);
+        for side in 0..2 {
+            let Some(arm) = db.arms[side] else { continue };
+            let on = rising && db.hand_contacts[self.frame][side];
+            self.hands_on[side] += ((on as u8 as f32) - self.hands_on[side]) * ease;
+            let weight = self.hands_on[side];
+            if weight < 0.01 {
+                continue;
+            }
+            let hand = world[arm.0].w_axis.truncate();
+            let (face, into) = self.plan_face;
+            let mut target = hand;
+            target.y = self.plan_top + 0.06;
+            let past = (hand - face).dot(into);
+            if past < 0.06 {
+                target += into * (0.06 - past);
+            }
+            let target = hand.lerp(target, weight);
+            if target.distance(hand) < 1e-4 {
+                continue;
+            }
+            let kept = crate::ik::turn_of(world[arm.0]);
+            crate::ik::reach_leg(&db.skeleton, pose, placed, &mut world, arm, target, back * 0.05);
+            let turned = crate::ik::turn_of(world[arm.0]);
+            crate::ik::turn_joint(&db.skeleton, pose, &world, placed, arm.0, kept * turned.inverse());
+            world = crate::ik::placed_joints(&db.skeleton, pose, placed);
+        }
     }
 
     /// How far the frame playing is about to climb, and to drop, over the
@@ -1606,7 +1699,7 @@ impl Matcher {
         let squeeze = if real.abs() <= 0.6 { 0.35 } else { 0.7 };
         let poor = !(squeeze..=1.43).contains(&stretch);
         let stretch = stretch.clamp(squeeze, 1.43);
-        Some(Plan { warp, end: peak, top: hit.y, stretch, edge, poor })
+        Some(Plan { warp, end: peak, top: hit.y, stretch, edge, poor, face: (self.root.0 + dir * edge_at, dir) })
     }
 
     /// Keep each foot that is down where it went down: the leg bent to it,
