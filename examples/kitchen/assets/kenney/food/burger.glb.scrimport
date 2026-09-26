@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/food/burger.glb",
-    hash: "39fa4e34ac7db6738495ac4ea63c079e",
-    id: Some("9e954d00ff7371a2d0b9deac106ba681"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

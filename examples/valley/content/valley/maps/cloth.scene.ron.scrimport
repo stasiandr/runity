@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/cloth.scene.ron",
+    id: Some("dd634e5e4f597cdba97d06881ea587b6"),
+)

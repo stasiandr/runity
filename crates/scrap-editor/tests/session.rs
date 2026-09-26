@@ -15,6 +15,16 @@ use scrap::glam::Vec3;
 use scrap::{EntityId, Material, Transform};
 use scrap_editor::{EditError, SceneReload, Session, Snap};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const SCENE: &str = r#"(
     entities: [
         (name: "ground", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0))),
@@ -32,8 +42,9 @@ fn scene_file(name: &str, text: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("scrap-editor-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     scrap::Project::create(&root, name).unwrap();
-    let path = root.join("scenes/scene.ron");
-    std::fs::write(&path, text).unwrap();
+    let path = root.join("maps/scene.scene.ron");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    write_all(&path, text).unwrap();
     path
 }
 
@@ -43,7 +54,7 @@ fn loose_scene_file(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("scene.ron");
-    std::fs::write(&path, SCENE).unwrap();
+    write_all(&path, SCENE).unwrap();
     path
 }
 
@@ -597,7 +608,7 @@ fn write_material(directory: &Path, name: &str, material: Material) {
         scrap::asset::MATERIAL,
     )
     .unwrap();
-    std::fs::write(directory.join(format!("{name}.scrasset")), bytes).unwrap();
+    write_all(directory.join(format!("{name}.scrasset")), bytes).unwrap();
 }
 
 #[test]
@@ -635,7 +646,7 @@ fn opening_a_scene_looks_where_the_scene_says_and_keeping_a_view_is_a_decision()
 
     // And opening a scene with a view in it points the camera there.
     let framed = path.parent().unwrap().join("framed.ron");
-    std::fs::write(
+    write_all(
         &framed,
         r#"(view: (position: (1.0, 2.0, 3.0), target: (0.0, 0.0, 0.0), fov_deg: 40.0), entities: [])"#,
     )
@@ -664,7 +675,7 @@ fn a_thing_arranged_once_becomes_a_thing_placed_many_times() {
         "the lid lives in the prefab file now"
     );
     assert_eq!(session.entity_prefab(crate_id).as_deref(), Some("crate"));
-    let written = root_of(&path).join("prefabs/crate.prefab");
+    let written = scrap::Project::find(&path).unwrap().prefabs().join("crate.prefab");
     assert!(
         written.exists(),
         "{} should have been written",
@@ -1085,7 +1096,7 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
     session.save_material(crate_id, "clay").unwrap();
 
     // What came out is a file a person could have written.
-    let source = root_of(&path).join("materials/clay.scrmat");
+    let source = scrap::Project::find(&path).unwrap().materials().join("clay.scrmat");
     let text = std::fs::read_to_string(&source).expect("the .scrmat source");
     assert!(
         text.contains("color: \"#"),
@@ -1119,7 +1130,7 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
 
     // Editing the source and asking for a reload changes what is drawn,
     // with nothing reopened: the loop the whole asset pipeline is for.
-    std::fs::write(&source, "(color: \"#3c5a8a\")\n").unwrap();
+    write_all(&source, "(color: \"#3c5a8a\")\n").unwrap();
     let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
     std::fs::File::options()
         .write(true)
@@ -1145,7 +1156,7 @@ fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
     // A triangle is enough: what is being tested is the path, not the
     // parser, which has its own tests next door.
     let source = path.parent().unwrap().join("wedge.obj");
-    std::fs::write(
+    write_all(
         &source,
         "v -1.0 0.0 -1.0\nv  1.0 0.0 -1.0\nv  1.0 0.0  1.0\nf 1 3 2\n",
     )
@@ -1214,7 +1225,7 @@ fn opening_a_scene_finds_its_project() {
 /// Write a file the way another program would, with its clock pushed on so
 /// the change is visible inside one tick of the filesystem's clock.
 fn write_elsewhere(path: &Path, text: &str) {
-    std::fs::write(path, text).unwrap();
+    write_all(path, text).unwrap();
     let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
     let file = std::fs::File::options().write(true).open(path).unwrap();
     file.set_modified(later).unwrap();
@@ -1291,8 +1302,8 @@ fn a_prefab_changed_on_disk_reaches_its_instances() {
         "prefab-reload",
         r#"(entities: [(id: "a1", name: "fire", prefab: "campfire")])"#,
     );
-    let prefab = root_of(&path).join("prefabs/campfire.prefab");
-    std::fs::write(
+    let prefab = scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab");
+    write_all(
         &prefab,
         r#"(name: "campfire", model: "builtin:cube", children: [(id: "c1", name: "ember", model: "builtin:sphere")])"#,
     )
@@ -1466,14 +1477,14 @@ fn a_merge_conflict_is_listed_with_its_values_and_settled_theirs_way() {
     git(&["commit", "-q", "-m", "start"]);
     git(&["checkout", "-q", "-b", "theirs"]);
     let text = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, text.replace("(0.0, 0.0, 0.0)", "(0.0, 0.0, 9.0)")).unwrap();
+    write_all(&path, text.replace("(0.0, 0.0, 0.0)", "(0.0, 0.0, 9.0)")).unwrap();
     git(&["commit", "-q", "-am", "theirs"]);
     git(&["checkout", "-q", "main"]);
-    std::fs::write(&path, text.replace("(0.0, 0.0, 0.0)", "(5.0, 0.0, 0.0)")).unwrap();
+    write_all(&path, text.replace("(0.0, 0.0, 0.0)", "(5.0, 0.0, 0.0)")).unwrap();
     git(&["commit", "-q", "-am", "ours"]);
     assert!(!git(&["merge", "-q", "theirs"]), "a conflict");
     // What the merge driver leaves: ours, loadable.
-    git(&["checkout", "--ours", "--", "scenes/scene.ron"]);
+    git(&["checkout", "--ours", "--", "maps/scene.scene.ron"]);
 
     session.open_scene(&path).unwrap();
     let conflicts = session.merge_conflicts().unwrap();
@@ -1554,7 +1565,7 @@ fn the_git_tab_commits_chosen_files_and_says_what_a_commit_changed() {
     let err = session.commit(&[scene.clone()], "move it").unwrap_err();
     assert!(err.to_string().contains("unsaved"), "{err}");
     session.save_scene(None).unwrap();
-    std::fs::write(root.join("notes.txt"), "not this one").unwrap();
+    write_all(root.join("notes.txt"), "not this one").unwrap();
 
     let status = session.git_status().unwrap();
     let letters: Vec<(char, bool)> = status
@@ -1600,8 +1611,8 @@ fn editing_a_part_of_an_instance_overrides_it_in_that_instance_only() {
             (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
         ])"#,
     );
-    let prefab = root_of(&path).join("prefabs/campfire.prefab");
-    std::fs::write(
+    let prefab = scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab");
+    write_all(
         &prefab,
         r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
             children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
@@ -1827,8 +1838,8 @@ fn applying_overrides_writes_them_into_the_prefab_for_every_instance() {
             (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
         ])"#,
     );
-    let prefab = root_of(&path).join("prefabs/campfire.prefab");
-    std::fs::write(
+    let prefab = scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab");
+    write_all(
         &prefab,
         "// The camp's fire.\n(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n",
     )
@@ -1873,8 +1884,8 @@ fn sculpting_a_terrain_writes_a_readable_line_and_reshapes_it_at_once() {
     ) else {
         return;
     };
-    let source = root_of(&path).join("assets/hills.scrterrain");
-    std::fs::write(
+    let source = scrap::Project::find(&path).unwrap().assets().join("hills.scrterrain");
+    write_all(
         &source,
         "// Flat, to begin with.\n(size: (40.0, 40.0), resolution: 41, height: 0.0)\n",
     )
@@ -1927,7 +1938,7 @@ fn renaming_a_material_keeps_the_open_scene_and_its_undo_pointing_at_it() {
     };
     let path = scene_file("rename", text);
     let root = root_of(&path);
-    std::fs::write(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
+    write_all(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
     scrap_import::sync(&scrap::Project::open(&root).unwrap());
     session.open_scene(&path).unwrap();
     let crate_id = id(&session, "crate");
@@ -1941,7 +1952,7 @@ fn renaming_a_material_keeps_the_open_scene_and_its_undo_pointing_at_it() {
     let done = session
         .rename_asset("materials/clay.scrmat", "materials/terracotta.scrmat")
         .unwrap();
-    assert_eq!(done.rewritten, [("scenes/scene.ron".to_string(), 2)]);
+    assert_eq!(done.rewritten, [("maps/scene.scene.ron".to_string(), 2)]);
     assert_eq!(
         session.material_name(crate_id).as_deref(),
         Some("terracotta")
@@ -1984,7 +1995,7 @@ fn an_instance_becomes_a_variant_and_its_overrides_apply_to_the_variant_only() {
     let root = root_of(&path);
     let base = root.join("prefabs/campfire.prefab");
     let base_text = "(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n";
-    std::fs::write(&base, base_text).unwrap();
+    write_all(&base, base_text).unwrap();
     session.open_scene(&path).unwrap();
     let (one, two): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
     let part: EntityId = "c2".parse().unwrap();
@@ -2044,7 +2055,7 @@ fn an_asset_the_open_scene_uses_cannot_be_deleted_even_unsaved() {
     };
     let path = scene_file("delete-asset", SCENE);
     let root = root_of(&path);
-    std::fs::write(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
+    write_all(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
     scrap_import::sync(&scrap::Project::open(&root).unwrap());
     session.open_scene(&path).unwrap();
     let listed = session.assets().unwrap();
@@ -2086,8 +2097,8 @@ fn a_search_finds_lines_and_prefab_parts_alike() {
             (id: "00000000000000a2", name: "gate", model: "builtin:cube", components: { "door": (locked: true) }),
         ])"#,
     );
-    std::fs::write(
-        root_of(&path).join("prefabs/campfire.prefab"),
+    write_all(
+        scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab"),
         r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
             children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
     )
@@ -2114,12 +2125,12 @@ fn a_prefab_opens_edits_and_saves_like_a_scene_and_its_instances_follow() {
     );
     let root = root_of(&path);
     let prefab = root.join("prefabs/campfire.prefab");
-    std::fs::write(
+    write_all(
         &prefab,
         "// The camp's fire.\n(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n",
     )
     .unwrap();
-    std::fs::write(
+    write_all(
         root.join("prefabs/mossy.prefab"),
         "(id: \"00000000000000d1\", name: \"mossy\", prefab: \"campfire\")\n",
     )
@@ -2378,8 +2389,8 @@ fn an_unpacked_instance_is_plain_entities_and_stops_following_the_prefab() {
         r#"(entities: [(id: "00000000000000a1", name: "fire", prefab: "campfire",
             overrides: { "00000000000000c2": (material: "moss") })])"#,
     );
-    let prefab = root_of(&path).join("prefabs/campfire.prefab");
-    std::fs::write(
+    let prefab = scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab");
+    write_all(
         &prefab,
         r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
             children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
@@ -2410,7 +2421,7 @@ fn an_unpacked_instance_is_plain_entities_and_stops_following_the_prefab() {
     // Saved, it no longer follows the prefab file.
     session.save_scene(None).unwrap();
     let text = std::fs::read_to_string(&prefab).unwrap();
-    std::fs::write(&prefab, text.replace("builtin:cube", "builtin:cone")).unwrap();
+    write_all(&prefab, text.replace("builtin:cube", "builtin:cone")).unwrap();
     session.open_scene(&path).unwrap();
     assert_eq!(session.scene().get(fire).unwrap().model(), "builtin:cube");
     assert!(
@@ -2432,8 +2443,8 @@ fn greybox_cubes_become_the_real_prefab_where_they_stood() {
             (id: "00000000000000a3", name: "wall", model: "builtin:cube", material: "grid"),
         ])"#,
     );
-    std::fs::write(
-        root_of(&path).join("prefabs/barrel.prefab"),
+    write_all(
+        scrap::Project::find(&path).unwrap().prefabs().join("barrel.prefab"),
         r#"(id: "00000000000000c1", name: "barrel", model: "builtin:cylinder", material: "bark")"#,
     )
     .unwrap();
@@ -2476,8 +2487,8 @@ fn the_hierarchy_and_the_inspector_are_data_a_window_draws() {
             (id: "00000000000000a3", name: "fire", prefab: "campfire"),
         ])"#,
     );
-    std::fs::write(
-        root_of(&path).join("prefabs/campfire.prefab"),
+    write_all(
+        scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab"),
         r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
             children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
     )
@@ -3418,8 +3429,8 @@ fn one_overridden_field_of_a_part_is_applied_or_reverted_on_its_own() {
             (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
         ])"#,
     );
-    let prefab = root_of(&path).join("prefabs/campfire.prefab");
-    std::fs::write(
+    let prefab = scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab");
+    write_all(
         &prefab,
         "(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n",
     )
@@ -3729,7 +3740,7 @@ fn the_player_is_the_one_scrap_ron_describes_and_navigation_walks_for_it() {
     let text = text
         .replacen("radius: 0.35", "radius: 0.6", 1)
         .replacen("step: 0.3,", "step: 0.45,", 1);
-    std::fs::write(&manifest, text).unwrap();
+    write_all(&manifest, text).unwrap();
     let player = session.player_metrics();
     assert_eq!((player.radius, player.step), (0.6, 0.45));
     assert_eq!(
@@ -4149,7 +4160,7 @@ fn an_asset_s_import_settings_are_edited_and_it_is_built_again() {
         return;
     };
     let root = root_of(&path);
-    std::fs::write(
+    write_all(
         root.join("assets/wedge.obj"),
         "v -1.0 0.0 -1.0\nv  1.0 0.0 -1.0\nv  1.0 1.0  1.0\nf 1 3 2\n",
     )
@@ -4230,7 +4241,7 @@ fn a_box_collider_is_fitted_to_the_model() {
     };
     let root = root_of(&path);
     // A post two metres tall, its origin at its foot once imported.
-    std::fs::write(
+    write_all(
         root.join("assets/post.obj"),
         "v -0.5 0 -0.5\nv 0.5 0 -0.5\nv 0.5 2 0.5\nv -0.5 2 0.5\nf 1 2 3\nf 1 3 4\n",
     )
@@ -4310,8 +4321,8 @@ fn an_instance_changes_its_part_s_light_and_the_others_keep_the_prefab_s() {
             (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
         ])"#,
     );
-    std::fs::write(
-        root_of(&path).join("prefabs/campfire.prefab"),
+    write_all(
+        scrap::Project::find(&path).unwrap().prefabs().join("campfire.prefab"),
         "(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", light: (intensity: 1.0, range: 3.0))])\n",
     )
     .unwrap();
@@ -4438,7 +4449,7 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
         .unwrap();
     assert_eq!(session.undo_steps().len(), steps + 1, "one step");
     assert_eq!(session.selected(), Some(hall));
-    assert!(root_of(&path).join("assets/hall.scrpoly").is_file());
+    assert!(scrap::Project::find(&path).unwrap().assets().join("hall.scrpoly").is_file());
     let (low, high) = session.world_bounds(hall).unwrap();
     assert!((low - Vec3::new(20.0, 0.0, 0.0)).length() < 1e-3, "{low}");
     assert!(
@@ -4586,7 +4597,7 @@ fn carving_grey_shapes_out_of_a_slab_leaves_a_hole_things_fall_through() {
     );
     assert_eq!(line.collider(), scrap::scene::Collider::Model);
     assert_eq!(line.body(), scrap::Body::Static);
-    let text = std::fs::read_to_string(root_of(&path).join("assets/upper_floor.scrbrush")).unwrap();
+    let text = std::fs::read_to_string(scrap::Project::find(&path).unwrap().assets().join("upper_floor.scrbrush")).unwrap();
     assert!(
         text.contains("(shape: Box, scale: (6.0, 0.5, 6.0))"),
         "{text}"
@@ -4706,9 +4717,9 @@ fn a_brush_solid_is_made_and_cut_by_the_agent_line_by_line() {
         .brush_shape("wall", &wall, Vec3::new(0.0, 0.0, -5.0))
         .unwrap();
     // Written by hand in between: a comment the next line must not lose.
-    let file = root_of(&path).join("assets/wall.scrbrush");
+    let file = scrap::Project::find(&path).unwrap().assets().join("wall.scrbrush");
     let text = std::fs::read_to_string(&file).unwrap();
-    std::fs::write(&file, format!("// the back wall\n{text}")).unwrap();
+    write_all(&file, format!("// the back wall\n{text}")).unwrap();
     let door = Brush::cuboid(
         Op::Subtract,
         Vec3::new(-0.5, -0.5, -1.0),
@@ -4968,7 +4979,7 @@ fn a_link_gets_its_id_on_save_and_follows_a_file_renamed_outside_the_editor() {
     let path = scene_file("links", r#"(entities: [(name: "block", model: "wedge")])"#);
     let root = root_of(&path);
     let project = scrap::Project::open(&root).unwrap();
-    std::fs::write(
+    write_all(
         project.assets().join("wedge.obj"),
         "v -1 0 -1\nv 1 0 -1\nv 1 0 1\nf 1 3 2\n",
     )
@@ -5176,7 +5187,7 @@ fn a_material_link_gets_its_id_and_a_builtin_stays_a_name() {
     );
     let root = root_of(&path);
     let project = scrap::Project::open(&root).unwrap();
-    std::fs::write(
+    write_all(
         project.materials().join("clay.scrmat"),
         r##"(color: "#b0643c")"##,
     )
@@ -5224,7 +5235,7 @@ fn assets_are_brought_up_to_date_beside_the_frame_not_in_it() {
     // Whatever the new project's starter assets needed, done first.
     session.reload_assets();
     let project = session.project().unwrap().clone();
-    std::fs::write(
+    write_all(
         project.materials().join("slate.scrmat"),
         "(color: \"#445566\")\n",
     )
@@ -5379,7 +5390,7 @@ assert export.send_link(export.MOVES, export.moves([rock]))
 fn nothing_is_marked_changed_until_something_changes() {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/kitchen/scenes/main.ron"
+        "/../../examples/kitchen/content/kitchen/maps/main.scene.ron"
     ))
     .unwrap();
     let Some(mut session) = new_session() else {
@@ -5388,7 +5399,7 @@ fn nothing_is_marked_changed_until_something_changes() {
     session
         .open_scene(std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/kitchen/scenes/main.ron"
+            "/../../examples/kitchen/content/kitchen/maps/main.scene.ron"
         )))
         .unwrap();
     // Opening settles links (IDs added); that is not a change.
@@ -5554,7 +5565,7 @@ fn a_field_that_names_an_asset_says_which_kind() {
     // The animators a picker offers are the graphs in `animators/`.
     let root = root_of(&path);
     std::fs::create_dir_all(root.join("animators")).unwrap();
-    std::fs::write(root.join("animators/door.ron"), "()").unwrap();
+    write_all(root.join("animators/door.animator.ron"), "()").unwrap();
     assert_eq!(session.assets_of_kind("animator"), vec!["door".to_string()]);
     assert!(session.link_exists("animator", &scrap::AssetLink::named("door")));
 }
@@ -5569,7 +5580,7 @@ fn a_picker_lists_textures_entities_and_bones_by_name() {
     std::fs::create_dir_all(&assets).unwrap();
     let valley = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley");
     std::fs::copy(
-        valley.join("assets/textures/marks.png"),
+        valley.join("content/valley/marks/marks.png"),
         assets.join("marks.png"),
     )
     .unwrap();
@@ -5592,7 +5603,7 @@ fn a_picker_lists_textures_entities_and_bones_by_name() {
     assert_eq!(session.texture_picture(&name, 16).unwrap().len(), 16 * 16 * 4);
     // A shader by its file.
     std::fs::create_dir_all(root.join("shaders")).unwrap();
-    std::fs::write(root.join("shaders/water.wgsl"), "").unwrap();
+    write_all(root.join("shaders/water.wgsl"), "").unwrap();
     assert_eq!(
         session.asset_ids_of_kind("shader"),
         vec![("water".to_string(), scrap::asset::shader_id("water"))]
@@ -6007,7 +6018,7 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
     let root = root_of(&path);
     let file = root.join("configs/enemies.ron");
     let text = "// Who the player meets.\n{\n    \"goblin\": (hp: 10, speed: 2.5), // small\n    \"orc\": (hp: 30),\n}\n";
-    std::fs::write(&file, text).unwrap();
+    write_all(&file, text).unwrap();
     assert!(session
         .table_sources()
         .contains(&"configs/enemies.ron".to_string()));
@@ -6085,7 +6096,7 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
     assert_eq!(session.undo_cell().unwrap(), None);
 
     // A record that does not fit says so on its row.
-    std::fs::write(&file, "{ \"orc\": (hp: 30, sped: 1.0) }").unwrap();
+    write_all(&file, "{ \"orc\": (hp: 30, sped: 1.0) }").unwrap();
     let table = session.table("configs/enemies.ron").unwrap();
     assert!(
         table.rows[0].problems[0].contains("did you mean `speed`?"),
@@ -6185,21 +6196,21 @@ fn a_ball_onto_a_wired_porch_slides_the_door_open_in_play() {
     let root = root_of(&path);
     std::fs::create_dir_all(root.join("animators")).unwrap();
     std::fs::create_dir_all(root.join("clips")).unwrap();
-    std::fs::write(
-        root.join("animators/door.ron"),
+    write_all(
+        root.join("animators/door.animator.ron"),
         r#"(start: "shut", states: {
             "shut": (clip: "door_shut", transitions: [(to: "open", when: [Trigger("open")])]),
             "open": (clip: "door_open", looping: false),
         })"#,
     )
     .unwrap();
-    std::fs::write(
-        root.join("clips/door_shut.ron"),
+    write_all(
+        root.join("clips/door_shut.clip.ron"),
         "(length: 0.5, tracks: [(what: X, keys: [(0.0, 5.0)])])",
     )
     .unwrap();
-    std::fs::write(
-        root.join("clips/door_open.ron"),
+    write_all(
+        root.join("clips/door_open.clip.ron"),
         "(length: 0.5, tracks: [(what: X, keys: [(0.0, 5.0), (0.5, 7.0)])])",
     )
     .unwrap();

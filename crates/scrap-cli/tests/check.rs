@@ -9,11 +9,21 @@ use std::path::Path;
 use scrap::Project;
 use scrap_cli::{check, Finding, Severity};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const CUBE: &str = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
+    write_all(path, text).unwrap();
 }
 
 fn project(name: &str) -> Project {
@@ -55,7 +65,7 @@ fn every_kind_of_dangling_name_is_found_with_a_fix() {
     );
     scrap_import::sync(&project);
     write(
-        &root.join("scenes/main.ron"),
+        &root.join("maps/main.scene.ron"),
         r#"(entities: [
             (id: "a1", name: "boulder", model: "rok", material: "mos"),
             (id: "a2", name: "ball", model: "builtin:sphre"),
@@ -69,7 +79,7 @@ fn every_kind_of_dangling_name_is_found_with_a_fix() {
     assert_eq!(lines.len(), 6, "{lines:#?}");
     let model = one_containing(&lines, "no model named `rok`");
     assert!(
-        model.starts_with("error: scenes/main.ron: `boulder` (00000000000000a1)"),
+        model.starts_with("error: maps/main.scene.ron: `boulder` (00000000000000a1)"),
         "{model}"
     );
     assert!(model.contains("did you mean `rock`?"), "{model}");
@@ -100,13 +110,13 @@ fn every_kind_of_dangling_name_is_found_with_a_fix() {
 fn a_scene_that_does_not_parse_says_where() {
     let project = project("parse");
     write(
-        &project.scenes().join("broken.ron"),
+        &project.scenes().join("broken.scene.ron"),
         "(entities: [(name: \"a\",",
     );
     let lines = errors(&check(&project));
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(
-        lines[0].starts_with("error: scenes/broken.ron: 1:"),
+        lines[0].starts_with("error: content/parse/maps/broken.scene.ron: 1:"),
         "line and column: {}",
         lines[0]
     );
@@ -124,12 +134,12 @@ fn two_sources_with_one_name_are_fine_until_a_line_names_them_without_an_id() {
     );
 
     // A line that says only `pine` cannot tell which.
-    let scene = project.scenes().join("forest.ron");
+    let scene = project.scenes().join("forest.scene.ron");
     write(&scene, r#"(entities: [(name: "tree", model: "pine")])"#);
     let lines = errors(&check(&project));
     let clash = one_containing(&lines, "`pine` is the name of");
     assert!(
-        clash.contains("assets/rocks/pine.obj, assets/trees/pine.obj"),
+        clash.contains("content/clash/rocks/pine.obj, content/clash/trees/pine.obj"),
         "{clash}"
     );
 
@@ -187,7 +197,7 @@ fn a_stale_override_and_a_variant_of_itself_are_found_once_each() {
         r#"(id: "e1", name: "loop", prefab: "loop")"#,
     );
     write(
-        &root.join("scenes/main.ron"),
+        &root.join("maps/main.scene.ron"),
         r#"(entities: [
             (id: "a1", name: "west", prefab: "mossy"),
             (id: "a2", name: "east", prefab: "mossy"),
@@ -198,7 +208,7 @@ fn a_stale_override_and_a_variant_of_itself_are_found_once_each() {
     let stale = one_containing(&errors, "part 00000000000000c9");
     assert!(stale.contains("prefabs/mossy.prefab:"), "{stale}");
     let scene = one_containing(&errors, "part 00000000000000c8");
-    assert!(scene.contains("scenes/main.ron:"), "{scene}");
+    assert!(scene.contains("maps/main.scene.ron:"), "{scene}");
     assert!(scene.contains("`fire`"), "{scene}");
     let looped = one_containing(&errors, "a prefab containing itself?");
     assert!(looped.contains("prefabs/loop.prefab:"), "{looped}");
@@ -209,7 +219,7 @@ fn a_component_scenes_name_is_a_file_in_src_components() {
     let project = project("components");
     let root = project.root();
     write(
-        &root.join("scenes/doors.ron"),
+        &root.join("maps/doors.scene.ron"),
         r#"(entities: [
             (id: "a1", name: "gate", model: "builtin:cube", components: { "spn": (degrees_per_second: 10.0) }),
             (id: "a2", name: "wheel", model: "builtin:cube", components: { "spin": (degrees_per_second: 10.0) }),
@@ -222,7 +232,7 @@ fn a_component_scenes_name_is_a_file_in_src_components() {
 
     scrap_cli::add::component(&project, "door").unwrap();
     write(
-        &root.join("scenes/doors.ron"),
+        &root.join("maps/doors.scene.ron"),
         r#"(entities: [(id: "a1", name: "gate", model: "builtin:cube", components: { "door": () })])"#,
     );
     assert!(errors_of(&project).is_empty(), "{:#?}", errors_of(&project));
@@ -236,7 +246,7 @@ fn errors_of(project: &Project) -> Vec<String> {
 fn a_joint_to_nothing_is_named() {
     let project = project("joints");
     write(
-        &project.root().join("scenes/door.ron"),
+        &project.root().join("maps/door.scene.ron"),
         r#"(entities: [
             (id: "a1", name: "frame", model: "builtin:cube", body: Static),
             (id: "a2", name: "door", model: "builtin:cube", body: Dynamic, joint: Hinge(to: "a1")),
@@ -256,14 +266,14 @@ fn a_wire_to_nothing_or_to_a_trigger_the_animator_lacks_is_named() {
     let project = project("wires");
     let root = project.root();
     write(
-        &root.join("animators/door.ron"),
+        &root.join("animators/door.animator.ron"),
         r#"(start: "shut", states: {
             "shut": (clip: "", transitions: [(to: "open", when: [Trigger("open")])]),
             "open": (clip: "", transitions: [(to: "shut", when: [Trigger("close")])]),
         })"#,
     );
     write(
-        &root.join("scenes/porch.ron"),
+        &root.join("maps/porch.scene.ron"),
         r#"(entities: [
             (id: "d1", name: "door", model: "builtin:cube", animator: "door"),
             (id: "a1", name: "porch", body: Trigger, collider: Box(half: (1.0, 1.0, 1.0)), wires: [
@@ -295,7 +305,7 @@ fn a_wire_to_nothing_or_to_a_trigger_the_animator_lacks_is_named() {
 fn a_layer_no_file_names_is_found() {
     let project = project("layers");
     write(
-        &project.root().join("scenes/shards.ron"),
+        &project.root().join("maps/shards.scene.ron"),
         r#"(entities: [
             (id: "a1", name: "shard", model: "builtin:cube", body: Dynamic, layer: "debris"),
             (id: "a2", name: "hero", model: "builtin:cube", body: Dynamic, layer: "playr"),
@@ -308,14 +318,14 @@ fn a_layer_no_file_names_is_found() {
         "{line}"
     );
     write(
-        &project.root().join("layers.ron"),
+        &project.root().join("config/layers.ron"),
         r#"(layers: ["x", "x"])"#,
     );
     let errors = errors_of(&project);
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("layers.ron") && e.contains("named twice")),
+            .any(|e| e.contains("config/layers.ron") && e.contains("named twice")),
         "{errors:#?}"
     );
 }
@@ -324,11 +334,11 @@ fn a_layer_no_file_names_is_found() {
 fn a_screen_with_two_elements_of_one_id_is_found() {
     let project = project("screens");
     assert!(
-        project.root().join("ui/hud.ron").is_file(),
+        project.content().join("ui/screens/hud.screen.ron").is_file(),
         "a new project has a HUD"
     );
     write(
-        &project.root().join("ui/menu.ron"),
+        &project.root().join("ui/menu.screen.ron"),
         r#"(elements: [
             (id: "play", size: (200, 40), kind: Button("Play")),
             (id: "play", size: (200, 40), kind: Button("Again")),
@@ -336,17 +346,17 @@ fn a_screen_with_two_elements_of_one_id_is_found() {
     );
     let errors = errors(&check(&project));
     let line = one_containing(&errors, "is the id of two elements");
-    assert!(line.contains("ui/menu.ron"), "{line}");
+    assert!(line.contains("ui/menu.screen.ron"), "{line}");
 }
 
 #[test]
 fn a_word_a_language_lacks_is_listed() {
     let project = project("strings");
     assert!(errors_of(&project).is_empty(), "{:#?}", errors_of(&project));
-    write(&project.root().join("strings/ru.ron"), r#"{}"#);
+    write(&project.root().join("content/localization/ru.ron"), r#"{}"#);
     let errors = errors_of(&project);
     let line = one_containing(&errors, "no `hud.quit`");
-    assert!(line.contains("strings/ru.ron"), "{line}");
+    assert!(line.contains("content/localization/ru.ron"), "{line}");
 }
 
 #[test]
@@ -368,7 +378,7 @@ fn the_game_settings_name_a_scene_and_a_language_that_are_there() {
     let lines = errors(&check(&project));
     let scene = one_containing(&lines, "start_scene");
     assert!(scene.contains("did you mean `main`?"), "{scene}");
-    one_containing(&lines, "language `ru` has no strings/ru.ron");
+    one_containing(&lines, "language `ru` has no content/localization/ru.ron");
 
     let (name, settings) =
         scrap::project::GameSettings::load(&project.root().to_string_lossy()).unwrap();
@@ -378,7 +388,9 @@ fn the_game_settings_name_a_scene_and_a_language_that_are_there() {
 }
 
 #[test]
-fn a_file_outside_the_layout_is_named_with_where_it_goes() {
+fn a_file_anywhere_is_in_the_project_and_an_old_layout_is_named() {
+    // Where a file lies is the project's (docs/layout.md): a model at the
+    // root is a model, and nothing says it is in the wrong place.
     let project = project("layout");
     write(&project.root().join("rock.obj"), CUBE);
     write(&project.root().join("notes.txt"), "todo");
@@ -388,12 +400,31 @@ fn a_file_outside_the_layout_is_named_with_where_it_goes() {
         .filter(|f| f.severity == Severity::Warning)
         .map(ToString::to_string)
         .collect();
-    one_containing(&warnings, "`rock.obj` is outside the layout");
-    assert!(one_containing(&warnings, "rock.obj").contains("assets/"));
-    one_containing(&warnings, "`notes.txt` is not part of the project layout");
+    assert!(
+        !warnings.iter().any(|w| w.contains("layout")),
+        "{warnings:#?}"
+    );
     assert!(
         errors(&findings).is_empty(),
         "warnings, not errors: {findings:#?}"
+    );
+
+    // A project laid out before: read as it is, and said once.
+    let root = std::env::temp_dir().join("scrap-check-old-layout");
+    let _ = std::fs::remove_dir_all(&root);
+    write(&root.join("scrap.ron"), "(name: \"old\")");
+    write(&root.join("scenes/main.ron"), "(entities: [])");
+    let old = Project::open(&root).unwrap();
+    assert!(old.is_legacy());
+    assert_eq!(old.scene_names(), ["main"]);
+    let warnings: Vec<String> = check(&old)
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        one_containing(&warnings, "laid out as before").contains("scrap migrate-layout"),
+        "{warnings:#?}"
     );
 }
 
@@ -472,12 +503,12 @@ fn a_table_is_checked_by_record_as_written_and_by_the_game_s_types() {
         &ron::to_string(&shapes).unwrap(),
     );
     write(
-        &root.join("scenes/craft.ron"),
+        &root.join("maps/craft.scene.ron"),
         "(entities: [(id: \"b1\", name: \"bench\", components: {\"crafter\": (from: \"Кремень\")}), (id: \"b2\", name: \"table\", components: {\"crafter\": (from: \"Палка\")})])\n",
     );
     let errors = lines(&check(&project), Severity::Error);
     let found = one_containing(&errors, "`crafter.from`: no `Material` called `Кремень`");
-    assert!(found.starts_with("error: scenes/craft.ron"), "{found}");
+    assert!(found.starts_with("error: maps/craft.scene.ron"), "{found}");
     assert!(!errors.iter().any(|e| e.contains("`Палка`") && e.contains("crafter")), "{errors:#?}");
 }
 
@@ -491,7 +522,7 @@ fn the_old_tuning_folder_is_named_with_its_new_name() {
         .filter(|f| f.severity == Severity::Warning)
         .map(ToString::to_string)
         .collect();
-    assert!(one_containing(&warnings, "`tuning/`").contains("git mv tuning configs"));
+    assert!(one_containing(&warnings, "`tuning/`").contains("move its files"));
     assert!(
         errors(&findings).is_empty(),
         "warnings, not errors: {findings:#?}"
@@ -515,7 +546,7 @@ fn a_component_value_that_does_not_fit_the_game_s_type_is_found() {
         errors(&check(&project)).is_empty(),
         "the starter scene fits"
     );
-    let main = project.scenes().join("main.ron");
+    let main = project.scenes().join("main.scene.ron");
     let text = std::fs::read_to_string(&main).unwrap();
     write(
         &main,
@@ -536,7 +567,7 @@ fn a_component_linking_an_asset_that_is_not_there_is_named() {
         &project.prefabs().join("campfire.prefab"),
         r#"(name: "campfire")"#,
     );
-    let scene = project.scenes().join("camp.ron");
+    let scene = project.scenes().join("camp.scene.ron");
     write(
         &scene,
         r#"(entities: [(name: "spawner", components: { "spawner": (what: PrefabLink("campfir")) })])"#,
@@ -557,7 +588,7 @@ fn a_component_linking_an_asset_that_is_not_there_is_named() {
 fn a_dialogue_that_does_not_join_up_is_found() {
     let project = project("dialogue");
     write(
-        &project.root().join("dialogues/captain.ron"),
+        &project.root().join("dialogues/captain.dialogue.ron"),
         r#"(start: "hello", lines: {
             "hello": (text: "Ahoy.", next: "ask"),
             "lost": (text: "?"),
@@ -565,7 +596,7 @@ fn a_dialogue_that_does_not_join_up_is_found() {
     );
     let found = errors(&check(&project));
     let line = one_containing(&found, "leads to `ask`");
-    assert!(line.contains("dialogues/captain.ron"), "{line}");
+    assert!(line.contains("dialogues/captain.dialogue.ron"), "{line}");
     one_containing(&found, "`lost` is never reached");
 }
 
@@ -574,7 +605,7 @@ fn dialogues_cases_flags_and_quests_are_checked_together() {
     let project = project("dialogue-flow");
     let root = project.root();
     write(
-        &root.join("dialogues/harbour/captain.ron"),
+        &root.join("dialogues/harbour/captain.dialogue.ron"),
         r#"(start: "hello", lines: {
             "hello": (text: "Ahoy.", when: [Is("met")], else: "first", next: "ask"),
             "first": (text: "New here?", set: ["met", "waved"], next: "ask"),
@@ -594,12 +625,12 @@ fn dialogues_cases_flags_and_quests_are_checked_together() {
         ])"#,
     );
     write(
-        &root.join("quests/help.ron"),
+        &root.join("quests/help.quest.ron"),
         r#"(stages: [(name: "ask", done_when: [Var("trust", Ge, 1)]), (name: "ask", done_when: [])])"#,
     );
     let findings = check(&project);
     let lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
-    let file = "dialogues/harbour/captain.ron";
+    let file = "dialogues/harbour/captain.dialogue.ron";
     let twice = one_containing(&lines, "`thanks` is written twice");
     assert!(
         twice.starts_with("error") && twice.contains(file),
@@ -649,15 +680,15 @@ fn the_dialogues_lines_are_written_as_a_sheet_per_language() {
     let project = project("dialogue-lines");
     let root = project.root();
     write(
-        &root.join("dialogues/chef.ron"),
+        &root.join("dialogues/chef.dialogue.ron"),
         r#"(start: "hello", lines: {"hello": (speaker: "@chef", text: "@chef.hello")})"#,
     );
     write(
-        &root.join("strings/en.ron"),
+        &root.join("content/localization/en.ron"),
         r#"{"chef": "Chef", "chef.hello": "Morning"}"#,
     );
     write(
-        &root.join("strings/ru.ron"),
+        &root.join("content/localization/ru.ron"),
         r#"{"chef": "Шеф", "chef.hello": "Утро"}"#,
     );
     let out = root.join("build/lines");
@@ -671,7 +702,7 @@ fn the_dialogues_lines_are_written_as_a_sheet_per_language() {
 fn an_animators_cases_are_played_by_check() {
     let project = project("animator-cases");
     write(
-        &project.root().join("animators/hero.ron"),
+        &project.root().join("animators/hero.animator.ron"),
         r#"(start: "idle", states: {
             "idle": (clip: "idle", transitions: [(to: "walk", when: [Above("speed", 0.1)])]),
             "walk": (clip: "walk"),
@@ -703,7 +734,7 @@ fn a_field_no_module_reads_is_kept_and_named_and_one_that_does_not_fit_is_an_err
             (id: "a1", name: "raft", model: "builtin:cube", buoyancy: (floats: true), lihgt: (range: 3.0)),
             (id: "a2", name: "lamp", model: "builtin:cube", light: "bright"),
         ])"#;
-    write(&root.join("scenes/main.ron"), text);
+    write(&root.join("maps/main.scene.ron"), text);
     let findings = check(&project);
     let lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
     let buoyancy = one_containing(&lines, "`buoyancy`");
@@ -725,14 +756,14 @@ fn a_field_no_module_reads_is_kept_and_named_and_one_that_does_not_fit_is_an_err
         "{errors:#?}"
     );
     // And the scene keeps what it did not understand, byte for byte.
-    let scene = scrap::Scene::load(root.join("scenes/main.ron")).unwrap();
+    let scene = scrap::Scene::load(root.join("maps/main.scene.ron")).unwrap();
     assert_eq!(
         scene.entities[0].parts.raw("buoyancy"),
         Some("(floats: true)")
     );
-    scene.save(root.join("scenes/main.ron")).unwrap();
+    scene.save(root.join("maps/main.scene.ron")).unwrap();
     assert_eq!(
-        std::fs::read_to_string(root.join("scenes/main.ron"))
+        std::fs::read_to_string(root.join("maps/main.scene.ron"))
             .unwrap()
             .trim(),
         text.trim()

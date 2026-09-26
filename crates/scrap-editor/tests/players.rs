@@ -27,7 +27,7 @@ fn project(name: &str) -> Option<(Session, Project)> {
         }
     };
     session
-        .open_scene(project.scenes().join("main.ron"))
+        .open_scene(project.scenes().join("main.scene.ron"))
         .unwrap();
     Some((session, project))
 }
@@ -46,7 +46,7 @@ fn how_many_play_is_this_persons_choice_and_kept() {
     session.set_link("poor").unwrap();
 
     let mut again = Session::offscreen(64, 64).unwrap();
-    again.open_scene(project.scenes().join("main.ron")).unwrap();
+    again.open_scene(project.scenes().join("main.scene.ron")).unwrap();
     assert_eq!(again.players(), 2, "kept in .scrap/, with the view");
     assert_eq!(again.link(), "poor");
 }
@@ -70,7 +70,7 @@ fn an_optimized_game_is_this_persons_choice_and_kept() {
     assert_eq!(level(&session.game_command().unwrap()), Some(Some(scrap_editor::FAST_GAME_LEVEL.into())));
 
     let mut again = Session::offscreen(64, 64).unwrap();
-    again.open_scene(project.scenes().join("main.ron")).unwrap();
+    again.open_scene(project.scenes().join("main.scene.ron")).unwrap();
     assert!(again.fast_game(), "kept in .scrap/, with the view");
 }
 

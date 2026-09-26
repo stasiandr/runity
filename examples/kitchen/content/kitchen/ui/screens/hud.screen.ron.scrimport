@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/kitchen/ui/screens/hud.screen.ron",
+    id: Some("5341f76dd0bec5658cb7df9453ce0d2c"),
+)

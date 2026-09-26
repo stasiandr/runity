@@ -20,8 +20,11 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// The file, in a project's root.
-pub const FILE: &str = "layers.ron";
+/// The file, from a project's root.
+pub const FILE: &str = "config/layers.ron";
+/// Where a project laid out before 2026-09-26 kept it, read until
+/// 2026-10-31.
+pub const LEGACY_FILE: &str = "layers.ron";
 
 /// A project's layers and the pairs of them that do not collide.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,7 +65,7 @@ impl Layers {
 
     /// A project's layers: its `layers.ron`, or just `default` without one.
     pub fn of(project: &crate::Project) -> Result<Self, String> {
-        let path = project.root().join(FILE);
+        let path = project.layers_file();
         if crate::files::is_file(&path) {
             Self::load(path)
         } else {
@@ -162,7 +165,7 @@ mod tests {
     fn a_file_that_cannot_mean_anything_says_why() {
         let dir = std::env::temp_dir().join("scrap-layers");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(FILE);
+        let path = dir.join(LEGACY_FILE);
         std::fs::write(
             &path,
             r#"(layers: ["player", "debris", "player"], ignore: [("debri", "player")])"#,

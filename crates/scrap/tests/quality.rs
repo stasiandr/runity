@@ -18,7 +18,7 @@ fn each_preset_runs_no_more_than_the_one_above_and_low_is_cheapest() {
     }
     let scene = scrap::scene::Scene::load(std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/valley/scenes/materials.ron"
+        "/../../examples/valley/content/valley/maps/materials.scene.ron"
     )))
     .expect("the scene reads");
     let target = OffscreenTarget::new(&gpu, 1280, 720);

@@ -1,4 +1,0 @@
-ImportSettings(
-    source: "scenes/characters.ron",
-    id: Some("7dff2191960a46d7f2c4ffbde8d120be"),
-)

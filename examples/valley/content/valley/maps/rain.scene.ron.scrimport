@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/rain.scene.ron",
+    id: Some("461cec3128ff854ced22f78a3ed9e66a"),
+)

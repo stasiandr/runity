@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/furniture/cardboardBoxOpen.glb",
+    hash: "a4e0eb91e87d2ca5ec2276b894a08c63",
+    id: Some("5ab21b259bdb8e9c3534b988e65dc8d5"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

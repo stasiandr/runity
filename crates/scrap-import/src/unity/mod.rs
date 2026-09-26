@@ -510,7 +510,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
                 .iter()
                 .map(|d| d.join(&file))
                 .chain(std::iter::once(
-                    project.root().join(scrap::project::SHADERS).join(&file),
+                    project.default_dir(scrap::layout::Kind::Shader).join(&file),
                 ))
                 .find_map(|p| std::fs::read_to_string(p).ok())
         };
@@ -537,7 +537,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     unity.declared_params = declared_params;
     // The shaders those materials had: a stub each to write again, never
     // over one already written.
-    let dir = project.root().join(scrap::project::SHADERS);
+    let dir = project.default_dir(scrap::layout::Kind::Shader);
     for (name, path) in &shaders {
         let file = dir.join(format!("{name}.wgsl"));
         let stub =
@@ -608,7 +608,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         scene.set_part_opt(look::ambient_occlusion(&unity).as_ref());
         let name = &unity.names[guid];
         scene
-            .save(project.scenes().join(format!("{name}.ron")))
+            .save(project.new_file(scrap::layout::Kind::Scene, name))
             .with_context(|| format!("scene {name}"))?;
         report.scenes += 1;
     }
@@ -627,7 +627,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     for path in tables {
         let Ok(text) = std::fs::read_to_string(path) else { continue };
         for (language, words) in string_table(&text) {
-            let file = project.root().join("strings").join(format!("{language}.ron"));
+            let file = project.strings_dir().join(format!("{language}.ron"));
             let mut all: BTreeMap<String, String> = std::fs::read_to_string(&file)
                 .ok()
                 .and_then(|t| scrap::ron::from_str(&t).ok())
@@ -655,9 +655,8 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     for (guid, path) in unity.of_kind("animator") {
         match animator::convert(&unity, path, &mut report) {
             Ok(text) => {
-                let dir = project.root().join(scrap::project::ANIMATORS);
                 let name = &unity.names[guid];
-                write(&dir.join(format!("{name}.ron")), &text)?;
+                write(&project.new_file(scrap::layout::Kind::Animator, name), &text)?;
                 report.animators += 1;
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
@@ -667,9 +666,8 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     for (guid, path) in unity.of_kind("motion") {
         match motion::convert(path, &mut report) {
             Ok(clip) => {
-                let dir = project.root().join(scrap::motion::DIR);
                 let name = &unity.names[guid];
-                write(&dir.join(format!("{name}.ron")), &motion::text(&clip))?;
+                write(&project.new_file(scrap::layout::Kind::Clip, name), &motion::text(&clip))?;
                 report.motions += 1;
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
@@ -692,10 +690,11 @@ fn keep_origins(dir: &Path) -> Result<()> {
         let sidecar = crate::sidecar_for(&path);
         let mut settings = match crate::ImportSettings::load(&sidecar) {
             Ok(settings) => settings,
-            Err(_) => crate::ImportSettings::for_source(format!(
-                "assets/models/{}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            )),
+            Err(_) => crate::ImportSettings::for_source(
+                scrap::Project::find(&path).ok().and_then(|p| p.relative(&path)).unwrap_or_else(|| {
+                    format!("assets/models/{}", path.file_name().unwrap_or_default().to_string_lossy())
+                }),
+            ),
         };
         // One mesh, whatever its nodes: a scene names a model as one
         // thing — its pieces are there for a renderer that names one.

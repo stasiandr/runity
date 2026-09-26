@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/settlers/settler_walk.obj",
+    hash: "7cc9856eabfce3fc3ee39b42cfcfcbfd",
+    id: Some("b641a22e2e857199d327f0128993bfb6"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

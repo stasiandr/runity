@@ -164,28 +164,13 @@ impl Dialogues {
         }
     }
 
-    fn dir(session: &Session) -> Option<PathBuf> {
-        session
-            .project()
-            .map(|p| p.root().join(scrap::dialogue::DIR))
-    }
-
     fn list(&mut self, ui: &mut Ui, session: &Session) {
         ui.clear(self.files_list);
         self.parts.retain(|_, p| !matches!(p, Part::File(_)));
-        let mut paths: Vec<PathBuf> = Self::dir(session)
-            .and_then(|d| std::fs::read_dir(d).ok())
-            .map(|r| {
-                r.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.extension().is_some_and(|e| e == "ron")
-                            && !p.to_string_lossy().ends_with(".cases.ron")
-                    })
-                    .collect()
-            })
+        let paths: Vec<PathBuf> = session
+            .project()
+            .map(|p| p.files(scrap::layout::Kind::Dialogue))
             .unwrap_or_default();
-        paths.sort();
         if paths.is_empty() {
             ui.add_text(
                 self.files_list,
@@ -228,11 +213,7 @@ impl Dialogues {
                         d
                     });
                 self.words = session.project().and_then(|p| {
-                    scrap::strings::Strings::load(
-                        p.root().join(scrap::strings::DIR),
-                        &p.manifest().game.language,
-                    )
-                    .ok()
+                    scrap::strings::Strings::load(p.strings_dir(), &p.manifest().game.language).ok()
                 });
                 self.open = Some((path, dialogue));
                 self.chosen = None;
@@ -872,15 +853,17 @@ impl Dialogues {
     }
 
     fn new_file(&mut self, ui: &mut Ui, session: &mut Session) {
-        let Some(dir) = Self::dir(session) else {
+        let Some(project) = session.project() else {
             return;
         };
-        let _ = std::fs::create_dir_all(&dir);
-        let mut path = dir.join("dialogue.ron");
+        let mut path = project.new_file(scrap::layout::Kind::Dialogue, "dialogue");
         let mut n = 2;
         while path.exists() {
-            path = dir.join(format!("dialogue_{n}.ron"));
+            path = project.new_file(scrap::layout::Kind::Dialogue, &format!("dialogue_{n}"));
             n += 1;
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
         }
         let text = "(\n    start: \"hello\",\n    lines: {\n        \"hello\": (speaker: \"\", text: \"\"),\n    },\n)\n";
         match std::fs::write(&path, text) {
@@ -894,7 +877,5 @@ impl Dialogues {
 }
 
 fn stem(path: &std::path::Path) -> String {
-    path.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    scrap::layout::name_of(path)
 }

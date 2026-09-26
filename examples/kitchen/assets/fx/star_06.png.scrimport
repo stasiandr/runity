@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/fx/star_06.png",
-    hash: "85aa3267b939686e89cce5db89250a45",
-    id: Some("1cd59af66585a7e9254719e7245f1d26"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

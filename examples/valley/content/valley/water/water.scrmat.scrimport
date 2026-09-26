@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/water/water.scrmat",
+    hash: "76e8097e44117baa7ba602f612c4c5ab",
+    id: Some("2c4ef7b554e68a447659d047234054e1"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

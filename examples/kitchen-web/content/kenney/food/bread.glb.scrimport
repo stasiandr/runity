@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/bread.glb",
+    hash: "538920f79410ed6af974d122881861c7",
+    id: Some("43fba096fdbacd6a3e22fcf33e83d1e0"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

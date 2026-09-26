@@ -350,30 +350,12 @@ impl Generator {
 /// must not shadow.
 fn taken(project: &scrap::Project, name: &str) -> Option<PathBuf> {
     let drafts = project.assets().join(DRAFTS);
-    let mut found = None;
-    walk(&project.assets(), &mut |path| {
-        let same = path.file_stem().is_some_and(|s| s == name)
+    // Wherever the project keeps its models (docs/layout.md).
+    scrap::layout::walk(project.root()).into_iter().find(|path| {
+        path.file_stem().is_some_and(|s| s == name)
             && !path.starts_with(&drafts)
-            && path.extension().is_some_and(|e| e != "scrimport");
-        if same && found.is_none() {
-            found = Some(path.to_path_buf());
-        }
-    });
-    found
-}
-
-fn walk(dir: &Path, visit: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk(&path, visit);
-        } else {
-            visit(&path);
-        }
-    }
+            && path.extension().is_some_and(|e| e != "scrimport")
+    })
 }
 
 /// A finished mesh into the project, and onto the entity it replaces.

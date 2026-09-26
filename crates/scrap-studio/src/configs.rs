@@ -137,10 +137,7 @@ impl Configs {
                 None => {
                     ui.set_text(
                         self.title,
-                        &format!(
-                            "No configs yet: a RON file in {}/ shows here.",
-                            scrap::project::CONFIGS
-                        ),
+                        "No configs yet: a table or tuned numbers — a plain .ron — shows here.",
                     );
                     ui.clear(self.body);
                     self.cells.clear();
@@ -158,12 +155,9 @@ impl Configs {
     fn list_files(&mut self, ui: &mut Ui, root: &Path, found: Vec<PathBuf>) {
         ui.clear(self.list);
         self.files.clear();
-        let dir = root.join(scrap::project::CONFIGS);
         for path in found {
-            let name = path
-                .strip_prefix(&dir)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let name = scrap::layout::relative(root, &path);
+            let name = name.strip_prefix("configs/").unwrap_or(&name).to_string();
             let row = ui.add(
                 self.list,
                 Style::row()

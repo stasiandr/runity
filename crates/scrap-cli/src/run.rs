@@ -1,5 +1,5 @@
 //! `scrap run [--hot] [--scene NAME]`: the game, from its project, in one
-//! command, on `scenes/main.ron` or the scene named.
+//! command, on the start scene or the scene named.
 //!
 //! Plain, it is `cargo run` in the project: scenes, prefabs, assets,
 //! shaders and numbers already reload while it runs. With `--hot` the game
@@ -173,8 +173,8 @@ pub fn player_command(
 /// What the game reads to know which scene to open: `main` without it.
 pub const SCENE_VAR: &str = "SCRAP_SCENE";
 
-/// Check that the project has `scenes/NAME.ron`, for `--scene NAME`, and
-/// say which ones it has when not.
+/// Check that the project has a scene called NAME, wherever it lies, for
+/// `--scene NAME`, and say which ones it has when not.
 pub fn scene(project: &Project, name: &str) -> Result<String> {
     let names = project.scene_names();
     if names.iter().any(|n| n == name) {
@@ -184,7 +184,7 @@ pub fn scene(project: &Project, name: &str) -> Result<String> {
         .map(|n| format!(" — did you mean `{n}`?"))
         .unwrap_or_default();
     bail!(
-        "no scenes/{name}.ron{near} (there are: {})",
+        "no scene called `{name}`{near} (there are: {})",
         names.join(", ")
     )
 }

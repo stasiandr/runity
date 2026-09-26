@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/pot.scrmat",
-    hash: "1df96391c3fabe644d695b49b6814a12",
-    id: Some("a5ef5ed5dbefd91d6777cd8a4f8d5e49"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

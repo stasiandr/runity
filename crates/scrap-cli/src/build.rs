@@ -26,9 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use scrap::project::{
-    ANIMATORS, CONFIGS, DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES, SHADERS, UI,
-};
+use scrap::project::{DATA, FILE, LIBRARY};
 use scrap::Project;
 
 /// What a build's textures are cooked for.
@@ -219,9 +217,9 @@ pub fn package_for(project: &Project, executable: &Path, out: &Path, platform: P
     let data = out.join(DATA);
     std::fs::create_dir_all(&data)?;
     std::fs::copy(project.root().join(FILE), data.join(FILE))?;
-    for file in [INPUT, scrap::layers::FILE] {
-        if project.root().join(file).is_file() {
-            std::fs::copy(project.root().join(file), data.join(file))?;
+    for file in [project.input_file(), project.layers_file()] {
+        if file.is_file() {
+            copy_file(project, &file, &data)?;
         }
     }
     match platform.coding() {
@@ -232,18 +230,27 @@ pub fn package_for(project: &Project, executable: &Path, out: &Path, platform: P
         }
         None => copy_tree(&project.root().join(LIBRARY), &data.join(LIBRARY))?,
     }
-    for dir in [
-        SCENES,
-        PREFABS,
-        CONFIGS,
-        UI,
-        ANIMATORS,
-        SHADERS,
-        scrap::strings::DIR,
-        scrap::dialogue::DIR,
-        scrap::motion::DIR,
-    ] {
-        copy_tree(&project.root().join(dir), &data.join(dir))?;
+    // What the game reads as text, wherever it lies (docs/layout.md) and
+    // at the same path: scenes, prefabs, screens, graphs, shaders, its
+    // data and its words — with the sidecars that give them their IDs. No
+    // sources: those are in the library, built. Not `developers/`: a
+    // sandbox is not the game.
+    let root = project.root();
+    let mut files: Vec<PathBuf> = scrap::layout::index(root).into_iter().map(|(path, _)| path).collect();
+    files.extend(scrap::layout::data_files(root));
+    files.extend(scrap::layout::walk(project.strings_dir()));
+    files.sort();
+    files.dedup();
+    for path in files {
+        let relative = scrap::layout::relative(root, &path);
+        if scrap::layout::in_developers(&relative) {
+            continue;
+        }
+        copy_file(project, &path, &data)?;
+        let sidecar = scrap_import::sidecar_for(&path);
+        if sidecar.is_file() {
+            copy_file(project, &sidecar, &data)?;
+        }
     }
     let shipped = out.join(
         executable
@@ -252,6 +259,16 @@ pub fn package_for(project: &Project, executable: &Path, out: &Path, platform: P
     );
     std::fs::copy(executable, &shipped)?;
     Ok(shipped)
+}
+
+/// A file of the project into `data`, at the same path.
+fn copy_file(project: &Project, path: &Path, data: &Path) -> Result<()> {
+    let to = data.join(scrap::layout::relative(project.root(), path));
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(path, &to).with_context(|| format!("copying {}", path.display()))?;
+    Ok(())
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {

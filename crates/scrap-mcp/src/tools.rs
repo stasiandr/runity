@@ -261,7 +261,9 @@ fn action_tool(action: &scrap_editor::actions::EditorAction) -> Value {
     for param in action.params {
         let schema = match param.kind {
             Kind::Id | Kind::Text => json!({ "type": "string", "description": param.about }),
-            Kind::Ids => json!({ "type": "array", "items": { "type": "string" }, "description": param.about }),
+            Kind::Ids => {
+                json!({ "type": "array", "items": { "type": "string" }, "description": param.about })
+            }
             Kind::Flag => json!({ "type": "boolean", "description": param.about }),
         };
         properties.insert(param.name.to_string(), schema);
@@ -270,7 +272,10 @@ fn action_tool(action: &scrap_editor::actions::EditorAction) -> Value {
 }
 
 /// A tool call's arguments as an editor action takes them.
-fn action_args(action: &scrap_editor::actions::EditorAction, args: &Value) -> Result<scrap_editor::actions::Args, String> {
+fn action_args(
+    action: &scrap_editor::actions::EditorAction,
+    args: &Value,
+) -> Result<scrap_editor::actions::Args, String> {
     use scrap_editor::actions::{Arg, Args, Kind};
     let mut out = Args::default();
     for param in action.params {
@@ -292,8 +297,17 @@ fn action_args(action: &scrap_editor::actions::EditorAction, args: &Value) -> Re
                     .map(parse)
                     .collect::<Result<_, _>>()?,
             ),
-            Kind::Text => Arg::Text(value.as_str().ok_or_else(|| format!("{} is text", param.name))?.to_string()),
-            Kind::Flag => Arg::Flag(value.as_bool().ok_or_else(|| format!("{} is true or false", param.name))?),
+            Kind::Text => Arg::Text(
+                value
+                    .as_str()
+                    .ok_or_else(|| format!("{} is text", param.name))?
+                    .to_string(),
+            ),
+            Kind::Flag => Arg::Flag(
+                value
+                    .as_bool()
+                    .ok_or_else(|| format!("{} is true or false", param.name))?,
+            ),
         };
         out = out.with(param.name, arg);
     }
@@ -496,7 +510,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .make_prefab(id, &name)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!(
-                "prefabs/{name}.prefab written; {id} is now an instance"
+                "{name}.prefab written; {id} is now an instance"
             ))])
         }
         "make_variant" => {
@@ -507,7 +521,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .make_variant(id, &name)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!(
-                "prefabs/{name}.prefab written as a variant; {id} is now an instance of it"
+                "{name}.prefab written as a variant, beside its base; {id} is now an instance of it"
             ))])
         }
         "measure" => {
@@ -899,7 +913,11 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             side.map_err(|e| e.to_string())?;
             Ok(vec![text(format!(
                 "conflict {index} settled {} way; not saved",
-                if name == "take_ours" { "ours'" } else { "theirs'" }
+                if name == "take_ours" {
+                    "ours'"
+                } else {
+                    "theirs'"
+                }
             ))])
         }
         "resolved" => {
@@ -1215,34 +1233,62 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 let needle = find.to_lowercase();
                 let mut out = String::new();
                 for file in scrap_editor::configs::files(&root) {
-                    let Ok(text) = std::fs::read_to_string(&file) else { continue };
-                    let Ok(config) = scrap_editor::configs::read(&text) else { continue };
-                    let rel = file.strip_prefix(&root).unwrap_or(&file).display().to_string();
+                    let Ok(text) = std::fs::read_to_string(&file) else {
+                        continue;
+                    };
+                    let Ok(config) = scrap_editor::configs::read(&text) else {
+                        continue;
+                    };
+                    let rel = file
+                        .strip_prefix(&root)
+                        .unwrap_or(&file)
+                        .display()
+                        .to_string();
                     for table in &config.tables {
                         for row in &table.rows {
                             if row[0].to_lowercase().contains(&needle) {
-                                let under = table.name.as_deref().map(|n| format!(" {n}")).unwrap_or_default();
+                                let under = table
+                                    .name
+                                    .as_deref()
+                                    .map(|n| format!(" {n}"))
+                                    .unwrap_or_default();
                                 let _ = writeln!(out, "{rel}{under}: {}", row[0]);
                             }
                         }
                     }
                 }
-                return Ok(vec![text(if out.is_empty() { format!("nothing called like {find:?}") } else { out })]);
+                return Ok(vec![text(if out.is_empty() {
+                    format!("nothing called like {find:?}")
+                } else {
+                    out
+                })]);
             }
             let Some(file) = optional_string(args, "file")? else {
                 let mut out = String::new();
                 for file in scrap_editor::configs::files(&root) {
-                    let rel = file.strip_prefix(&root).unwrap_or(&file).display().to_string();
+                    let rel = file
+                        .strip_prefix(&root)
+                        .unwrap_or(&file)
+                        .display()
+                        .to_string();
                     match scrap_editor::configs::shape_of(&root, &file) {
                         Some(shape) => {
-                            let _ = writeln!(out, "{rel}: a table of {}: {}", shape.record, shape.shape);
+                            let _ = writeln!(
+                                out,
+                                "{rel}: a table of {}: {}",
+                                shape.record, shape.shape
+                            );
                         }
                         None => {
                             let _ = writeln!(out, "{rel}");
                         }
                     }
                 }
-                return Ok(vec![text(if out.is_empty() { "no configs/ files".into() } else { out })]);
+                return Ok(vec![text(if out.is_empty() {
+                    "no configs/ files".into()
+                } else {
+                    out
+                })]);
             };
             let path = root.join(&file);
             let body = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
@@ -1264,7 +1310,13 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                     let cells: Vec<String> = row
                         .iter()
                         .zip(taken)
-                        .map(|(cell, taken)| if *taken { format!("^{cell}") } else { cell.clone() })
+                        .map(|(cell, taken)| {
+                            if *taken {
+                                format!("^{cell}")
+                            } else {
+                                cell.clone()
+                            }
+                        })
                         .collect();
                     let _ = writeln!(out, "{}", cells.join(" | "));
                 }
@@ -1277,9 +1329,13 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             let path = root.join(&file);
             let field = string(args, "field")?;
             let value = string(args, "value")?;
-            let place = match (optional_string(args, "record")?, optional_string(args, "grid")?) {
+            let place = match (
+                optional_string(args, "record")?,
+                optional_string(args, "grid")?,
+            ) {
                 (Some(record), _) => {
-                    let body = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
+                    let body =
+                        std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
                     let config = scrap_editor::configs::read(&body)?;
                     let row = config
                         .tables
@@ -1287,7 +1343,11 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                         .find(|t| t.records)
                         .and_then(|t| t.rows.iter().position(|r| r[0] == record))
                         .ok_or_else(|| format!("{file}: no record `{record}`"))?;
-                    scrap_editor::configs::Place::Cell { grid: None, row, column: field }
+                    scrap_editor::configs::Place::Cell {
+                        grid: None,
+                        row,
+                        column: field,
+                    }
                 }
                 (None, Some(grid)) => scrap_editor::configs::Place::Cell {
                     grid: Some(grid),
@@ -1297,7 +1357,11 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 (None, None) => scrap_editor::configs::Place::Field(field),
             };
             let label = server.configs.set(&root, &path, &place, &value)?;
-            Ok(vec![text(if label.is_empty() { "already so".into() } else { format!("set {label}") })])
+            Ok(vec![text(if label.is_empty() {
+                "already so".into()
+            } else {
+                format!("set {label}")
+            })])
         }
         "config_undo" => Ok(vec![text(match server.configs.undo()? {
             Some(label) => format!("undone: {label}"),
@@ -1802,7 +1866,9 @@ fn new_project(server: &mut Server, args: &Value) -> Answer {
             .ok_or("the path has no folder name; pass name")?,
     };
     let project = Project::create(&path, &name).map_err(|e| e.to_string())?;
-    let scene = project.scenes().join("main.ron");
+    let scene = project
+        .scene("main")
+        .ok_or("the new project has no main scene")?;
     let mut out = open_scene(server, &scene.to_string_lossy())?;
     out.insert(
         0,
@@ -1821,15 +1887,12 @@ fn open_scene(server: &mut Server, path: &str) -> Answer {
     match session.project() {
         Some(project) => {
             let _ = write!(out, " in project {}", project.name());
-            let has_sources = std::fs::read_dir(project.assets())
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .any(|e| !e.file_name().to_string_lossy().starts_with('.'))
-                })
-                .unwrap_or(false);
+            let mut has_sources = false;
+            scrap_import::walk(project.root(), &mut |path| {
+                has_sources |= scrap_import::importable(path)
+            });
             if has_sources && !project.library().is_dir() {
-                out.push_str("; its library is not built yet, so models from assets/ draw nothing until `reload` or `scrap sync`");
+                out.push_str("; its library is not built yet, so its models draw nothing until `reload` or `scrap sync`");
             }
         }
         None => out.push_str(", in no project: builtins only"),
@@ -2344,8 +2407,19 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
     let session = server.session()?;
     let project = session.project().ok_or("the open scene is in no project")?;
     let name = string(args, "name")?;
-    let dir = project.root().join(scrap::project::ANIMATORS);
-    let path = dir.join(format!("{name}.ron"));
+    let path = project
+        .file(scrap::layout::Kind::Animator, &name)
+        .ok_or_else(|| {
+            let names: Vec<String> = project
+                .files(scrap::layout::Kind::Animator)
+                .iter()
+                .map(scrap::layout::name_of)
+                .collect();
+            let near = scrap::spelling::closest(&name, names.iter().map(String::as_str))
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            format!("no animator graph `{name}` in the project{near}")
+        })?;
     let old = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut graph: Graph =
         scrap::ron::from_str(&old).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -2491,7 +2565,7 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
             }
             save(&graph)?;
             // The graph's cases name states too.
-            let cases = dir.join(format!("{name}.cases.ron"));
+            let cases = scrap::layout::cases_of(&path);
             let mut also = String::new();
             if let Ok(text_of) = std::fs::read_to_string(&cases) {
                 let renamed =
@@ -2525,7 +2599,6 @@ fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Va
             .collect();
         return Ok(vec![text(format!("wrote {}", files.join(", ")))]);
     }
-    let dir = project.root().join(scrap::dialogue::DIR);
     let name = string(args, "name")?;
     let (all, _) = scrap_cli::lines::dialogues(project);
     if tool == "dialogue" && name.is_empty() {
@@ -2536,7 +2609,11 @@ fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Va
             names.join("\n")
         })]);
     }
-    let path = dir.join(format!("{name}.ron"));
+    let path = all
+        .iter()
+        .find(|(_, d)| d.name == name)
+        .map(|(p, _)| p.clone())
+        .unwrap_or_else(|| project.new_file(scrap::layout::Kind::Dialogue, &name));
     let old = std::fs::read_to_string(&path).unwrap_or_default();
     let mut dialogue: Dialogue = if old.is_empty() && tool == "dialogue_line" {
         Dialogue::default()
@@ -2544,7 +2621,7 @@ fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Va
         let near = scrap::spelling::closest(&name, all.iter().map(|(_, d)| d.name.as_str()))
             .map(|n| format!(" — did you mean `{n}`?"))
             .unwrap_or_default();
-        return Err(format!("no dialogue `{name}` in dialogues/{near}"));
+        return Err(format!("no dialogue `{name}` in the project{near}"));
     } else {
         scrap::ron::from_str(&old).map_err(|e| format!("{}: {e}", path.display()))?
     };
@@ -2555,7 +2632,7 @@ fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Va
         }
         std::fs::write(&path, scrap::dialogue_text::write(&old, d)).map_err(|e| e.to_string())
     };
-    let cases_path = path.with_extension("cases.ron");
+    let cases_path = scrap::layout::cases_of(&path);
     match tool {
         "dialogue" => {
             let mut out = format!("start: {}\n", dialogue.start);

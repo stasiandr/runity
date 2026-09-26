@@ -16,6 +16,16 @@ use scrap::{Library, Prefabs, Project, Scene};
 use scrap_import::assets::{rename, usages, usages_of};
 use scrap_import::{sidecar_for, sync, ImportSettings};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {
@@ -65,15 +75,15 @@ fn changed(before: &str, after: &str) -> Vec<String> {
 fn renaming_a_material_renames_it_in_every_line_that_used_it() {
     let (project, root) = valley("material");
     let scenes = [
-        "scenes/first-light.ron",
-        "scenes/camp.ron",
-        "prefabs/campfire.prefab",
+        "content/valley/maps/first-light.scene.ron",
+        "content/valley/maps/camp.scene.ron",
+        "content/valley/camp/campfire/campfire.prefab",
     ];
     let before: Vec<String> = scenes.iter().map(|s| read(&root.join(s))).collect();
-    let id = ImportSettings::load(root.join("materials/stone.scrmat.scrimport"))
+    let id = ImportSettings::load(root.join("content/valley/nature/rocks/stone.scrmat.scrimport"))
         .unwrap()
         .id;
-    let used = usages(&project, Path::new("materials/stone.scrmat")).unwrap();
+    let used = usages(&project, Path::new("content/valley/nature/rocks/stone.scrmat")).unwrap();
     let total = before
         .iter()
         .map(|t| t.matches("\"stone\"").count())
@@ -82,8 +92,8 @@ fn renaming_a_material_renames_it_in_every_line_that_used_it() {
 
     let done = rename(
         &project,
-        Path::new("materials/stone.scrmat"),
-        Path::new("materials/granite.scrmat"),
+        Path::new("content/valley/nature/rocks/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/granite.scrmat"),
     )
     .unwrap();
 
@@ -111,10 +121,10 @@ fn renaming_a_material_renames_it_in_every_line_that_used_it() {
     }
 
     // The file and its sidecar moved; the asset kept its ID, under its new name.
-    assert!(!root.join("materials/stone.scrmat").exists());
-    assert!(!root.join("materials/stone.scrmat.scrimport").exists());
-    let sidecar = ImportSettings::load(sidecar_for(&root.join("materials/granite.scrmat"))).unwrap();
-    assert_eq!(sidecar.source, "materials/granite.scrmat");
+    assert!(!root.join("content/valley/nature/rocks/stone.scrmat").exists());
+    assert!(!root.join("content/valley/nature/rocks/stone.scrmat.scrimport").exists());
+    let sidecar = ImportSettings::load(sidecar_for(&root.join("content/valley/nature/rocks/granite.scrmat"))).unwrap();
+    assert_eq!(sidecar.source, "content/valley/nature/rocks/granite.scrmat");
     assert_eq!(sidecar.id, id);
     assert!(
         done.synced.iter().all(|r| r.result.is_ok()),
@@ -128,13 +138,13 @@ fn renaming_a_material_renames_it_in_every_line_that_used_it() {
         "no second copy"
     );
 
-    let camp = Scene::load(root.join("scenes/camp.ron")).unwrap();
+    let camp = Scene::load(root.join("content/valley/maps/camp.scene.ron")).unwrap();
     assert!(camp
         .flatten()
         .iter()
         .any(|(e, _)| e.material_ref() == MaterialRef::Named("granite".into())));
     assert!(
-        usages(&project, Path::new("materials/granite.scrmat"))
+        usages(&project, Path::new("content/valley/nature/rocks/granite.scrmat"))
             .unwrap()
             .len()
             == total,
@@ -145,28 +155,28 @@ fn renaming_a_material_renames_it_in_every_line_that_used_it() {
 #[test]
 fn renaming_a_prefab_renames_its_instances() {
     let (project, root) = valley("prefab");
-    let before = read(&root.join("scenes/camp.ron"));
+    let before = read(&root.join("content/valley/maps/camp.scene.ron"));
     let done = rename(
         &project,
-        Path::new("prefabs/campfire.prefab"),
-        Path::new("prefabs/hearth.prefab"),
+        Path::new("content/valley/camp/campfire/campfire.prefab"),
+        Path::new("content/valley/camp/campfire/hearth.prefab"),
     )
     .unwrap();
     assert_eq!(
         done.rewritten,
         [(
-            "scenes/camp.ron".to_string(),
+            "content/valley/maps/camp.scene.ron".to_string(),
             before.matches("prefab: \"campfire\"").count()
         )]
     );
-    let after = read(&root.join("scenes/camp.ron"));
+    let after = read(&root.join("content/valley/maps/camp.scene.ron"));
     assert!(changed(&before, &after)
         .iter()
         .all(|l| l.contains("prefab: \"hearth\"")));
     let (prefabs, problems) = Prefabs::of(&project);
     assert!(problems.is_empty());
     assert!(prefabs.get("hearth").is_some());
-    let camp = Scene::load(root.join("scenes/camp.ron")).unwrap();
+    let camp = Scene::load(root.join("content/valley/maps/camp.scene.ron")).unwrap();
     let instanced = scrap::prefab::instantiate(&camp, &prefabs);
     assert!(instanced.problems.is_empty(), "{:?}", instanced.problems);
 }
@@ -174,16 +184,16 @@ fn renaming_a_prefab_renames_its_instances() {
 #[test]
 fn renaming_a_model_renames_the_lines_that_draw_it() {
     let (project, root) = valley("model");
-    let scene = root.join("scenes/first-light.ron");
+    let scene = root.join("content/valley/maps/first-light.scene.ron");
     let text = read(&scene).replace(
         "name: \"tree near\",   model: \"builtin:cone\"",
         "name: \"tree near\",   model: \"axe\"",
     );
-    std::fs::write(&scene, &text).unwrap();
+    write_all(&scene, &text).unwrap();
     rename(
         &project,
-        Path::new("assets/models/axe.obj"),
-        Path::new("assets/tools/hatchet.obj"),
+        Path::new("content/valley/camp/axe.obj"),
+        Path::new("content/valley/tools/hatchet.obj"),
     )
     .unwrap();
     let after = read(&scene);
@@ -191,22 +201,22 @@ fn renaming_a_model_renames_the_lines_that_draw_it() {
     assert!(after.contains("model: \"hatchet\""));
     let (library, _) = Library::open(project.library()).unwrap();
     assert!(library.mesh_by_name("hatchet").is_some());
-    assert!(root.join("assets/tools/hatchet.obj.scrimport").is_file());
+    assert!(root.join("content/valley/tools/hatchet.obj.scrimport").is_file());
 }
 
 #[test]
 fn moving_a_material_between_folders_changes_no_scene() {
     let (project, root) = valley("move");
-    let before = read(&root.join("scenes/camp.ron"));
+    let before = read(&root.join("content/valley/maps/camp.scene.ron"));
     let done = rename(
         &project,
-        Path::new("materials/stone.scrmat"),
-        Path::new("materials/rock/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/rock/stone.scrmat"),
     )
     .unwrap();
     assert_eq!(done.reference, None);
     assert!(done.rewritten.is_empty());
-    assert_eq!(read(&root.join("scenes/camp.ron")), before);
+    assert_eq!(read(&root.join("content/valley/maps/camp.scene.ron")), before);
     let (library, _) = Library::open(project.library()).unwrap();
     assert!(library.material_by_name("stone").is_some());
 }
@@ -218,23 +228,23 @@ fn a_rename_that_would_change_what_a_line_means_is_refused_and_moves_nothing() {
     // Onto another material's name.
     let e = rename(
         &project,
-        Path::new("materials/stone.scrmat"),
-        Path::new("materials/rock/moss.scrmat"),
+        Path::new("content/valley/nature/rocks/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/rock/moss.scrmat"),
     )
     .unwrap_err();
     assert!(
-        format!("{e:#}").contains("materials/moss.scrmat is already called `moss`"),
+        format!("{e:#}").contains("content/valley/nature/ground/moss.scrmat is already called `moss`"),
         "{e:#}"
     );
 
     // Onto a name lines already use, with no file behind it yet.
-    let scene = root.join("scenes/first-light.ron");
+    let scene = root.join("content/valley/maps/first-light.scene.ron");
     let text = read(&scene).replacen("material: \"needle\"", "material: \"sand\"", 1);
-    std::fs::write(&scene, &text).unwrap();
+    write_all(&scene, &text).unwrap();
     let e = rename(
         &project,
-        Path::new("materials/stone.scrmat"),
-        Path::new("materials/sand.scrmat"),
+        Path::new("content/valley/nature/rocks/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/sand.scrmat"),
     )
     .unwrap_err();
     assert!(
@@ -242,22 +252,22 @@ fn a_rename_that_would_change_what_a_line_means_is_refused_and_moves_nothing() {
         "{e:#}"
     );
 
-    // Into another kind of folder.
+    // Into another kind of file.
     let e = rename(
         &project,
-        Path::new("materials/stone.scrmat"),
-        Path::new("assets/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/stone.scrmat"),
+        Path::new("content/valley/nature/rocks/stone.obj"),
     )
     .unwrap_err();
     assert!(format!("{e:#}").contains("not a rename"), "{e:#}");
 
-    assert!(root.join("materials/stone.scrmat").is_file(), "nothing moved");
+    assert!(root.join("content/valley/nature/rocks/stone.scrmat").is_file(), "nothing moved");
     assert_eq!(read(&scene), text, "nothing rewritten");
     assert_eq!(
         usages_of(&project, &AssetRef::Material("stone".into()))
             .unwrap()
             .len(),
-        usages(&project, Path::new("materials/stone.scrmat"))
+        usages(&project, Path::new("content/valley/nature/rocks/stone.scrmat"))
             .unwrap()
             .len()
     );
@@ -266,12 +276,12 @@ fn a_rename_that_would_change_what_a_line_means_is_refused_and_moves_nothing() {
 #[test]
 fn moving_a_heightmap_points_its_terrain_at_the_new_place() {
     let (project, root) = valley("heightmap");
-    std::fs::create_dir_all(root.join("assets/terrain")).unwrap();
+    std::fs::create_dir_all(root.join("content/valley/terrain")).unwrap();
     image::GrayImage::from_fn(8, 8, |x, _| image::Luma([(x * 30) as u8]))
-        .save(root.join("assets/terrain/ramp.png"))
+        .save(root.join("content/valley/terrain/ramp.png"))
         .unwrap();
-    let terrain = root.join("assets/terrain/field.scrterrain");
-    std::fs::write(
+    let terrain = root.join("content/valley/terrain/field.scrterrain");
+    write_all(
         &terrain,
         "(\n    // painted by hand\n    size: (30.0, 30.0), resolution: 8, height: 6.0,\n    heightmap: \"ramp.png\",\n)\n",
     )
@@ -280,8 +290,8 @@ fn moving_a_heightmap_points_its_terrain_at_the_new_place() {
 
     let done = rename(
         &project,
-        Path::new("assets/terrain/ramp.png"),
-        Path::new("assets/paint/valley.png"),
+        Path::new("content/valley/terrain/ramp.png"),
+        Path::new("content/valley/paint/valley.png"),
     )
     .unwrap();
     assert_eq!(
@@ -297,11 +307,11 @@ fn moving_a_heightmap_points_its_terrain_at_the_new_place() {
     // And the terrain moving keeps finding its image.
     rename(
         &project,
-        Path::new("assets/terrain/field.scrterrain"),
-        Path::new("assets/paint/field.scrterrain"),
+        Path::new("content/valley/terrain/field.scrterrain"),
+        Path::new("content/valley/paint/field.scrterrain"),
     )
     .unwrap();
-    assert!(read(&root.join("assets/paint/field.scrterrain")).contains("heightmap: \"valley.png\""));
+    assert!(read(&root.join("content/valley/paint/field.scrterrain")).contains("heightmap: \"valley.png\""));
     let (library, _) = Library::open(project.library()).unwrap();
     assert!(library.mesh_by_name("field").is_some());
 }
@@ -312,25 +322,25 @@ fn the_project_lists_every_asset_with_how_much_it_is_used() {
     let entries = scrap_import::assets::list(&project).unwrap();
     let stone = entries
         .iter()
-        .find(|e| e.file == "materials/stone.scrmat")
+        .find(|e| e.file == "content/valley/nature/rocks/stone.scrmat")
         .unwrap();
     assert_eq!(stone.kind, "material");
     assert_eq!(stone.name, "stone");
     assert!(stone.built && stone.id.is_some());
     assert_eq!(
         stone.uses,
-        usages(&project, Path::new("materials/stone.scrmat"))
+        usages(&project, Path::new("content/valley/nature/rocks/stone.scrmat"))
             .unwrap()
             .len()
     );
     let campfire = entries
         .iter()
-        .find(|e| e.file == "prefabs/campfire.prefab")
+        .find(|e| e.file == "content/valley/camp/campfire/campfire.prefab")
         .unwrap();
     assert_eq!((campfire.kind, campfire.uses), ("prefab", 3));
     let axe = entries
         .iter()
-        .find(|e| e.file == "assets/models/axe.obj")
+        .find(|e| e.file == "content/valley/camp/axe.obj")
         .unwrap();
     assert_eq!((axe.kind, axe.uses), ("model", 0));
     assert!(entries.iter().all(|e| !e.file.ends_with(".scrimport")));
@@ -342,21 +352,21 @@ fn the_project_lists_every_asset_with_how_much_it_is_used() {
 #[test]
 fn deleting_what_is_still_used_is_refused_with_the_lines_and_the_rest_goes() {
     let (project, root) = valley("delete");
-    let e = scrap_import::assets::delete(&project, Path::new("materials/stone.scrmat")).unwrap_err();
+    let e = scrap_import::assets::delete(&project, Path::new("content/valley/nature/rocks/stone.scrmat")).unwrap_err();
     let said = format!("{e:#}");
     assert!(
-        said.contains("materials/stone.scrmat is still used"),
+        said.contains("content/valley/nature/rocks/stone.scrmat is still used"),
         "{said}"
     );
-    assert!(said.contains("scenes/camp.ron: `kettle`"), "{said}");
-    assert!(root.join("materials/stone.scrmat").is_file());
+    assert!(said.contains("content/valley/maps/camp.scene.ron: `kettle`"), "{said}");
+    assert!(root.join("content/valley/nature/rocks/stone.scrmat").is_file());
 
     let built =
-        scrap_import::built_for(&root.join("assets/models/axe.obj"), &project.library()).unwrap();
+        scrap_import::built_for(&root.join("content/valley/camp/axe.obj"), &project.library()).unwrap();
     assert!(built.is_file());
-    scrap_import::assets::delete(&project, Path::new("assets/models/axe.obj")).unwrap();
-    assert!(!root.join("assets/models/axe.obj").exists());
-    assert!(!root.join("assets/models/axe.obj.scrimport").exists());
+    scrap_import::assets::delete(&project, Path::new("content/valley/camp/axe.obj")).unwrap();
+    assert!(!root.join("content/valley/camp/axe.obj").exists());
+    assert!(!root.join("content/valley/camp/axe.obj.scrimport").exists());
     assert!(!built.exists(), "and its built asset");
     assert!(sync(&project).is_empty(), "nothing left for a sync to find");
 }
@@ -364,16 +374,16 @@ fn deleting_what_is_still_used_is_refused_with_the_lines_and_the_rest_goes() {
 #[test]
 fn a_duplicate_is_a_new_asset_with_the_same_settings() {
     let (project, root) = valley("duplicate");
-    let original = ImportSettings::load(root.join("assets/models/axe.obj.scrimport")).unwrap();
+    let original = ImportSettings::load(root.join("content/valley/camp/axe.obj.scrimport")).unwrap();
     let done = scrap_import::assets::duplicate(
         &project,
-        Path::new("assets/models/axe.obj"),
-        Path::new("assets/models/axe_old.obj"),
+        Path::new("content/valley/camp/axe.obj"),
+        Path::new("content/valley/camp/axe_old.obj"),
     )
     .unwrap();
     assert!(done.iter().all(|r| r.result.is_ok()), "{done:?}");
-    let copy = ImportSettings::load(root.join("assets/models/axe_old.obj.scrimport")).unwrap();
-    assert_eq!(copy.source, "assets/models/axe_old.obj");
+    let copy = ImportSettings::load(root.join("content/valley/camp/axe_old.obj.scrimport")).unwrap();
+    assert_eq!(copy.source, "content/valley/camp/axe_old.obj");
     assert_eq!(copy.scale, original.scale);
     assert_ne!(copy.asset_id(), original.asset_id(), "an asset of its own");
     assert_eq!(copy.hash, original.hash, "the same bytes");
@@ -384,7 +394,7 @@ fn a_duplicate_is_a_new_asset_with_the_same_settings() {
     // A copy under the same name elsewhere would be two `axe`s.
     let e = scrap_import::assets::duplicate(
         &project,
-        Path::new("assets/models/axe.obj"),
+        Path::new("content/valley/camp/axe.obj"),
         Path::new("assets/tools/axe.obj"),
     )
     .unwrap_err();
@@ -401,7 +411,7 @@ fn two_sources_with_one_name_in_two_folders_are_two_assets() {
     for (folder, text) in [("rocks", square), ("cliffs", bigger)] {
         let dir = root.join("assets").join(folder);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("rock.obj"), text).unwrap();
+        write_all(dir.join("rock.obj"), text).unwrap();
     }
     scrap_import::sync(&project);
     let a =
@@ -412,7 +422,7 @@ fn two_sources_with_one_name_in_two_folders_are_two_assets() {
     assert!(a.is_file() && b.is_file(), "neither wrote over the other");
 
     // A library from before assets were named by ID is rebuilt by ID.
-    std::fs::write(project.library().join("rock.obj.scrasset"), b"old").unwrap();
+    write_all(project.library().join("rock.obj.scrasset"), b"old").unwrap();
     scrap_import::sync(&project);
     assert!(!project.library().join("rock.obj.scrasset").exists());
     let _ = std::fs::remove_dir_all(&root);
@@ -423,15 +433,15 @@ fn prefabs_scenes_graphs_and_screens_get_an_id_that_follows_a_move() {
     let root = std::env::temp_dir().join(format!("scrap-identify-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let project = scrap::Project::create(&root, "identify").unwrap();
-    std::fs::write(root.join("prefabs/door.prefab"), "(name: \"door\")").unwrap();
+    write_all(root.join("prefabs/door.prefab"), "(name: \"door\")").unwrap();
     std::fs::create_dir_all(root.join("animators")).unwrap();
-    std::fs::write(
-        root.join("animators/hero.ron"),
+    write_all(
+        root.join("animators/hero.animator.ron"),
         "(start: \"idle\", states: {}, transitions: [])",
     )
     .unwrap();
     std::fs::create_dir_all(root.join("ui")).unwrap();
-    std::fs::write(root.join("ui/menu.ron"), "(elements: [])").unwrap();
+    write_all(root.join("ui/menu.screen.ron"), "(elements: [])").unwrap();
 
     let made = scrap_import::identify(&project);
     assert!(made.len() >= 3, "{made:?}");

@@ -1,4 +1,0 @@
-ImportSettings(
-    source: "scenes/vegetation.ron",
-    id: Some("240e0b248617eb9e9f8ae147c11a38b0"),
-)

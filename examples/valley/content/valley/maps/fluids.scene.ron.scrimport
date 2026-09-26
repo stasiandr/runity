@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/fluids.scene.ron",
+    id: Some("9a623e1051215980cfe34a7ea1941545"),
+)

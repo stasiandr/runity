@@ -1,43 +1,46 @@
-//! A game project: one folder, laid out one way.
+//! A game project: one folder, with a few things fixed at its root and
+//! the rest wherever a person put it (docs/layout.md).
 //!
-//! DNA, postulate 7: one standard for where everything lives — scenes,
-//! prefabs, materials, sources, the built library — so that neither a
-//! person nor an agent has to guess, and every tool finds the same things.
-//! Before this there was a convention per tool ("`prefabs/` beside the
-//! scene"), which is the kind of rule that holds until the second scene
-//! lives in a subfolder.
+//! DNA, postulate 7: one standard — how a file says what it is (its
+//! extension, [`crate::layout`]), how it is named (an ID and a name), and
+//! what lies at the root — so that neither a person nor an agent has to
+//! guess, and every tool finds the same things. Where the rest lies is the
+//! project's: a tomato's model, material and prefab together, code by
+//! feature. What `scrap new` writes is the default, Unreal's scheme:
 //!
 //! ```text
 //! <project>/
-//!   scrap.ron      this file says it is a project: name, engine version
-//!   scenes/         *.ron
-//!   prefabs/        *.prefab
-//!   materials/      *.scrmat
-//!   assets/         sources: models, textures, sounds
-//!   configs/        the game's data, RON, reloaded while it runs
-//!   ui/             the game's screens, RON, reloaded while it runs
-//!   library/        built .scrasset — derived, never committed
-//!   Cargo.toml      the game crate, its own workspace
-//!   build.rs        finds the components and systems below; not edited
-//!   src/main.rs     the game: a window on scenes/main.ron, reloading live
-//!   src/components/ one file per component, registered by its file name
-//!   src/systems/    one file per system; `step` in main.rs runs them in order
-//!   CLAUDE.md       what an agent needs to work here
+//!   scrap.ron        this file says it is a project: name, engine version
+//!   config/          the game's settings as a whole          (Unreal Config/)
+//!     input.ron      actions by name, and their keys
+//!     layers.ron     collision layers
+//!   content/         what artists and designers make         (Unreal Content/)
+//!     <name>/        the project's own folder (Allar 2.2)
+//!       maps/        levels: *.scene.ron (2.4)
+//!       core/        what everything else stands on (2.5)
+//!       <feature>/   model, texture, material, prefab together
+//!       ui/screens/  *.screen.ron
+//!     localization/  the game's words, one file per language
+//!     developers/    sandboxes: read, never shipped (2.3)
+//!   library/         built .scrasset — derived, never committed
+//!   Cargo.toml       the game crate, its own workspace
+//!   build.rs         finds the components and systems in src/; not edited
+//!   src/main.rs      the game: a window on its first scene, reloading live
+//!   src/<feature>/   code by feature: a component is a file named for it
+//!   CLAUDE.md        what an agent needs to work here
 //! ```
 //!
 //! A component is a file rather than a line in a list, because two people
 //! each adding one should not both edit the same line: git merges two new
 //! files cleanly and two lines appended at one place as a conflict. The
-//! file's name is the name a scene uses (`components/door.rs` is `"door"`,
-//! struct `Door`), and `build.rs` writes the registration — so there is no
+//! file's name is the name a scene uses (`cooking/pot.rs` is `"pot"`,
+//! struct `Pot`), and `build.rs` writes the registration — so there is no
 //! list to forget either. Systems are files for the same reason, but the
 //! order they run in is one place on purpose: two people changing it should
 //! see each other's change.
 //!
-//! Not configurable, on purpose. A layout with settings is a layout every
-//! tool has to read the settings of, and a project that moved `scenes/`
-//! somewhere clever is a project the next tool gets wrong. Custom is done by
-//! replacing a module, not by a hundred options (postulate 7).
+//! A project laid out before (`scenes/`, `prefabs/`, `input.ron` at the
+//! root) still opens, until 2026-10-31; see [`crate::layout`].
 //!
 //! The game is its own crate, at the root, and its own workspace: editing
 //! it rebuilds the game and never the engine (postulate 1).
@@ -55,38 +58,41 @@ pub const FILE: &str = "scrap.ron";
 /// of each other. The desktop shell reads it; it overrides the size the
 /// game asked for.
 pub const WINDOW_VAR: &str = "SCRAP_WINDOW";
-/// Where scenes live.
-pub const SCENES: &str = "scenes";
-/// Where prefabs live.
-pub const PREFABS: &str = "prefabs";
-/// Where material sources live.
-pub const MATERIALS: &str = "materials";
-/// Where every other source lives: models, textures, sounds.
-pub const ASSETS: &str = "assets";
+/// The game's settings as a whole: input, layers (Unreal's `Config/`).
+pub const CONFIG: &str = "config";
+/// Everything artists and designers make (Unreal's `Content/`). Where in
+/// it is theirs: the engine finds a file by its kind ([`crate::layout`]).
+pub const CONTENT: &str = "content";
+/// Where levels go by default, in the project's own folder in
+/// [`CONTENT`] (Allar 2.4).
+pub const MAPS: &str = "maps";
 /// Where built assets go. Derived from everything above, and never
 /// committed: a clone builds it.
 pub const LIBRARY: &str = "library";
-/// Where the game's code lives.
+/// Where the game's code lives: by feature, a component or a system a file
+/// anywhere in it.
 pub const SRC: &str = "src";
-/// Where the game's components live, one per file, under [`SRC`].
-pub const COMPONENTS: &str = "src/components";
-/// Where the game's systems live, one per file, under [`SRC`].
-pub const SYSTEMS: &str = "src/systems";
-/// The game's screens — menus, the HUD — one RON file each (the UI
-/// module's `screen`).
-pub const UI: &str = "ui";
-/// Which animation plays when — Animator Controllers — one RON file each
-/// (the animation module's `animgraph`).
-pub const ANIMATORS: &str = "animators";
-
-/// Materials' own shaders, one `surface` function a file: `shaders/water.wgsl`
-/// is `shader: "water"` in a material.
-pub const SHADERS: &str = "shaders";
 /// What the player does, by name, and which keys that is.
-pub const INPUT: &str = "input.ron";
+pub const INPUT: &str = "config/input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
-/// [`crate::Tuned`].
+/// [`crate::Tuned`]. Tables and tuned files lie with the feature that
+/// reads them; `configs/` is only where a project laid out before put them.
 pub const CONFIGS: &str = "configs";
+
+/// Where a project laid out before 2026-09-26 kept each thing: at the root,
+/// a folder per kind. Read until 2026-10-31 ([`crate::layout`]).
+pub mod legacy {
+    pub const SCENES: &str = "scenes";
+    pub const PREFABS: &str = "prefabs";
+    pub const MATERIALS: &str = "materials";
+    pub const ASSETS: &str = "assets";
+    pub const UI: &str = "ui";
+    pub const ANIMATORS: &str = "animators";
+    pub const SHADERS: &str = "shaders";
+    pub const INPUT: &str = "input.ron";
+    pub const COMPONENTS: &str = "src/components";
+    pub const SYSTEMS: &str = "src/systems";
+}
 
 /// What the game's components look like, written by the game from its own
 /// types: what the editor's Inspector and `scrap check` know them by
@@ -123,6 +129,21 @@ pub fn data_file(dev_root: &str, relative: &str) -> PathBuf {
         .and_then(|exe| exe.parent().map(|dir| dir.join(DATA).join(relative)))
         .filter(|path| path.exists());
     shipped.unwrap_or_else(|| Path::new(dev_root).join(relative))
+}
+
+/// The folder a game's data is in: its project in development, `data/`
+/// beside it in a build ([`data_file`]).
+pub fn data_root(dev_root: &str) -> PathBuf {
+    data_file(dev_root, "")
+}
+
+/// The scene called `name` in a game's data, wherever it lies
+/// ([`crate::layout`]): what `scrap run --scene cave` and the start scene
+/// open. A path from the root (`content/game/maps/cave`) is taken as it is.
+pub fn data_scene(dev_root: &str, name: &str) -> PathBuf {
+    let root = data_root(dev_root);
+    crate::layout::find(&root, crate::layout::Kind::Scene, name)
+        .unwrap_or_else(|| root.join(format!("{name}{}", crate::layout::Kind::Scene.extension())))
 }
 
 /// Where the host put the project's data, when it is not beside the
@@ -192,7 +213,8 @@ pub struct Manifest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameSettings {
-    /// The scene the game opens: `scenes/<start_scene>.ron`.
+    /// The scene the game opens, by name: the `.scene.ron` of that name,
+    /// wherever it lies.
     pub start_scene: String,
     /// The window's title; the project's name when empty.
     pub title: String,
@@ -365,15 +387,7 @@ impl Project {
         if root.join(FILE).exists() {
             return Err(ProjectError::AlreadyAProject(root));
         }
-        for dir in [SCENES, PREFABS, MATERIALS, ASSETS] {
-            std::fs::create_dir_all(root.join(dir))?;
-        }
-        // Git keeps no empty folders, and a layout that disappears on the
-        // first clone is not a layout.
-        for dir in [PREFABS, MATERIALS, ASSETS] {
-            std::fs::write(root.join(dir).join(".gitkeep"), "")?;
-        }
-
+        std::fs::create_dir_all(root.join(SRC))?;
         let manifest = Manifest {
             name: name.to_string(),
             engine: env!("CARGO_PKG_VERSION").to_string(),
@@ -388,21 +402,43 @@ impl Project {
         std::fs::write(root.join(FILE), text + "\n")?;
         std::fs::write(root.join(".gitignore"), GITIGNORE)?;
         std::fs::write(root.join(".gitattributes"), GITATTRIBUTES)?;
-        std::fs::write(root.join("CLAUDE.md"), CLAUDE_MD.replace("{name}", name))?;
-        std::fs::write(root.join(SCENES).join("main.ron"), starter_scene())?;
-        std::fs::write(root.join(INPUT), INPUT_RON)?;
-        std::fs::write(root.join(crate::layers::FILE), LAYERS_RON)?;
-        std::fs::create_dir_all(root.join(UI))?;
         std::fs::write(
-            root.join(UI).join("hud.ron"),
-            HUD_RON.replace("{name}", name),
+            root.join("CLAUDE.md"),
+            CLAUDE_MD
+                .replace("{name}", name)
+                .replace("{folder}", &crate_name(name)),
         )?;
-        std::fs::create_dir_all(root.join(crate::strings::DIR))?;
-        std::fs::write(root.join(crate::strings::DIR).join("en.ron"), STRINGS_EN)?;
-        std::fs::create_dir_all(root.join(CONFIGS))?;
-        std::fs::write(root.join(CONFIGS).join("world.ron"), WORLD_RON)?;
-        std::fs::create_dir_all(root.join(COMPONENTS))?;
-        std::fs::create_dir_all(root.join(SYSTEMS))?;
+        let write = |relative: &Path, text: &str| -> std::io::Result<()> {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, text)
+        };
+        let own_relative = Path::new(CONTENT).join(crate_name(name));
+        write(
+            &own_relative.join(MAPS).join("main.scene.ron"),
+            &starter_scene(),
+        )?;
+        write(Path::new(INPUT), INPUT_RON)?;
+        write(Path::new(crate::layers::FILE), LAYERS_RON)?;
+        write(
+            &own_relative.join("ui/screens/hud.screen.ron"),
+            &HUD_RON.replace("{name}", name),
+        )?;
+        write(&Path::new(crate::strings::DIR).join("en.ron"), STRINGS_EN)?;
+        write(&own_relative.join("core/world.ron"), WORLD_RON)?;
+        // Git keeps no empty folders, and a layout that disappears on the
+        // first clone is not a layout.
+        for dir in ["ui/components", "props"] {
+            write(&own_relative.join(dir).join(".gitkeep"), "")?;
+        }
+        write(
+            &Path::new(CONTENT)
+                .join(crate::layout::DEVELOPERS)
+                .join(".gitkeep"),
+            "",
+        )?;
         let bare = modules.is_some_and(|(listed, _)| listed.is_empty());
         let features = modules.map(|(_, features)| features);
         std::fs::write(
@@ -414,10 +450,13 @@ impl Project {
         let listed = modules.map(|(listed, _)| listed);
         std::fs::write(
             root.join(SRC).join("main.rs"),
-            for_modules(game, listed).replace("{name}", name),
+            for_modules(game, listed)
+                .replace("{name}", name)
+                .replace("{folder}", &crate_name(name)),
         )?;
-        std::fs::write(root.join(COMPONENTS).join("spin.rs"), SPIN_COMPONENT)?;
-        std::fs::write(root.join(SYSTEMS).join("spin.rs"), SPIN_SYSTEM)?;
+        std::fs::create_dir_all(root.join(SRC).join("spin"))?;
+        std::fs::write(root.join(SRC).join("spin/spin.rs"), SPIN_COMPONENT)?;
+        std::fs::write(root.join(SRC).join("spin/turn.rs"), SPIN_SYSTEM)?;
 
         Self::open(root)
     }
@@ -434,48 +473,153 @@ impl Project {
         &self.manifest
     }
 
+    /// Whether the project is laid out as before 2026-09-26: a folder per
+    /// kind at the root, no `content/`. Read until 2026-10-31.
+    pub fn is_legacy(&self) -> bool {
+        !crate::files::is_dir(self.root.join(CONTENT))
+    }
+
+    /// The project's own folder in `content/` (Allar 2.2): `content/<name>`.
+    /// The root, in a project laid out before.
+    pub fn content(&self) -> PathBuf {
+        if self.is_legacy() {
+            self.root.clone()
+        } else {
+            self.root
+                .join(CONTENT)
+                .join(crate_name(&self.manifest.name))
+        }
+    }
+
+    /// Where a new file of a kind goes when nobody said: levels in
+    /// `maps/`, screens in `ui/screens/`, the rest in the project's own
+    /// folder. In a project laid out before, the kind's old folder.
+    pub fn default_dir(&self, kind: crate::layout::Kind) -> PathBuf {
+        use crate::layout::Kind;
+        if self.is_legacy() {
+            let folder = match kind {
+                Kind::Prefab => legacy::PREFABS,
+                Kind::Material => legacy::MATERIALS,
+                Kind::Shader => legacy::SHADERS,
+                Kind::Cases => legacy::ANIMATORS,
+                _ => kind.legacy_folder().unwrap_or(legacy::SCENES),
+            };
+            return self.root.join(folder);
+        }
+        match kind {
+            Kind::Scene => self.content().join(MAPS),
+            Kind::Screen => self.content().join("ui/screens"),
+            _ => self.content(),
+        }
+    }
+
+    /// The path a new file of a kind called `name` gets: in
+    /// [`Project::default_dir`], with the kind's extension — or plain
+    /// `.ron` in an old folder, where the folder says the kind.
+    pub fn new_file(&self, kind: crate::layout::Kind, name: &str) -> PathBuf {
+        let extension = if self.is_legacy() && kind.legacy_folder().is_some() {
+            ".ron"
+        } else {
+            kind.extension()
+        };
+        self.default_dir(kind).join(format!("{name}{extension}"))
+    }
+
+    /// Every file of a kind in the project, wherever it lies, sorted by
+    /// path.
+    pub fn files(&self, kind: crate::layout::Kind) -> Vec<PathBuf> {
+        crate::layout::files(&self.root, kind)
+    }
+
+    /// The file of a kind a name — or a path from the root — names.
+    pub fn file(&self, kind: crate::layout::Kind, name: &str) -> Option<PathBuf> {
+        crate::layout::find(&self.root, kind, name)
+    }
+
+    /// The scene called `name`, wherever it lies.
+    pub fn scene(&self, name: &str) -> Option<PathBuf> {
+        self.file(crate::layout::Kind::Scene, name)
+    }
+
+    /// Where new scenes go: `content/<name>/maps/`.
     pub fn scenes(&self) -> PathBuf {
-        self.root.join(SCENES)
+        self.default_dir(crate::layout::Kind::Scene)
     }
 
+    /// Where new prefabs go when nobody said.
     pub fn prefabs(&self) -> PathBuf {
-        self.root.join(PREFABS)
+        self.default_dir(crate::layout::Kind::Prefab)
     }
 
-    /// Make `scenes/NAME.ron`: Unity's File → New Scene, for a greybox — a
-    /// ground with the metre grid on it, solid, and the default sun and
-    /// view. Refuses a name already taken rather than overwrite a level.
+    /// Make a scene called NAME in `maps/`: Unity's File → New Scene, for a
+    /// greybox — a ground with the metre grid on it, solid, and the default
+    /// sun and view. Refuses a name already taken rather than overwrite a
+    /// level.
     pub fn new_scene(&self, name: &str) -> Result<PathBuf, String> {
         valid_name(name)?;
-        let path = self.scenes().join(format!("{name}.ron"));
-        if path.exists() {
-            return Err(format!("scenes/{name}.ron is already there"));
+        if let Some(there) = self.scene(name) {
+            return Err(format!(
+                "{} is already there",
+                self.relative(&there).unwrap_or_default()
+            ));
         }
-        std::fs::create_dir_all(self.scenes()).map_err(|e| e.to_string())?;
+        let path = self.new_file(crate::layout::Kind::Scene, name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
         std::fs::write(&path, blank_scene()).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
     }
 
     /// The project's scenes by name, sorted: `main`, `level_2`.
     pub fn scene_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = crate::files::read_dir(self.scenes())
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-            .filter_map(|p| Some(p.file_stem()?.to_string_lossy().into_owned()))
+        let mut out: Vec<String> = self
+            .files(crate::layout::Kind::Scene)
+            .iter()
+            .map(crate::layout::name_of)
             .collect();
         out.sort();
+        out.dedup();
         out
     }
 
+    /// Where new materials go when nobody said.
     pub fn materials(&self) -> PathBuf {
-        self.root.join(MATERIALS)
+        self.default_dir(crate::layout::Kind::Material)
     }
 
+    /// Where a new source — a model, a texture — goes when nobody said:
+    /// the project's own folder, or `assets/` in a project laid out
+    /// before.
     pub fn assets(&self) -> PathBuf {
-        self.root.join(ASSETS)
+        if self.is_legacy() {
+            self.root.join(legacy::ASSETS)
+        } else {
+            self.content()
+        }
+    }
+
+    /// Where content is looked for: every folder but the derived ones and
+    /// code ([`crate::layout::walk`]). The root.
+    pub fn sources(&self) -> PathBuf {
+        self.root.clone()
+    }
+
+    /// `config/input.ron`, or `input.ron` at the root of a project laid out
+    /// before.
+    pub fn input_file(&self) -> PathBuf {
+        pick(&self.root, INPUT, legacy::INPUT)
+    }
+
+    /// `config/layers.ron`, or `layers.ron` at the root of a project laid
+    /// out before.
+    pub fn layers_file(&self) -> PathBuf {
+        pick(&self.root, crate::layers::FILE, crate::layers::LEGACY_FILE)
+    }
+
+    /// `content/localization/`, or `strings/` in a project laid out before.
+    pub fn strings_dir(&self) -> PathBuf {
+        pick(&self.root, crate::strings::DIR, crate::strings::LEGACY_DIR)
     }
 
     pub fn library(&self) -> PathBuf {
@@ -501,18 +645,21 @@ impl Project {
         Some(parts.join("/"))
     }
 
-    /// The game's components, by the name scenes use — the file names in
-    /// `src/components/`, sorted. `None` for a project laid out before
-    /// components had a folder, whose names only its code knows.
+    /// The game's components, by the name scenes use — the files in
+    /// `src/` that declare the struct of their name ([`component_files`]),
+    /// sorted. `None` for a project with no `src/`, whose names only its
+    /// code knows.
     pub fn component_names(&self) -> Option<Vec<String>> {
-        let entries = std::fs::read_dir(self.root.join(COMPONENTS)).ok()?;
-        let mut names: Vec<String> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|e| e == "rs"))
-            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+        let src = self.root.join(SRC);
+        if !src.is_dir() {
+            return None;
+        }
+        let mut names: Vec<String> = component_files(&src)
+            .into_iter()
+            .map(|(name, _)| name)
             .collect();
         names.sort();
+        names.dedup();
         Some(names)
     }
 
@@ -538,13 +685,87 @@ const GITIGNORE: &str = "\
 /// The `.gitattributes` lines that send scenes, prefabs and configs to
 /// `scrap merge`, for a project made before they were in the template.
 pub const MERGE_ATTRIBUTES: &str = "\
-# Scenes and prefabs merge by entity and field, configs by record and field,
-# not by line. The driver is `scrap merge`; `scrap git-setup` turns it on in
-# a clone.
-scenes/**/*.ron merge=scrap
-prefabs/**/*.prefab merge=scrap
-configs/**/*.ron merge=scrap
+# Scenes and prefabs merge by entity and field, the game's data by record
+# and field, not by line — wherever they lie. The driver is `scrap merge`;
+# `scrap git-setup` turns it on in a clone.
+*.scene.ron merge=scrap
+*.prefab merge=scrap
+*.ron merge=scrap
 ";
+
+/// `new` under `root` when it is there or `old` is not: where a file
+/// that moved with the layout is, in a project laid out either way.
+pub fn pick(root: &Path, new: &str, old: &str) -> PathBuf {
+    let new = root.join(new);
+    let old = root.join(old);
+    if !crate::files::exists(&new) && crate::files::exists(&old) {
+        old
+    } else {
+        new
+    }
+}
+
+/// The files `build.rs` looks at under `src`, sorted: in its folders, not
+/// right in it, and not in a folder with a `mod.rs` — those are modules
+/// main.rs declares.
+fn rust_files(src: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(src)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    while let Some(folder) = folders.pop() {
+        if folder.join("mod.rs").is_file() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for path in entries.flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Whether the text of `name.rs` declares the component `name`: a
+/// `pub struct` of its name in PascalCase — the rule `build.rs` goes by.
+pub fn declares_component(name: &str, text: &str) -> bool {
+    let decl = format!("pub struct {}", type_name(name));
+    text.match_indices(&decl).any(|(at, _)| {
+        !text[at + decl.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// Whether a file's text is a system: it has `pub fn run(`.
+pub fn declares_system(text: &str) -> bool {
+    text.contains("pub fn run(")
+}
+
+/// The game's components under `src`, by name, with their files: a file
+/// in `src/components/` (a project laid out before), or anywhere in `src/`
+/// declaring the struct of its name.
+pub fn component_files(src: &Path) -> Vec<(String, PathBuf)> {
+    rust_files(src)
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            let in_components = path.parent().is_some_and(|p| p.ends_with("components"));
+            let in_systems = path.parent().is_some_and(|p| p.ends_with("systems"));
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            (in_components || (!in_systems && declares_component(&name, &text)))
+                .then_some((name, path))
+        })
+        .collect()
+}
 
 /// The name Cargo will accept for a project called `name`.
 /// A project's name as a crate's: lowercase, `_` for the rest, never
@@ -736,11 +957,11 @@ const INPUT_RON: &str = "\
 )
 ";
 
-/// The game a new project starts with: a window on `scenes/main.ron` that
+/// The game a new project starts with: a window on its `main` scene that
 /// keeps up with the files.
 const GAME: &str = r#"//! {name}.
 //!
-//! `cargo run` opens a window on `scenes/main.ron`. Save the scene, a
+//! `cargo run` opens a window on the `main` scene. Save the scene, a
 //! prefab, or re-import an asset while it runs, and the change is in the
 //! next frames without the game losing its state. Run under
 //! `dx serve --hotpatch` and a rebuilt system, `step` or `frame` takes
@@ -779,7 +1000,7 @@ mod systems {
     include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 }
 
-/// Numbers from `configs/world.ron`, reloaded while the game runs.
+/// Numbers from `core/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
@@ -836,7 +1057,7 @@ impl Game {
 /// nothing drawn.
 fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop, profile: &mut scrap::perf::Profiler, seconds: f32) {
     // systems, in order
-    profile.time("spin", || systems::spin::run(world, seconds));
+    profile.time("turn", || systems::turn::run(world, seconds));
     // @soft {
     // Ropes' ends held by bodies take the bodies' weight and speed.
     scrap::netsim::anchor_ropes(world, physics);
@@ -898,10 +1119,10 @@ fn write_shapes() {
     }
 }
 
-/// Every table the game reads from configs/, and what its records are: a
+/// Every table the game reads, and what its records are: a
 /// `Wolf` that is a `scrap::Record`, read with
 /// `scrap::Table::<Wolf>::load(...)`, is registered here as
-/// `tables.register::<Wolf>("configs/wolves.ron")` — and then the editor
+/// `tables.register::<Wolf>("content/{folder}/wolves/wolves.ron")` — and then the editor
 /// knows its fields and `scrap check` its links.
 fn game_tables() -> Tables {
     Tables::new()
@@ -911,7 +1132,7 @@ fn game_tables() -> Tables {
 fn game_components() -> Components {
     let mut components = Components::new();
     components::register(&mut components);
-    // What tuning/ is read as: the editor's Table shows its columns and
+    // What core/world.ron is read as: the editor's Table shows its columns and
     // `scrap check` its misspelt fields.
     components.register_tuning::<WorldNumbers>("world");
     components
@@ -1111,13 +1332,13 @@ fn main() -> anyhow::Result<()> {
     // A panic is written down in the player's folder: scrap::crash::pending
     // finds it on the next start.
     scrap::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
-    // `scrap run --scene cave` plays scenes/cave.ron.
+    // `scrap run --scene cave` plays the scene called `cave`, wherever it lies.
     let playing = std::env::var("SCRAP_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     // Started from the editor, the game watches the editor's document as it
     // stands (SCRAP_SCENE_FILE), so an edit shows here without a save.
     let scene = match std::env::var_os("SCRAP_SCENE_FILE") {
         Some(file) => std::path::PathBuf::from(file),
-        None => scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing)),
+        None => scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &playing),
     };
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
@@ -1143,23 +1364,23 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     // @animation {
-    let (motions, problems) = scrap::motion::Motions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), ""));
+    let (motions, problems) = scrap::motion::Motions::load(scrap::project::data_root(env!("CARGO_MANIFEST_DIR")));
     for problem in &problems {
         eprintln!("{problem}");
     }
     // @animation }
-    let actions = Actions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
+    let actions = Actions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "config/input.ron"))?;
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
-    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "configs/world.ron"))
+    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "content/{folder}/core/world.ron"))
         .map_err(anyhow::Error::msg)?;
-    let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
+    let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "config/layers.ron"))
         .map_err(anyhow::Error::msg)?;
-    let hud = Screen::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui/hud.ron"))
+    let hud = Screen::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "content/{folder}/ui/screens/hud.screen.ron"))
         .map_err(anyhow::Error::msg)?;
     let strings = scrap::strings::Strings::load(
-        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), scrap::strings::DIR),
         &settings.language,
     )
     .map_err(anyhow::Error::msg)?;
@@ -1175,7 +1396,7 @@ fn main() -> anyhow::Result<()> {
         console: scrap::console::Console::for_build(cheats(), cfg!(debug_assertions)),
         debug: scrap::debug_overlay::DebugOverlay::new(),
         widgets: Widgets::new(),
-        shaders: scrap::render::MaterialShaders::new(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
+        shaders: scrap::render::MaterialShaders::new(scrap::project::data_root(env!("CARGO_MANIFEST_DIR"))),
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
@@ -1204,10 +1425,7 @@ mod tests {
     fn the_start_scene_plays() {
         write_shapes();
         let (_, settings) = scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
-        let scene = scrap::project::data_file(
-            env!("CARGO_MANIFEST_DIR"),
-            &format!("scenes/{}.ron", settings.start_scene),
-        );
+        let scene = scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &settings.start_scene);
         let (live, problems) = LiveScene::open(&scene).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let mut live = live.with_components(game_components());
@@ -1267,7 +1485,7 @@ mod systems {
 /// order, then the core's — everything placed.
 fn tick(world: &mut World, modules: &mut PlayerLoop, seconds: f32) {
     // systems, in order
-    systems::spin::run(world, seconds);
+    systems::turn::run(world, seconds);
     modules.run(Phase::FixedUpdate, world, seconds, None);
 }
 
@@ -1291,7 +1509,7 @@ fn game_components() -> Components {
 fn start(path: &std::path::Path) -> anyhow::Result<World> {
     let scene = Scene::load(path)?;
     let (prefabs, problems) =
-        scrap::Prefabs::open(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "prefabs"))?;
+        scrap::Prefabs::open(scrap::project::data_root(env!("CARGO_MANIFEST_DIR")))?;
     for (path, problem) in problems {
         eprintln!("{}: {problem}", path.display());
     }
@@ -1314,7 +1532,7 @@ fn main() -> anyhow::Result<()> {
         scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).map_err(anyhow::Error::msg)?;
     scrap::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
     let playing = std::env::var("SCRAP_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
-    let scene = scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{playing}.ron"));
+    let scene = scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &playing);
     let mut world = start(&scene)?;
     let seconds = settings.fixed_delta();
     eprintln!("{project_name}: {playing}, {} steps a second", settings.steps_per_second);
@@ -1336,10 +1554,7 @@ mod tests {
     #[test]
     fn the_start_scene_plays() {
         let (_, settings) = scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
-        let scene = scrap::project::data_file(
-            env!("CARGO_MANIFEST_DIR"),
-            &format!("scenes/{}.ron", settings.start_scene),
-        );
+        let scene = scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &settings.start_scene);
         let mut world = start(&scene).unwrap();
         let seconds = settings.fixed_delta();
         let mut modules = modules();
@@ -1456,17 +1671,24 @@ pub fn valid_name(name: &str) -> Result<(), String> {
 /// The game's `build.rs`: the module list and the registration, written
 /// from what files there are.
 const BUILD_RS: &str = r##"//! Finds the game's components and systems. Written by `scrap new`; not
-//! edited. Adding a component is adding a file to src/components/, and the
-//! file's name is the name scenes use for it.
+//! edited.
+//!
+//! Code lies by feature: `src/cooking/pot.rs`, `src/cooking/cook.rs`. A file
+//! in a folder under `src/` that declares the struct of its name
+//! (`pot.rs`, `pub struct Pot`) is a component, and its file name is the
+//! name scenes use for it. One with `pub fn run(` is a system; `step` in
+//! main.rs runs them in order. The rest are the game's own modules. A
+//! folder with a `mod.rs` is an ordinary module main.rs declares, and so
+//! are the files right in `src/`: neither is looked into.
 
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let out = std::env::var("OUT_DIR").unwrap();
     let root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let components = files(&Path::new(&root).join("src/components"));
-    let systems = files(&Path::new(&root).join("src/systems"));
+    let src = Path::new(&root).join("src");
+    let (components, systems) = find(&src);
 
     let mut text = String::new();
     for (name, path) in &components {
@@ -1518,25 +1740,69 @@ fn networked(path: &str) -> bool {
         .contains("pub const NETWORKED: bool = true;")
 }
 
-/// `(module name, absolute path)` for every .rs file in a folder, sorted.
-fn files(dir: &Path) -> Vec<(String, String)> {
-    println!("cargo::rerun-if-changed={}", dir.display());
-    let mut found: Vec<(String, String)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == "rs"))
-        .map(|path| {
+/// The components and the systems under `src`, as `(module name, absolute
+/// path)`, sorted. Two of either with one name is an error: a scene could
+/// not tell the components apart, and `step` the systems.
+fn find(src: &Path) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let mut components = Vec::new();
+    let mut systems = Vec::new();
+    let mut folders: Vec<PathBuf> = Vec::new();
+    println!("cargo::rerun-if-changed={}", src.display());
+    for entry in std::fs::read_dir(src).into_iter().flatten().flatten() {
+        if entry.path().is_dir() {
+            folders.push(entry.path());
+        }
+    }
+    while let Some(folder) = folders.pop() {
+        println!("cargo::rerun-if-changed={}", folder.display());
+        if folder.join("mod.rs").is_file() {
+            continue;
+        }
+        // A project laid out before: the folder says which.
+        let only = folder.file_name().and_then(|n| n.to_str()).filter(|n| *n == "components" || *n == "systems").map(str::to_string);
+        for path in std::fs::read_dir(&folder).into_iter().flatten().flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                folders.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
             let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let component = match only.as_deref() {
+                Some(which) => which == "components",
+                None => declares(&name, &text),
+            };
+            let system = match only.as_deref() {
+                Some(which) => which == "systems",
+                None => !component && text.contains("pub fn run("),
+            };
+            if !(component || system) {
+                continue;
+            }
             if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
                 panic!("{}: a component or system file is named in snake_case, like front_door.rs", path.display());
             }
-            (name, path.to_string_lossy().replace('\\', "/"))
-        })
-        .collect();
-    found.sort();
-    found
+            let found = (name, path.to_string_lossy().replace('\\', "/"));
+            if component { components.push(found) } else { systems.push(found) }
+        }
+    }
+    for list in [&mut components, &mut systems] {
+        list.sort();
+        for pair in list.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                panic!("two files are called {}.rs: {} and {} — a scene or `step` could not tell them apart; rename one", pair[0].0, pair[0].1, pair[1].1);
+            }
+        }
+    }
+    (components, systems)
+}
+
+/// Whether `name.rs` declares the struct of its name.
+fn declares(name: &str, text: &str) -> bool {
+    let decl = format!("pub struct {}", type_name(name));
+    text.match_indices(&decl).any(|(at, _)| !text[at + decl.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_'))
 }
 
 /// `front_door` is `FrontDoor`.
@@ -1562,12 +1828,12 @@ const GITATTRIBUTES: &str = "\
 # Text as LF on every machine: .scrimport stores a hash of the source's bytes.
 * text=auto eol=lf
 
-# Scenes and prefabs merge by entity and field, configs by record and field,
-# not by line. The driver is `scrap merge`; `scrap git-setup` turns it on in
-# a clone.
-scenes/**/*.ron merge=scrap
-prefabs/**/*.prefab merge=scrap
-configs/**/*.ron merge=scrap
+# Scenes and prefabs merge by entity and field, the game's data by record
+# and field, not by line — wherever they lie. The driver is `scrap merge`;
+# `scrap git-setup` turns it on in a clone.
+*.scene.ron merge=scrap
+*.prefab merge=scrap
+*.ron merge=scrap
 
 # Binary sources: stored in LFS, lockable. Text sources (.ron, .prefab,
 # .scrmat, .scrimport, .obj, .gltf) stay in git, where a diff means something.
@@ -1590,33 +1856,55 @@ configs/**/*.ron merge=scrap
 const CLAUDE_MD: &str = "\
 # {name}
 
-A scrap project. The layout is fixed — every tool, and every agent, finds
-things in the same place:
+A scrap project. What a file is, its extension says — not the folder it
+lies in — so every tool, and every agent, finds a file wherever it is
+(docs/layout.md in the engine). Keep what belongs together together: a
+tomato's model, texture, material and prefab in one folder; code by
+feature. The layout `scrap new` wrote is Unreal's:
 
 ```
-scrap.ron   the project file
-input.ron    actions by name (\"jump\"), and the keys for each
-configs/     the game's data, RON: one struct is scrap::Tuned, records by name scrap::Table
-ui/          the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
-strings/     the game's words, one file per language; a screen says `@key`
-dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue); <name>.cases.ron played by check
-quests/      rows of stages done by the dialogues' flags (scrap::quest)
-animators/   which animation plays when: states and transitions, RON (scrap::animgraph)
-clips/       clips that move things, not bones — a line's `animator` plays them (scrap::motion)
-shaders/     materials' own looks: one WGSL `surface` function a file
-layers.ron   collision layers, and which pairs pass through each other
-scenes/      scenes, RON — one entity per block, `id` first
-prefabs/     one entity subtree per file; a scene places it with `prefab: \"name\"`
-materials/   .scrmat sources: `(color: \"#rrggbb\")`, sRGB hex
-assets/      models, textures, sounds; each source gets a .scrimport beside it
-library/     built assets — derived, never committed
-Cargo.toml   the game crate; build.rs finds its components and systems
-src/main.rs  the game: the window, and `step`, which runs the systems in order
-src/components/  one component per file; the file name is the scene's name for it
-src/systems/     one system per file: `pub fn run(world, seconds)`
+scrap.ron     the project file: name, modules, the start scene by name
+config/       settings for the whole game
+  input.ron   actions by name (\"jump\"), and the keys for each
+  layers.ron  collision layers, and which pairs pass through each other
+content/      everything a person makes
+  {folder}/   the game's own folder
+    maps/     levels
+    core/     what everything else stands on; world.ron, the game's numbers
+    props/    a feature: its model, texture, material and prefab together
+    ui/screens/     the screens
+    ui/components/  pieces of screens
+  localization/     the game's words, one file per language; a screen says `@key`
+  developers/ sandboxes: the editor reads them, `scrap build` does not ship them
+library/      built assets — derived, never committed
+Cargo.toml    the game crate; build.rs finds its components and systems
+src/main.rs   the game: the window, and `step`, which runs the systems in order
+src/<feature>/  code by feature: `spin/spin.rs` is the component `spin`, `spin/turn.rs` a system
 ```
 
-* `scrap run` (or `cargo run`) plays `scenes/main.ron`. It keeps running
+Kinds, by extension — find them anywhere with a glob (`**/*.prefab`):
+
+```
+*.scene.ron     scenes, RON — one entity per block, `id` first
+*.prefab        one entity subtree per file; a scene places it with `prefab: \"name\"`
+*.scrmat        materials: `(color: \"#rrggbb\")`, sRGB hex
+*.screen.ron    the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
+*.animator.ron  which animation plays when: states and transitions (scrap::animgraph)
+*.clip.ron      clips that move things, not bones — a line's `animator` plays them (scrap::motion)
+*.dialogue.ron  conversations: lines, answers and the flags they set (scrap::dialogue)
+*.quest.ron     rows of stages done by the dialogues' flags (scrap::quest)
+*.cases.ron     beside a graph or a dialogue: the cases `scrap check` plays
+*.wgsl, *.graph.ron  materials' own looks: `shader: \"water\"` is water.wgsl
+*.vfx.ron       particle effect graphs
+*.ron           anything else is the game's data: one struct is scrap::Tuned, records by name scrap::Table
+models, textures, sounds  sources; each gets a .scrimport beside it
+```
+
+A name is the file's name without that extension: `maps/cave.scene.ron`
+is the scene `cave`, wherever it lies. Two files of one kind with one name
+are ambiguous to a line that names only the name; `scrap check` says so.
+
+* `scrap run` (or `cargo run`) plays the scene `main`. It keeps running
   while you edit: saved scenes, prefabs and rebuilt assets show up in the
   window. `scrap run --hot` patches the game's own Rust in too, under
   `dx serve --hotpatch` (`cargo install dioxus-cli`).
@@ -1628,12 +1916,14 @@ src/systems/     one system per file: `pub fn run(world, seconds)`
   reported in words (\"both changed the position of `tree`\") with ours
   kept and the file still loading.
 * `scrap build` makes a folder to ship: the game in release, and `data/`
-  beside it with the scenes, prefabs and built library — no sources.
-* `scrap rename FROM TO` renames or moves a model, texture, sound,
-  material or prefab, its .scrimport with it, and rewrites every scene and
-  prefab line that named it. Scenes name assets by file stem, so renaming
-  a file by hand breaks them; use this. `scrap uses FILE` lists those
-  lines first. `scrap assets` lists every asset and how much it is used;
+  beside it with the scenes, prefabs, screens, data and built library at
+  the same paths — no sources, and nothing from `developers/`.
+* Scenes link assets by ID and name (`model: (\"rock\", \"3f9a…\")`), so
+  a file moved to another folder — with its `.scrimport` beside it — is
+  still found. `scrap rename FROM TO` renames or moves a model, texture,
+  sound, material or prefab and its .scrimport together, and freshens the
+  name in every line that named it; `scrap uses FILE` lists those lines
+  first. `scrap assets` lists every asset and how much it is used;
   `scrap delete FILE` removes one only when nothing names it;
   `scrap duplicate FROM TO` copies one as a new asset.
 * `scrap sync` builds `library/` from the sources. After adding, changing
@@ -1649,17 +1939,21 @@ src/systems/     one system per file: `pub fn run(world, seconds)`
   tool — open, add, move, undo, render a frame to look at, check, simulate.
 * Game logic is Rust on the ECS (`scrap::hecs`): components are plain
   structs, systems are functions over the world, and an entity spawned from
-  a scene carries `SceneId`. `scrap add component door` writes
-  `src/components/door.rs` (struct `Door`), and build.rs registers it as
+  a scene carries `SceneId`. `scrap add component doors/door` writes
+  `src/doors/door.rs` (struct `Door`), and build.rs registers it as
   `\"door\"` — a scene line then gives it:
   `components: { \"door\": (locked: true) }`. A component the other
   players must see derives `Serialize` too and says
   `pub const NETWORKED: bool = true;` in its file: whoever owns the entity
-  sends it. `scrap add system patrol`
-  writes `src/systems/patrol.rs` and adds its call last in `step`; move the
-  line to change the order. Never register components by hand or keep a
-  list of them: the folder is the list. `scrap check` reports a component
-  name no file answers to. Editing a value while the game runs changes that
+  sends it. `scrap add system guards/patrol`
+  writes `src/guards/patrol.rs` and adds its call last in `step`; move the
+  line to change the order. build.rs finds them in every folder under
+  `src/`: a file declaring the struct of its name is a component, one with
+  `pub fn run(` a system; the files right in `src/`, and folders with a
+  `mod.rs`, are the game's own modules and are left alone — so never
+  declare a component's file with `mod` yourself. Never register
+  components by hand or keep a list of them: the files are the list.
+  `scrap check` reports a component name no file answers to. Editing a value while the game runs changes that
   component and nothing else.
 * The player's size is `game: (player: (height, radius, step, slope,
   jump_height, speed, gravity))` in `scrap.ron`: navigation bakes for it,
@@ -1725,11 +2019,12 @@ mod tests {
         assert_eq!(scene.entities.len(), 1);
         assert_eq!(scene.entities[0].name, "ground");
         assert_eq!(project.scene_names(), ["cave", "main"]);
-        // The game picks the scene by name at run time, not the project's
-        // name baked in by the template.
+        assert_eq!(path, root.join("content/moss/maps/cave.scene.ron"));
+        // The game picks the scene by name at run time, wherever it lies,
+        // not the project's name baked in by the template.
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         assert!(
-            main.contains("format!(\"scenes/{}.ron\", playing)"),
+            main.contains("scrap::project::data_scene(env!(\"CARGO_MANIFEST_DIR\"), &playing)"),
             "{main}"
         );
         let e = project.new_scene("main").unwrap_err();
@@ -1742,9 +2037,10 @@ mod tests {
         let root = temp("new");
         let project = Project::create(&root, "moss").unwrap();
         assert_eq!(project.name(), "moss");
-        for dir in [SCENES, PREFABS, MATERIALS, ASSETS] {
-            assert!(root.join(dir).is_dir(), "{dir}/");
-        }
+        // Unreal's scheme: settings in config/, what people make in
+        // content/, the project's own folder in it (docs/layout.md).
+        assert!(!project.is_legacy());
+        assert_eq!(project.content(), root.join("content/moss"));
         for file in [
             FILE,
             ".gitignore",
@@ -1752,10 +2048,37 @@ mod tests {
             "CLAUDE.md",
             "Cargo.toml",
             "src/main.rs",
-            "input.ron",
+            "config/input.ron",
+            "config/layers.ron",
+            "content/moss/maps/main.scene.ron",
+            "content/moss/core/world.ron",
+            "content/moss/ui/screens/hud.screen.ron",
+            "content/localization/en.ron",
+            "content/developers/.gitkeep",
         ] {
             assert!(root.join(file).is_file(), "{file}");
         }
+        for old in [
+            "scenes",
+            "prefabs",
+            "materials",
+            "assets",
+            "input.ron",
+            "configs",
+        ] {
+            assert!(!root.join(old).exists(), "{old}");
+        }
+        assert_eq!(project.input_file(), root.join("config/input.ron"));
+        assert_eq!(project.layers_file(), root.join("config/layers.ron"));
+        assert_eq!(project.strings_dir(), root.join("content/localization"));
+        let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+        assert!(main.contains("\"content/moss/core/world.ron\""), "{main}");
+        assert!(!main.contains("{folder}"), "{main}");
+        let attributes = std::fs::read_to_string(root.join(".gitattributes")).unwrap();
+        assert!(
+            attributes.contains("*.scene.ron merge=scrap"),
+            "{attributes}"
+        );
         // The library is derived: ignored, and not made until something is
         // built into it.
         assert!(std::fs::read_to_string(root.join(".gitignore"))
@@ -1763,9 +2086,9 @@ mod tests {
             .contains("/library/"));
 
         // And the scene it starts with opens, with every entity named.
-        let scene = crate::Scene::load(root.join("scenes/main.ron")).unwrap();
+        let scene = crate::Scene::load(root.join("content/moss/maps/main.scene.ron")).unwrap();
         assert_eq!(scene.entities.len(), 3);
-        let text = std::fs::read_to_string(root.join("scenes/main.ron")).unwrap();
+        let text = std::fs::read_to_string(root.join("content/moss/maps/main.scene.ron")).unwrap();
         assert_eq!(
             text.matches("id: ").count(),
             3,
@@ -1801,13 +2124,17 @@ mod tests {
     fn making_a_project_where_one_is_refuses_rather_than_overwriting() {
         let root = temp("twice");
         Project::create(&root, "once").unwrap();
-        std::fs::write(root.join("scenes/main.ron"), "(entities: [])").unwrap();
+        std::fs::write(
+            root.join("content/once/maps/main.scene.ron"),
+            "(entities: [])",
+        )
+        .unwrap();
         assert!(matches!(
             Project::create(&root, "twice"),
             Err(ProjectError::AlreadyAProject(_))
         ));
         assert_eq!(
-            std::fs::read_to_string(root.join("scenes/main.ron")).unwrap(),
+            std::fs::read_to_string(root.join("content/once/maps/main.scene.ron")).unwrap(),
             "(entities: [])",
             "and nothing was touched"
         );
@@ -1817,12 +2144,17 @@ mod tests {
     fn a_project_is_found_from_anything_inside_it() {
         let root = temp("find");
         let project = Project::create(&root, "found").unwrap();
-        std::fs::create_dir_all(root.join("scenes/caves")).unwrap();
-        let deep = root.join("scenes/caves/deep.ron");
+        std::fs::create_dir_all(root.join("content/found/maps/caves")).unwrap();
+        let deep = root.join("content/found/maps/caves/deep.scene.ron");
         std::fs::write(&deep, "(entities: [])").unwrap();
 
         assert_eq!(Project::find(&deep).unwrap(), project);
-        assert_eq!(Project::find(root.join("scenes")).unwrap(), project);
+        assert_eq!(Project::find(root.join("content")).unwrap(), project);
+        assert_eq!(
+            project.scene("deep").unwrap(),
+            deep,
+            "a scene in a subfolder is found by its name"
+        );
 
         // And outside one, it says so in a sentence.
         let lost = std::env::temp_dir().join("scrap-project-nowhere/scene.ron");
@@ -1863,13 +2195,15 @@ mod tests {
         let root = std::env::temp_dir().join("scrap-project-code-layout");
         let _ = std::fs::remove_dir_all(&root);
         let project = Project::create(&root, "layout").unwrap();
+        // By feature: the component and its system together.
         assert_eq!(project.component_names(), Some(vec!["spin".to_string()]));
-        assert!(root.join(SYSTEMS).join("spin.rs").is_file());
+        assert!(root.join("src/spin/spin.rs").is_file());
+        assert!(root.join("src/spin/turn.rs").is_file());
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         assert!(main.contains("components::register(&mut components);"));
         assert!(
             main.contains(
-                "// systems, in order\n    profile.time(\"spin\", || systems::spin::run("
+                "// systems, in order\n    profile.time(\"turn\", || systems::turn::run("
             ),
             "{main}"
         );

@@ -53,7 +53,7 @@ pub enum Wish {
     Quit,
     /// A mixer group's volume, 0 to 1: `music` or `sfx`.
     Volume(&'static str, f32),
-    /// The language, by its file in `strings/`.
+    /// The language, by its file in `content/localization/`.
     Language(&'static str),
 }
 
@@ -116,9 +116,13 @@ const LOST_AT: scrap::glam::Vec3 = scrap::glam::Vec3::new(0.0, 2.3, -3.8);
 pub const LINE_SECONDS: f32 = 2.8;
 
 impl Front {
-    pub fn load(ui_dir: &std::path::Path) -> Result<Self, String> {
-        let chef = ui_dir.with_file_name(scrap::dialogue::DIR).join("chef.ron");
-        let screen = |name: &str| Screen::load(ui_dir.join(format!("{name}.ron")));
+    pub fn load(root: &std::path::Path) -> Result<Self, String> {
+        // By name, wherever they lie (docs/layout.md).
+        let find = |kind: scrap::layout::Kind, name: &str| {
+            scrap::layout::find(root, kind, name).ok_or_else(|| format!("no {} `{name}` under {}", kind.word(), root.display()))
+        };
+        let chef = find(scrap::layout::Kind::Dialogue, "chef")?;
+        let screen = |name: &str| Screen::load(find(scrap::layout::Kind::Screen, name)?);
         Ok(Self {
             phase: Phase::Menu,
             menu: {
@@ -477,7 +481,7 @@ impl Front {
 /// The round as this peer has it.
 /// Kenney Future, the kitchen's letters. Built into the game rather than
 /// read from `assets/`: `scrap build` ships the library, not the sources.
-pub const FONT: &[u8] = include_bytes!("../assets/fonts/kenney_future.ttf");
+pub const FONT: &[u8] = include_bytes!("../content/kitchen/ui/fonts/kenney_future.ttf");
 
 /// The kitchen's buttons and panels: warm, round, with a lip to press —
 /// the colours of Kenney's UI pack.
@@ -652,7 +656,7 @@ fn order_cards(count: usize) -> Layout {
     Layout { elements }
 }
 
-/// The bell over the window rings: its graph (animators/window.ron) is told
+/// The bell over the window rings: its graph (stations/window/window.animator.ron) is told
 /// `serve`, and plays its clip on the things under the window.
 pub fn ring(world: &mut World) {
     for (moving, animates) in world.query_mut::<(&mut scrap::motion::Moving, &scrap::motion::Animates)>() {

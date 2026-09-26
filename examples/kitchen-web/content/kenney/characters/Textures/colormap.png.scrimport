@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/characters/Textures/colormap.png",
+    hash: "e6bb025ab83f00c59e2e1990b807692b",
+    id: Some("457504b6ff40ffa024d935e4c8446518"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

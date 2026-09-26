@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/furniture/kitchenCabinet.glb",
-    hash: "b8b3d5314494b662e3f6cf36d16d97f7",
-    id: Some("2d91acc29167f7180c7e97d08fdf5b22"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

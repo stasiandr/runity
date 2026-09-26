@@ -1,0 +1,13 @@
+// Cracks between cells, 1 along them and 0 inside: Voronoi's nearest two
+// points, where they are almost as near. What lava, dry mud and old paint
+// share; the lava graph calls it.
+(
+    inputs: { "at": "position.xz", "scale": 3.0, "width": 0.12 },
+    nodes: {
+        "cells": Voronoi(at: "at", scale: "scale"),
+        "border": Subtract(a: "cells.y", b: "cells.x"),
+        "edge": Smoothstep(low: 0.0, high: "width", of: "border"),
+        "crack": OneMinus(of: "edge"),
+    },
+    outputs: { "crack": "crack" },
+)

@@ -50,7 +50,7 @@ fn with_the_least_passes_the_sun_does_not_show_and_the_scene_still_does() {
         eprintln!("skipping: no adapter");
         return;
     };
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley/scenes/first-light.ron");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley/content/valley/maps/first-light.scene.ron");
     let scene = Scene::load(path).expect("the reference scene");
     let morning = Vec3::new(-0.6, -0.7, -0.35).normalize();
     let evening = Vec3::new(0.85, -0.2, 0.3).normalize();

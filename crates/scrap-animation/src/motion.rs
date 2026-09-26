@@ -189,41 +189,28 @@ pub struct Motions {
 }
 
 impl Motions {
-    /// `animators/*.ron` and `clips/*.ron` under a project's root; what did
-    /// not read, said.
+    /// Every animator graph and clip under a project's root, wherever
+    /// they lie (`*.animator.ron`, `*.clip.ron`; `animators/*.ron` and
+    /// `clips/*.ron` of a project laid out before); what did not read,
+    /// said.
     pub fn load(root: impl AsRef<Path>) -> (Self, Vec<String>) {
         let root = root.as_ref();
         let mut out = Self::default();
         let mut problems = Vec::new();
-        let files = |dir: &Path| -> Vec<std::path::PathBuf> {
-            let mut paths: Vec<_> = scrap_core::files::read_dir(dir)
-                .map(|r| {
-                    r.flatten()
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension().is_some_and(|e| e == "ron")
-                                && !p.to_string_lossy().ends_with(".cases.ron")
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            paths.sort();
-            paths
-        };
-        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned());
-        for path in files(&root.join(crate::project::ANIMATORS)) {
+        let name = |p: &Path| Some(scrap_core::layout::name_of(p));
+        for path in scrap_core::layout::files(root, scrap_core::layout::Kind::Animator) {
             let read = scrap_core::files::read_to_string(&path).map_err(|e| e.to_string());
             match read.and_then(|t| ron::from_str::<Graph>(&t).map_err(|e| e.to_string())) {
                 Ok(graph) => {
-                    out.graphs.insert(stem(&path).unwrap_or_default(), graph);
+                    out.graphs.insert(name(&path).unwrap_or_default(), graph);
                 }
                 Err(e) => problems.push(format!("{}: {e}", path.display())),
             }
         }
-        for path in files(&root.join(DIR)) {
+        for path in scrap_core::layout::files(root, scrap_core::layout::Kind::Clip) {
             match Motion::load(&path) {
                 Ok(motion) => {
-                    out.clips.insert(stem(&path).unwrap_or_default(), motion);
+                    out.clips.insert(name(&path).unwrap_or_default(), motion);
                 }
                 Err(e) => problems.push(e),
             }

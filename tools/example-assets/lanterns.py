@@ -1,4 +1,4 @@
-"""Write examples/valley/scenes/lanterns.ron: a courtyard made for the rays.
+"""Write examples/valley/content/valley/maps/lanterns.scene.ron: a courtyard made for the rays.
 
 A pergola of thin beams, lattice screens (mashrabiya), a colonnade and a
 score of lanterns swinging on their hooks. Everything that makes shadow
@@ -184,6 +184,6 @@ head = """// Двор для лучей (`scrap::ray`): пергола из то
     ray_tracing: (sun_shadows: true, light_shadows: true, ambient_occlusion: true, sun_size: 0.6, sun_rays: 4, occlusion_rays: 6, occlusion_radius: 1.2, lamp_size: 0.07, reflections: true, reflection_roughness: 0.5, refractions: true),
     entities: [
 """
-out = pathlib.Path(__file__).resolve().parents[2] / "examples/valley/scenes/lanterns.ron"
+out = pathlib.Path(__file__).resolve().parents[2] / "examples/valley/content/valley/maps/lanterns.scene.ron"
 out.write_text(head + "\n".join(lines) + "\n    ],\n)\n")
 print(f"{out}: {len(lines)} entities")

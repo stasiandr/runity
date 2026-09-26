@@ -86,8 +86,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
     let mut out = Vec::new();
     let names = names(project, &mut out);
 
-    let prefab_dir = project.prefabs();
-    for path in files(&prefab_dir, "prefab") {
+    for path in project.files(scrap::layout::Kind::Prefab) {
         let file = relative(project, &path);
         match scrap::Prefabs::read(&path) {
             Ok(_) => {
@@ -101,7 +100,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
         }
     }
 
-    for path in files(&project.scenes(), "ron") {
+    for path in project.files(scrap::layout::Kind::Scene) {
         let file = relative(project, &path);
         if let Some(scene) = parse::<Scene>(&path, &file, &mut out) {
             check_entities(&scene.entities, &file, &names, &mut out);
@@ -119,20 +118,21 @@ pub fn check(project: &Project) -> Vec<Finding> {
     animators(project, &mut out);
     shaders(project, &mut out);
 
-    let input = project.root().join(scrap::project::INPUT);
+    let input = project.input_file();
     if input.is_file() {
+        let file = relative(project, &input);
         match scrap::Actions::load(&input) {
             Ok(actions) => {
                 for problem in actions.map.problems() {
-                    out.push(error(scrap::project::INPUT, problem));
+                    out.push(error(&file, problem));
                 }
             }
-            Err(e) => out.push(error(scrap::project::INPUT, e)),
+            Err(e) => out.push(error(&file, e)),
         }
     }
 
     let mut keys: Vec<String> = Vec::new();
-    for path in files(&project.root().join(scrap::project::UI), "ron") {
+    for path in project.files(scrap::layout::Kind::Screen) {
         let file = relative(project, &path);
         if let Some(layout) = parse::<scrap::screen::Layout>(&path, &file, &mut out) {
             for problem in layout.problems() {
@@ -145,7 +145,8 @@ pub fn check(project: &Project) -> Vec<Finding> {
     // the flags between them, and their texts' keys, checked against
     // strings/ with the screens'.
     keys.extend(dialogues(project, &mut out));
-    let strings = project.root().join(scrap::strings::DIR);
+    let strings = project.strings_dir();
+    let strings_file = relative(project, &strings);
     let mut tables = Vec::new();
     for (language, path) in scrap::strings::tables(&strings) {
         let file = relative(project, &path);
@@ -155,9 +156,9 @@ pub fn check(project: &Project) -> Vec<Finding> {
     }
     if tables.is_empty() && !keys.is_empty() {
         out.push(error(
-            scrap::strings::DIR,
+            &strings_file,
             format!(
-                "screens ask for `@{}` and there is no language in strings/ to say it",
+                "screens ask for `@{}` and there is no language in {strings_file}/ to say it",
                 keys[0]
             ),
         ));
@@ -165,10 +166,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
     unused_strings(project, &tables, &keys, &mut out);
     for missing in scrap::strings::missing(&tables, &keys) {
         let (language, rest) = missing.split_once(": ").unwrap_or(("", &missing));
-        out.push(error(
-            &format!("{}/{language}.ron", scrap::strings::DIR),
-            rest,
-        ));
+        out.push(error(&format!("{strings_file}/{language}.ron"), rest));
     }
 
     // The game starts on a scene and speaks a language that are there.
@@ -178,7 +176,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
         out.push(error(
             scrap::project::FILE,
             format!(
-                "start_scene `{}` is not in scenes/{}",
+                "start_scene `{}` is no scene in the project{}",
                 game.start_scene,
                 suggest(&game.start_scene, scenes.iter().map(String::as_str))
             ),
@@ -189,7 +187,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
         out.push(error(
             scrap::project::FILE,
             format!(
-                "language `{}` has no strings/{}.ron{}",
+                "language `{}` has no {strings_file}/{}.ron{}",
                 game.language,
                 game.language,
                 suggest(&game.language, languages.iter().map(String::as_str))
@@ -206,23 +204,17 @@ pub fn check(project: &Project) -> Vec<Finding> {
     // The numbers are RON, and fit what the game reads them as when it
     // has said (library/tuning.ron): a misspelt field of one record is
     // named with the record and the nearest field there is.
-    let tuning = project.root().join(scrap::project::CONFIGS);
     let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> =
         std::fs::read_to_string(project.root().join(scrap::project::TUNING_SHAPES))
             .ok()
             .and_then(|text| ron::from_str(&text).ok())
             .unwrap_or_default();
-    for path in files(&tuning, "ron") {
+    for path in scrap::layout::data_files(project.root()) {
         let file = relative(project, &path);
         let Some(_) = parse::<ron::Value>(&path, &file, &mut out) else {
             continue;
         };
-        let name = path
-            .strip_prefix(&tuning)
-            .unwrap_or(&path)
-            .with_extension("")
-            .to_string_lossy()
-            .replace('\\', "/");
+        let name = scrap::layout::data_name(project.root(), &path);
         let (Some(shape), Ok(text)) = (shapes.get(&name), std::fs::read_to_string(&path)) else {
             continue;
         };
@@ -273,7 +265,7 @@ fn check_configs(project: &Project, out: &mut Vec<Finding>) {
             ));
         }
     }
-    for path in files(&project.root().join(scrap::project::CONFIGS), "ron") {
+    for path in scrap::layout::data_files(project.root()) {
         let file = relative(project, &path);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -341,83 +333,32 @@ fn check_configs(project: &Project, out: &mut Vec<Finding>) {
     }
 }
 
-/// What is at the top of the project that the layout has no place for
-/// (DNA, postulate 7): a model dropped next to `scrap.ron` is a model no
-/// tool looks for. A warning with where it goes, when that can be told.
+/// What the layout says about the project (docs/layout.md): where things
+/// lie is the project's, so this is only about what moved — a project laid
+/// out before 2026-09-26, read until 2026-10-31, and a `.ron` in a folder
+/// that no longer says what it is.
 fn check_layout(project: &Project, out: &mut Vec<Finding>) {
-    use scrap::project::*;
-    let known = [
-        FILE,
-        SCENES,
-        PREFABS,
-        MATERIALS,
-        ASSETS,
-        LIBRARY,
-        SRC,
-        UI,
-        INPUT,
-        CONFIGS,
-        ANIMATORS,
-        SHADERS,
-        scrap::layers::FILE,
-        scrap::strings::DIR,
-        scrap::dialogue::DIR,
-        scrap::quest::DIR,
-        scrap::motion::DIR,
-        crate::perf::BUDGETS,
-        "Cargo.toml",
-        "Cargo.lock",
-        "build.rs",
-        "target",
-        "build",
-        "CLAUDE.md",
-        "README.md",
-        "LICENSE",
-    ];
-    let Ok(entries) = std::fs::read_dir(project.root()) else {
-        return;
+    let warn = |out: &mut Vec<Finding>, file: &str, message: String| {
+        out.push(Finding { severity: Severity::Warning, file: file.to_string(), message });
     };
-    let mut strays: Vec<(String, bool)> = entries
-        .flatten()
-        .map(|e| {
-            (
-                e.file_name().to_string_lossy().into_owned(),
-                e.path().is_dir(),
-            )
-        })
-        .filter(|(name, _)| !name.starts_with('.') && !known.contains(&name.as_str()))
-        .collect();
-    strays.sort();
-    for (name, dir) in strays {
-        let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-        let home = match extension.as_deref() {
-            _ if dir => None,
-            Some("prefab") => Some(PREFABS),
-            Some("scrmat") => Some(MATERIALS),
-            Some(
-                "gltf" | "glb" | "obj" | "fbx" | "png" | "jpg" | "jpeg" | "wav" | "ogg" | "mp3"
-                | "flac" | "scrterrain" | "scrpoly" | "scrbrush",
-            ) => Some(ASSETS),
-            Some("ron") => Some(SCENES),
-            _ => None,
-        };
-        let message = match home {
-            // The folder's old name, from before it held more than numbers.
-            _ if dir && name == "tuning" => {
-                format!("`tuning/` is `{CONFIGS}/` now: `git mv tuning {CONFIGS}`")
-            }
-            Some(home) => format!(
-                "`{name}` is outside the layout, where no tool looks for it — it goes in {home}/"
-            ),
-            None => format!(
-                "`{name}` is not part of the project layout; nothing reads it (see the layout in CLAUDE.md)"
-            ),
-        };
-        out.push(Finding {
-            severity: Severity::Warning,
-            file: name.clone(),
-            message,
-        });
+    if project.root().join("tuning").is_dir() {
+        warn(out, "tuning", "`tuning/` is from before configs: move its files to where the feature that reads them is".into());
+    }
+    if project.is_legacy() {
+        let old: Vec<&str> = ["scenes", "prefabs", "materials", "assets", "ui", "animators", "clips", "dialogues", "quests", "shaders", "strings", "configs", "input.ron", "layers.ron"]
+            .into_iter()
+            .filter(|name| project.root().join(name).exists())
+            .collect();
+        if !old.is_empty() {
+            warn(
+                out,
+                scrap::project::FILE,
+                format!(
+                    "laid out as before 2026-09-26 ({}), read that way until 2026-10-31 — `scrap migrate-layout` moves it to config/ and content/ (docs/layout.md)",
+                    old.join(", ")
+                ),
+            );
+        }
     }
 }
 
@@ -446,11 +387,9 @@ fn expansion(project: &Project, out: &mut Vec<Finding>) {
             }
         }
     };
-    for path in files(&project.prefabs(), "prefab") {
+    for path in project.files(scrap::layout::Kind::Prefab) {
         let file = relative(project, &path);
-        let Some(name) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
+        let name = scrap::layout::name_of(&path);
         let alone = Scene {
             entities: vec![EntityDesc {
                 name: name.clone(),
@@ -461,7 +400,7 @@ fn expansion(project: &Project, out: &mut Vec<Finding>) {
         };
         report(&file, scrap::instantiate(&alone, &prefabs), out);
     }
-    for path in files(&project.scenes(), "ron") {
+    for path in project.files(scrap::layout::Kind::Scene) {
         let file = relative(project, &path);
         if let Ok(scene) = Scene::load(&path) {
             let done = scrap::instantiate(&scene, &prefabs);
@@ -482,7 +421,8 @@ fn expansion(project: &Project, out: &mut Vec<Finding>) {
 fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
     let mut models: HashMap<String, Vec<String>> = HashMap::new();
     let mut materials: HashMap<String, Vec<String>> = HashMap::new();
-    for root in [project.assets(), project.materials()] {
+    {
+        let root = project.root().to_path_buf();
         scrap_import::walk(&root, &mut |path| {
             let (Some(stem), Some(extension)) = (
                 path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -516,20 +456,19 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             ),
         ));
     }
-    let prefab_files = files(&project.prefabs(), "prefab");
-    let prefabs = prefab_files
-        .iter()
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-        .collect();
+    let prefab_files = project.files(scrap::layout::Kind::Prefab);
+    let prefabs = prefab_files.iter().map(scrap::layout::name_of).collect();
     let mut ids = HashSet::new();
     let mut sources = prefab_files;
-    for root in [project.assets(), project.materials()] {
-        scrap_import::walk(&root, &mut |path| sources.push(path.to_path_buf()));
-    }
-    let scene_files = files(&project.scenes(), "ron");
+    scrap_import::walk(project.root(), &mut |path| {
+        if scrap_import::importable(path) {
+            sources.push(path.to_path_buf());
+        }
+    });
+    let scene_files = project.files(scrap::layout::Kind::Scene);
     sources.extend(scene_files.iter().cloned());
     let (mut sounds, mut textures) = (HashSet::new(), HashSet::new());
-    scrap_import::walk(&project.assets(), &mut |path| {
+    scrap_import::walk(project.root(), &mut |path| {
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
         let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
         if let (Some(stem), Some(extension)) = (stem, extension) {
@@ -544,38 +483,28 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             }
         }
     });
-    let scenes: HashSet<String> = scene_files
-        .iter()
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-        .collect();
+    let scenes: HashSet<String> = scene_files.iter().map(scrap::layout::name_of).collect();
     for source in sources {
         if let Some(id) = scrap::asset::sidecar_id(scrap::asset::sidecar_of(&source)) {
             ids.insert(id);
         }
     }
-    let graphs: Vec<PathBuf> = files(&project.root().join(scrap::project::ANIMATORS), "ron")
-        .into_iter()
-        .filter(|p| !p.to_string_lossy().ends_with(".cases.ron"))
-        .collect();
-    let animators = graphs
-        .iter()
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-        .collect();
+    let graphs: Vec<PathBuf> = project.files(scrap::layout::Kind::Animator);
+    let animators = graphs.iter().map(scrap::layout::name_of).collect();
     // Read quietly: `animators` says what does not read.
     let parameters = graphs
         .iter()
         .filter_map(|p| {
-            let name = p.file_stem()?.to_string_lossy().into_owned();
+            let name = scrap::layout::name_of(p);
             let text = std::fs::read_to_string(p).ok()?;
             let graph: scrap::animgraph::Graph = ron::from_str(&text).ok()?;
             Some((name, graph.parameters()))
         })
         .collect();
-    let effects = std::fs::read_dir(project.root().join(scrap::project::SHADERS))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| scrap::shader_graph::effect_name(&e.file_name().to_string_lossy()).map(str::to_string))
+    let effects = project
+        .files(scrap::layout::Kind::Shader)
+        .iter()
+        .filter_map(|p| scrap::shader_graph::effect_name(&p.file_name()?.to_string_lossy()).map(str::to_string))
         .collect();
     Names {
         animators,
@@ -649,7 +578,7 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 out.push(error(
                     file,
                     format!(
-                        "{who}: no prefab named `{}` in prefabs/{}",
+                        "{who}: no prefab named `{}` in the project{}",
                         entity.prefab,
                         suggest(&entity.prefab, names.prefabs.iter().map(String::as_str))
                     ),
@@ -671,7 +600,7 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
             out.push(error(
                 file,
                 format!(
-                    "{who}: animator `{}` is not a graph in animators/{}",
+                    "{who}: animator `{}` is no graph in the project (*.animator.ron){}",
                     entity.animator(),
                     suggest(
                         &entity.animator(),
@@ -730,7 +659,7 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 out.push(error(
                     file,
                     format!(
-                        "{who}: `particles` names effect graph `{}`, and there is no shaders/{0}.vfx.ron{}",
+                        "{who}: `particles` names effect graph `{}`, and there is no {0}.vfx.ron in the project{}",
                         emitter.graph,
                         suggest(&emitter.graph, names.effects.iter().map(String::as_str))
                     ),
@@ -955,7 +884,7 @@ fn check_material(name: &str, who: &str, file: &str, names: &Names, out: &mut Ve
         out.push(error(
             file,
             format!(
-                "{who}: no material named `{name}`, so it draws grey — add materials/{name}.scrmat or use an existing one{}",
+                "{who}: no material named `{name}`, so it draws grey — add a {name}.scrmat or use an existing one{}",
                 suggest(name, known)
             ),
         ));
@@ -966,7 +895,8 @@ fn check_material(name: &str, who: &str, file: &str, names: &Names, out: &mut Ve
 /// next `scrap sync` writes one, and a clone that did not run it builds
 /// something else.
 fn check_sidecars(project: &Project, out: &mut Vec<Finding>) {
-    for root in [project.assets(), project.materials()] {
+    {
+        let root = project.root().to_path_buf();
         scrap_import::walk(&root, &mut |source| {
             if !scrap_import::importable(source) {
                 return;
@@ -1024,12 +954,11 @@ fn parse<T: serde::de::DeserializeOwned>(
 /// code never names — a graph waiting on a number nobody sets.
 fn animators(project: &Project, out: &mut Vec<Finding>) {
     // The motion clips: each reads.
-    for path in files(&project.root().join(scrap::motion::DIR), "ron") {
+    for path in project.files(scrap::layout::Kind::Clip) {
         let file = relative(project, &path);
         parse::<scrap::motion::Motion>(&path, &file, out);
     }
-    let dir = project.root().join(scrap::project::ANIMATORS);
-    let graphs = files(&dir, "ron");
+    let graphs = project.files(scrap::layout::Kind::Animator);
     if graphs.is_empty() {
         return;
     }
@@ -1038,15 +967,12 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
     // The game's code, as text: a parameter is set by name.
     let code = game_code(project);
     for path in graphs {
-        if path.to_string_lossy().ends_with(".cases.ron") {
-            continue;
-        }
         let file = relative(project, &path);
         let Some(graph) = parse::<scrap::animgraph::Graph>(&path, &file, out) else {
             continue;
         };
         // Its cases, played without the game.
-        let cases_path = path.with_extension("cases.ron");
+        let cases_path = scrap::layout::cases_of(&path);
         if cases_path.is_file() {
             let cases_file = relative(project, &cases_path);
             if let Some(cases) = parse::<scrap::animgraph::Cases>(&cases_path, &cases_file, out) {
@@ -1106,13 +1032,10 @@ fn game_code(project: &Project) -> String {
 fn dialogues(project: &Project, out: &mut Vec<Finding>) -> Vec<String> {
     use scrap::dialogue::{named_twice, Cases, Dialogue};
     use std::collections::BTreeSet;
-    let dir = project.root().join(scrap::dialogue::DIR);
+    let dir = project.root();
     let mut keys = Vec::new();
     let mut found: Vec<(String, Dialogue)> = Vec::new();
-    for path in files(&dir, "ron") {
-        if crate::lines::is_cases(&path) {
-            continue;
-        }
+    for path in project.files(scrap::layout::Kind::Dialogue) {
         let file = relative(project, &path);
         for twice in named_twice(&std::fs::read_to_string(&path).unwrap_or_default()) {
             out.push(error(&file, twice));
@@ -1120,11 +1043,11 @@ fn dialogues(project: &Project, out: &mut Vec<Finding>) -> Vec<String> {
         let Some(mut dialogue) = parse::<Dialogue>(&path, &file, out) else {
             continue;
         };
-        dialogue.name = crate::lines::name(&dir, &path);
+        dialogue.name = crate::lines::name(dir, &path);
         for problem in dialogue.problems() {
             out.push(error(&file, problem));
         }
-        let cases_path = path.with_extension("cases.ron");
+        let cases_path = scrap::layout::cases_of(&path);
         if cases_path.is_file() {
             let cases_file = relative(project, &cases_path);
             if let Some(cases) = parse::<Cases>(&cases_path, &cases_file, out) {
@@ -1137,7 +1060,7 @@ fn dialogues(project: &Project, out: &mut Vec<Finding>) -> Vec<String> {
         found.push((file, dialogue));
     }
     let mut quests: Vec<(String, scrap::quest::Quest)> = Vec::new();
-    for path in files(&project.root().join(scrap::quest::DIR), "ron") {
+    for path in project.files(scrap::layout::Kind::Quest) {
         let file = relative(project, &path);
         if let Some(quest) = parse::<scrap::quest::Quest>(&path, &file, out) {
             for problem in quest.problems() {
@@ -1236,7 +1159,7 @@ fn unused_strings(
             }
             out.push(Finding {
                 severity: Severity::Warning,
-                file: format!("{}/{language}.ron", scrap::strings::DIR),
+                file: format!("{}/{language}.ron", relative(project, &project.strings_dir())),
                 message: format!(
                     "`{key}` is asked for by no screen, dialogue or quest, and no \"{key}\" in src/"
                 ),
@@ -1248,7 +1171,7 @@ fn unused_strings(
 /// Every animator parameter a wire in a scene or a prefab pulls.
 fn wired_parameters(project: &Project) -> HashSet<String> {
     let mut lines: Vec<EntityDesc> = Vec::new();
-    for path in files(&project.scenes(), "ron") {
+    for path in project.files(scrap::layout::Kind::Scene) {
         if let Some(scene) = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| ron::from_str::<Scene>(&t).ok())
@@ -1256,7 +1179,7 @@ fn wired_parameters(project: &Project) -> HashSet<String> {
             lines.extend(scene.entities);
         }
     }
-    for path in files(&project.prefabs(), "prefab") {
+    for path in project.files(scrap::layout::Kind::Prefab) {
         if let Some(desc) = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| ron::from_str::<EntityDesc>(&t).ok())
@@ -1274,25 +1197,30 @@ fn wired_parameters(project: &Project) -> HashSet<String> {
     out
 }
 
-/// Every material shader in `shaders/` — hand-written or a graph — built
+/// Every material shader in the project — hand-written or a graph — built
 /// over the standard shader as the renderer would, without a GPU, and every
 /// particle effect graph over the particles' shader; and what a graph holds
 /// that nothing reads.
 fn shaders(project: &Project, out: &mut Vec<Finding>) {
-    let dir = project.root().join(scrap::project::SHADERS);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
+    // Two shaders of one name: a material could not tell which it means.
+    for (name, paths) in scrap::layout::repeated(project.root(), scrap::layout::Kind::Shader) {
+        let paths: Vec<String> = paths.iter().map(|p| relative(project, p)).collect();
+        out.push(error(&paths[0], format!("shader name `{name}` is used by {} — rename all but one", paths.join(", "))));
+    }
+    for path in project.files(scrap::layout::Kind::Shader) {
         let file = relative(project, &path);
+        if file.ends_with(".subgraph.ron") {
+            if let Err(e) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::subgraph::parse(&t)) {
+                out.push(error(&file, e));
+            }
+            continue;
+        }
         if file.ends_with(".vfx.ron") {
             match scrap::render::effect_source(&path).and_then(|s| scrap::particles_gpu::check_effect(&s)) {
                 Err(e) => out.push(error(&file, e)),
                 Ok(()) => {
                     if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::effect::parse(&t)) {
-                        for problem in scrap::shader_graph::effect::problems(&graph) {
+                        for problem in scrap::shader_graph::effect::problems_with(&graph, &scrap::render::subgraphs_beside(&path)) {
                             out.push(Finding {
                                 severity: Severity::Warning,
                                 file: file.clone(),
@@ -1320,7 +1248,7 @@ fn shaders(project: &Project, out: &mut Vec<Finding>) {
         }
         if file.ends_with(".graph.ron") {
             if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::surface::parse(&t)) {
-                for problem in scrap::shader_graph::surface::problems(&graph) {
+                for problem in scrap::shader_graph::surface::problems_with(&graph, &scrap::render::subgraphs_beside(&path)) {
                     out.push(Finding {
                         severity: Severity::Warning,
                         file: file.clone(),
@@ -1344,18 +1272,6 @@ fn relative(project: &Project, path: &Path) -> String {
     project
         .relative(path)
         .unwrap_or_else(|| path.display().to_string())
-}
-
-/// Files with this extension anywhere under `root`, sorted.
-fn files(root: &Path, extension: &str) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    scrap_import::walk(root, &mut |path| {
-        if path.extension().and_then(|e| e.to_str()) == Some(extension) {
-            found.push(path.to_path_buf());
-        }
-    });
-    found.sort();
-    found
 }
 
 /// ` — did you mean `x`?` for the closest known name, or nothing when none

@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/food/meat-raw.glb",
-    hash: "21f72ee3692e4b9fea85aed190cf816c",
-    id: Some("86b67e547dde941330c043b8f3649fdc"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

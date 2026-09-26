@@ -50,7 +50,8 @@ impl Prefabs {
         Self::default()
     }
 
-    /// Read every `.prefab` in a directory.
+    /// Read every `.prefab` under a directory, however deep
+    /// ([`crate::layout::files`]): a project's root, or any folder in it.
     ///
     /// A file that does not parse is reported and skipped, like a bad asset
     /// in a library: one broken prefab should cost one missing thing, not
@@ -58,13 +59,10 @@ impl Prefabs {
     pub fn open(directory: impl AsRef<Path>) -> std::io::Result<(Self, Vec<(PathBuf, String)>)> {
         let mut prefabs = Self::new();
         let mut problems = Vec::new();
-        let mut paths = Vec::new();
-        for entry in crate::files::read_dir(directory.as_ref())? {
-            let path = entry?.path();
-            if path.extension().and_then(|e| e.to_str()) == Some(EXTENSION) {
-                paths.push(path);
-            }
+        if !crate::files::is_dir(directory.as_ref()) {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}: no such folder", directory.as_ref().display())));
         }
+        let paths = crate::layout::files(directory.as_ref(), crate::layout::Kind::Prefab);
         // Read and parsed on every core: a game's thousand prefabs are
         // megabytes of text, and each stands alone.
         let read = crate::jobs::map(&paths, 8, |path| {
@@ -85,13 +83,19 @@ impl Prefabs {
         Ok((prefabs, problems))
     }
 
-    /// Every prefab in `folder` of a game's [`crate::data::Data`]: what
-    /// [`Prefabs::open`] reads from a directory, read through the seam.
+    /// Every prefab under `folder` of a game's [`crate::data::Data`] — `""`
+    /// for all of it: what [`Prefabs::open`] reads from a directory, read
+    /// through the seam.
     pub fn open_from(data: &dyn crate::data::Data, folder: &str) -> (Self, Vec<(String, String)>) {
         let mut prefabs = Self::new();
         let mut problems = Vec::new();
-        for path in data.list(folder).unwrap_or_default() {
+        for path in data.walk(folder).unwrap_or_default() {
             if !path.ends_with(&format!(".{EXTENSION}")) {
+                continue;
+            }
+            let top = path.strip_prefix(folder).unwrap_or(&path).trim_start_matches('/');
+            let first = top.split('/').next().unwrap_or_default();
+            if top.contains('/') && (first.starts_with('.') || crate::layout::SKIPPED.contains(&first)) {
                 continue;
             }
             let read = data
@@ -120,20 +124,21 @@ impl Prefabs {
         (prefabs, problems)
     }
 
-    /// A project's prefabs: everything in its `prefabs/`.
+    /// A project's prefabs: every `.prefab` in it, wherever it lies
+    /// (docs/layout.md).
     ///
     /// Found through the project rather than next to whichever scene is
     /// open, so the headless render, the walk-around and the editor all see
-    /// the same set, and a scene in `scenes/caves/` finds the same campfire
-    /// as one in `scenes/`. No folder means no prefabs, which is not an
-    /// error: most projects start with none.
+    /// the same set, and a scene in `maps/caves/` finds the same campfire
+    /// as one in `maps/`. None is not an error: most projects start with
+    /// none.
     ///
     /// And the prefabs imports built into `library/`: a glTF or `.blend`
     /// scene is a tree the importer writes there (docs/blender.md), found
     /// by the same names as a hand-written one.
     pub fn of(project: &crate::Project) -> (Self, Vec<(PathBuf, String)>) {
         let (mut prefabs, mut problems) =
-            Self::open(project.prefabs()).unwrap_or_else(|_| (Self::new(), Vec::new()));
+            Self::open(project.root()).unwrap_or_else(|_| (Self::new(), Vec::new()));
         problems.extend(prefabs.add_imported(project.library()));
         (prefabs, problems)
     }

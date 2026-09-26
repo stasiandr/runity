@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/flame_fx.scrmat",
-    hash: "3b709d6220b47900782d098f4e373748",
-    id: Some("2a0509e828453e027be6cfa04e84a962"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

@@ -17,7 +17,7 @@ use crate::components::Item;
 use crate::state::*;
 use crate::{game_components, session, tick};
 
-/// Tiles of the kitchen by what is there (see scenes/main.ron).
+/// Tiles of the kitchen by what is there (see maps/main.scene.ron).
 const TOMATOES: (f32, f32) = (-3.0, -3.0);
 const ONIONS: (f32, f32) = (-5.0, 2.0);
 const BOARD: (f32, f32) = (-5.0, -2.0);
@@ -70,7 +70,7 @@ impl Peer {
 
     fn in_scene(name: &str, party: Party, mut render: Option<Render>) -> Self {
         let scene =
-            scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{name}.ron"));
+            scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &name);
         let (live, problems) = LiveScene::open(&scene).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let mut live = live.with_components(game_components());
@@ -638,7 +638,7 @@ fn what_a_guests_hands_do_the_host_does_and_everyone_sees() {
 #[test]
 fn the_screens_load_and_every_word_is_in_both_languages() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let front = crate::front::Front::load(&root).unwrap();
     // The ids the code asks for are in the files.
     let ids = |screen: &scrap::screen::Screen| -> Vec<String> {
         screen
@@ -693,17 +693,17 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     .iter()
     .flat_map(|s| scrap::screen::Screen::keys(s.layout()))
     .collect();
-    let code = ["src/front.rs", "src/components/item.rs"]
+    let code = ["src/front.rs", "src/items/item.rs"]
         .map(|f| std::fs::read_to_string(root.join(f)).unwrap())
         .join("\n");
     for piece in code.split("\"@").skip(1) {
         keys.push(piece.split('"').next().unwrap().to_string());
     }
-    let chef = scrap::dialogue::Dialogue::load(root.join("dialogues/chef.ron")).unwrap();
+    let chef = scrap::dialogue::Dialogue::load(root.join("content/kitchen/characters/chef/chef.dialogue.ron")).unwrap();
     assert!(chef.problems().is_empty(), "{:?}", chef.problems());
     keys.extend(chef.keys());
     for language in crate::front::LANGUAGES {
-        let strings = scrap::strings::Strings::load(root.join("strings"), language).unwrap();
+        let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), language).unwrap();
         for key in &keys {
             assert_ne!(strings.get(key), key.as_str(), "{language} lacks `{key}`");
         }
@@ -713,7 +713,7 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
 #[test]
 fn the_head_chef_says_every_line_and_stops() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     assert!(front.line().is_none());
     front.brief();
     let mut said = Vec::new();
@@ -824,7 +824,7 @@ impl Peer {
         r.renderer.render(&r.gpu, &r.target, &frame);
         let mut ui = scrap::ui::Ui::new();
         let mut widgets = scrap::widgets::Widgets::with_style(crate::front::style());
-        let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+        let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), "en").unwrap();
         let size = scrap::glam::Vec2::new(r.target.width as f32, r.target.height as f32);
         if let Some(front) = front {
             front.draw(
@@ -896,7 +896,7 @@ fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
         return;
     };
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.2);
     let menu = k.shot(&mut front, "menu");
@@ -1319,7 +1319,7 @@ fn a_guest_sees_what_its_cook_holds_in_its_hands_at_once() {
 fn the_camera_tour_loads() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("content/kitchen/core/flyby.ron")).unwrap();
     assert!(tour.shots.len() >= 2 && tour.travel > 0.0);
 }
 
@@ -1331,10 +1331,10 @@ fn close_ups() {
         return;
     };
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("content/kitchen/core/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     let leg = tour.hold + tour.travel;
@@ -1365,10 +1365,10 @@ fn tour_frames() {
         return;
     };
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("content/kitchen/core/flyby.ron")).unwrap();
     let _ = std::fs::remove_dir_all(root.join("target/shots/tour"));
     std::fs::create_dir_all(root.join("target/shots/tour")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
@@ -1409,10 +1409,10 @@ fn lenses() {
         return;
     };
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("content/kitchen/core/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     for (name, lens) in [
@@ -1645,10 +1645,10 @@ fn a_guest_whose_host_closes_the_kitchen_is_told_and_offered_the_menu() {
         guest.events
     );
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     front.host_lost = Some(true);
-    let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), "en").unwrap();
     let mut ui = scrap::ui::Ui::new();
     let wish = front.draw(
         &guest.world,
@@ -1713,10 +1713,10 @@ fn burnt_meat_left_on_a_pan_catches_fire_and_is_scraped_off() {
 #[test]
 fn points_rise_over_the_window_as_they_are_won_and_fall_at_the_board_as_they_are_lost() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let k = Peer::alone();
-    let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), "en").unwrap();
     let size = scrap::glam::Vec2::new(1280.0, 720.0);
     let camera = scrap::scene_camera(&k.live.scene().view());
     let draw = |k: &Peer, front: &mut crate::front::Front| {
@@ -1772,9 +1772,9 @@ fn a_guest_says_they_are_ready_and_the_host_sees_it_in_the_lobby() {
         crate::front::ready_players(&h.world).contains(&me)
     });
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    let mut front = crate::front::Front::load(&root).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), "en").unwrap();
     let mut ui = scrap::ui::Ui::new();
     front.draw(
         &host.world,

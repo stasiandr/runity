@@ -9,6 +9,16 @@ use std::process::Command;
 
 use scrap::Project;
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn git(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .current_dir(root)
@@ -40,13 +50,13 @@ fn a_rename_is_a_move_and_one_line_per_use_in_the_diff() {
     let root = std::env::temp_dir().join("scrap-cli-rename");
     let _ = std::fs::remove_dir_all(&root);
     let project = Project::create(&root, "rename").unwrap();
-    std::fs::write(
+    write_all(
         project.materials().join("clay.scrmat"),
         "(color: \"#b4643c\")\n",
     )
     .unwrap();
-    std::fs::write(
-        project.scenes().join("main.ron"),
+    write_all(
+        project.scenes().join("main.scene.ron"),
         "(\n    entities: [\n        // Pots along the wall.\n        (id: \"00000000000000a1\", name: \"pot\",  model: \"builtin:sphere\", material: \"clay\"),\n        (id: \"00000000000000a2\", name: \"lid\",  model: \"builtin:cube\",   material: \"clay\"),\n        (id: \"00000000000000a3\", name: \"wall\", model: \"builtin:cube\",   material: \"stone\"),\n    ],\n)\n",
     )
     .unwrap();
@@ -57,17 +67,17 @@ fn a_rename_is_a_move_and_one_line_per_use_in_the_diff() {
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-q", "-m", "start"]);
 
-    let used = scrap(&root, &["uses", "materials/clay.scrmat"]);
+    let used = scrap(&root, &["uses", "content/rename/clay.scrmat"]);
     let said = String::from_utf8_lossy(&used.stdout);
     assert!(
-        said.contains("scenes/main.ron: `pot` (00000000000000a1) material"),
+        said.contains("maps/main.scene.ron: `pot` (00000000000000a1) material"),
         "{said}"
     );
     assert!(said.contains("named 2 times"), "{said}");
 
     let out = scrap(
         &root,
-        &["rename", "materials/clay.scrmat", "materials/terracotta.scrmat"],
+        &["rename", "content/rename/clay.scrmat", "content/rename/terracotta.scrmat"],
     );
     assert!(
         out.status.success(),
@@ -84,19 +94,19 @@ fn a_rename_is_a_move_and_one_line_per_use_in_the_diff() {
         3,
         "the file, its sidecar, the scene:\n{status}"
     );
-    assert!(lines.contains(&"M\tscenes/main.ron"), "{status}");
+    assert!(lines.contains(&"M\tcontent/rename/maps/main.scene.ron"), "{status}");
     assert!(
-        lines.contains(&"R100\tmaterials/clay.scrmat\tmaterials/terracotta.scrmat"),
+        lines.contains(&"R100\tcontent/rename/clay.scrmat\tcontent/rename/terracotta.scrmat"),
         "{status}"
     );
     // The sidecar's `source:` line changed, so git pairs it by similarity.
     assert!(
         lines.iter().any(|l| l.starts_with('R')
-            && l.ends_with("\tmaterials/clay.scrmat.scrimport\tmaterials/terracotta.scrmat.scrimport")),
+            && l.ends_with("\tcontent/rename/clay.scrmat.scrimport\tcontent/rename/terracotta.scrmat.scrimport")),
         "{status}"
     );
 
-    let diff = git(&root, &["diff", "--cached", "-U0", "--", "scenes/main.ron"]);
+    let diff = git(&root, &["diff", "--cached", "-U0", "--", "content/rename/maps/main.scene.ron"]);
     let changed: Vec<&str> = diff
         .lines()
         .filter(|l| {
@@ -116,14 +126,14 @@ fn a_rename_is_a_move_and_one_line_per_use_in_the_diff() {
     let listed = scrap(&root, &["assets"]);
     let listed = String::from_utf8_lossy(&listed.stdout);
     assert!(
-        listed.contains("material    2 used  materials/terracotta.scrmat"),
+        listed.contains("material    2 used  content/rename/terracotta.scrmat"),
         "{listed}"
     );
-    let refused = scrap(&root, &["delete", "materials/terracotta.scrmat"]);
+    let refused = scrap(&root, &["delete", "content/rename/terracotta.scrmat"]);
     assert!(!refused.status.success());
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("still used — 2 place(s)"), "{said}");
-    assert!(root.join("materials/terracotta.scrmat").is_file());
+    assert!(root.join("content/rename/terracotta.scrmat").is_file());
 
     let check = scrap(&root, &["check"]);
     assert!(
@@ -144,7 +154,7 @@ fn add_writes_a_component_and_a_system_where_they_go() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let text = std::fs::read_to_string(root.join("src/components/front_door.rs")).unwrap();
+    let text = std::fs::read_to_string(root.join("src/front_door/front_door.rs")).unwrap();
     assert!(text.contains("pub struct FrontDoor {}"), "{text}");
 
     let out = scrap(&root, &["add", "system", "patrol"]);
@@ -153,9 +163,9 @@ fn add_writes_a_component_and_a_system_where_they_go() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(root.join("src/systems/patrol.rs").is_file());
+    assert!(root.join("src/patrol/patrol.rs").is_file());
     let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
-    let spin = main.find("systems::spin::run(").unwrap();
+    let spin = main.find("systems::turn::run(").unwrap();
     let patrol = main
         .find("profile.time(\"patrol\", || systems::patrol::run(world, seconds));")
         .unwrap();

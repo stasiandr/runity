@@ -37,8 +37,14 @@ mod tests {
     fn a_compressed_asset_is_read_back_as_it_was_and_only_through_read() {
         let mesh = cube();
         let bytes = to_bytes(&mesh, crate::asset::MESH).unwrap();
-        let packed = compressed(&bytes, |body| ruzstd::encoding::compress_to_vec(body, ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
+        let packed = compressed(&bytes, false, |body| ruzstd::encoding::compress_to_vec(body, ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
         assert_ne!(packed, bytes);
+        let shuffled = compressed(&bytes, true, |body| ruzstd::encoding::compress_to_vec(body, ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
+        assert_eq!(uncompressed(shuffled).unwrap(), bytes, "shuffled, and back");
+        for n in [0, 1, 3, 4, 7, 64, 65] {
+            let b: Vec<u8> = (0..n as u8).collect();
+            assert_eq!(unshuffle(&shuffle(&b)), b, "{n} bytes");
+        }
         assert!(split_header(&packed).is_err(), "its body is not rkyv's until unpacked");
         assert_eq!(head_of(&packed).unwrap().1, mesh.id, "its header says what it is all the same");
         let dir = std::env::temp_dir().join(format!("scrap-zstd-{}", std::process::id()));

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/camp/logs_loose.obj",
+    hash: "3ac24970536e6247b9bdc5b3bbd0fdcc",
+    id: Some("c3f7babedca3a7fde2ea558622b90291"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

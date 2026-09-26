@@ -98,7 +98,7 @@ jobs:
           cp Cargo.lock "$RUNNER_TEMP/fresh/"
           CARGO_TARGET_DIR="$PWD/target" cargo run -q -p scrap-cli -- rebuild-time "$RUNNER_TEMP/fresh" --budget 10
           CARGO_TARGET_DIR="$PWD/target" cargo run -q -p scrap-cli -- build "$RUNNER_TEMP/fresh" --debug --out "$RUNNER_TEMP/dist"
-          test -f "$RUNNER_TEMP/dist/data/scenes/main.ron"
+          test -f "$RUNNER_TEMP/dist/data/content/fresh/maps/main.scene.ron"
       # The other ways to start (DNA, postulate 8): the bare core — a game
       # with no window, on scrap-core alone — and a template, an example
       # copied and handed over. Each builds and plays its start scene.

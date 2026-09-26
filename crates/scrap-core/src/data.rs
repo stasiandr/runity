@@ -17,6 +17,13 @@ pub trait Data {
     /// The files directly in a folder, by their paths.
     fn list(&self, folder: &str) -> io::Result<Vec<String>>;
 
+    /// The files in a folder and every folder under it, by their paths,
+    /// sorted — `""` for all of them. What finding a kind wherever it lies
+    /// needs (docs/layout.md).
+    fn walk(&self, folder: &str) -> io::Result<Vec<String>> {
+        self.list(folder)
+    }
+
     /// A file's text.
     fn read_text(&self, path: &str) -> io::Result<String> {
         String::from_utf8(self.read(path)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -46,6 +53,23 @@ impl Data for Disk {
             .filter(|e| e.path().is_file())
             .map(|e| join(folder, &e.file_name().to_string_lossy()))
             .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    fn walk(&self, folder: &str) -> io::Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut folders = vec![folder.to_string()];
+        while let Some(here) = folders.pop() {
+            for entry in std::fs::read_dir(self.root.join(&here))?.flatten() {
+                let path = join(&here, &entry.file_name().to_string_lossy());
+                if entry.path().is_dir() {
+                    folders.push(path);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
         out.sort();
         Ok(out)
     }
@@ -86,6 +110,11 @@ impl Data for Preloaded {
             .filter(|p| p.strip_prefix(&prefix).is_some_and(|rest| !rest.contains('/')))
             .cloned()
             .collect())
+    }
+
+    fn walk(&self, folder: &str) -> io::Result<Vec<String>> {
+        let prefix = if folder.is_empty() { String::new() } else { format!("{}/", folder.trim_end_matches('/')) };
+        Ok(self.files.keys().filter(|p| p.starts_with(&prefix)).cloned().collect())
     }
 }
 

@@ -11,6 +11,16 @@ use std::time::{Duration, Instant};
 
 use scrap::Project;
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const SOURCES: usize = 300;
 
 #[test]
@@ -20,7 +30,7 @@ fn one_changed_material_among_hundreds_is_rebuilt_within_budget() {
     let project = Project::create(&root, "budget").unwrap();
     for i in 0..SOURCES {
         let path = project.materials().join(format!("m{i:03}.scrmat"));
-        std::fs::write(path, format!("(color: \"#{:06x}\")", i * 997)).unwrap();
+        write_all(path, format!("(color: \"#{:06x}\")", i * 997)).unwrap();
     }
     assert_eq!(scrap_import::sync(&project).len(), SOURCES, "first build");
     assert!(
@@ -31,7 +41,7 @@ fn one_changed_material_among_hundreds_is_rebuilt_within_budget() {
     let changed = project.materials().join("m150.scrmat");
     let mut took = Duration::MAX;
     for run in 0..5u32 {
-        std::fs::write(&changed, format!("(color: \"#{:06x}\")", run * 4099 + 1)).unwrap();
+        write_all(&changed, format!("(color: \"#{:06x}\")", run * 4099 + 1)).unwrap();
         let later = std::time::SystemTime::now() + Duration::from_secs(2 + u64::from(run));
         std::fs::File::options()
             .write(true)
