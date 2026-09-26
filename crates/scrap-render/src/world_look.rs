@@ -539,9 +539,20 @@ pub fn run_cameras(world: &mut World, dt: f32) {
 /// [`camera_of`]. A camera at the top of the tree is moved in the world;
 /// one under a parent is left to its parent.
 pub fn follow_cameras(world: &mut World, dt: f32) {
-    let targets: std::collections::HashMap<crate::id::EntityId, glam::Vec3> = world
+    // Where each followed thing is — only those: a camera follows one or
+    // two, and the level is thousands.
+    let followed: scrap_core::hash::FastSet<crate::id::EntityId> = world
+        .query::<&CameraLens>()
+        .iter()
+        .filter_map(|lens| lens.0.follow.map(|f| f.target))
+        .collect();
+    if followed.is_empty() {
+        return;
+    }
+    let targets: scrap_core::hash::FastMap<crate::id::EntityId, glam::Vec3> = world
         .query::<(&SceneId, &WorldTransform)>()
         .iter()
+        .filter(|(id, _)| followed.contains(&id.0))
         .map(|(id, placed)| (id.0, placed.0.w_axis.truncate()))
         .collect();
     // Exponential: the same softness at any frame rate.
