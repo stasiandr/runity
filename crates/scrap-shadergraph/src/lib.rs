@@ -11,4 +11,4 @@ pub mod surface;
 
 pub use effect::{effect_name, EffectGraph};
 pub use expr::{Input, Node, Ty};
-pub use surface::{shader_name, ShaderGraph, SurfaceOut};
+pub use surface::{shader_name, ShaderGraph, SurfaceOut, VertexOut};

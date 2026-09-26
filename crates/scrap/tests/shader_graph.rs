@@ -203,3 +203,84 @@ fn a_graph_reading_the_scene_draws() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A graph's vertex stage moves what it draws: a cube lifted out of the
+/// middle of the view leaves it empty and fills the top — lit, with the
+/// sun's shadows drawn by the graph's own shader, and cut out of the
+/// prepass so nothing is left where it stood.
+#[test]
+fn a_graphs_vertex_stage_moves_the_cube() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("scrap-shader-graph-vertex-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write(
+        &dir.join("lift.graph.ron"),
+        r#"(
+            params: ["up"],
+            nodes: {
+                "lift": Combine(x: 0.0, y: "up", z: 0.0),
+                "lifted": Add(a: "position", b: "lift"),
+            },
+            surface: (albedo: (1.0, 0.0, 0.0), emission: (1.0, 0.0, 0.0)),
+            vertex: (position: "lifted"),
+        )"#,
+        0,
+    );
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+    let mut shaders = MaterialShaders::new(&dir);
+    for (name, result) in shaders.poll(&mut renderer, &gpu) {
+        result.unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    let shot = |renderer: &mut Renderer, up: f32, shading: Shading| {
+        let mut params = [0.0; 8];
+        params[0] = up;
+        let frame = Frame {
+            camera: Camera {
+                position: Vec3::new(0.0, 0.0, 6.0),
+                target: Vec3::ZERO,
+                ..Camera::default()
+            },
+            sky: scrap::render::Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            clear_color: Vec3::ZERO,
+            post: scrap::post::PostProcess::OFF,
+            ambient_occlusion: scrap::ssao::AmbientOcclusion::OFF,
+            draws: vec![Draw {
+                mesh: cube,
+                transform: Mat4::IDENTITY,
+                texture: TextureHandle::WHITE,
+                material: Material {
+                    shading,
+                    shader: Some(scrap::asset::shader_id("lift")),
+                    params,
+                    ..Material::new(1.0, 1.0, 1.0)
+                },
+                pose: None,
+            }],
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        let pixels = target.read_rgba(&gpu);
+        (
+            OffscreenTarget::pixel(&pixels, SIZE, SIZE / 2, SIZE / 2),
+            OffscreenTarget::pixel(&pixels, SIZE, SIZE / 2, SIZE / 8),
+        )
+    };
+    for shading in [Shading::Unlit, Shading::Lit] {
+        let (middle, top) = shot(&mut renderer, 0.0, shading);
+        assert!(middle[0] > 60, "not lifted, it is in the middle ({shading:?}): {middle:?}");
+        assert!(top[0] < 30, "and not at the top: {top:?}");
+        let (middle, top) = shot(&mut renderer, 1.9, shading);
+        assert!(middle[0] < 30, "lifted out of the middle ({shading:?}): {middle:?}");
+        assert!(top[0] > 60, "to the top ({shading:?}): {top:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

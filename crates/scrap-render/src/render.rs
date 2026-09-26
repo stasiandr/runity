@@ -1284,6 +1284,10 @@ pub struct Renderer {
     /// Materials' own `surface` functions, by id: built again whenever the
     /// standard shader is reloaded.
     material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
+    /// The shadow pipelines of the material shaders that move their
+    /// vertices ([`shadow_pipelines`]), by the kind [`Renderer::own_shadow`]
+    /// says.
+    material_shadows: scrap_core::hash::FastMap<crate::asset::AssetId, [wgpu::RenderPipeline; 4]>,
     /// What each of those reads through `texture_at`, by its
     /// `// scrap:textures` line: the names of its slots.
     shader_textures: scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
@@ -1653,7 +1657,28 @@ pub fn with_surface(base: &str, surface: &str) -> Result<String, String> {
                 .into(),
         );
     }
-    Ok(format!("{}{surface}\n{}", &base[..start], &base[end..]))
+    let spliced = format!("{}{surface}\n{}", &base[..start], &base[end..]);
+    // Its own `vertex`, when it brings one, in place of the one that
+    // leaves every vertex where it is.
+    if !has_vertex_stage(surface) {
+        return Ok(spliced);
+    }
+    const VOPEN: &str = "// scrap:vertex {";
+    const VCLOSE: &str = "// scrap:vertex }";
+    let start = spliced
+        .find(VOPEN)
+        .ok_or("the standard shader has no `scrap:vertex` mark")?;
+    let end = spliced[start..]
+        .find(VCLOSE)
+        .map(|i| start + i + VCLOSE.len())
+        .ok_or("the standard shader's `scrap:vertex` mark is not closed")?;
+    Ok(format!("{}{}", &spliced[..start], &spliced[end..]))
+}
+
+/// Whether a material's shader brings its own vertex stage: `fn vertex(in:
+/// VertexIn, out: Vertex) -> Vertex`, which moves what it draws.
+pub fn has_vertex_stage(shader: &str) -> bool {
+    shader.contains("fn vertex(")
 }
 
 /// Every material shader in a folder — `shaders/water.wgsl` for
@@ -2160,6 +2185,7 @@ fn material_pipelines(
         wgpu::ShaderModule,
         std::collections::HashMap<Look, wgpu::RenderPipeline>,
         std::collections::HashMap<Look, wgpu::RenderPipeline>,
+        Option<[wgpu::RenderPipeline; 4]>,
     ),
     String,
 > {
@@ -2196,7 +2222,18 @@ fn material_pipelines(
     if let Some(error) = error {
         return Err(format!("the shader does not fit the renderer: {error}"));
     }
-    Ok((shader, scene, prepassed))
+    // Its own shadows, when it moves what it draws.
+    let shadows = if has_vertex_stage(surface) {
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let built = shadow_pipelines(gpu, &shader, base.layouts);
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("the shader's vertex stage does not fit the shadows: {error}"));
+        }
+        Some(built)
+    } else {
+        None
+    };
+    Ok((shader, scene, prepassed, shadows))
 }
 
 /// `make` over `items` on the workers, each under an error scope of its
@@ -2361,6 +2398,94 @@ fn terrain_mesh_pipelines(
     }
 }
 
+/// The depth-only pipelines that draw casters into shadow maps, from
+/// `shader`: both sides and front only, solid and cut out by alpha. The
+/// standard shader's, and a material's own when its `vertex` moves what it
+/// draws — its shadow moves with it.
+fn shadow_pipelines(gpu: &Gpu, shader: &wgpu::ShaderModule, layouts: &Layouts) -> [wgpu::RenderPipeline; 4] {
+    let buffers = vertex_buffers(false);
+    let shadow_pipeline = |cull_mode: Option<wgpu::Face>| {
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("scrap::shadow"),
+                layout: Some(layouts.shadow),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_shadow"),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    // Both sides: a card, a leaf, a flag that faces the sun has no far
+    // side, and the lamps' maps and the virtual pages draw everything so.
+    let shadow = shadow_pipeline(None);
+    // Front faces only, for the sun's cascades: what one-sided things
+    // cast, as URP's caster pass culls as the material does. Its normal
+    // bias shrinks a caster only while its back faces stay out.
+    let shadow_front = shadow_pipeline(Some(wgpu::Face::Back));
+    let shadow_clip_pipeline = |cull_mode: Option<wgpu::Face>| {
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("scrap::shadow (clipped)"),
+                layout: Some(layouts.shadow_clip),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_shadow_clip"),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_shadow_clip"),
+                    compilation_options: Default::default(),
+                    targets: &[],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    // A cut-out is usually a card seen from both sides.
+    let shadow_clip = shadow_clip_pipeline(None);
+    let shadow_clip_front = shadow_clip_pipeline(Some(wgpu::Face::Back));
+    [shadow, shadow_front, shadow_clip, shadow_clip_front]
+}
+
 fn build_pipelines(
     gpu: &Gpu,
     shader: &wgpu::ShaderModule,
@@ -2440,45 +2565,7 @@ fn build_pipelines(
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
     let buffers = vertex_buffers(false);
-    let shadow_pipeline = |cull_mode: Option<wgpu::Face>| {
-        gpu.device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("scrap::shadow"),
-                layout: Some(layouts.shadow),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_shadow"),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                fragment: None,
-                primitive: wgpu::PrimitiveState {
-                    cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 2,
-                        slope_scale: 2.0,
-                        clamp: 0.0,
-                    },
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-    };
-    // Both sides: a card, a leaf, a flag that faces the sun has no far
-    // side, and the lamps' maps and the virtual pages draw everything so.
-    let shadow = shadow_pipeline(None);
-    // Front faces only, for the sun's cascades: what one-sided things
-    // cast, as URP's caster pass culls as the material does. Its normal
-    // bias shrinks a caster only while its back faces stay out.
-    let shadow_front = shadow_pipeline(Some(wgpu::Face::Back));
+    let [shadow, shadow_front, shadow_clip, shadow_clip_front] = shadow_pipelines(gpu, shader, layouts);
 
     // Tools, with the same vertex layout, into the tools' own picture
     // (crate::tools): no depth at all, so an overlay neither hides behind
@@ -2621,46 +2708,6 @@ fn build_pipelines(
             cache: None,
         });
 
-    let shadow_clip_pipeline = |cull_mode: Option<wgpu::Face>| {
-        gpu.device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("scrap::shadow (clipped)"),
-                layout: Some(layouts.shadow_clip),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_shadow_clip"),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some("fs_shadow_clip"),
-                    compilation_options: Default::default(),
-                    targets: &[],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 2,
-                        slope_scale: 2.0,
-                        clamp: 0.0,
-                    },
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-    };
-    // A cut-out is usually a card seen from both sides.
-    let shadow_clip = shadow_clip_pipeline(None);
-    let shadow_clip_front = shadow_clip_pipeline(Some(wgpu::Face::Back));
 
     let compute = |layout: &wgpu::PipelineLayout, entry: &str| {
         gpu.device
@@ -2903,14 +2950,15 @@ impl Renderer {
         }
     }
 
-    /// Whether a look's own shader cuts its surface out (`discard`): the
-    /// prepass, which does not run it, would lay the whole of it, so it is
-    /// left out there and drawn over the prepass's depth as a see-through
-    /// thing is, by its own test.
+    /// Whether a look's own shader cuts its surface out (`discard`) or
+    /// moves it (its own `vertex`): the prepass, which does not run it,
+    /// would lay the whole of it where it stood, so it is left out there
+    /// and drawn over the prepass's depth as a see-through thing is, by its
+    /// own test.
     fn cuts(&self, look: Look) -> bool {
         look.shader
             .and_then(|id| self.material_shaders.get(&id))
-            .is_some_and(|s| s.contains("discard"))
+            .is_some_and(|s| s.contains("discard") || has_vertex_stage(s))
     }
 
     /// Give materials whose `shader` is `id` their own `surface` function
@@ -2969,9 +3017,13 @@ impl Renderer {
         let built = scrap_core::jobs::map(shaders, 1, |(id, surface)| material_pipelines(gpu, &base, *id, surface));
         let mut out = Vec::with_capacity(shaders.len());
         for ((id, surface), built) in shaders.iter().zip(built) {
-            out.push(built.map(|(shader, scene, prepassed)| {
+            out.push(built.map(|(shader, scene, prepassed, shadows)| {
                 self.pipelines.scene.extend(scene);
                 self.pipelines.prepassed.extend(prepassed);
+                match shadows {
+                    Some(shadows) => self.material_shadows.insert(*id, shadows),
+                    None => self.material_shadows.remove(id),
+                };
                 self.lean_modules.insert(Some(*id), shader);
                 self.material_shaders.insert(*id, surface.clone());
                 self.shader_textures.insert(*id, declared_textures(surface));
@@ -3730,6 +3782,7 @@ impl Renderer {
             graph: crate::graph::FrameGraph::new(),
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
+            material_shadows: scrap_core::hash::FastMap::default(),
             shader_textures: scrap_core::hash::FastMap::default(),
             layout,
             bind_group,
@@ -4252,6 +4305,7 @@ impl Renderer {
             looks: &self.looks,
             by_asset: &self.by_asset,
             shader_textures: &self.shader_textures,
+            moving: &self.material_shadows,
         }
     }
 
@@ -4586,6 +4640,35 @@ impl Renderer {
         }
     }
 
+    /// A material's own shadow pipeline of a kind (0 both sides, 1 front
+    /// only, 2 and 3 the same cut out by alpha) when it moves its vertices.
+    fn own_shadow(&self, look: &Option<Look>, kind: usize) -> Option<&wgpu::RenderPipeline> {
+        look.as_ref()
+            .and_then(|l| l.shader)
+            .and_then(|id| self.material_shadows.get(&id))
+            .map(|p| &p[kind])
+    }
+
+    /// The standard shadow pipeline of a kind.
+    fn standard_shadow(&self, kind: usize) -> &wgpu::RenderPipeline {
+        match kind {
+            0 => &self.pipelines.shadow,
+            1 => &self.pipelines.shadow_front,
+            2 => &self.pipelines.shadow_clip,
+            _ => &self.pipelines.shadow_clip_front,
+        }
+    }
+
+    /// The look a caster's shadow batch is filed under: none, all drawn
+    /// alike, but for a material that moves its vertices, whose shadow is
+    /// drawn by its own shader.
+    fn shadow_look(&self, material: &Material) -> Option<Look> {
+        material
+            .shader
+            .filter(|id| self.material_shadows.contains_key(id))
+            .map(|_| Look::of(material, false))
+    }
+
     /// Shadow casters into one cascade: of each batch, the runs of its
     /// instances whose bit is set in `masks` (indexed as the instances
     /// are, from 0 at the first caster), each run one call.
@@ -4599,10 +4682,19 @@ impl Renderer {
         masks: &[u8],
         bit: u8,
         cascade: Option<(Mat4, f32)>,
+        kind: usize,
     ) {
         let mut first = base;
+        // The pipeline the caller set is the standard one of this kind; a
+        // material that moves its vertices draws its shadow with its own.
+        let mut own = false;
         for ((look, handle, texture), list) in batches {
             let count = list.len() as u32;
+            let mine = self.own_shadow(look, kind);
+            if mine.is_some() || own {
+                pass.set_pipeline(mine.unwrap_or_else(|| self.standard_shadow(kind)));
+                own = mine.is_some();
+            }
             let Some(mesh) = self.mesh(*handle) else {
                 first += count;
                 continue;
@@ -6798,7 +6890,7 @@ impl Renderer {
             // split by them.
             let maps = self.batch_maps(maps);
             if !draw.material.is_transparent() {
-                let key = (None, level.unwrap_or(draw.mesh), maps);
+                let key = (self.shadow_look(&draw.material), level.unwrap_or(draw.mesh), maps);
                 // A mirrored one winds the other way: both, to be safe.
                 let one_sided = draw.material.render_face == RenderFace::Front
                     && draw.transform.determinant() > 0.0;
@@ -6926,7 +7018,7 @@ impl Renderer {
                 let maps = self.maps_of(draw);
                 let mut raw = instance_of(draw.transform, &draw.material);
                 raw.maps = packed(maps);
-                index.push(&mut pool, list, (None, draw.mesh, self.batch_maps(maps)), raw);
+                index.push(&mut pool, list, (self.shadow_look(&draw.material), draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
         }
@@ -7330,18 +7422,18 @@ impl Renderer {
             let (one, both) = shadow_batches.split_at(shadow_one_sided);
             pass.set_pipeline(&self.pipelines.shadow_front);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_casters(&mut pass, one, 0, false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
+            self.draw_casters(&mut pass, one, 0, false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)), 1);
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_casters(&mut pass, both, count(one), false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
+            self.draw_casters(&mut pass, both, count(one), false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)), 0);
             if !clip_batches.is_empty() {
                 let (one, both) = clip_batches.split_at(clip_one_sided);
                 pass.set_pipeline(&self.pipelines.shadow_clip_front);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_casters(&mut pass, one, solid_casters, true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
+                self.draw_casters(&mut pass, one, solid_casters, true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)), 3);
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_casters(&mut pass, both, solid_casters + count(one), true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
+                self.draw_casters(&mut pass, both, solid_casters + count(one), true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)), 2);
             }
             }
             if debugged {
@@ -7395,7 +7487,7 @@ impl Renderer {
                 let offset = [self.vsm.offset(i)];
                 let over = |r: &[f32; 4]| r[0] <= job.rect[1] && r[1] >= job.rect[0] && r[2] <= job.rect[3] && r[3] >= job.rect[2];
                 let mut first = 0u32;
-                for (b, ((_, handle, maps), list)) in shadow_batches.iter().chain(clip_batches.iter()).enumerate() {
+                for (b, ((look, handle, maps), list)) in shadow_batches.iter().chain(clip_batches.iter()).enumerate() {
                     let count = list.len() as u32;
                     let clipped = b >= shadow_batches.len();
                     let Some(mesh) = self.mesh(*handle) else {
@@ -7414,7 +7506,8 @@ impl Renderer {
                             k += 1;
                         }
                         if !bound {
-                            pass.set_pipeline(if clipped { &self.pipelines.shadow_clip } else { &self.pipelines.shadow });
+                            let kind = if clipped { 2 } else { 0 };
+                            pass.set_pipeline(self.own_shadow(look, kind).unwrap_or_else(|| self.standard_shadow(kind)));
                             pass.set_bind_group(0, &self.vsm.page_group, &offset);
                             if clipped {
                                 self.bind_maps(&mut pass, *maps);
@@ -7461,12 +7554,12 @@ impl Renderer {
             let offset = [((MAX_CASCADES + i) as u64 * self.caster_stride) as u32];
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_batches(&mut pass, solid, base, false);
+            self.draw_casters(&mut pass, solid, base, false, &[], 1, None, 0);
             base += solid.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
             if !clipped.is_empty() {
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_batches(&mut pass, clipped, base, true);
+                self.draw_casters(&mut pass, clipped, base, true, &[], 1, None, 2);
                 base += clipped.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
             }
         }
@@ -8099,6 +8192,9 @@ struct DrawLookup<'a> {
     looks: &'a scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
     by_asset: &'a scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
     shader_textures: &'a scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
+    /// The material shaders that move their vertices: drawn whole, never a
+    /// coarser level — a flag simplified to two triangles cannot wave.
+    moving: &'a scrap_core::hash::FastMap<crate::asset::AssetId, [wgpu::RenderPipeline; 4]>,
 }
 
 impl DrawLookup<'_> {
@@ -8172,7 +8268,7 @@ impl DrawLookup<'_> {
         if covers < crate::lod::TOO_SMALL {
             return None;
         }
-        if skinned {
+        if skinned || draw.material.shader.is_some_and(|id| self.moving.contains_key(&id)) {
             return Some(draw.mesh);
         }
         let mut pick = draw.mesh;
@@ -8706,6 +8802,44 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_shader_graph_that_moves_its_vertices_builds_and_leaves_the_prepass() {
+        let graph = scrap_shadergraph::surface::parse(
+            r#"(
+                params: ["sway"],
+                nodes: {
+                    "phase": Add(a: "time", b: "origin.x"),
+                    "wave": Sine(of: "phase"),
+                    "high": Saturate(of: "object.y"),
+                    "push": Multiply(a: "wave", b: "high"),
+                    "far": Multiply(a: "push", b: "sway"),
+                    "along": Combine(x: "far", y: 0.0, z: 0.0),
+                    "moved": Add(a: "position", b: "along"),
+                    "tint": Multiply(a: "vertex_color.rgb", b: 0.5),
+                },
+                surface: (albedo: "tint"),
+                vertex: (position: "moved"),
+            )"#,
+        )
+        .unwrap();
+        let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/grass.graph.ron").unwrap();
+        assert!(wgsl.contains("fn vertex(in: VertexIn, out: Vertex) -> Vertex"), "{wgsl}");
+        assert!(has_vertex_stage(&wgsl));
+        check_material_shader(&wgsl).unwrap_or_else(|e| panic!("{e}\n{wgsl}"));
+        let full = with_surface(SHADER, &wgsl).unwrap();
+        assert_eq!(full.matches("fn vertex(").count(), 1, "the standard one left out");
+        assert!(scrap_shadergraph::surface::problems(&graph).is_empty());
+        // What the vertex stage cannot see.
+        let e = scrap_shadergraph::surface::to_wgsl(
+            &scrap_shadergraph::surface::parse(r#"(nodes: { "m": Add(a: "position", b: "view") }, vertex: (position: "m"))"#).unwrap(),
+            "x",
+        )
+        .unwrap_err();
+        assert!(e.contains("no node, input or parameter called `view`"), "{e}");
+        // And a shader with no vertex stage keeps the standard one.
+        assert_eq!(with_surface(SHADER, "fn surface(in: SurfaceIn, out: Surface) -> Surface { return out; }").unwrap().matches("fn vertex(").count(), 1);
+    }
 
     #[test]
     fn a_shader_graph_of_every_kind_of_node_builds_over_the_standard_shader() {

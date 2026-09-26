@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/flag.scrmat",
+    hash: "25c8af3fe943e8e1753633a3429c7ec3",
+    id: Some("da703988bdfeff5ee8a9adbac4bd8830"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

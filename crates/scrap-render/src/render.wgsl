@@ -709,6 +709,47 @@ fn world_normal(model: mat4x4<f32>, n: vec3<f32>) -> vec3<f32> {
 }
 @group(0) @binding(3) var<uniform> caster: Caster;
 
+// What a material's own vertex stage is given: where the vertex is in the
+// world as placed (after the wind), its normal there, where it is in the
+// model's own space, where the model is, its texture coordinates, the
+// clock, the material's numbers and the colour painted on it.
+struct VertexIn {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    object: vec3<f32>,
+    origin: vec3<f32>,
+    uv: vec2<f32>,
+    time: f32,
+    params: array<vec4<f32>, 2>,
+    vertex_color: vec4<f32>,
+};
+
+// What it sets: where the vertex is in the world, and its normal.
+struct Vertex {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+};
+
+// A material's shader may bring its own `vertex` — everything between the
+// two marks is left out when it does — to move what it draws: grass in its
+// own wind, a wave, a flag. It runs in the colour pass and the shadows'.
+// It reads only what it is given: the shadow passes know no `frame`.
+// scrap:vertex {
+fn vertex(in: VertexIn, out: Vertex) -> Vertex {
+    return out;
+}
+// scrap:vertex }
+
+/// A vertex through its material's `vertex`.
+fn material_vertex(in: VertexInput, object: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, time: f32) -> Vertex {
+    // Of length one: a world normal is scaled with the model.
+    let n = normalize(normal);
+    return vertex(
+        VertexIn(world, n, object, in.model_3.xyz, in.uv * in.uv_transform.xy + in.uv_transform.zw, time, array<vec4<f32>, 2>(in.params_0, in.params_1), in.vertex_color),
+        Vertex(world, n),
+    );
+}
+
 // maps: begin
 // The surface's own image. Every draw binds one; an untextured material
 // binds a single white pixel, so the shader never needs a branch and an
@@ -934,10 +975,11 @@ fn skinned_vertex(in: VertexInput, skin: SkinInput) -> VertexOutput {
     let posed = skinning * vec4<f32>(in.position, 1.0);
     let world = model * posed;
 
+    let moved = material_vertex(in, posed.xyz, world.xyz, world_normal(model, (skinning * vec4<f32>(in.normal, 0.0)).xyz), frame.foliage.wind.w);
     var out: VertexOutput;
-    out.clip_position = frame.view_projection * world;
-    out.world_position = world.xyz;
-    out.normal = world_normal(model, (skinning * vec4<f32>(in.normal, 0.0)).xyz);
+    out.clip_position = frame.view_projection * vec4<f32>(moved.position, 1.0);
+    out.world_position = moved.position;
+    out.normal = moved.normal;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -1043,7 +1085,8 @@ fn trampled(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    let biased = shadow_biased(world, world_normal(model, in.normal));
+    let moved = material_vertex(in, in.position, world, world_normal(model, in.normal), caster.foliage.wind.w);
+    let biased = shadow_biased(moved.position, moved.normal);
     return caster.view_projection * vec4<f32>(biased, 1.0);
 }
 
@@ -1061,7 +1104,8 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     var out: ClipOut;
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    let biased = shadow_biased(world, world_normal(model, in.normal));
+    let moved = material_vertex(in, in.position, world, world_normal(model, in.normal), caster.foliage.wind.w);
+    let biased = shadow_biased(moved.position, moved.normal);
     out.position = caster.view_projection * vec4<f32>(biased, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
@@ -2242,10 +2286,11 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
         1.0,
     );
 
+    let moved = material_vertex(in, in.position, world.xyz, world_normal(model, in.normal), frame.foliage.wind.w);
     var out: VertexOutput;
-    out.clip_position = frame.view_projection * world;
-    out.world_position = world.xyz;
-    out.normal = world_normal(model, in.normal);
+    out.clip_position = frame.view_projection * vec4<f32>(moved.position, 1.0);
+    out.world_position = moved.position;
+    out.normal = moved.normal;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
