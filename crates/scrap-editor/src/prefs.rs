@@ -39,6 +39,10 @@ pub(crate) struct Prefs {
     /// The Inspector in Debug mode: every field as the RON its file holds,
     /// as Unity's Inspector menu has it.
     inspector_debug: bool,
+    /// The game's own code built optimized for Play: slower to build after
+    /// an edit, several times quicker to run (a game's systems at
+    /// `opt-level` 0 are three or four times slower than at 1).
+    fast_game: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -127,6 +131,24 @@ impl Session {
         prefs.link = link.trim().to_string();
         write_prefs(&path, &prefs);
         Ok(())
+    }
+
+    /// Whether Play builds the game's own code optimized (`opt-level` 1,
+    /// what `CARGO_PROFILE_DEV_OPT_LEVEL` sets for the game's crate) rather
+    /// than as a debug build: this person's choice, kept with the view.
+    pub fn fast_game(&self) -> bool {
+        self.read_prefs().fast_game
+    }
+
+    /// Build the game optimized from the next Play on, or not. Outside a
+    /// project it is not kept.
+    pub fn set_fast_game(&mut self, on: bool) {
+        let Some(path) = self.prefs_path() else {
+            return;
+        };
+        let mut prefs = self.read_prefs();
+        prefs.fast_game = on;
+        write_prefs(&path, &prefs);
     }
 
     /// Whether this person has the Inspector in Debug mode: every field as

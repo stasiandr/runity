@@ -13,6 +13,7 @@ glam = { version = "0.32", features = ["serde", "bytemuck"] }
 hecs = "0.11.0"
 rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
+ruzstd = "0.9"
 serde = { version = "1.0.229", features = ["derive"] }
 tracing = "0.1.44"
 # The clock: `std::time` on the desktop, the page's in the browser.

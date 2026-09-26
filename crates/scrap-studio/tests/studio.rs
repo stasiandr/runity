@@ -437,6 +437,14 @@ fn the_menus_leave_the_toolbar_for_the_system_and_say_their_state() {
     assert!(play
         .iter()
         .any(|i| i.label == "Play from Here" && i.action == Some(Action::PlayFromHere)));
+    // And whether Play builds the game optimized, a tick of its own.
+    assert!(play
+        .iter()
+        .any(|i| i.label == "Optimized Game Code" && i.action == Some(Action::FastGame)));
+    assert!(!s.menu_state(&Action::FastGame, "Optimized Game Code").checked);
+    s.run(Action::FastGame);
+    assert!(s.session.fast_game());
+    assert!(s.menu_state(&Action::FastGame, "Optimized Game Code").checked);
 
     // The system's menus: none in the toolbar, the play buttons stay.
     s.set_native_menu(true);

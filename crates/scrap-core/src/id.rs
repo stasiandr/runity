@@ -166,6 +166,13 @@ impl<'de> Deserialize<'de> for EntityId {
     }
 }
 
+thread_local! {
+    /// Where each link was last found, by world and ID, and whether through
+    /// a scene's ID (else a spawned prefab's).
+    static FOUND: std::cell::RefCell<crate::hash::FastMap<(usize, u64), (hecs::Entity, bool)>> =
+        std::cell::RefCell::new(Default::default());
+}
+
 /// A link from a game's component to another entity of the scene: Unity's
 /// object field. A door names its switch, a spawner its spawn point.
 ///
@@ -188,20 +195,58 @@ impl EntityRef {
     /// The entity it links to in a running world: the one spawned from the
     /// scene line with that ID, or — in something the game spawned from a
     /// prefab — from that prefab's line.
+    ///
+    /// What was found is remembered, and the next look only checks that
+    /// the entity still carries that ID: a game's systems follow the same
+    /// links every step, and looking through every entity of the level for
+    /// each was a step's worth of lookups. An ID not found, or no longer on
+    /// the entity it was, is looked for through them all again.
     pub fn get(&self, world: &hecs::World) -> Option<hecs::Entity> {
         let id = self.0?;
-        world
-            .query::<(hecs::Entity, &crate::world::SceneId)>()
-            .iter()
-            .find(|(_, scene)| scene.0 == id)
-            .map(|(entity, _)| entity)
-            .or_else(|| {
-                world
-                    .query::<(hecs::Entity, &crate::world::SpawnedId)>()
-                    .iter()
-                    .find(|(_, spawned)| spawned.0 == id)
-                    .map(|(entity, _)| entity)
-            })
+        let key = (world as *const hecs::World as usize, id.0);
+        let remembered = FOUND.with(|found| found.borrow().get(&key).copied());
+        if let Some((entity, scene)) = remembered {
+            let still = if scene {
+                world.get::<&crate::world::SceneId>(entity).is_ok_and(|s| s.0 == id)
+            } else {
+                world.get::<&crate::world::SpawnedId>(entity).is_ok_and(|s| s.0 == id)
+            };
+            if still {
+                return Some(entity);
+            }
+        }
+        // Every entity carrying it, the first found as before: remembered
+        // only when it is the one, so a link a prefab's instances share
+        // (each spawned copy carries its lines' IDs) is found as before.
+        let mut scene = world.query::<(hecs::Entity, &crate::world::SceneId)>();
+        let mut matches = scene.iter().filter(|(_, s)| s.0 == id).map(|(e, _)| (e, true));
+        let mut found = matches.next();
+        let mut only = found.is_some() && matches.next().is_none();
+        drop(matches);
+        drop(scene);
+        if found.is_none() {
+            let mut spawned = world.query::<(hecs::Entity, &crate::world::SpawnedId)>();
+            let mut matches = spawned.iter().filter(|(_, s)| s.0 == id).map(|(e, _)| (e, false));
+            found = matches.next();
+            only = found.is_some() && matches.next().is_none();
+        }
+        FOUND.with(|remember| {
+            let mut remember = remember.borrow_mut();
+            match found.filter(|_| only) {
+                Some(found) => {
+                    // Worlds come and go (a test's, a reloaded level's):
+                    // what they left is forgotten now and then.
+                    if remember.len() >= 1 << 16 {
+                        remember.clear();
+                    }
+                    remember.insert(key, found);
+                }
+                None => {
+                    remember.remove(&key);
+                }
+            }
+        });
+        found.map(|(entity, _)| entity)
     }
 
     /// Every entity ID linked in a value's RON text: what `check` looks
@@ -259,6 +304,39 @@ impl<'de> Deserialize<'de> for EntityRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link finds its entity, then not once it is gone, then the one
+    /// spawned anew with its ID; a link two spawned copies share finds the
+    /// first of them, every time, as a look through them all does.
+    #[test]
+    fn a_link_follows_its_entity_whatever_it_remembered() {
+        use crate::world::{SceneId, SpawnedId};
+        let id: EntityId = "00000000000000aa".parse().unwrap();
+        let link = EntityRef::to(id);
+        let mut world = hecs::World::new();
+        world.spawn((SceneId("00000000000000bb".parse().unwrap()),));
+        let first = world.spawn((SceneId(id),));
+        assert_eq!(link.get(&world), Some(first));
+        assert_eq!(link.get(&world), Some(first), "remembered");
+        world.despawn(first).unwrap();
+        assert_eq!(link.get(&world), None, "gone");
+        let again = world.spawn((SceneId(id),));
+        assert_eq!(link.get(&world), Some(again), "spawned anew");
+        world.remove_one::<SceneId>(again).unwrap();
+        assert_eq!(link.get(&world), None, "no longer carrying it");
+
+        let shared: EntityId = "00000000000000cc".parse().unwrap();
+        let tail = EntityRef::to(shared);
+        let copies: Vec<hecs::Entity> = (0..3).map(|_| world.spawn((SpawnedId(shared),))).collect();
+        let scanned = world.query::<(hecs::Entity, &SpawnedId)>().iter().find(|(_, s)| s.0 == shared).map(|(e, _)| e);
+        for _ in 0..3 {
+            assert_eq!(tail.get(&world), scanned);
+        }
+        world.despawn(scanned.unwrap()).unwrap();
+        let next = world.query::<(hecs::Entity, &SpawnedId)>().iter().find(|(_, s)| s.0 == shared).map(|(e, _)| e);
+        assert_eq!(tail.get(&world), next);
+        assert!(copies.contains(&next.unwrap()));
+    }
 
     #[test]
     fn a_link_reads_and_writes_as_its_name_and_an_id() {

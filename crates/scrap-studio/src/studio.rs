@@ -1023,6 +1023,7 @@ impl Studio {
             | Action::SaveMaterial => (selected, false),
             Action::Pause => (playing, s.is_paused()),
             Action::Step | Action::KeepSimulation => (playing, false),
+            Action::FastGame => (true, s.fast_game()),
             Action::Play => (true, playing),
             Action::ToggleGrid => (true, s.show_grid()),
             Action::ToggleSnap => (true, s.snap().meters > 0.0),
@@ -4362,6 +4363,18 @@ impl Studio {
                             },
                         );
                     }
+                }
+                Action::FastGame => {
+                    let on = !s.fast_game();
+                    s.set_fast_game(on);
+                    s.say(
+                        Level::Info,
+                        if on {
+                            "Play builds the game's code optimized: slower to build, quicker to run"
+                        } else {
+                            "Play builds the game's code as a debug build: quicker to build"
+                        },
+                    );
                 }
                 Action::KeepSimulation => {
                     if !s.is_playing() {

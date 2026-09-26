@@ -85,19 +85,73 @@ impl Bounds {
     }
 }
 
-/// An image, ready to upload: straight RGBA8, one byte per channel.
-///
-/// Uncompressed for now. Block compression (BC7 on desktop, ASTC on mobile)
-/// is the obvious next step and belongs at import, where it is paid for once
-/// rather than every load — but it is a per-platform decision, and the
-/// pipeline has to exist before it is worth making.
+/// How a texture's texels are stored: straight RGBA8, as the importer
+/// writes the library, or in blocks the GPU samples as they are — BC7 on a
+/// desktop's, ASTC 4x4 on a phone's or an Apple one's — as a build for a
+/// platform cooks them (`scrap build --platform`). A quarter of the bytes
+/// on disk, in the download and in video memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Archive, Serialize, Deserialize)]
+#[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq))]
+pub enum TextureCoding {
+    #[default]
+    Rgba8,
+    Bc7,
+    Astc4x4,
+}
+
+impl TextureCoding {
+    /// Texels across (and down) a block: 1 for RGBA8.
+    pub fn block(self) -> u32 {
+        match self {
+            TextureCoding::Rgba8 => 1,
+            TextureCoding::Bc7 | TextureCoding::Astc4x4 => 4,
+        }
+    }
+
+    /// Bytes a block takes: a texel's four for RGBA8, sixteen for BC7 and
+    /// ASTC 4x4.
+    pub fn block_bytes(self) -> u32 {
+        match self {
+            TextureCoding::Rgba8 => 4,
+            TextureCoding::Bc7 | TextureCoding::Astc4x4 => 16,
+        }
+    }
+
+    /// Blocks across and down a level `width` by `height`: the last ones
+    /// partly past its edge.
+    pub fn blocks(self, width: u32, height: u32) -> (u32, u32) {
+        let b = self.block();
+        (width.max(1).div_ceil(b), height.max(1).div_ceil(b))
+    }
+
+    /// The bytes of a level `width` by `height`.
+    pub fn level_bytes(self, width: u32, height: u32) -> usize {
+        let (x, y) = self.blocks(width, height);
+        x as usize * y as usize * self.block_bytes() as usize
+    }
+}
+
+impl ArchivedTextureCoding {
+    /// The coding, off the archive.
+    pub fn native(&self) -> TextureCoding {
+        match self {
+            ArchivedTextureCoding::Rgba8 => TextureCoding::Rgba8,
+            ArchivedTextureCoding::Bc7 => TextureCoding::Bc7,
+            ArchivedTextureCoding::Astc4x4 => TextureCoding::Astc4x4,
+        }
+    }
+}
+
+/// An image, ready to upload: RGBA8, one byte per channel, as imported;
+/// in GPU blocks ([`TextureCoding`]) as a build for a platform cooks it.
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
 pub struct TextureAsset {
     pub id: AssetId,
     pub name: String,
     pub width: u32,
     pub height: u32,
-    /// `width * height * 4` bytes, top row first. The base level.
+    /// The base level, top row first: `width * height * 4` bytes of RGBA8,
+    /// or its blocks, a row of them at a time ([`TextureCoding::level_bytes`]).
     pub pixels: Vec<u8>,
     /// Levels 1 and down, each half the previous, ending at 1x1.
     ///
@@ -110,6 +164,8 @@ pub struct TextureAsset {
     /// roughness and masks are not, and sampling those through an sRGB view
     /// bends every value in them.
     pub srgb: bool,
+    /// How `pixels` and each level's are stored.
+    pub coding: TextureCoding,
 }
 
 
