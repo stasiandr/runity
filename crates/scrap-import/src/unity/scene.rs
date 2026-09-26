@@ -1574,6 +1574,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             if b.i64("orthographic") == Some(1) {
                 lens.ortho = b.f32("orthographic size");
             }
+            // Unity draws its cameras by depth, the deepest last and over
+            // the rest: that one is what the player sees (a 3D skybox's
+            // camera is shallower than the main one).
+            lens.priority = b.f32("m_Depth").unwrap_or(0.0).round() as i32;
             desc.set_part(&lens);
         }
         "HingeJoint" | "FixedJoint" | "CharacterJoint" | "ConfigurableJoint" | "SpringJoint" => {

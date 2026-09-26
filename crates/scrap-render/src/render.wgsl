@@ -956,7 +956,7 @@ fn expand(v: VertexSlim) -> VertexOutput {
 // two characters in different poses cost two offsets rather than two
 // pipelines.
 struct Pose {
-    joints: array<mat4x4<f32>, 64>,
+    joints: array<mat4x4<f32>, 128>,
 };
 @group(2) @binding(0) var<uniform> pose: Pose;
 

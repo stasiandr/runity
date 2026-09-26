@@ -676,9 +676,9 @@ pub const MAX_CASCADES: usize = 4;
 /// The most joints one pose may have.
 ///
 /// Sized so a pose fits comfortably in a uniform buffer on the downlevel
-/// limits this engine asks for. A skeleton past this is split or simplified
+/// limits this engine asks for (8 KiB of 16). A skeleton past this is split or simplified
 /// at import; silently dropping joints would put a limb at the origin.
-pub const MAX_JOINTS: usize = 64;
+pub const MAX_JOINTS: usize = 128;
 
 /// A skeleton's joints, already turned into skinning matrices.
 #[derive(Debug, Clone, PartialEq)]

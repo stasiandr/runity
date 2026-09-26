@@ -722,12 +722,12 @@ pub struct SkinOf(pub crate::AssetLink);
 
 /// A skinned model bent by things of the scene: each joint of its skin by
 /// the entity of that name near it (a Unity skinned mesh's bones), and
-/// where the bone stood when it was bound — the pose the model was made in.
+/// where the bone stood in the pose the model was made in.
 #[derive(Debug, Clone)]
 pub struct BoundSkin {
     pub bones: Vec<Option<hecs::Entity>>,
-    /// Per joint: the bone's place when bound, undone, then the model's
-    /// own place then (its vertices are in its own frame).
+    /// Per joint: the bone's place in the model's own pose, undone, then
+    /// the model's own place when bound (its vertices are in its own frame).
     pub unbind: Vec<Mat4>,
 }
 
@@ -777,16 +777,15 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
             .map(|j| named.get(&j.name).or_else(|| named.get(crate::animation::bare_joint_name(&j.name))).copied())
             .collect();
         // Its vertices are in its own frame (a piece of a Unity model's
-        // are): undone from where each bone stood when bound.
+        // are): undone from where each bone stands in the model's pose.
         let root_at = world_of(world, entity).unwrap_or(Mat4::IDENTITY);
         if bones.iter().all(Option::is_none) {
             gone.push(entity);
             continue;
         }
-        let unbind = bones
-            .iter()
-            .map(|b| b.and_then(|b| world_of(world, b)).map_or(Mat4::IDENTITY, |at| at.inverse() * root_at))
-            .collect();
+        let at: Vec<Option<Mat4>> = bones.iter().map(|b| b.and_then(|b| world_of(world, b))).collect();
+        let made_in = pose_made_in(&skin.skeleton, &at);
+        let unbind = made_in.iter().map(|at| at.map_or(Mat4::IDENTITY, |at| at.inverse() * root_at)).collect();
         bound.push((entity, BoundSkin { bones, unbind }));
     }
     for entity in gone {
@@ -796,6 +795,70 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
         let _ = world.insert_one(entity, skin);
     }
     pose_bound_skins(world);
+}
+
+/// Where each bone stood when its model was made, from where the bones
+/// stand now (`at`): a scene may keep its bones posed (a Unity prefab
+/// saved mid-animation), so each is placed from the topmost bone above
+/// it by the skin's own bind pose. The skin's joints and the scene's
+/// bones may differ by a frame — a scale and a turn, as a model
+/// converted between tools has — found from the bones' offsets from
+/// their parents, which no pose changes. Where that is not found, the
+/// bones are taken as they stand.
+fn pose_made_in(skeleton: &crate::animation::Skeleton, at: &[Option<Mat4>]) -> Vec<Option<Mat4>> {
+    use glam::{Mat3, Vec3};
+    let joints = &skeleton.joints;
+    let made = |j: usize| Mat4::from_cols_array_2d(&joints[j].inverse_bind).inverse();
+    // The frame: the scene's offsets against the skin's, fitted.
+    let outer = |a: Vec3, b: Vec3| Mat3::from_cols(a * b.x, a * b.y, a * b.z);
+    let mut pairs = Vec::new();
+    let mut pair_of = vec![None; joints.len()];
+    for (j, joint) in joints.iter().enumerate() {
+        let Some(p) = joint.parent.map(usize::from) else { continue };
+        let (Some(child), Some(parent)) = (at[j], at[p]) else { continue };
+        let scene = (parent.inverse() * child).w_axis.truncate();
+        let skin = (made(p).inverse() * made(j)).w_axis.truncate();
+        pair_of[j] = Some(pairs.len());
+        pairs.push((scene, skin));
+    }
+    // Each offset counts alike, however long; what does not fit is left
+    // out and the rest fitted again.
+    let fit = |pairs: &mut dyn Iterator<Item = &(Vec3, Vec3)>| {
+        let (mut across, mut own) = (Mat3::ZERO, Mat3::ZERO);
+        for (scene, skin) in pairs {
+            let weight = 1.0 / skin.length_squared().max(1e-12);
+            across += outer(*scene, *skin * weight);
+            own += outer(*skin, *skin * weight);
+        }
+        (own.determinant().abs() > 1e-12).then(|| across * own.inverse())
+    };
+    // A bone that moves by its pose (the hips), or under a root of
+    // another frame, is left out of the fit.
+    let fits = |frame: Mat3, (scene, skin): &(Vec3, Vec3)| (*scene - frame * *skin).length() <= 0.05 * scene.length() + 1e-4;
+    let as_they_stand = at.to_vec();
+    let Some(mut frame) = fit(&mut pairs.iter()) else { return as_they_stand };
+    for loose in [0.5, 0.2, 0.05] {
+        let near = |p: &&(Vec3, Vec3)| (p.0 - frame * p.1).length() <= loose * p.0.length() + 1e-4;
+        let Some(better) = fit(&mut pairs.iter().filter(near)) else { return as_they_stand };
+        frame = better;
+    }
+    let kept = pairs.iter().filter(|p| fits(frame, p)).count();
+    if kept * 4 < pairs.len() * 3 || frame.determinant().abs() < 1e-12 {
+        return as_they_stand;
+    }
+    let framed = Mat4::from_mat3(frame);
+    let unframe = framed.inverse();
+    (0..joints.len())
+        .map(|j| {
+            at[j]?;
+            // The topmost bone above it by bones that fit.
+            let mut top = j;
+            while pair_of[top].is_some_and(|i| fits(frame, &pairs[i])) {
+                top = usize::from(joints[top].parent?);
+            }
+            Some(at[top]? * framed * made(top).inverse() * made(j) * unframe)
+        })
+        .collect()
 }
 
 /// Each bound skin posed by its bones as they stand now: a joint moves its
@@ -1017,6 +1080,55 @@ pub fn hold_on_bones(world: &mut World) {
 mod tests {
     use super::*;
     use crate::animation::{Channel, Joint, Path};
+
+    /// A scene that keeps a bone posed (a Unity prefab saved mid-clip)
+    /// still binds its skin in the pose the model was made in, across a
+    /// frame that differs by a scale and a turn.
+    #[test]
+    fn a_skin_binds_in_the_pose_it_was_made_in() {
+        use glam::Vec3;
+        let offsets = [
+            (None, Vec3::ZERO),
+            (Some(0), Vec3::new(0.0, 100.0, 0.0)),
+            (Some(1), Vec3::new(0.0, 0.0, 100.0)),
+            (Some(2), Vec3::new(100.0, 0.0, 0.0)),
+            (Some(3), Vec3::new(0.0, 50.0, 0.0)),
+            (Some(1), Vec3::new(-80.0, 20.0, 0.0)),
+        ];
+        let mut made = Vec::new();
+        for (parent, offset) in offsets {
+            made.push(parent.map_or(Mat4::IDENTITY, |p: usize| made[p]) * Mat4::from_translation(offset));
+        }
+        let skeleton = Skeleton {
+            joints: offsets
+                .iter()
+                .zip(&made)
+                .enumerate()
+                .map(|(j, ((parent, _), at))| Joint {
+                    name: format!("j{j}"),
+                    parent: parent.map(|p| p as u16),
+                    inverse_bind: at.inverse().to_cols_array_2d(),
+                    rest: PoseTransform::default(),
+                })
+                .collect(),
+        };
+        let frame = Mat4::from_scale(Vec3::splat(0.01)) * Mat4::from_rotation_y(std::f32::consts::PI);
+        let placed = Mat4::from_translation(Vec3::new(3.0, 0.0, -2.0));
+        let bind: Vec<Mat4> = made.iter().map(|m| placed * frame * *m * frame.inverse()).collect();
+        // The scene's bones: the third turned at its joint, and what hangs
+        // under it with it.
+        let turn = Mat4::from_rotation_x(1.2);
+        let mut scene = bind.clone();
+        for j in [2, 3, 4] {
+            scene[j] = bind[2] * turn * bind[2].inverse() * bind[j];
+        }
+        let at: Vec<Option<Mat4>> = scene.into_iter().map(Some).collect();
+        let found = pose_made_in(&skeleton, &at);
+        for (j, (found, bind)) in found.iter().zip(&bind).enumerate() {
+            let found = found.unwrap();
+            assert!(found.abs_diff_eq(*bind, 1e-4), "joint {j}: {found} against {bind}");
+        }
+    }
 
     fn skeleton() -> Arc<Skeleton> {
         Arc::new(Skeleton {

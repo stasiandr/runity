@@ -270,7 +270,11 @@ impl UiRenderer {
                 &mut self.font_system,
                 Metrics::new(run.size, run.size * 1.25),
             );
-            buffer.set_size(Some(width as f32), Some(height as f32));
+            // Words placed in a box wrap at its edge, each line set in it
+            // as the run says (a dialogue's long line; Unity's Text wraps
+            // in its rectangle).
+            let wrap = run.within.map(|(w, _)| w).filter(|w| *w > 0.0).unwrap_or(width as f32);
+            buffer.set_size(Some(wrap), Some(height as f32));
             buffer.set_text(
                 &run.text,
                 &Attrs::new().family(match &self.family {
@@ -283,6 +287,18 @@ impl UiRenderer {
                 Shaping::Advanced,
                 None,
             );
+            if let Some((_, across)) = run.within {
+                let align = if across <= 0.25 {
+                    glyphon::cosmic_text::Align::Left
+                } else if across >= 0.75 {
+                    glyphon::cosmic_text::Align::Right
+                } else {
+                    glyphon::cosmic_text::Align::Center
+                };
+                for line in buffer.lines.iter_mut() {
+                    line.set_align(Some(align));
+                }
+            }
             buffer.shape_until_scroll(&mut self.font_system, false);
             buffers.push((buffer, run));
         }
@@ -290,16 +306,8 @@ impl UiRenderer {
             .iter()
             .map(|(buffer, run)| TextArea {
                 buffer,
-                left: match run.within {
-                    Some((box_width, across)) => {
-                        let wide = buffer
-                            .layout_runs()
-                            .map(|line| line.line_w)
-                            .fold(0.0, f32::max);
-                        run.x + (box_width - wide).max(0.0) * across
-                    }
-                    None => run.x,
-                },
+                // Within a box, the lines are set in it already.
+                left: run.x,
                 top: run.y,
                 scale: 1.0,
                 bounds: match run.clip {
