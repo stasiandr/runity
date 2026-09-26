@@ -3485,6 +3485,7 @@ dependencies = [
  "scrap-render",
  "scrap-reports",
  "scrap-routes",
+ "scrap-shadergraph",
  "scrap-shell",
  "scrap-soft",
  "scrap-spline",
@@ -3667,6 +3668,7 @@ dependencies = [
  "scrap-geometry",
  "scrap-gpu",
  "scrap-overlay",
+ "scrap-shadergraph",
  "serde",
  "web-time",
  "wgpu",
@@ -3690,6 +3692,15 @@ version = "0.1.0"
 dependencies = [
  "glam 0.32.1",
  "hecs",
+ "ron",
+ "scrap-core",
+ "serde",
+]
+
+[[package]]
+name = "scrap-shadergraph"
+version = "0.1.0"
+dependencies = [
  "ron",
  "scrap-core",
  "serde",

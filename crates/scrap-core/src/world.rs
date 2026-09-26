@@ -190,37 +190,63 @@ pub fn is_active(world: &World, entity: hecs::Entity) -> bool {
 /// Every entity that is off, itself or by a parent: what the frame and the
 /// physics leave out.
 pub fn inactive_in_hierarchy(world: &World) -> crate::hash::FastSet<hecs::Entity> {
+    inactive_among(world, world.query::<(hecs::Entity, &Transform)>().iter().map(|(e, _)| e))
+}
+
+/// Which of `entities` are off, themselves or by a parent: what
+/// [`inactive_in_hierarchy`] says about them, looking up only their own
+/// lines to the root — the physics asks about its few hundred bodies, not
+/// every entity in the level.
+pub fn inactive_among(
+    world: &World,
+    entities: impl IntoIterator<Item = hecs::Entity>,
+) -> crate::hash::FastSet<hecs::Entity> {
     let mut out = crate::hash::FastSet::default();
     if world.query::<&Inactive>().iter().next().is_none() {
         return out;
     }
     // Each entity's answer is its parent's unless it is off itself, so the
     // answers are remembered on the way up: one look per entity, not one
-    // per entity per level.
-    let mut known: FastMap<hecs::Entity, bool> = FastMap::default();
+    // per entity per level. Remembered by the entity's slot (0 not yet
+    // known, 1 on, 2 off), which hashes nothing: the world holds still
+    // while this looks, so a slot is one entity throughout.
+    let mut known: Vec<u8> = Vec::new();
+    let recall = |known: &Vec<u8>, e: hecs::Entity| match known.get(e.id() as usize) {
+        Some(1) => Some(false),
+        Some(2) => Some(true),
+        _ => None,
+    };
+    let remember = |known: &mut Vec<u8>, e: hecs::Entity, off: bool| {
+        let slot = e.id() as usize;
+        if slot >= known.len() {
+            known.resize(slot + 1, 0);
+        }
+        known[slot] = if off { 2 } else { 1 };
+    };
     let mut chain = Vec::new();
-    for (entity, _) in world.query::<(hecs::Entity, &Transform)>().iter() {
+    for entity in entities {
         chain.clear();
         let mut at = Some(entity);
         let mut off = false;
         while let Some(e) = at {
-            if let Some(&k) = known.get(&e) {
+            if let Some(k) = recall(&known, e) {
                 off = k;
                 break;
             }
-            if world.get::<&Inactive>(e).is_ok() {
+            let Ok(line) = world.entity(e) else { break };
+            if line.has::<Inactive>() {
                 off = true;
-                known.insert(e, true);
+                remember(&mut known, e, true);
                 break;
             }
             chain.push(e);
             if chain.len() > 64 {
                 break;
             }
-            at = world.get::<&Parent>(e).ok().map(|p| p.0);
+            at = line.get::<&Parent>().map(|p| p.0);
         }
-        for e in chain.drain(..) {
-            known.insert(e, off);
+        for &e in &chain {
+            remember(&mut known, e, off);
         }
         if off {
             out.insert(entity);

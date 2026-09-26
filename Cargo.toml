@@ -35,6 +35,7 @@ members = [
     "crates/scrap-render",
     "crates/scrap-reports",
     "crates/scrap-routes",
+    "crates/scrap-shadergraph",
     "crates/scrap-shell",
     "crates/scrap-soft",
     "crates/scrap-spline",
