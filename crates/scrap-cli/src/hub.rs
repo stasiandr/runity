@@ -383,23 +383,93 @@ pub fn discover(folder: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// A new project in `folder`, as `scrap new --engine-path` makes it: the
-/// basic set, its game built against this checkout of the engine (or the
-/// engine from git when this one has moved). Returns its start scene.
-pub fn create(folder: &Path) -> Result<PathBuf, String> {
+/// What a new project starts from: an empty one with a set of modules, or
+/// a copy of one of the engine's example projects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// `bare`, `basic` or `full` (`scrap::modules::SETS`).
+    Set(String),
+    /// An example's folder name in the engine's `examples/`.
+    Template(String),
+}
+
+/// One choice on the New screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choice {
+    pub start: Start,
+    pub title: String,
+    pub about: String,
+}
+
+/// What a new project can start from: the three sets, then every example
+/// with a `scrap.ron` (`scrap new --template`), each said in a line.
+pub fn choices() -> Vec<Choice> {
+    let mut out = vec![
+        Choice {
+            start: Start::Set("basic".into()),
+            title: "Empty".into(),
+            about: "A window, the picture, input, a score on screen, sound, collisions".into(),
+        },
+        Choice {
+            start: Start::Set("full".into()),
+            title: "Empty, every module".into(),
+            about: "All the official modules, to take out what the game does not need".into(),
+        },
+        Choice {
+            start: Start::Set("bare".into()),
+            title: "Empty, the core alone".into(),
+            about: "No window: a server or a simulation".into(),
+        },
+    ];
+    for name in crate::template::names() {
+        let root = crate::template::examples().join(&name);
+        let Ok(project) = scrap::Project::open(&root) else { continue };
+        let manifest = project.manifest();
+        let scenes = project.scene_names().len();
+        let title = if manifest.game.title.is_empty() {
+            project.name().to_string()
+        } else {
+            manifest.game.title.clone()
+        };
+        out.push(Choice {
+            start: Start::Template(name.clone()),
+            title,
+            about: format!(
+                "The engine's example `{name}`: {scenes} scene{}, {} module{}",
+                if scenes == 1 { "" } else { "s" },
+                manifest.modules.len(),
+                if manifest.modules.len() == 1 { "" } else { "s" },
+            ),
+        });
+    }
+    out
+}
+
+/// A new project in `folder`, as `scrap new --engine-path` makes it: from
+/// `start`, its game built against this checkout of the engine (or the
+/// engine from git when this one has moved). Returns the scene to open.
+pub fn create(folder: &Path, start: &Start) -> Result<PathBuf, String> {
     let name = folder
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or("the folder has no name")?;
+    if folder.exists() {
+        return Err(format!("{} is there already", folder.display()));
+    }
     let engine = match this_engine() {
         Some(root) => scrap::project::Engine::Path(root.join("crates/scrap")),
         None => scrap::project::Engine::default(),
     };
-    let listed = scrap::modules::set("basic").ok_or("no basic set of modules")?;
-    let features = scrap::modules::features(&listed, &scrap::modules::official());
-    let project =
-        scrap::Project::create_with_modules(folder, &name, &engine, Some((&listed, &features)))
-            .map_err(|e| e.to_string())?;
+    let project = match start {
+        Start::Set(set) => {
+            let listed = scrap::modules::set(set).ok_or_else(|| format!("no set `{set}`"))?;
+            let features = scrap::modules::features(&listed, &scrap::modules::official());
+            scrap::Project::create_with_modules(folder, &name, &engine, Some((&listed, &features)))
+                .map_err(|e| e.to_string())?
+        }
+        Start::Template(template) => crate::template::create(template, folder, &name, &engine)
+            .map_err(|e| format!("{e:#}"))?,
+    };
     describe(project.root())
         .scene
         .ok_or_else(|| format!("{} has no scene to open", project.root().display()))
@@ -477,6 +547,23 @@ mod tests {
         assert_eq!(Known::load(&dir).unwrap(), known);
         assert!(known.forget(&a));
         assert!(!known.forget(&a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_starts_from_a_set_or_from_an_example() {
+        let choices = choices();
+        assert_eq!(choices[0].start, Start::Set("basic".into()), "the plain one first");
+        assert!(choices.iter().any(|c| c.start == Start::Template("valley".into())));
+
+        let dir = std::env::temp_dir().join(format!("scrap-hub-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let empty = create(&dir.join("moss"), &Start::Set("basic".into())).unwrap();
+        assert!(empty.is_file(), "an empty project has a scene to open");
+        let copy = create(&dir.join("meadow"), &Start::Template("valley".into())).unwrap();
+        assert!(copy.is_file());
+        assert_eq!(describe(&dir.join("meadow")).name, "meadow", "renamed, not valley");
+        assert!(create(&dir.join("moss"), &Start::Set("basic".into())).is_err(), "not over one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

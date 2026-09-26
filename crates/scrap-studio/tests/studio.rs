@@ -5068,3 +5068,61 @@ fn the_projects_screen_lists_pins_forgets_and_opens() {
     let _ = std::fs::remove_dir_all(&other);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The app started with nothing to open: the Projects screen over no
+/// project at all — which Esc does not close, there being nothing behind
+/// it — and New there makes a project from one of the engine's examples and
+/// opens it.
+#[test]
+fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
+    let Some((_, dir)) = studio() else { return };
+    let session = scrap_studio::open_empty().unwrap();
+    let mut s = Studio::new(session, 1440.0, 900.0, 1.0);
+    for _ in 0..3 {
+        s.frame();
+    }
+    assert!(s.session.project().is_none());
+    s.open_hub();
+    s.frame();
+    assert!(s.ui.find("projects close").is_none(), "nothing to close it to");
+    click(&mut s, "projects field");
+    key(&mut s, Key::Escape);
+    assert!(s.ui.find("projects overlay").is_some(), "Esc leaves it up");
+
+    // New: the example valley, as `meadow`, in a folder of the test's own.
+    click(&mut s, "projects new");
+    assert!(s.ui.find("new set basic").is_some(), "an empty one on offer");
+    assert!(s.ui.find("new template valley").is_some(), "and the examples");
+    let place = dir.with_file_name(format!("{}-new", dir.file_name().unwrap().to_string_lossy()));
+    std::fs::create_dir_all(&place).unwrap();
+    {
+        let (hub, ui) = s.hub_mut().unwrap();
+        hub.set_location(ui, place.clone());
+    }
+    click(&mut s, "new template valley");
+    let name = s.ui.find("new name").unwrap();
+    s.ui.set_text(name, "meadow");
+    click(&mut s, "new create");
+    s.frame();
+    assert!(s.ui.find("projects overlay").is_none(), "the screen goes");
+    let made = place.join("meadow").canonicalize().unwrap();
+    assert_eq!(
+        s.session.project().map(|p| p.root().canonicalize().unwrap()),
+        Some(made.clone()),
+        "the new project is open"
+    );
+    assert_eq!(s.session.project().unwrap().name(), "meadow");
+    let config = scrap_studio::appearance::config_dir().unwrap();
+    let listed = scrap_cli::hub::Known::load(&config)
+        .unwrap()
+        .projects
+        .iter()
+        .any(|k| k.path == made);
+    assert!(listed, "and on the list");
+    scrap_cli::hub::update(&config, |k| {
+        k.forget(&made);
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&place);
+    let _ = std::fs::remove_dir_all(&dir);
+}

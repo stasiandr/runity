@@ -4,8 +4,12 @@
 //! recently opened — with its branch and the engine its game builds
 //! against: that checkout's commit, and a mark when it is not the one this
 //! editor was built from. A click opens the project's start scene; Add finds
-//! projects in a folder, New makes one. The list and what each line says are
-//! `scrap_cli::hub`'s, the same `scrap projects` prints.
+//! projects in a folder; New makes one — empty, with a set of modules, or a
+//! copy of one of the engine's examples. The list and what each line says
+//! are `scrap_cli::hub`'s, the same `scrap projects` prints.
+//!
+//! The app starts on it with nothing open behind it: until a project is
+//! chosen there is nothing to close it to.
 //!
 //! Reading a project asks git a few things, so the list is read on a thread
 //! and drawn when it arrives.
@@ -13,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 
-use scrap_cli::hub::{self, Entry, Known};
+use scrap_cli::hub::{self, Choice, Entry, Known};
 use scrap_ui::{Color, Event, NodeId, Style, Ui};
 
 use crate::theme::*;
@@ -28,8 +32,8 @@ pub enum Outcome {
     Open(PathBuf),
     /// Ask for a folder and add the projects in it.
     Add,
-    /// Ask where, and make a project there.
-    New,
+    /// Ask for the folder a new project goes in.
+    ChooseLocation,
 }
 
 struct Row {
@@ -39,28 +43,55 @@ struct Row {
     entry: usize,
 }
 
-pub struct Hub {
-    pub overlay: NodeId,
+/// The list: a search over the projects.
+struct List {
     field: NodeId,
     list: NodeId,
     status: NodeId,
     add: NodeId,
     new: NodeId,
-    close: NodeId,
+    close: Option<NodeId>,
     rows: Vec<Row>,
+}
+
+/// New: a name, a folder, and what it starts from.
+struct Form {
+    name: NodeId,
+    location: NodeId,
+    choose: NodeId,
+    back: NodeId,
+    create: NodeId,
+    status: NodeId,
+    choices: Vec<(NodeId, Choice)>,
+    chosen: usize,
+}
+
+enum Mode {
+    List(List),
+    New(Form),
+}
+
+pub struct Hub {
+    pub overlay: NodeId,
+    panel: NodeId,
+    mode: Mode,
     entries: Vec<Entry>,
     loading: Option<Receiver<Result<Vec<Entry>, String>>>,
     config: Option<PathBuf>,
-    /// The project open in the editor, marked on its line.
+    /// The project open in the editor, marked on its line; None at the
+    /// start, when the screen cannot be closed.
     current: Option<PathBuf>,
     /// The engine checkout this editor was built from.
     engine: Option<PathBuf>,
+    /// Where New puts a project: chosen, or beside the one opened last.
+    location: Option<PathBuf>,
 }
 
 impl Hub {
     pub fn open(ui: &mut Ui, config: Option<PathBuf>, current: Option<PathBuf>) -> Self {
         let root = ui.root();
         let (w, h, _) = ui.viewport();
+        let start = current.is_none();
         let overlay = ui.add(
             root,
             Style::column()
@@ -68,7 +99,9 @@ impl Hub {
                 .size(w, h)
                 .padding(56.0)
                 .center_items()
-                .background(NEUTRAL_900.alpha(70))
+                // Nothing open behind it at the start: the ground, not a
+                // dimmed empty editor.
+                .background(if start { BG } else { NEUTRAL_900.alpha(70) })
                 .clickable(),
         );
         ui.set_layer(overlay, true);
@@ -88,20 +121,29 @@ impl Hub {
                 .clickable(),
         );
         ui.set_name(panel, "projects");
+        let mode = Mode::List(Self::build_list(ui, panel, start));
+        let mut hub = Self {
+            overlay,
+            panel,
+            mode,
+            entries: Vec::new(),
+            loading: None,
+            config,
+            current: current.map(|p| p.canonicalize().unwrap_or(p)),
+            engine: hub::this_engine(),
+            location: None,
+        };
+        hub.reload();
+        hub
+    }
+
+    fn build_list(ui: &mut Ui, panel: NodeId, start: bool) -> List {
+        ui.clear(panel);
         let header = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
-        ui.add_text(
-            header,
-            Style::default()
-                .text_size(16.0)
-                .weight(500)
-                .text_color(TEXT)
-                .nowrap()
-                .fill(),
-            "Projects",
-        );
+        title(ui, header, "Projects");
         let add = button(ui, header, "projects add", "Add…", false);
         let new = button(ui, header, "projects new", "New…", true);
-        let close = icon_button(ui, header, "projects close", "x", false);
+        let close = (!start).then(|| icon_button(ui, header, "projects close", "x", false));
         let field = ui.add_field(
             panel,
             field_style().full_width().height(30.0).text_size(13.0),
@@ -111,14 +153,10 @@ impl Hub {
         ui.set_placeholder(field, "Search by name, folder or branch");
         let status = ui.add_text(panel, caption(), "Reading the projects…");
         ui.set_name(status, "projects status");
-        let list = ui.add(
-            panel,
-            Style::column().full_width().gap(2.0).fill().clip(),
-        );
+        let list = ui.add(panel, Style::column().full_width().gap(2.0).fill().clip());
         ui.set_name(list, "projects list");
         ui.focus(Some(field));
-        let mut hub = Self {
-            overlay,
+        List {
             field,
             list,
             status,
@@ -126,14 +164,129 @@ impl Hub {
             new,
             close,
             rows: Vec::new(),
-            entries: Vec::new(),
-            loading: None,
-            config,
-            current: current.map(|p| p.canonicalize().unwrap_or(p)),
-            engine: hub::this_engine(),
+        }
+    }
+
+    fn build_form(&self, ui: &mut Ui) -> Form {
+        let panel = self.panel;
+        ui.clear(panel);
+        let header = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
+        title(ui, header, "New project");
+        let back = button(ui, header, "new back", "Back", false);
+
+        let row = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
+        ui.add_text(row, text().width(64.0).fixed(), "Name");
+        let name = ui.add_field(row, field_style().fill().height(28.0).text_size(13.0), "my-game");
+        ui.set_name(name, "new name");
+
+        let row = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
+        ui.add_text(row, text().width(64.0).fixed(), "In");
+        let location = ui.add_text(row, text().text_color(MUTED).fill(), "");
+        ui.set_name(location, "new location");
+        let choose = button(ui, row, "new choose", "Choose…", false);
+
+        ui.add_text(panel, caption(), "START FROM");
+        let list = ui.add(panel, Style::column().full_width().gap(2.0).fill().clip());
+        ui.set_name(list, "new choices");
+        let mut choices = Vec::new();
+        for choice in hub::choices() {
+            let node = ui.add(
+                list,
+                Style::row()
+                    .full_width()
+                    .height(44.0)
+                    .fixed()
+                    .padding_x(SPACE_3)
+                    .gap(SPACE_3)
+                    .center_items()
+                    .radius(RADIUS_MD)
+                    .hover(ACCENT.alpha(16))
+                    .clickable(),
+            );
+            let key = match &choice.start {
+                hub::Start::Set(set) => format!("set {set}"),
+                hub::Start::Template(name) => format!("template {name}"),
+            };
+            ui.set_name(node, format!("new {key}"));
+            let glyph = match choice.start {
+                hub::Start::Set(_) => "file-plus",
+                hub::Start::Template(_) => "package",
+            };
+            icon(ui, node, glyph, ACCENT_300);
+            let words = ui.add(node, Style::column().fill().gap(2.0));
+            ui.add_text(words, text().weight(500), &choice.title);
+            ui.add_text(words, caption(), &choice.about);
+            choices.push((node, choice));
+        }
+
+        let footer = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
+        let status = ui.add_text(footer, caption().text_color(WARNING).fill(), "");
+        ui.set_name(status, "new status");
+        let create = button(ui, footer, "new create", "Create", true);
+        ui.focus(Some(name));
+        let mut form = Form {
+            name,
+            location,
+            choose,
+            back,
+            create,
+            status,
+            choices,
+            chosen: 0,
         };
-        hub.reload();
-        hub
+        Self::mark_chosen(ui, &mut form, 0);
+        ui.set_text(form.location, &home_relative(&self.new_location()));
+        form
+    }
+
+    fn mark_chosen(ui: &mut Ui, form: &mut Form, chosen: usize) {
+        form.chosen = chosen;
+        for (i, (node, _)) in form.choices.iter().enumerate() {
+            let on = i == chosen;
+            ui.restyle(*node, |s| {
+                if on {
+                    s.background(ACCENT_900).border(1.0, ACCENT)
+                } else {
+                    s.background(Color::TRANSPARENT).border(1.0, Color::TRANSPARENT)
+                }
+            });
+        }
+    }
+
+    /// Where New puts a project unless told: beside the one opened last —
+    /// not one of the engine's own examples — else beside the engine, else
+    /// the home folder.
+    fn new_location(&self) -> PathBuf {
+        if let Some(chosen) = &self.location {
+            return chosen.clone();
+        }
+        let inside_engine = |p: &Path| self.engine.as_ref().is_some_and(|e| p.starts_with(e));
+        self.entries
+            .iter()
+            .filter(|e| e.problem.is_none() && !inside_engine(&e.path))
+            .max_by_key(|e| e.opened)
+            .and_then(|e| e.path.parent().map(Path::to_path_buf))
+            .or_else(|| self.engine.as_ref().and_then(|e| e.parent().map(Path::to_path_buf)))
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// The folder New puts the project in, as chosen.
+    pub fn set_location(&mut self, ui: &mut Ui, folder: PathBuf) {
+        self.location = Some(folder);
+        if let Mode::New(form) = &self.mode {
+            ui.set_text(form.location, &home_relative(&self.new_location()));
+        }
+    }
+
+    /// New, as the button opens it: for a test.
+    pub fn show_new(&mut self, ui: &mut Ui) {
+        self.mode = Mode::New(self.build_form(ui));
+    }
+
+    fn show_list(&mut self, ui: &mut Ui) {
+        self.mode = Mode::List(Self::build_list(ui, self.panel, self.current.is_none()));
+        self.fill(ui, "");
     }
 
     /// Read the list again, on a thread.
@@ -159,13 +312,18 @@ impl Hub {
             return false;
         };
         self.loading = None;
-        match read {
-            Ok(entries) => {
+        match (read, &self.mode) {
+            (Ok(entries), Mode::List(list)) => {
                 self.entries = entries;
-                let typed = ui.text(self.field).unwrap_or_default().to_string();
+                let typed = ui.text(list.field).unwrap_or_default().to_string();
                 self.fill(ui, &typed);
             }
-            Err(problem) => ui.set_text(self.status, &problem),
+            (Ok(entries), Mode::New(form)) => {
+                self.entries = entries;
+                ui.set_text(form.location, &home_relative(&self.new_location()));
+            }
+            (Err(problem), Mode::List(list)) => ui.set_text(list.status, &problem),
+            (Err(_), Mode::New(_)) => {}
         }
         true
     }
@@ -190,29 +348,46 @@ impl Hub {
     /// What an event on the screen asks for; None when it is not the
     /// screen's.
     pub fn event(&mut self, ui: &mut Ui, node: NodeId, event: &Event) -> Option<Outcome> {
-        let row = self.rows.iter().position(|r| {
-            r.node == node || r.pin == node || r.forget == node
-        });
+        match &self.mode {
+            Mode::List(_) => self.list_event(ui, node, event),
+            Mode::New(_) => self.form_event(ui, node, event),
+        }
+    }
+
+    fn list_event(&mut self, ui: &mut Ui, node: NodeId, event: &Event) -> Option<Outcome> {
+        let Mode::List(list) = &self.mode else { return None };
+        let (field, add, new, close) = (list.field, list.add, list.new, list.close);
+        let row = list
+            .rows
+            .iter()
+            .position(|r| r.node == node || r.pin == node || r.forget == node);
+        // At the start there is nothing behind to close it to.
+        let closing = if self.current.is_some() {
+            Outcome::Close
+        } else {
+            Outcome::Handled
+        };
         match event {
-            Event::Changed(text) if node == self.field => {
+            Event::Changed(text) if node == field => {
                 let text = text.clone();
                 self.fill(ui, &text);
                 Some(Outcome::Handled)
             }
-            Event::Submit(_) if node == self.field => Some(
-                self.rows
+            Event::Submit(_) if node == field => Some(
+                list.rows
                     .first()
                     .and_then(|r| self.entries[r.entry].scene.clone())
                     .map_or(Outcome::Handled, Outcome::Open),
             ),
-            Event::Cancel if node == self.field => Some(Outcome::Close),
-            Event::Click { .. } if node == self.close || node == self.overlay => {
-                Some(Outcome::Close)
+            Event::Cancel if node == field => Some(closing),
+            Event::Click { .. } if Some(node) == close || node == self.overlay => Some(closing),
+            Event::Click { .. } if node == add => Some(Outcome::Add),
+            Event::Click { .. } if node == new => {
+                self.show_new(ui);
+                Some(Outcome::Handled)
             }
-            Event::Click { .. } if node == self.add => Some(Outcome::Add),
-            Event::Click { .. } if node == self.new => Some(Outcome::New),
             Event::Click { .. } if row.is_some() => {
-                let row = &self.rows[row.expect("checked")];
+                let row = &list.rows[row.expect("checked")];
                 let entry = &self.entries[row.entry];
                 let path = entry.path.clone();
                 if node == row.pin {
@@ -230,8 +405,57 @@ impl Hub {
                     Some(entry.scene.clone().map_or(Outcome::Handled, Outcome::Open))
                 }
             }
-            _ if node == self.field => Some(Outcome::Handled),
+            _ if node == field => Some(Outcome::Handled),
             _ => None,
+        }
+    }
+
+    fn form_event(&mut self, ui: &mut Ui, node: NodeId, event: &Event) -> Option<Outcome> {
+        let Mode::New(form) = &mut self.mode else { return None };
+        let choice = form.choices.iter().position(|(n, _)| *n == node);
+        match event {
+            Event::Click { .. } if node == form.back => {
+                self.show_list(ui);
+                Some(Outcome::Handled)
+            }
+            Event::Cancel if node == form.name => {
+                self.show_list(ui);
+                Some(Outcome::Handled)
+            }
+            Event::Click { .. } if node == form.choose => Some(Outcome::ChooseLocation),
+            Event::Click { .. } if choice.is_some() => {
+                Self::mark_chosen(ui, form, choice.expect("checked"));
+                Some(Outcome::Handled)
+            }
+            Event::Click { .. } if node == form.create => Some(self.create(ui)),
+            Event::Submit(_) if node == form.name => Some(self.create(ui)),
+            _ if node == form.name => Some(Outcome::Handled),
+            Event::Click { .. } if node == self.overlay => Some(Outcome::Handled),
+            _ => None,
+        }
+    }
+
+    /// Make the project the form describes; its scene to open, or what is
+    /// wrong said under the choices.
+    fn create(&mut self, ui: &mut Ui) -> Outcome {
+        let Mode::New(form) = &self.mode else {
+            return Outcome::Handled;
+        };
+        let name = ui.text(form.name).unwrap_or_default().trim().to_string();
+        let status = form.status;
+        if name.is_empty() || name.contains('/') {
+            ui.set_text(status, "A project needs a name, one folder's worth.");
+            return Outcome::Handled;
+        }
+        let start = form.choices[form.chosen].1.start.clone();
+        let folder = self.new_location().join(&name);
+        ui.set_text(status, "Making it…");
+        match hub::create(&folder, &start) {
+            Ok(scene) => Outcome::Open(scene),
+            Err(problem) => {
+                ui.set_text(status, &problem);
+                Outcome::Handled
+            }
         }
     }
 
@@ -239,7 +463,9 @@ impl Hub {
     pub fn change(&mut self, ui: &mut Ui, change: impl FnOnce(&mut Known)) {
         let Some(dir) = &self.config else { return };
         if let Err(problem) = hub::update(dir, change) {
-            ui.set_text(self.status, &problem);
+            if let Mode::List(list) = &self.mode {
+                ui.set_text(list.status, &problem);
+            }
             return;
         }
         self.reload();
@@ -248,9 +474,10 @@ impl Hub {
     /// The lines for what is typed: a project matches by name, folder, or
     /// either branch.
     fn fill(&mut self, ui: &mut Ui, typed: &str) {
+        let Mode::List(list) = &self.mode else { return };
+        let (status, list_node) = (list.status, list.list);
         let query = typed.trim().to_lowercase();
-        ui.clear(self.list);
-        self.rows.clear();
+        ui.clear(list_node);
         let shown: Vec<usize> = (0..self.entries.len())
             .filter(|&i| {
                 let e = &self.entries[i];
@@ -267,30 +494,30 @@ impl Hub {
                     .any(|s| s.to_lowercase().contains(&query))
             })
             .collect();
-        let status = match (self.entries.len(), shown.len()) {
-            (0, _) => "No projects yet: open a scene, or Add a folder of them.".to_string(),
+        let said = match (self.entries.len(), shown.len()) {
+            (0, _) => "No projects yet: New makes one, Add finds the ones you have.".to_string(),
             (all, n) if n == all => format!("{all} projects"),
             (all, n) => format!("{n} of {all} projects"),
         };
         let others = self.entries.iter().filter(|e| self.other_engine(e)).count();
-        let status = if others > 0 {
-            format!("{status} · an engine in yellow is another checkout than this editor's")
+        let said = if others > 0 {
+            format!("{said} · an engine in yellow is another checkout than this editor's")
         } else {
-            status
+            said
         };
-        ui.set_text(self.status, &status);
-        for i in shown {
-            let row = self.row(ui, i);
-            self.rows.push(row);
+        ui.set_text(status, &said);
+        let rows: Vec<Row> = shown.into_iter().map(|i| self.row(ui, list_node, i)).collect();
+        if let Mode::List(list) = &mut self.mode {
+            list.rows = rows;
         }
     }
 
-    fn row(&self, ui: &mut Ui, i: usize) -> Row {
+    fn row(&self, ui: &mut Ui, list: NodeId, i: usize) -> Row {
         let e = &self.entries[i];
         let broken = e.problem.is_some();
         let current = self.current.as_deref() == Some(e.path.as_path());
         let node = ui.add(
-            self.list,
+            list,
             Style::row()
                 .full_width()
                 .height(52.0)
@@ -382,6 +609,19 @@ impl Hub {
             _ => false,
         }
     }
+}
+
+fn title(ui: &mut Ui, parent: NodeId, words: &str) {
+    ui.add_text(
+        parent,
+        Style::default()
+            .text_size(16.0)
+            .weight(500)
+            .text_color(TEXT)
+            .nowrap()
+            .fill(),
+        words,
+    );
 }
 
 /// `~/personal/dacha` rather than the whole path.

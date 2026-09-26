@@ -4553,6 +4553,13 @@ impl Studio {
     }
 
     /// The Projects screen as it is: for a test, which waits for its list.
+    pub fn hub_mut(&mut self) -> Option<(&mut crate::hub::Hub, &mut Ui)> {
+        let hub = self.hub.as_mut()?;
+        hub.wait(&mut self.ui);
+        Some((hub, &mut self.ui))
+    }
+
+    /// The Projects screen as it is: for a test, which waits for its list.
     pub fn hub(&mut self) -> Option<&crate::hub::Hub> {
         let hub = self.hub.as_mut()?;
         hub.wait(&mut self.ui);
@@ -4588,20 +4595,15 @@ impl Studio {
                     hub.change(&mut self.ui, |k| found.iter().for_each(|p| k.add(p)));
                 }
             }
-            Outcome::New => {
+            Outcome::ChooseLocation => {
                 let Some(folder) = rfd::FileDialog::new()
-                    .set_title("New project: its folder")
-                    .set_file_name("my-game")
-                    .save_file()
+                    .set_title("Where the new project goes")
+                    .pick_folder()
                 else {
                     return;
                 };
-                match scrap_cli::hub::create(&folder) {
-                    Ok(scene) => {
-                        self.close_hub();
-                        requests.action = Some(Action::OpenScene(scene));
-                    }
-                    Err(problem) => self.session.say(Level::Error, problem),
+                if let Some(hub) = &mut self.hub {
+                    hub.set_location(&mut self.ui, folder);
                 }
             }
         }

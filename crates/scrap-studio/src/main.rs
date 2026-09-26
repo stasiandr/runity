@@ -7,21 +7,21 @@ fn main() {
     if bundled {
         adopt_login_path();
     }
+    // The app, opened with nothing to open, starts where Unity Hub does: on
+    // the list of projects, with none open until one is chosen.
+    if bundled && std::env::args().nth(1).is_none() {
+        match scrap_studio::open_empty() {
+            Ok(session) => scrap_studio::window::run_with(session, "scrap".into(), true),
+            Err(message) => fail(&message, bundled),
+        }
+        return;
+    }
     let Some(scene) = scene_to_open(bundled) else {
         return;
     };
     let session = match scrap_studio::open_live(&scene) {
         Ok(session) => session,
-        Err(message) => {
-            eprintln!("{message}");
-            if bundled {
-                rfd::MessageDialog::new()
-                    .set_title("scrap")
-                    .set_description(&message)
-                    .show();
-            }
-            std::process::exit(1);
-        }
+        Err(message) => fail(&message, bundled),
     };
     remember(&scene);
     if let (Some(dir), Some(project)) = (scrap_studio::appearance::config_dir(), session.project()) {
@@ -34,10 +34,19 @@ fn main() {
         .file_name()
         .map(|name| format!("scrap — {}", name.to_string_lossy()))
         .unwrap_or_else(|| "scrap".to_string());
-    // The app, opened with nothing to open, starts where Unity Hub does: on
-    // the list of projects, over the one opened last.
-    let projects = bundled && std::env::args().nth(1).is_none();
-    scrap_studio::window::run_with(session, title, projects);
+    scrap_studio::window::run(session, title);
+}
+
+/// Say what went wrong — in a dialog too, started from the app — and stop.
+fn fail(message: &str, bundled: bool) -> ! {
+    eprintln!("{message}");
+    if bundled {
+        rfd::MessageDialog::new()
+            .set_title("scrap")
+            .set_description(message)
+            .show();
+    }
+    std::process::exit(1);
 }
 
 /// The scene named on the command line; else, from the repository, the
@@ -62,13 +71,6 @@ fn scene_to_open(bundled: bool) -> Option<PathBuf> {
     }
     if !bundled {
         return Some(reference);
-    }
-    // A project from the Projects list, which the screen then covers.
-    let known = scrap_studio::appearance::config_dir()
-        .and_then(|dir| scrap_cli::hub::Known::load(&dir).ok())
-        .unwrap_or_default();
-    if let Some(scene) = scrap_cli::hub::entries(&known).into_iter().find_map(|e| e.scene) {
-        return Some(scene);
     }
     rfd::FileDialog::new()
         .set_title("Open a scene")
