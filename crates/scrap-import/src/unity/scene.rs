@@ -1396,6 +1396,19 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             });
             solid(desc, b);
         }
+        "CharacterController" => {
+            // Unity's character capsule: a kinematic body the game moves
+            // (PhysicsWorld::move_character), its capsule upright.
+            let radius = b.f32("m_Radius").unwrap_or(0.5);
+            let height = b.f32("m_Height").unwrap_or(2.0);
+            desc.set_part(&Collider::Capsule {
+                half_height: (height * 0.5 - radius).max(0.0),
+                radius,
+                center: b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO),
+                axis: 1,
+            });
+            desc.set_part(&Body::Kinematic);
+        }
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
             // Its own mesh, which need not be the one drawn.

@@ -368,6 +368,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     unity.pieces = pieces(&project.assets().join("models"));
     unity.mesh_pieces = mesh_pieces(&unity);
     keep_origins(&project.assets().join("models"))?;
+    clip_cuts(&unity, &project.assets().join("models"))?;
 
     if let Some((layers, _)) = unity_layers(&unity.root) {
         let text = ron::ser::to_string_pretty(&layers, ron::ser::PrettyConfig::new())?;
@@ -656,7 +657,14 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         match animator::convert(&unity, path, &mut report) {
             Ok(text) => {
                 let name = &unity.names[guid];
-                write(&project.new_file(scrap::layout::Kind::Animator, name), &text)?;
+                let to = project.new_file(scrap::layout::Kind::Animator, name);
+                // Written again as rules (docs/animator.md): the project's
+                // own now, not the import's to overwrite.
+                if std::fs::read_to_string(&to).is_ok_and(|t| scrap::rules::RulesFile::is_rules(&t)) {
+                    report.skip("an animator the project rewrote as rules (kept)");
+                    continue;
+                }
+                write(&to, &text)?;
                 report.animators += 1;
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
@@ -703,6 +711,73 @@ fn keep_origins(dir: &Path) -> Result<()> {
             settings.origin_to_base = false;
             settings.scene = false;
             settings.keep_uvs = true;
+            settings.hash = String::new();
+            settings.save(&sidecar)?;
+        }
+    }
+    Ok(())
+}
+
+/// Each converted model's clips as Unity cuts them from its takes
+/// (`clipAnimations` in the model's `.meta`: a name, a take, a first and
+/// last frame), into its sidecar for the import to cut.
+fn clip_cuts(unity: &Unity, dir: &Path) -> Result<()> {
+    for (guid, path) in unity.of_kind("model") {
+        if unity.mesh_assets.contains(path) {
+            continue;
+        }
+        let Ok(meta) = std::fs::read_to_string(meta_of(path)) else {
+            continue;
+        };
+        let mut cuts: Vec<crate::ClipCut> = Vec::new();
+        let mut inside = false;
+        let mut cut: Option<crate::ClipCut> = None;
+        for line in meta.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("clipAnimations:") {
+                inside = !trimmed.ends_with("[]");
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            // The list ends where a key of the importer's own comes, less indented.
+            if !line.starts_with("    ") && !trimmed.is_empty() {
+                break;
+            }
+            if trimmed.starts_with("- serializedVersion:") || trimmed.starts_with("- name:") {
+                cuts.extend(cut.take());
+                cut = Some(crate::ClipCut { name: String::new(), take: String::new(), from: 0.0, to: 0.0 });
+            }
+            let Some(c) = cut.as_mut() else { continue };
+            let value = |key: &str| trimmed.strip_prefix(key).map(|v| v.trim().to_string());
+            if let Some(v) = value("- name:").or_else(|| value("name:")) {
+                if c.name.is_empty() {
+                    c.name = if v == "mixamo.com" { stem(path) } else { v };
+                }
+            } else if let Some(v) = value("takeName:") {
+                c.take = v;
+            } else if let Some(v) = value("firstFrame:") {
+                c.from = v.parse().unwrap_or(0.0);
+            } else if let Some(v) = value("lastFrame:") {
+                c.to = v.parse().unwrap_or(0.0);
+            }
+        }
+        cuts.extend(cut);
+        cuts.retain(|c| !c.name.is_empty() && c.to > c.from);
+        if cuts.is_empty() {
+            continue;
+        }
+        let file = dir.join(format!("{}.glb", unity.names[guid]));
+        if !file.is_file() {
+            continue;
+        }
+        let sidecar = crate::sidecar_for(&file);
+        let Ok(mut settings) = crate::ImportSettings::load(&sidecar) else {
+            continue;
+        };
+        if settings.clips != cuts {
+            settings.clips = cuts;
             settings.hash = String::new();
             settings.save(&sidecar)?;
         }

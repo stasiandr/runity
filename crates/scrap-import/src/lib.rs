@@ -114,6 +114,22 @@ pub struct ImportSettings {
     /// shadow pass too, which runs no material's own shader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_from: Option<ColourChannel>,
+    /// Named clips cut from a model's takes by frame — Unity's
+    /// `clipAnimations`: one take of a file, `Ellen_JumpTakeOff` its frames
+    /// 1 to 19. The takes themselves are kept beside them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips: Vec<ClipCut>,
+}
+
+/// A clip cut from a take: frames `from` to `to` of the take `take` (its
+/// name, or any take when empty), at the take's own frame rate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipCut {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take: String,
+    pub from: f32,
+    pub to: f32,
 }
 
 /// One of an image's colour channels.
@@ -143,6 +159,7 @@ impl Default for ImportSettings {
             parts: BTreeMap::new(),
             materials: BTreeMap::new(),
             alpha_from: None,
+            clips: Vec::new(),
         }
     }
 }
@@ -600,7 +617,10 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     if colors.iter().all(|c| *c == [255; 4]) {
         colors.clear();
     }
-    let skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
+    let mut skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
+    if let Some(skin) = &mut skin {
+        skin.clips = cut_clips(merge_takes(std::mem::take(&mut skin.clips)), &settings.clips);
+    }
     let look = if settings.keep_uvs {
         None
     } else {
@@ -752,26 +772,62 @@ fn read_skin(
         Some(matrix)
     };
     let roots: Vec<usize> = (0..skeleton.joints.len()).filter(|i| skeleton.joints[*i].parent.is_none()).collect();
-    if let Some(carrier) = roots.first().and_then(|r| above(node_indices[*r])) {
-        if !carrier.abs_diff_eq(glam::Mat4::IDENTITY, 1e-6) && skeleton.joints.len() < u16::MAX as usize {
-            let slot = skeleton.joints.len() as u16;
-            let (scale, rotation, translation) = carrier.to_scale_rotation_translation();
-            skeleton.joints.push(Joint {
-                name: "(skeleton root)".into(),
-                parent: None,
-                // Nothing is weighted to it; bound where it stands.
-                inverse_bind: carrier.inverse().to_cols_array_2d(),
-                rest: PoseTransform {
-                    translation: translation.to_array(),
-                    rotation: rotation.to_array(),
-                    scale: scale.to_array(),
-                },
-            });
+    // The nodes above the skin's root, each a joint of its own under its
+    // name, top first: the armature's scale and turn, and a Unity rig's
+    // root bone that carries its root motion (`Ellen_Root` above
+    // `Ellen_Hips`), whose clips' keys are kept then. Only when there is
+    // something to carry: a skeleton at the model's origin gets none.
+    let mut extra_nodes: Vec<usize> = Vec::new();
+    if let Some(&first) = roots.first() {
+        let mut chain = Vec::new();
+        let mut at = parent_of[node_indices[first]];
+        while let Some(n) = at {
+            if node_indices.contains(&n) {
+                chain.clear();
+                break;
+            }
+            chain.push(n);
+            at = parent_of[n];
+        }
+        chain.reverse();
+        let carried = above(node_indices[first]).is_some_and(|m| !m.abs_diff_eq(glam::Mat4::IDENTITY, 1e-6));
+        let mut node_indices_more = Vec::new();
+        let animated: std::collections::HashSet<usize> = document
+            .animations()
+            .flat_map(|a| a.channels().map(|c| c.target().node().index()).collect::<Vec<_>>())
+            .collect();
+        let needed = carried || chain.iter().any(|n| animated.contains(n));
+        if needed && skeleton.joints.len() + chain.len() < u16::MAX as usize {
+            let mut global = glam::Mat4::IDENTITY;
+            let mut parent: Option<u16> = None;
+            for n in chain {
+                let node = document.nodes().nth(n).expect("a node of the file");
+                let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+                global *= local;
+                let (scale, rotation, translation) = local.to_scale_rotation_translation();
+                let slot = skeleton.joints.len() as u16;
+                skeleton.joints.push(Joint {
+                    name: node.name().unwrap_or("(skeleton root)").to_string(),
+                    parent,
+                    // Nothing is weighted to it; bound where it stands.
+                    inverse_bind: global.inverse().to_cols_array_2d(),
+                    rest: PoseTransform {
+                        translation: translation.to_array(),
+                        rotation: rotation.to_array(),
+                        scale: scale.to_array(),
+                    },
+                });
+                node_indices_more.push(n);
+                parent = Some(slot);
+            }
             for r in roots {
-                skeleton.joints[r].parent = Some(slot);
+                skeleton.joints[r].parent = parent;
             }
         }
+        extra_nodes = node_indices_more;
     }
+    let mut node_indices = node_indices;
+    node_indices.extend(extra_nodes);
 
     let clips = document
         .animations()
@@ -784,6 +840,102 @@ fn read_skin(
         skeleton,
         clips,
     })
+}
+
+/// One take a file exporter split by object — Blender writes
+/// `Ellen_Skeleton|Take 001|BaseLayer` and `Ellen_Root|Take 001|BaseLayer`
+/// for one take of one armature — made one clip again, under the first's
+/// name. Takes of one name only are left as they are.
+fn merge_takes(clips: Vec<Clip>) -> Vec<Clip> {
+    let key = |name: &str| name.split_once('|').map_or(name, |(_, rest)| rest).to_string();
+    let mut out: Vec<Clip> = Vec::new();
+    for clip in clips {
+        match out.iter_mut().find(|c| c.name.contains('|') && key(&c.name) == key(&clip.name)) {
+            Some(same) => {
+                same.duration = same.duration.max(clip.duration);
+                same.channels.extend(clip.channels);
+            }
+            None => out.push(clip),
+        }
+    }
+    out
+}
+
+/// A clip's frame rate, from how far apart its keys are: an exporter that
+/// samples every frame keys each one.
+fn frame_rate(clip: &Clip) -> f32 {
+    let step = clip
+        .channels
+        .iter()
+        .flat_map(|c| c.times.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d > 1e-4)
+        .fold(f32::MAX, f32::min);
+    if step == f32::MAX {
+        30.0
+    } else {
+        (1.0 / step).round().max(1.0)
+    }
+}
+
+/// The takes, and each cut ([`ClipCut`]) as a clip of its own: its keys
+/// from its first frame to its last, with a key made at each end.
+fn cut_clips(mut clips: Vec<Clip>, cuts: &[ClipCut]) -> Vec<Clip> {
+    let mut made = Vec::new();
+    for cut in cuts {
+        let take = clips
+            .iter()
+            .find(|c| !cut.take.is_empty() && (c.name == cut.take || c.name.split('|').any(|p| p == cut.take)))
+            .or_else(|| clips.iter().max_by(|a, b| a.duration.total_cmp(&b.duration)));
+        let Some(take) = take else { continue };
+        let fps = frame_rate(take);
+        let (t0, t1) = (cut.from / fps, (cut.to / fps).max(cut.from / fps));
+        let channels = take
+            .channels
+            .iter()
+            .map(|ch| {
+                let width = ch.values.len() / ch.times.len().max(1);
+                let at = |t: f32| -> Vec<f32> {
+                    let i = ch.times.partition_point(|x| *x < t);
+                    if i == 0 {
+                        return ch.values[..width].to_vec();
+                    }
+                    if i >= ch.times.len() {
+                        return ch.values[(ch.times.len() - 1) * width..].to_vec();
+                    }
+                    let (a, b) = (ch.times[i - 1], ch.times[i]);
+                    let f = if b > a { (t - a) / (b - a) } else { 0.0 };
+                    let (va, vb) = (&ch.values[(i - 1) * width..i * width], &ch.values[i * width..(i + 1) * width]);
+                    if width == 4 {
+                        // A rotation: the short way, then made whole.
+                        let qa = glam::Quat::from_slice(va);
+                        let mut qb = glam::Quat::from_slice(vb);
+                        if qa.dot(qb) < 0.0 {
+                            qb = -qb;
+                        }
+                        qa.slerp(qb, f).to_array().to_vec()
+                    } else {
+                        va.iter().zip(vb).map(|(x, y)| x + (y - x) * f).collect()
+                    }
+                };
+                let mut times = vec![0.0];
+                let mut values = at(t0);
+                for (i, t) in ch.times.iter().enumerate() {
+                    if *t > t0 + 1e-5 && *t < t1 - 1e-5 {
+                        times.push(t - t0);
+                        values.extend_from_slice(&ch.values[i * width..(i + 1) * width]);
+                    }
+                }
+                if t1 > t0 {
+                    times.push(t1 - t0);
+                    values.extend(at(t1));
+                }
+                Channel { joint: ch.joint, path: ch.path, times, values }
+            })
+            .collect();
+        made.push(Clip { name: cut.name.clone(), duration: t1 - t0, channels });
+    }
+    clips.extend(made);
+    clips
 }
 
 fn read_clip(

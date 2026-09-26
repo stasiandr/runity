@@ -1851,6 +1851,46 @@ impl PhysicsWorld {
         })
     }
 
+    /// [`Self::sphere_cast`] meeting only the named layers: a camera kept
+    /// out of walls and ground but not its own player (Cinemachine's
+    /// Collider, its Collide Against mask).
+    pub fn sphere_cast_among(
+        &self,
+        from: Vec3,
+        radius: f32,
+        direction: Vec3,
+        max_distance: f32,
+        layers: &[&str],
+    ) -> Option<RayHit> {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 {
+            return None;
+        }
+        let only = InteractionGroups::new(
+            Group::ALL,
+            Group::from_bits_truncate(self.layers.mask(layers)),
+            InteractionTestMode::And,
+        );
+        let ball = Ball::new(radius.max(1e-4));
+        let at = Pose::translation(from.x, from.y, from.z);
+        let (collider, hit) = self.queries(QueryFilter::default().exclude_sensors().groups(only)).cast_shape(
+            &at,
+            rv(direction),
+            &ball,
+            rapier3d::parry::query::ShapeCastOptions {
+                max_time_of_impact: max_distance,
+                stop_at_penetration: true,
+                ..Default::default()
+            },
+        )?;
+        Some(RayHit {
+            point: from + direction * hit.time_of_impact,
+            distance: hit.time_of_impact,
+            collider: ColliderRef(collider),
+            entity: self.entity_of(collider),
+        })
+    }
+
     /// Which entity a collider belongs to.
     /// The entity a collider answers for: the body's own — a crate, not
     /// the plank of it the ray met.
@@ -2201,6 +2241,91 @@ impl PhysicsWorld {
             collider: ColliderRef(collider),
             entity: self.entity_of(collider),
         })
+    }
+
+    /// Move a character's body by `desired` (metres) the way Unity's
+    /// `CharacterController.Move` does: sliding along walls, up steps no
+    /// higher than `step`, up slopes no steeper than `slope_deg`, and kept
+    /// on the ground going down them. The body is the entity's own
+    /// (kinematic, its first collider the character's shape); what it
+    /// touches is the rest of the scene, triggers aside. Returns how far it
+    /// can go — for the game to add to its transform — and whether it
+    /// stands on ground after. A collision primitive, not a controller:
+    /// how fast, when to jump and how to fall stay the game's (player.md).
+    pub fn move_character(
+        &self,
+        world: &World,
+        entity: hecs::Entity,
+        desired: Vec3,
+        step: f32,
+        slope_deg: f32,
+    ) -> Option<(Vec3, bool)> {
+        use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+        let handle = self.body_of(world, entity)?;
+        let body = self.bodies.get(handle)?;
+        let collider = self.colliders.get(*body.colliders().first()?)?;
+        let controller = KinematicCharacterController {
+            offset: CharacterLength::Absolute(0.02),
+            slide: true,
+            autostep: (step > 0.0).then_some(CharacterAutostep {
+                max_height: CharacterLength::Absolute(step),
+                min_width: CharacterLength::Absolute(0.1),
+                include_dynamic_bodies: false,
+            }),
+            max_slope_climb_angle: slope_deg.to_radians(),
+            min_slope_slide_angle: slope_deg.to_radians(),
+            // Kept on the ground going down a slope — never pulled down
+            // out of a jump.
+            snap_to_ground: (desired.y <= 0.0).then_some(CharacterLength::Absolute(step.max(0.1))),
+            ..Default::default()
+        };
+        let filter = QueryFilter::default().exclude_sensors().exclude_rigid_body(handle).groups(collider.collision_groups());
+        // Where the entity is now, not where the last step left the
+        // shape: a kinematic body follows its transform a step behind.
+        let placed = world
+            .get::<&WorldTransform>(entity)
+            .ok()
+            .map(|w| {
+                let (_, r, t) = w.0.to_scale_rotation_translation();
+                Pose::from_parts(rv(t), rapier3d::math::Rotation::from_xyzw(r.x, r.y, r.z, r.w))
+            })
+            .unwrap_or(*body.position());
+        let at = match collider.position_wrt_parent() {
+            Some(local) => placed * *local,
+            None => *collider.position(),
+        };
+        let moved = controller.move_shape(
+            self.parameters.dt,
+            &self.queries(filter),
+            collider.shape(),
+            &at,
+            rv(desired),
+            |_| {},
+        );
+        let t = moved.translation;
+        // Rapier misses ground under a mesh floor's seams: a short cast of
+        // the shape down from where it ends, onto something not too steep,
+        // is ground too — as a CharacterController's skin touching it is.
+        let mut grounded = moved.grounded;
+        if !grounded && desired.y <= 0.0 {
+            let mut ended = at;
+            ended.translation += t;
+            let probe = self.queries(filter).cast_shape(
+                &ended,
+                rv(Vec3::NEG_Y),
+                collider.shape(),
+                rapier3d::parry::query::ShapeCastOptions {
+                    max_time_of_impact: 0.06,
+                    stop_at_penetration: true,
+                    ..Default::default()
+                },
+            );
+            grounded = probe.is_some_and(|(_, hit)| {
+                let n = gv(hit.normal1);
+                n.y >= slope_deg.to_radians().cos() - 1e-3 || gv(hit.normal2).y <= -(slope_deg.to_radians().cos() - 1e-3)
+            });
+        }
+        Some((Vec3::new(t.x, t.y, t.z), grounded))
     }
 
     /// Bring ray queries up to date with the bodies, without a step: after
@@ -4336,6 +4461,44 @@ mod tests {
             (same - fell).abs() < 1e-4,
             "the same fall, deterministic: {fell} {same}"
         );
+    }
+
+    /// Unity's CharacterController.Move: a step up is taken, a wall
+    /// stops, the ground is stood on.
+    #[test]
+    fn a_character_walks_up_a_step_and_stops_at_a_wall() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "floor", model: "m", body: Static,
+                 collider: Box(half: (20.0, 0.5, 20.0)), transform: (position: (0.0, -0.5, 0.0))),
+                (id: "00000000000000f2", name: "step", model: "m", body: Static,
+                 collider: Box(half: (1.0, 0.1, 5.0)), transform: (position: (3.0, 0.1, 0.0))),
+                (id: "00000000000000f3", name: "wall", model: "m", body: Static,
+                 collider: Box(half: (0.5, 2.0, 5.0)), transform: (position: (8.0, 2.0, 0.0))),
+                (id: "00000000000000f4", name: "ellen", model: "m", body: Kinematic,
+                 collider: Capsule(half_height: 0.5, radius: 0.3), transform: (position: (0.0, 0.82, 0.0))),
+            ])"#,
+        );
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let ellen = by_id(&world, "00000000000000f4".parse().unwrap());
+        let mut grounded = false;
+        let mut highest: f32 = 0.0;
+        for _ in 0..200 {
+            let (moved, on) = physics
+                .move_character(&world, ellen, Vec3::new(0.05, -0.02, 0.0), 0.3, 45.0)
+                .unwrap();
+            grounded = on;
+            world.get::<&mut Transform>(ellen).unwrap().position += moved;
+            crate::world::apply_hierarchy(&mut world);
+            physics.sync_from_world(&mut world);
+            physics.refresh_queries();
+            highest = highest.max(world.get::<&Transform>(ellen).unwrap().position.y);
+        }
+        let at = world.get::<&Transform>(ellen).unwrap().position;
+        assert!(highest > 0.95, "up the 0.2 m step: {highest}");
+        assert!(at.x < 7.5 && at.x > 7.0, "stopped at the wall: {at}");
+        assert!(grounded, "on the floor");
     }
 
     #[test]
