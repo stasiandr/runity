@@ -168,7 +168,7 @@ impl Ik {
 }
 
 /// A foot's knee and hip: its parent and its parent's.
-fn leg(skeleton: &Skeleton, foot: usize) -> Option<(usize, usize)> {
+pub(crate) fn leg(skeleton: &Skeleton, foot: usize) -> Option<(usize, usize)> {
     let knee = skeleton.joints.get(foot)?.parent? as usize;
     let hip = skeleton.joints.get(knee)?.parent? as usize;
     Some((knee, hip))
@@ -176,7 +176,7 @@ fn leg(skeleton: &Skeleton, foot: usize) -> Option<(usize, usize)> {
 
 /// Each joint's place in the world: the skeleton's model-space matrices
 /// under the entity's.
-fn placed_joints(skeleton: &Skeleton, pose: &[PoseTransform], placed: Mat4) -> Vec<Mat4> {
+pub(crate) fn placed_joints(skeleton: &Skeleton, pose: &[PoseTransform], placed: Mat4) -> Vec<Mat4> {
     skeleton
         .world_matrices(pose)
         .into_iter()
@@ -184,7 +184,7 @@ fn placed_joints(skeleton: &Skeleton, pose: &[PoseTransform], placed: Mat4) -> V
         .collect()
 }
 
-fn turn_of(m: Mat4) -> Quat {
+pub(crate) fn turn_of(m: Mat4) -> Quat {
     m.to_scale_rotation_translation().1
 }
 
@@ -198,7 +198,7 @@ fn parent_of(skeleton: &Skeleton, world: &[Mat4], placed: Mat4, j: usize) -> Mat
 }
 
 /// Turn joint `j` by `turn` in the world, written into its local pose.
-fn turn_joint(
+pub(crate) fn turn_joint(
     skeleton: &Skeleton,
     pose: &mut [PoseTransform],
     world: &[Mat4],
@@ -293,40 +293,7 @@ fn feet(
         // The foot keeps the animation's turn through the leg's, then
         // turns to the slope.
         let kept = turn_of(world[foot]);
-        let (h, k, f) = (
-            world[hip].w_axis.truncate(),
-            world[knee].w_axis.truncate(),
-            world[foot].w_axis.truncate(),
-        );
-        // The knee bends the way it already does; a straight leg forward.
-        let along = (f - h).normalize_or(-up);
-        let out = (k - h) - along * (k - h).dot(along);
-        let pole = if out.length() > 1e-4 {
-            k + out
-        } else {
-            k + forward
-        };
-        let (knee_to, foot_to) =
-            crate::geometry_ik::two_bone(h, h.distance(k), k.distance(f), target, pole);
-        turn_joint(
-            skeleton,
-            pose,
-            &world,
-            placed,
-            hip,
-            Quat::from_rotation_arc((k - h).normalize_or(up), (knee_to - h).normalize_or(up)),
-        );
-        world = placed_joints(skeleton, pose, placed);
-        let (k, f) = (world[knee].w_axis.truncate(), world[foot].w_axis.truncate());
-        turn_joint(
-            skeleton,
-            pose,
-            &world,
-            placed,
-            knee,
-            Quat::from_rotation_arc((f - k).normalize_or(up), (foot_to - k).normalize_or(up)),
-        );
-        world = placed_joints(skeleton, pose, placed);
+        reach_leg(skeleton, pose, placed, &mut world, (foot, knee, hip), target, forward);
         let slope = Quat::IDENTITY.slerp(
             Quat::from_rotation_arc(up, normal),
             feet.align.clamp(0.0, 1.0),
@@ -342,6 +309,50 @@ fn feet(
         );
         world = placed_joints(skeleton, pose, placed);
     }
+}
+
+/// Bend a leg — `(foot, knee, hip)` — so its foot is at `target`, the knee
+/// bending the way it already does (forward, `forward`, when straight).
+/// The foot's own turn is the leg's; `world` is refreshed.
+pub(crate) fn reach_leg(
+    skeleton: &Skeleton,
+    pose: &mut [PoseTransform],
+    placed: Mat4,
+    world: &mut Vec<Mat4>,
+    (foot, knee, hip): (usize, usize, usize),
+    target: Vec3,
+    forward: Vec3,
+) {
+    let up = Vec3::Y;
+    let (h, k, f) = (
+        world[hip].w_axis.truncate(),
+        world[knee].w_axis.truncate(),
+        world[foot].w_axis.truncate(),
+    );
+    // The knee bends the way it already does; a straight leg forward.
+    let along = (f - h).normalize_or(-up);
+    let out = (k - h) - along * (k - h).dot(along);
+    let pole = if out.length() > 1e-4 { k + out } else { k + forward };
+    let (knee_to, foot_to) = crate::geometry_ik::two_bone(h, h.distance(k), k.distance(f), target, pole);
+    turn_joint(
+        skeleton,
+        pose,
+        world,
+        placed,
+        hip,
+        Quat::from_rotation_arc((k - h).normalize_or(up), (knee_to - h).normalize_or(up)),
+    );
+    *world = placed_joints(skeleton, pose, placed);
+    let (k, f) = (world[knee].w_axis.truncate(), world[foot].w_axis.truncate());
+    turn_joint(
+        skeleton,
+        pose,
+        world,
+        placed,
+        knee,
+        Quat::from_rotation_arc((f - k).normalize_or(up), (foot_to - k).normalize_or(up)),
+    );
+    *world = placed_joints(skeleton, pose, placed);
 }
 
 fn look_at(

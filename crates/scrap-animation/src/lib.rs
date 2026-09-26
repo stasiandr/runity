@@ -13,6 +13,7 @@ pub mod animator;
 pub mod animgraph;
 pub mod graph_text;
 pub mod ik;
+pub mod matching;
 pub mod motion;
 pub mod tween;
 

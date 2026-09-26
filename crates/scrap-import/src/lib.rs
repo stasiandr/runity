@@ -27,6 +27,7 @@
 pub mod assets;
 pub mod blend;
 pub mod brush;
+pub mod bvh;
 pub mod cook;
 pub mod poly;
 pub mod scene;

@@ -27,6 +27,9 @@ pub use scrap_animation::animgraph;
 /// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
 #[cfg(feature = "animation")]
 pub use scrap_animation::ik as pose_ik;
+/// Motion matching: a skeleton played from every frame of its clips.
+#[cfg(feature = "animation")]
+pub use scrap_animation::matching;
 /// The asset archive as the core has it: its header, its ID.
 pub use scrap_core::asset as asset_core;
 pub use scrap_geometry::animation;
