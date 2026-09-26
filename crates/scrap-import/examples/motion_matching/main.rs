@@ -180,6 +180,7 @@ impl Walker {
                     "lock_reach" => feel.lock_reach = v,
                     "lock_creep" => feel.lock_creep = v,
                     "blend_halflife" => feel.blend_halflife = v,
+                    "upper_blend_halflife" => feel.upper_blend_halflife = v,
                     "hold_halflife" => feel.hold_halflife = v,
                     "leash" => feel.leash = v,
                     "velocity_halflife" => feel.velocity_halflife = v,

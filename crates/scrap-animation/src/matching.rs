@@ -136,6 +136,8 @@ pub struct Database {
     hand_contacts: Vec<[bool; 2]>,
     /// Each hand with its forearm and upper arm.
     arms: [Option<(usize, usize, usize)>; 2],
+    /// Joints above the hips: not the legs, not the hips themselves.
+    upper: Vec<bool>,
     /// How high an ankle is over the floor it stands on, and a toe.
     ankle: f32,
     toe: f32,
@@ -629,6 +631,21 @@ impl Database {
             contacts,
             toe_contacts,
             hand_contacts,
+            upper: (0..joints)
+                .map(|j| {
+                    let mut at = Some(j);
+                    while let Some(k) = at {
+                        if k == root || thighs.contains(&k) {
+                            return false;
+                        }
+                        at = skeleton.joints[k].parent.map(|p| p as usize);
+                        if at == Some(root) {
+                            return true;
+                        }
+                    }
+                    true
+                })
+                .collect(),
             arms: hands.map(|h| {
                 let h = h?;
                 let fore = skeleton.joints[h].parent? as usize;
@@ -911,8 +928,10 @@ pub struct Feel {
     /// What a climb's warping costs against the features: the squared
     /// logarithms of its rise's and its run-up's scale, times this.
     pub fit_weight: f32,
-    /// How fast a jump's difference fades.
+    /// How fast a jump's difference fades: the legs', and the body's and
+    /// arms' above the hips.
     pub blend_halflife: f32,
+    pub upper_blend_halflife: f32,
     /// How fast the animation's root is pulled to the spring, and how far
     /// it may stray from it, metres.
     pub hold_halflife: f32,
@@ -946,6 +965,7 @@ impl Default for Feel {
             pose_free: 0.5,
             fit_weight: 30.0,
             blend_halflife: 0.1,
+            upper_blend_halflife: 0.1,
             hold_halflife: 0.2,
             leash: 0.15,
             lock_feet: true,
@@ -1405,8 +1425,12 @@ impl Matcher {
                 }
             }
         }
-        for (offset, speed) in &mut self.turns {
-            (*offset, *speed) = decay(*offset, *speed, self.feel.blend_halflife, dt);
+        // Legs settle fast — the feet are held anyway — the body and arms
+        // more slowly: a swing of the arms from one take to the next is the
+        // jump most seen.
+        for (j, (offset, speed)) in self.turns.iter_mut().enumerate() {
+            let halflife = if db.upper[j] { self.feel.upper_blend_halflife } else { self.feel.blend_halflife };
+            (*offset, *speed) = decay(*offset, *speed, halflife, dt);
         }
         self.shift = decay(self.shift.0, self.shift.1, self.feel.blend_halflife, dt);
 
