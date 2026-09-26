@@ -339,9 +339,6 @@ impl HairState {
         let width = self.hair.thickness.max(0.0005) * 0.5;
         let clump = self.hair.clump.clamp(0.0, 1.0);
         let curl = self.hair.curl.max(0.0);
-        let mut vertices = Vec::with_capacity(self.follows.len() * n * SIDES);
-        let mut indices = Vec::with_capacity(self.follows.len() * (n - 1) * SIDES * 6);
-        let mut line = vec![Vec3::ZERO; n];
         // How each guide has turned at each of its points since it grew:
         // the same for every strand that follows it, so found once here
         // rather than once a strand (a guide leads dozens).
@@ -359,7 +356,15 @@ impl HairState {
             let a = s as f32 / SIDES as f32 * std::f32::consts::TAU;
             (a.cos(), a.sin())
         });
-        for (k, f) in self.follows.iter().enumerate() {
+        // Each strand is its own `n × SIDES` vertices at a place known
+        // ahead: strands are made across the cores, straight into it.
+        let each = n * SIDES;
+        let blank = Vertex { position: [0.0; 3], normal: [0.0; 3], uv: [0.0; 2] };
+        let mut vertices = vec![blank; self.follows.len() * each];
+        scrap_core::jobs::for_each_chunk_mut(&mut vertices, each, |start, out| {
+            let k = start / each;
+            let f = &self.follows[k];
+            let mut line = vec![Vec3::ZERO; n];
             let offset = turn_now * f.offset;
             // Along the guides it follows, its root's offset carried as
             // their links are turned, and drawn in toward the tip.
@@ -384,7 +389,7 @@ impl HairState {
             }
             // Its own length: the last of it left off.
             let reach = ((n - 1) as f32 * f.length).clamp(1.0, (n - 1) as f32);
-            let first = vertices.len() as u32;
+            let mut out = out.iter_mut();
             for i in 0..n {
                 let t = (i as f32 / (n - 1) as f32 * reach).min(reach);
                 let (lo, frac) = (t.floor() as usize, t.fract());
@@ -398,13 +403,17 @@ impl HairState {
                 let local = back.transform_point3(p);
                 for (s, &(cos, sin)) in round.iter().enumerate() {
                     let normal = side * cos + up * sin;
-                    vertices.push(Vertex {
+                    *out.next().expect("n × SIDES a strand") = Vertex {
                         position: (local + back.transform_vector3(normal * r)).to_array(),
                         normal: back.transform_vector3(normal).normalize_or(normal).to_array(),
                         uv: [s as f32 / SIDES as f32, i as f32 / (n - 1) as f32],
-                    });
+                    };
                 }
             }
+        });
+        let mut indices = Vec::with_capacity(self.follows.len() * (n - 1) * SIDES * 6);
+        for k in 0..self.follows.len() {
+            let first = (k * each) as u32;
             for i in 0..n as u32 - 1 {
                 for s in 0..SIDES as u32 {
                     let a = first + i * SIDES as u32 + s;
