@@ -290,6 +290,13 @@ pub struct BodyProps {
     /// above it goes on, for their joint to fling both back up.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unswept: bool,
+    /// A trigger that notices what stands still too — a static crate, the
+    /// level's walls — not only what moves: Unity's trigger on a kinematic
+    /// Rigidbody. A zone with no Rigidbody in Unity sees only what has one,
+    /// and so does a `Trigger` that does not say this: a level-wide zone
+    /// is not tested against every wall of the level every step.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notices_still: bool,
     /// Axes it may not move along, as letters: `"y"` keeps it at its height.
     /// Unity's Freeze Position.
     #[serde(default, skip_serializing_if = "Axes::is_none")]
@@ -359,6 +366,7 @@ impl Default for BodyProps {
             blown: 0.0,
             fast: false,
             unswept: false,
+            notices_still: false,
             freeze_move: Axes::default(),
             freeze_turn: Axes::default(),
         }

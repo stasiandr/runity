@@ -1303,6 +1303,8 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 mass: Some(b.f32("m_Mass").unwrap_or(1.0)),
                 // Continuous, speculative or dynamic: checked between steps.
                 fast: b.i64("m_CollisionDetection").is_some_and(|m| m != 0),
+                // A trigger on a Rigidbody meets what stands still too.
+                notices_still: kinematic && desc.body() == Body::Trigger,
                 ..BodyProps::default()
             });
         }
@@ -1925,6 +1927,14 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
 /// Unity said so.
 fn solid(desc: &mut EntityDesc, b: &Yaml) {
     if b.i64("m_IsTrigger") == Some(1) {
+        // Its kinematic Rigidbody read first: a trigger that follows its
+        // transform, and meets what stands still as Unity's does.
+        if desc.body() == Body::Kinematic {
+            if let Some(mut props) = desc.part::<BodyProps>() {
+                props.notices_still = true;
+                desc.set_part(&props);
+            }
+        }
         desc.set_part(&Body::Trigger);
     } else if desc.body() == Body::None {
         desc.set_part(&Body::Static);
@@ -2764,6 +2774,19 @@ Rigidbody:
         let mut report = Report::default();
         let roots = convert_file(&unity(), volume, &mut report);
         assert_eq!(roots[0].body(), Body::Trigger);
+        assert!(roots[0].part::<BodyProps>().is_some_and(|p| p.notices_still), "on a Rigidbody: it meets what stands still");
+        // The Rigidbody read before the collider: the same.
+        let (collider, rigidbody) = volume.split_at(volume.find("--- !u!54").unwrap());
+        let (head, collider) = collider.split_at(collider.find("--- !u!65").unwrap());
+        let swapped = format!("{head}{rigidbody}\n{collider}");
+        let roots = convert_file(&unity(), &swapped, &mut report);
+        assert_eq!(roots[0].body(), Body::Trigger);
+        assert!(roots[0].part::<BodyProps>().is_some_and(|p| p.notices_still), "read the other way round");
+        // A zone with no Rigidbody meets only what has one.
+        let bare = &volume[..volume.find("--- !u!54").unwrap()];
+        let roots = convert_file(&unity(), bare, &mut report);
+        assert_eq!(roots[0].body(), Body::Trigger);
+        assert!(!roots[0].part::<BodyProps>().is_some_and(|p| p.notices_still));
         let solid = volume.replace("m_IsTrigger: 1", "m_IsTrigger: 0");
         let roots = convert_file(&unity(), &solid, &mut report);
         assert_eq!(roots[0].body(), Body::Kinematic);

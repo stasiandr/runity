@@ -920,11 +920,9 @@ impl PhysicsWorld {
             if let Some(mass) = props.mass.filter(|m| *m > 0.0) {
                 collider.set_mass(mass);
             }
-            if physics.0 == Body::Trigger {
+            if kind == Body::Trigger {
                 collider.set_sensor(true);
-                // A zone notices whatever enters it, a kinematic player or
-                // a static crate included — not only what the solver moves.
-                collider.set_active_collision_types(ActiveCollisionTypes::all());
+                collider.set_active_collision_types(zone_notices(props.notices_still));
             }
             let body = match kind {
                 Body::Dynamic => RigidBodyBuilder::dynamic(),
@@ -987,7 +985,14 @@ impl PhysicsWorld {
                 c.set_density(part.props.density.max(1e-3));
                 if part.trigger {
                     c.set_sensor(true);
-                    c.set_active_collision_types(ActiveCollisionTypes::all());
+                    // On a body that moves, a trigger meets what stands
+                    // still as well (Unity's trigger under a Rigidbody); on
+                    // one that does not, it is a zone like any other.
+                    c.set_active_collision_types(if matches!(kind, Body::Dynamic | Body::Kinematic) {
+                        ActiveCollisionTypes::all()
+                    } else {
+                        zone_notices(part.props.notices_still || props.notices_still)
+                    });
                 }
                 let volume = if part.trigger { 0.0 } else { c.shape().mass_properties(1.0).mass() };
                 let h = self.colliders.insert_with_parent(c, handle, &mut self.bodies);
@@ -2363,6 +2368,20 @@ fn hull(points: &[Vector]) -> Option<Collider> {
     Some(ColliderBuilder::new(SharedShape::new(crate::shapes::Hull::new(polyhedron))).build())
 }
 
+/// What a zone of its own (`Body::Trigger`) is tested against: whatever
+/// moves — dynamic or kinematic, a player carried by the game included —
+/// and, only when its line asks, what stands still. As Unity's triggers: one
+/// with no Rigidbody meets only colliders that have one, which keeps a
+/// level-wide zone from being tested against every wall of the level each
+/// step (Dacha's sandstorm box, a third of a level's physics).
+fn zone_notices(still: bool) -> ActiveCollisionTypes {
+    if still {
+        ActiveCollisionTypes::all()
+    } else {
+        ActiveCollisionTypes::all() - ActiveCollisionTypes::KINEMATIC_FIXED - ActiveCollisionTypes::FIXED_FIXED
+    }
+}
+
 /// `collider`'s shape, never swept between steps (see
 /// [`crate::shapes::Unswept`]).
 fn unsweep(collider: &mut Collider) {
@@ -3585,6 +3604,63 @@ mod tests {
             .find(|(_, p)| p.0 == kind)
             .map(|(e, _)| e)
             .unwrap()
+    }
+
+    /// A zone meets what moves — a kinematic thing carried into it — and
+    /// not what stands still in it, unless its line says it notices that
+    /// too: Unity's trigger with no Rigidbody, and one on a kinematic one.
+    #[test]
+    fn a_zone_notices_what_stands_still_only_when_asked() {
+        let cube = ColliderShape::Box { half: Vec3::splat(0.25), center: Vec3::ZERO };
+        let inside = |notices_still: bool| {
+            let mut zone = entity("zone", 1.0, Body::Trigger, ColliderShape::Box { half: Vec3::splat(2.0), center: Vec3::ZERO });
+            if notices_still {
+                zone.set_part(&crate::scene::BodyProps { notices_still: true, ..Default::default() });
+            }
+            let mut scene = Scene {
+                entities: vec![zone, entity("crate", 1.0, Body::Static, cube), entity("lift", 1.5, Body::Kinematic, cube)],
+                ..Default::default()
+            };
+            scene.assign_ids();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            let mut physics = PhysicsWorld::new(1.0 / 30.0);
+            run_for(&mut physics, &mut world, 3);
+            let zone = the(&world, Body::Trigger);
+            let names: Vec<String> = world
+                .get::<&Contacts>(zone)
+                .unwrap()
+                .inside
+                .iter()
+                .map(|e| world.get::<&crate::world::LineName>(*e).map(|n| n.0.clone()).unwrap_or_default())
+                .collect();
+            names
+        };
+        assert_eq!(inside(false), ["lift"], "what moves, not what stands still");
+        let mut both = inside(true);
+        both.sort();
+        assert_eq!(both, ["crate", "lift"], "asked: what stands still too");
+    }
+
+    /// A trigger part with no body above it is a zone of its own: what falls
+    /// into it falls through.
+    #[test]
+    fn a_trigger_part_on_its_own_stops_nothing() {
+        let mut scene = Scene {
+            entities: vec![
+                entity("floor", 0.0, Body::Static, ColliderShape::Box { half: Vec3::new(5.0, 0.1, 5.0), center: Vec3::ZERO }),
+                entity("zone", 2.0, Body::TriggerPart, ColliderShape::Box { half: Vec3::new(2.0, 0.5, 2.0), center: Vec3::ZERO }),
+                entity("ball", 4.0, Body::Dynamic, ColliderShape::Sphere { radius: 0.25, center: Vec3::ZERO }),
+            ],
+            ..Default::default()
+        };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        run_for(&mut physics, &mut world, 180);
+        let y = world.get::<&WorldTransform>(the(&world, Body::Dynamic)).unwrap().0.w_axis.y;
+        assert!((y - 0.35).abs() < 0.05, "through the zone to the floor: {y}");
     }
 
     #[test]
