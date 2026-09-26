@@ -8,7 +8,12 @@
 //! they stand is kept. Choosing a node shows its inputs on the right, each
 //! written into the file as it is submitted and only there
 //! ([`scrap::shader_graph::text`]): comments stay, the diff is the change.
-//! A node is added by writing it, and taken out with its line. Whether the
+//! A node is added by writing it, and taken out with its line; one node is
+//! read by another by dragging its box onto the other, which then asks as
+//! which of its inputs — an edit of the reader's input, never a place. The
+//! loading, checking and editing are the engine's
+//! ([`scrap_editor::shader_graphs`]), the MCP server's `shader_graph` tools
+//! as well. Whether the
 //! graph builds is said on the right in the compiler's words, and the node
 //! they name is marked; a material's graph is shown on a ball, lit, and the
 //! chosen node's value on another — Shader Graph's main preview and a
@@ -17,8 +22,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use scrap::shader_graph::{effect::EffectGraph, subgraph::SubGraph, Input, Node, ShaderGraph};
+use scrap::shader_graph::Node;
 use scrap_editor::console::Level;
+use scrap_editor::shader_graphs::{self as graphs, written, Checked, Doc, Edit, Kind};
 use scrap_editor::Session;
 use scrap_ui::graph_view::{self, BOX_H, BOX_W};
 use scrap_ui::{Color, Event, ImageId, NodeId, Style, Ui};
@@ -41,91 +47,12 @@ enum Part {
     /// A new node, as `"name": Kind(…)`.
     Add,
     Delete,
-}
-
-/// What a file is.
-#[derive(Debug, Clone)]
-enum Doc {
-    Surface(ShaderGraph),
-    Effect(EffectGraph),
-    Sub(SubGraph),
-}
-
-impl Doc {
-    fn nodes(&self) -> &BTreeMap<String, Node> {
-        match self {
-            Doc::Surface(g) => &g.nodes,
-            Doc::Effect(g) => &g.nodes,
-            Doc::Sub(g) => &g.nodes,
-        }
-    }
-
-    /// The boxes of what the graph sets, each with what it reads.
-    fn outputs(&self) -> Vec<(&'static str, Vec<&Input>)> {
-        fn some<'a>(v: Vec<&'a Option<Input>>) -> Vec<&'a Input> {
-            v.into_iter().flatten().collect()
-        }
-        match self {
-            Doc::Surface(g) => {
-                let s = &g.surface;
-                let mut out = vec![(
-                    "surface",
-                    some(vec![&s.albedo, &s.alpha, &s.metallic, &s.smoothness, &s.normal, &s.emission, &s.clip]),
-                )];
-                let v = some(vec![&g.vertex.position, &g.vertex.normal]);
-                if !v.is_empty() {
-                    out.push(("vertex", v));
-                }
-                out
-            }
-            Doc::Effect(g) => vec![
-                ("spawn", some(vec![&g.spawn.position, &g.spawn.velocity, &g.spawn.life])),
-                ("update", some(vec![&g.update.velocity, &g.update.position])),
-                ("output", some(vec![&g.output.color, &g.output.alpha, &g.output.size])),
-            ],
-            Doc::Sub(g) => vec![("outputs", g.outputs.values().collect())],
-        }
-    }
-}
-
-/// A file's kind, by its name.
-fn kind_of(path: &std::path::Path) -> Option<&'static str> {
-    let f = path.file_name()?.to_str()?;
-    if f.ends_with(".subgraph.ron") {
-        Some("subgraph")
-    } else if f.ends_with(".vfx.ron") {
-        Some("effect")
-    } else if f.ends_with(".graph.ron") {
-        Some("material")
-    } else {
-        None
-    }
-}
-
-fn load(path: &std::path::Path) -> Result<Doc, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    match kind_of(path) {
-        Some("subgraph") => scrap::shader_graph::subgraph::parse(&text).map(Doc::Sub),
-        Some("effect") => scrap::shader_graph::effect::parse(&text).map(Doc::Effect),
-        _ => scrap::shader_graph::surface::parse(&text).map(Doc::Surface),
-    }
-}
-
-/// An input as it is written.
-fn written(input: &Input) -> String {
-    match input {
-        Input::Name(s) => format!("\"{s}\""),
-        Input::Number(n) => format!("{n:?}"),
-        Input::Vector(v) => format!("({})", v.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", ")),
-    }
-}
-
-/// The node a read names, without its swizzle.
-fn base(input: &Input) -> Option<&str> {
-    match input {
-        Input::Name(s) => Some(scrap::shader_graph::expr::split(s).0),
-        _ => None,
-    }
+    /// What the graph sets, by its part: a box to drop a node on.
+    Output(String),
+    /// The dragged node read by the one it was dropped on, as this input.
+    As(&'static str),
+    /// Not connecting after all.
+    NotAs,
 }
 
 pub struct ShaderGraphs {
@@ -143,9 +70,11 @@ pub struct ShaderGraphs {
     columns: usize,
     pan: (f32, f32),
     listed: bool,
-    /// Whether it builds: `Err` in the compiler's words.
-    built: Result<(), String>,
-    problems: Vec<String>,
+    /// Whether it builds, and its warnings.
+    checked: Checked,
+    /// A node dragged onto another, waiting to be told as which input:
+    /// (the one read, the reader).
+    connecting: Option<(String, String)>,
     /// Pictures for the renderer: the previews.
     images: Vec<(ImageId, u32, Vec<u8>)>,
 }
@@ -190,8 +119,8 @@ impl ShaderGraphs {
             columns: 1,
             pan: (0.0, 0.0),
             listed: false,
-            built: Ok(()),
-            problems: Vec::new(),
+            checked: Checked { built: Ok(()), problems: Vec::new() },
+            connecting: None,
             images: Vec::new(),
         }
     }
@@ -225,7 +154,7 @@ impl ShaderGraphs {
         // Wherever they lie (docs/layout.md).
         let paths: Vec<PathBuf> = session
             .project()
-            .map(|p| p.files(scrap::layout::Kind::Shader).into_iter().filter(|p| kind_of(p).is_some()).collect())
+            .map(|p| p.files(scrap::layout::Kind::Shader).into_iter().filter(|p| Kind::of(p).is_some()).collect())
             .unwrap_or_default();
         if paths.is_empty() {
             ui.add_text(
@@ -252,9 +181,9 @@ impl ShaderGraphs {
                     .clickable(),
             );
             ui.set_name(row, format!("graph {name}"));
-            let glyph = match kind_of(&path) {
-                Some("effect") => "sparkles",
-                Some("subgraph") => "package",
+            let glyph = match Kind::of(&path) {
+                Some(Kind::Effect) => "sparkles",
+                Some(Kind::Subgraph) => "package",
                 _ => "palette",
             };
             icon(ui, row, glyph, MUTED);
@@ -266,15 +195,16 @@ impl ShaderGraphs {
     /// Open (or read again) the file at `path`: what it says, whether it
     /// builds, and its previews.
     fn open(&mut self, ui: &mut Ui, session: &mut Session, path: PathBuf) {
-        match load(&path) {
+        match Doc::load(&path) {
             Ok(doc) => {
                 let same = self.open.as_ref().is_some_and(|(p, _)| *p == path);
                 if !same {
                     self.chosen = None;
                     self.pan = (0.0, 0.0);
                 }
+                self.connecting = None;
+                self.checked = graphs::check(&path, &doc);
                 self.open = Some((path, doc));
-                self.check();
                 self.preview(session);
                 self.list(ui, session);
                 self.show(ui);
@@ -283,34 +213,12 @@ impl ShaderGraphs {
         }
     }
 
-    /// Whether the open graph builds, and what in it is likely a mistake.
-    fn check(&mut self) {
-        let Some((path, doc)) = &self.open else {
-            return;
-        };
-        let library = scrap::render::subgraphs_beside(path);
-        self.problems.clear();
-        self.built = match doc {
-            Doc::Surface(g) => {
-                self.problems = scrap::shader_graph::surface::problems_with(g, &library);
-                scrap::render::material_shader_source(path)
-                    .and_then(|s| scrap::render::check_material_shader(&s))
-            }
-            Doc::Effect(g) => {
-                self.problems = scrap::shader_graph::effect::problems_with(g, &library);
-                scrap::render::effect_source(path).and_then(|s| scrap::particles_gpu::check_effect(&s))
-            }
-            // A subgraph builds as the graphs that call it do.
-            Doc::Sub(_) => Ok(()),
-        };
-    }
-
     /// The pictures: the whole material on a ball, and the chosen node.
     fn preview(&mut self, session: &mut Session) {
-        let Some((path, Doc::Surface(_))) = &self.open else {
+        let Some((path, Doc::Material(_))) = &self.open else {
             return;
         };
-        if self.built.is_err() {
+        if self.checked.built.is_err() {
             return;
         }
         let path = path.clone();
@@ -332,16 +240,6 @@ impl ShaderGraphs {
         (24.0 + column as f32 * (BOX_W + 40.0), 24.0 + row as f32 * (BOX_H + 30.0))
     }
 
-    /// The node the compiler's words name, if any: `node `x``.
-    fn blamed(&self) -> Option<String> {
-        let words = self.built.as_ref().err()?;
-        let at = words.find("node `")? + 6;
-        let end = words[at..].find('`')?;
-        let name = &words[at..at + end];
-        // A subgraph's node, put in under its call: the call.
-        Some(name.split("__").next().unwrap_or(name).to_string())
-    }
-
     /// Build the canvas and the side again from the graph.
     fn show(&mut self, ui: &mut Ui) {
         self.parts.retain(|_, p| matches!(p, Part::File(_) | Part::Canvas | Part::Wide));
@@ -358,23 +256,7 @@ impl ShaderGraphs {
         let nodes = doc.nodes();
         let outputs = doc.outputs();
         // Data runs from what is read to what reads it.
-        let mut edges: Vec<(String, String)> = Vec::new();
-        for (name, node) in nodes {
-            for (_, input) in node.inputs() {
-                if let Some(b) = base(input).filter(|b| nodes.contains_key(*b)) {
-                    edges.push((b.to_string(), name.clone()));
-                }
-            }
-        }
-        for (out, reads) in &outputs {
-            for input in reads {
-                if let Some(b) = base(input).filter(|b| nodes.contains_key(*b)) {
-                    edges.push((b.to_string(), out.to_string()));
-                }
-            }
-        }
-        edges.sort();
-        edges.dedup();
+        let edges = doc.edges();
         let mut names: Vec<&str> = outputs.iter().map(|(o, _)| *o).collect();
         names.extend(nodes.keys().map(String::as_str));
         // Laid out from what the graph sets, back along the reads.
@@ -385,7 +267,7 @@ impl ShaderGraphs {
             self.layout.insert(o.to_string(), (0, i));
         }
         self.columns = self.layout.values().map(|(c, _)| c + 1).max().unwrap_or(1);
-        let blamed = self.blamed();
+        let blamed = self.checked.blamed();
         let layer = |ui: &mut Ui| ui.add(self.canvas, Style::default().absolute(self.pan.0, self.pan.1).size(4000.0, 4000.0));
         let arrows = layer(ui);
         let boxes = layer(ui);
@@ -413,7 +295,8 @@ impl ShaderGraphs {
         for name in &names {
             let (x, y) = self.place(name);
             let output = outputs.iter().any(|(o, _)| o == name);
-            let on = self.chosen.as_deref() == Some(*name);
+            let on = self.chosen.as_deref() == Some(*name)
+                || self.connecting.as_ref().is_some_and(|(f, t)| f == name || t == name);
             let wrong = blamed.as_deref() == Some(*name);
             let b = ui.add(
                 boxes,
@@ -433,7 +316,8 @@ impl ShaderGraphs {
                             NEUTRAL_800
                         },
                     )
-                    .clickable(),
+                    .clickable()
+                    .draggable(),
             );
             ui.set_name(b, format!("graph node {name}"));
             ui.add_text(b, text().nowrap().text_size(12.0), name);
@@ -446,9 +330,14 @@ impl ShaderGraphs {
                 Style::default().text_size(10.0).text_color(if output { ACCENT_200 } else { MUTED }).nowrap(),
                 kind.as_deref().unwrap_or("what the graph sets"),
             );
-            if !output {
-                self.parts.insert(b, Part::Node(name.to_string()));
-            }
+            self.parts.insert(
+                b,
+                if output {
+                    Part::Output(name.to_string())
+                } else {
+                    Part::Node(name.to_string())
+                },
+            );
         }
         self.show_side(ui, &doc);
     }
@@ -459,14 +348,40 @@ impl ShaderGraphs {
 
     fn show_side(&mut self, ui: &mut Ui, doc: &Doc) {
         let side = self.side;
-        match &self.built {
+        match &self.checked.built {
             Ok(()) => self.small(ui, "Builds.", SUCCESS),
             Err(e) => self.small(ui, e, ERROR),
         }
-        for p in self.problems.clone() {
+        for p in self.checked.problems.clone() {
             self.small(ui, &p, WARNING);
         }
-        if matches!(doc, Doc::Surface(_)) && self.built.is_ok() {
+        // A node dropped on another: as which of its inputs.
+        if let Some((from, to)) = self.connecting.clone() {
+            self.small(ui, &format!("`{to}` reads `{from}` as:"), LABEL);
+            let row = ui.add(side, Style::row().full_width().gap(SPACE_1).wrap());
+            for field in graphs::fields_of(doc, &to) {
+                let b = ui.add(
+                    row,
+                    Style::row()
+                        .padding_x(SPACE_2)
+                        .height(22.0)
+                        .center_items()
+                        .radius(RADIUS_SM)
+                        .background(SURFACE)
+                        .border(1.0, NEUTRAL_800)
+                        .hover(HOVER)
+                        .clickable(),
+                );
+                ui.set_name(b, format!("graph connect as {field}"));
+                ui.add_text(b, text().text_size(12.0), field);
+                self.parts.insert(b, Part::As(field));
+            }
+            let b = ui.add(row, Style::row().padding_x(SPACE_2).height(22.0).center_items().radius(RADIUS_SM).hover(HOVER).clickable());
+            ui.set_name(b, "graph connect cancel");
+            ui.add_text(b, Style::default().text_size(12.0).text_color(MUTED), "Cancel");
+            self.parts.insert(b, Part::NotAs);
+        }
+        if matches!(doc, Doc::Material(_)) && self.checked.built.is_ok() {
             let row = ui.add(side, Style::row().full_width().gap(SPACE_2));
             let size = 130.0;
             let whole = ui.add_image(row, Style::default().size(size, size).radius(RADIUS_MD), GRAPH_PREVIEW);
@@ -517,28 +432,13 @@ impl ShaderGraphs {
         self.parts.insert(f, Part::Add);
     }
 
-    /// Write `new` in place of the open file, when it still reads as a
-    /// graph of its kind; then read it again.
-    fn write(&mut self, ui: &mut Ui, session: &mut Session, new: Option<String>, what: &str) {
+    /// Make `edit` to the open file, where it goes; then read it again.
+    fn edit(&mut self, ui: &mut Ui, session: &mut Session, edit: Edit) {
         let Some((path, _)) = self.open.clone() else {
             return;
         };
-        let Some(new) = new else {
-            session.say(Level::Error, format!("{what}: not found in {}", path.display()));
-            return;
-        };
-        let reads = match kind_of(&path) {
-            Some("subgraph") => scrap::shader_graph::subgraph::parse(&new).map(|_| ()),
-            Some("effect") => scrap::shader_graph::effect::parse(&new).map(|_| ()),
-            _ => scrap::shader_graph::surface::parse(&new).map(|_| ()),
-        };
-        if let Err(e) = reads {
-            session.say(Level::Error, format!("{what}: {e}"));
-            return;
-        }
-        if let Err(e) = std::fs::write(&path, new) {
-            session.say(Level::Error, format!("{}: {e}", path.display()));
-            return;
+        if let Err(e) = graphs::apply(&path, &edit) {
+            session.say(Level::Error, e);
         }
         self.open(ui, session, path);
     }
@@ -548,7 +448,6 @@ impl ShaderGraphs {
             return;
         };
         let click = matches!(event, Event::Click { .. });
-        let text_now = || self.open.as_ref().and_then(|(p, _)| std::fs::read_to_string(p).ok()).unwrap_or_default();
         match part {
             Part::File(path) if click => self.open(ui, session, path),
             Part::Wide if click => {
@@ -557,7 +456,35 @@ impl ShaderGraphs {
             }
             Part::Node(name) if click => {
                 self.chosen = Some(name);
+                self.connecting = None;
                 self.preview(session);
+                self.show(ui);
+            }
+            // Dragged onto another box: that one reads it, as an input the
+            // side asks for.
+            Part::Node(name) => {
+                if let Event::DragEnd { over: Some(over) } = event {
+                    let to = match self.parts.get(over) {
+                        Some(Part::Node(to) | Part::Output(to)) if *to != name => to.clone(),
+                        _ => return,
+                    };
+                    let Some((_, doc)) = &self.open else { return };
+                    if graphs::fields_of(doc, &to).is_empty() {
+                        session.say(Level::Warning, format!("`{to}` reads nothing another node gives: its file says what it is"));
+                        return;
+                    }
+                    self.connecting = Some((name, to));
+                    self.show(ui);
+                }
+            }
+            Part::As(field) if click => {
+                let Some((from, to)) = self.connecting.take() else { return };
+                let Some((_, doc)) = &self.open else { return };
+                let edit = Edit::connect(doc, &from, &to, field);
+                self.edit(ui, session, edit);
+            }
+            Part::NotAs if click => {
+                self.connecting = None;
                 self.show(ui);
             }
             Part::Canvas => {
@@ -568,30 +495,28 @@ impl ShaderGraphs {
                 }
             }
             Part::Input(field) => {
-                if let (Event::Submit(value), Some(name)) = (event, self.chosen.clone()) {
-                    let new = scrap::shader_graph::text::set_input(&text_now(), &name, field, value.trim());
-                    self.write(ui, session, new, &format!("node `{name}`, input `{field}`"));
+                if let (Event::Submit(value), Some(node)) = (event, self.chosen.clone()) {
+                    let edit = Edit::Set { node, field: field.into(), value: value.trim().into() };
+                    self.edit(ui, session, edit);
                 }
             }
             Part::Add => {
                 if let Event::Submit(value) = event {
-                    let Some((name, node)) = value.split_once(':') else {
+                    let Some((name, kind)) = value.split_once(':') else {
                         session.say(Level::Error, "a new node is `\"name\": Kind(…)`");
                         return;
                     };
-                    let name = name.trim().trim_matches('"').to_string();
-                    let new = scrap::shader_graph::text::add_node(&text_now(), &name, node.trim());
-                    self.write(ui, session, new, &format!("node `{name}` (a name is one node's)"));
-                    if self.open.as_ref().is_some_and(|(_, d)| d.nodes().contains_key(&name)) {
-                        self.chosen = Some(name);
+                    let node = name.trim().trim_matches('"').to_string();
+                    self.edit(ui, session, Edit::Add { node: node.clone(), kind: kind.trim().into() });
+                    if self.open.as_ref().is_some_and(|(_, d)| d.nodes().contains_key(&node)) {
+                        self.chosen = Some(node);
                         self.show(ui);
                     }
                 }
             }
             Part::Delete if click => {
-                if let Some(name) = self.chosen.take() {
-                    let new = scrap::shader_graph::text::remove_node(&text_now(), &name);
-                    self.write(ui, session, new, &format!("node `{name}`"));
+                if let Some(node) = self.chosen.take() {
+                    self.edit(ui, session, Edit::Remove { node });
                 }
             }
             _ => {}

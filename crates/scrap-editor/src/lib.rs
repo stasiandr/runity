@@ -41,6 +41,7 @@ mod scene_view;
 mod surface;
 pub mod table;
 mod thumbnail;
+pub mod shader_graphs;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
 mod visibility;

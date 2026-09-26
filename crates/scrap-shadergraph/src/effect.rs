@@ -26,14 +26,23 @@
 //! What each part can read, besides the nodes:
 //!
 //! * everywhere: `time` (seconds the emitter has run), `seed` (a number
-//!   from 0 to 1 of the particle's own), and the emitter's numbers —
-//!   `speed`, `gravity` (a vec3), `life`, `size`, `end_size`, `color`,
-//!   `end_color`, `alpha`, `end_alpha`;
-//! * `spawn`: `origin` (where the emitter is) and `cone` (a way out within
-//!   its `spread_deg` of its direction, length 1);
+//!   from 0 to 1 of the particle's own), `center` (where the emitter is),
+//!   the emitter's numbers — `speed`, `gravity` (a vec3), `life`, `size`,
+//!   `end_size`, `color`, `end_color`, `alpha`, `end_alpha` — and the
+//!   graph's own `params` by name, from the emitter's eight `params` as a
+//!   material's are (Unity's exposed properties);
+//! * `spawn`: `origin` (where it is born by the emitter's shape — its
+//!   `from`, `box_size`, `radius`) and `cone` (a way out within its
+//!   `spread_deg` of its direction, length 1);
 //! * `update` and `output`: `position`, `velocity`, `age` (seconds),
-//!   `t` (its age over its life, 0 to 1); `update` also `dt`, the step's
-//!   seconds.
+//!   `t` (its age over its life, 0 to 1), and `custom`, a vec3 of the
+//!   particle's own that `spawn` gives it and `update` changes (Unity's
+//!   custom attributes: a colour picked at birth, a heat that cools);
+//!   `update` also `dt`, the step's seconds.
+//!
+//! `output: (frame: …)` picks the frame of the emitter's `sheet` — the
+//! picture of its `material`, frames across and down — by number: without
+//! it, the emitter's `frames` over each one's life.
 //!
 //! What is left out does what an emitter without a graph does: born at
 //! `origin`, leaving along `cone` at `speed`, living `life`; falling by
@@ -51,6 +60,10 @@ use crate::expr::{self, Context, Input, Node, Ty, Value};
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectGraph {
+    /// Its properties, in order, from the emitter's eight `params`: a
+    /// name alone is one number, `("tint", Color)` three.
+    #[serde(default)]
+    pub params: Vec<crate::surface::Param>,
     #[serde(default)]
     pub nodes: BTreeMap<String, Node>,
     /// A new one: where, how fast, for how long.
@@ -74,6 +87,9 @@ pub struct Spawn {
     /// Seconds it lives.
     #[serde(default)]
     pub life: Option<Input>,
+    /// Its own vec3, from birth: zero when not said.
+    #[serde(default)]
+    pub custom: Option<Input>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -85,6 +101,9 @@ pub struct Update {
     /// Where it is after this step; left out, it moves by its velocity.
     #[serde(default)]
     pub position: Option<Input>,
+    /// Its own vec3 after this step; left out, it keeps it.
+    #[serde(default)]
+    pub custom: Option<Input>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -97,6 +116,9 @@ pub struct Output {
     /// Metres across.
     #[serde(default)]
     pub size: Option<Input>,
+    /// Which frame of the emitter's sheet, by number from 0.
+    #[serde(default)]
+    pub frame: Option<Input>,
 }
 
 /// What a file of this name is called as an effect: `sparks.vfx.ron` is
@@ -128,8 +150,9 @@ impl Part {
 }
 
 /// Everywhere: the emitter's numbers, the clock, the particle's own seed.
-const EVERYWHERE: [(&str, &str, Ty); 12] = [
+const EVERYWHERE: [(&str, &str, Ty); 13] = [
     ("time", "e.time", Ty::F1),
+    ("center", "e.center", Ty::F3),
     ("seed", "e.seed", Ty::F1),
     ("speed", "params.motion.x", Ty::F1),
     ("gravity", "vec3<f32>(0.0, params.motion.z, 0.0)", Ty::F3),
@@ -143,17 +166,22 @@ const EVERYWHERE: [(&str, &str, Ty); 12] = [
     ("t", "e.t", Ty::F1),
 ];
 const BORN: [(&str, &str, Ty); 2] = [("origin", "e.origin", Ty::F3), ("cone", "e.cone", Ty::F3)];
-const LIVING: [(&str, &str, Ty); 3] = [
+const LIVING: [(&str, &str, Ty); 4] = [
     ("position", "e.position", Ty::F3),
     ("velocity", "e.velocity", Ty::F3),
     ("age", "e.age", Ty::F1),
+    ("custom", "e.custom", Ty::F3),
 ];
 
-struct Particles {
+/// The emitter's eight numbers, in the particles' shader.
+const NUMBERS: &str = "params.values";
+
+struct Particles<'a> {
     part: Part,
+    params: &'a [crate::surface::Param],
 }
 
-impl Particles {
+impl Particles<'_> {
     fn all(&self) -> Vec<(&'static str, &'static str, Ty)> {
         let mut out: Vec<_> = EVERYWHERE.to_vec();
         match self.part {
@@ -174,18 +202,20 @@ impl Particles {
     }
 }
 
-impl Context for Particles {
+impl Context for Particles<'_> {
     fn builtin(&self, name: &str) -> Option<Value> {
         self.all()
             .into_iter()
             .find(|(n, _, _)| *n == name)
             .map(|(_, code, ty)| Value::new(code, ty))
+            .or_else(|| crate::surface::param_value_of(self.params, name, NUMBERS))
     }
 
     fn builtins(&self) -> Vec<String> {
         self.all()
             .into_iter()
             .map(|(n, _, _)| n.to_string())
+            .chain(self.params.iter().map(|p| p.name().to_string()))
             .collect()
     }
 
@@ -235,11 +265,14 @@ fn expanded(
         &mut out.spawn.position,
         &mut out.spawn.velocity,
         &mut out.spawn.life,
+        &mut out.spawn.custom,
         &mut out.update.velocity,
         &mut out.update.position,
+        &mut out.update.custom,
         &mut out.output.color,
         &mut out.output.alpha,
         &mut out.output.size,
+        &mut out.output.frame,
     ]
     .into_iter()
     .filter_map(Option::as_mut)
@@ -264,7 +297,7 @@ pub fn to_wgsl_with(
             .iter()
             .map(|(n, i, _)| (format!("{} `{n}`", part.said()), *i))
             .collect();
-        let compiled = expr::compile(&graph.nodes, &wanted, &Particles { part })?;
+        let compiled = expr::compile(&graph.nodes, &wanted, &Particles { part, params: &graph.params })?;
         for h in compiled.helpers.split_inclusive("\n}\n") {
             if !h.trim().is_empty() && !helpers.iter().any(|x| x == h) {
                 helpers.push(h.to_string());
@@ -326,7 +359,7 @@ pub fn problems_with(graph: &EffectGraph, library: &dyn crate::subgraph::Library
         let fields = fields(graph, part);
         let wanted: Vec<(String, &Input)> =
             fields.iter().map(|(n, i, _)| (n.to_string(), *i)).collect();
-        let Ok(compiled) = expr::compile(&graph.nodes, &wanted, &Particles { part }) else {
+        let Ok(compiled) = expr::compile(&graph.nodes, &wanted, &Particles { part, params: &graph.params }) else {
             return Vec::new();
         };
         unused = Some(match unused {
@@ -362,15 +395,18 @@ fn fields(graph: &EffectGraph, part: Part) -> Vec<(&'static str, &Input, Ty)> {
             ("position", &graph.spawn.position, Ty::F3),
             ("velocity", &graph.spawn.velocity, Ty::F3),
             ("life", &graph.spawn.life, Ty::F1),
+            ("custom", &graph.spawn.custom, Ty::F3),
         ],
         Part::Update => vec![
             ("velocity", &graph.update.velocity, Ty::F3),
             ("position", &graph.update.position, Ty::F3),
+            ("custom", &graph.update.custom, Ty::F3),
         ],
         Part::Output => vec![
             ("color", &graph.output.color, Ty::F3),
             ("alpha", &graph.output.alpha, Ty::F1),
             ("size", &graph.output.size, Ty::F1),
+            ("frame", &graph.output.frame, Ty::F1),
         ],
     };
     all.into_iter()
@@ -379,6 +415,13 @@ fn fields(graph: &EffectGraph, part: Part) -> Vec<(&'static str, &Input, Ty)> {
 }
 
 fn shape(graph: &EffectGraph) -> Result<(), String> {
+    let numbers: usize = graph.params.iter().map(|p| p.kind().size()).sum();
+    if numbers > 8 {
+        return Err(format!(
+            "an emitter hands its effect 8 numbers, and `params` takes {numbers} ({})",
+            crate::surface::slot_names_of(&graph.params).join(" ")
+        ));
+    }
     let mut reserved: Vec<&str> = EVERYWHERE
         .iter()
         .chain(&BORN)
@@ -386,6 +429,17 @@ fn shape(graph: &EffectGraph) -> Result<(), String> {
         .map(|(n, _, _)| *n)
         .collect();
     reserved.push("dt");
+    let mut seen: Vec<&str> = Vec::new();
+    for p in &graph.params {
+        let name = p.name();
+        if name.is_empty() || name.contains(['.', ' ']) {
+            return Err(format!("`{name}` cannot name a parameter: no dots or spaces"));
+        }
+        if reserved.contains(&name) || seen.contains(&name) || graph.nodes.contains_key(name) {
+            return Err(format!("parameter `{name}` has the name of an input or node it would hide — call it something else"));
+        }
+        seen.push(name);
+    }
     for name in graph.nodes.keys() {
         if name.is_empty() || name.contains(['.', ' ']) {
             return Err(format!("`{name}` cannot name a node: no dots or spaces"));

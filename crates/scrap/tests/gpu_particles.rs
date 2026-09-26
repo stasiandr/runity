@@ -52,6 +52,7 @@ fn thousands_rise_from_the_emitter_and_none_fall_below_it() {
             emitter: emitter.clone(),
             born: (lived * emitter.rate) as u64,
             lived,
+            picture: None,
         }];
         renderer.render(&gpu, &target, &frame);
     }

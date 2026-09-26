@@ -230,6 +230,17 @@ pub fn list() -> Vec<Value> {
         }), &["name", "from", "to"]),
         tool("graph_disconnect", "Remove the transitions from one state to another in an animator graph.", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
         tool("graph_rename", "Rename a state in an animator graph, and everything that names it: the start, the transitions, and the graph's cases (animators/<name>.cases.ron).", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
+        tool("shader_graph", "A shader graph (shaders/<name>.graph.ron: a material's; <name>.vfx.ron: a GPU particle effect's; <name>.subgraph.ron) told in words: its properties, every node with its inputs, what it sets, whether it builds (in the compiler's words, as the renderer would build it) and its warnings. An empty name lists them. Nodes and their inputs: docs/shadergraph.md.", json!({ "name": { "type": "string", "description": "lava, embers.vfx, cracks.subgraph, or the file name" } }), &["name"]),
+        tool("shader_graph_edit", "Change a shader graph in its file where the change goes, the comments and every other line as they were, and say whether it builds after. Give `node` and `input` with `value` to set a node's input; `part` (surface, vertex; spawn, update, output) and `input` with `value` to set what the graph sets; `node` and `add` to add a node; `node` and `remove: true` to take one out with its line. Values as RON: \"noise.x\" names a node (with its components), 0.5, (1.0, 0.2, 0.0).", json!({
+            "name": { "type": "string" },
+            "node": { "type": "string" },
+            "part": { "type": "string" },
+            "input": { "type": "string" },
+            "value": { "type": "string" },
+            "add": { "type": "string", "description": "the new node as written, e.g. Sine(of: \"time\")" },
+            "remove": { "type": "boolean" },
+        }), &["name"]),
+        tool("shader_graph_preview", "A picture of a material's shader graph on a ball, lit, as the material that uses it has it — or, with `node`, that node's value glowing on black (a number as grey, a vec2 as red and green): the Shader Graph window's previews. Changes nothing.", json!({ "name": { "type": "string" }, "node": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["name"]),
         tool("dialogue", "A dialogue (dialogues/<name>.ron): its start, every line with who says it, what, when, and where it goes, every answer, what is wrong with it, its cases (dialogues/<name>.cases.ron) played, and what changed since the last commit. An empty name lists the dialogues.", json!({ "name": { "type": "string", "description": "the dialogue's path in dialogues/ without .ron" } }), &["name"]),
         tool("dialogue_line", "Write one line of a dialogue, into the file where it goes (the rest of the file as it was). `entry` is the line as RON — (speaker: \"@chef\", text: \"@chef.hi\", next: \"ask\"), with when: [Is(\"f\"), Not(\"f\"), Var(\"n\", Ge, 3)], else, set: [\"f\"], add: {\"n\": 1}, put: {\"n\": 0}, event, choices: [(text, to, when, once: true, set, add, put, event)]; an empty entry removes the line. A dialogue that is not there is made, starting at this line.", json!({
             "name": { "type": "string" },
@@ -1849,6 +1860,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "graph" | "graph_connect" | "graph_disconnect" | "graph_rename" => {
             graph_tool(server, name, args)
         }
+        "shader_graph" | "shader_graph_edit" | "shader_graph_preview" => shader_graph_tool(server, name, args),
         "dialogue" | "dialogue_line" | "dialogue_rename" | "dialogue_play" | "export_lines" => {
             dialogue_tool(server, name, args)
         }
@@ -2402,6 +2414,62 @@ kept where they fell: {}",
 // --- arguments ----------------------------------------------------------
 
 /// The animator graph tools: read one, connect, disconnect, rename a state.
+fn shader_graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+    use scrap_editor::shader_graphs::{self as graphs, Doc, Edit};
+    let root = project_root(server)?;
+    let name = string(args, "name")?;
+    if name.trim().is_empty() {
+        let names: Vec<String> = graphs::list(&root)
+            .iter()
+            .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+            .collect();
+        return Ok(vec![text(if names.is_empty() { "no graphs in shaders/".into() } else { names.join("\n") })]);
+    }
+    let path = graphs::find(&root, &name)?;
+    match tool {
+        "shader_graph" => {
+            let doc = Doc::load(&path)?;
+            Ok(vec![text(graphs::describe(&path, &doc))])
+        }
+        "shader_graph_edit" => {
+            let node = optional_string(args, "node")?;
+            let part = optional_string(args, "part")?;
+            let input = optional_string(args, "input")?;
+            let value = optional_string(args, "value")?;
+            let add = optional_string(args, "add")?;
+            let remove = args.get("remove").and_then(Value::as_bool).unwrap_or(false);
+            let edit = match (node, part, input, value, add, remove) {
+                (Some(node), None, None, None, None, true) => Edit::Remove { node },
+                (Some(node), None, None, None, Some(kind), false) => Edit::Add { node, kind },
+                (Some(node), None, Some(field), Some(value), None, false) => Edit::Set { node, field, value },
+                (None, Some(part), Some(field), Some(value), None, false) => Edit::SetPart { part, field, value },
+                _ => {
+                    return Err("one change: node+input+value, part+input+value, node+add, or node+remove".into())
+                }
+            };
+            let doc = graphs::apply(&path, &edit)?;
+            // The running game and the editor take the file from here.
+            let _ = server.session()?.reload_assets();
+            Ok(vec![text(graphs::describe(&path, &doc))])
+        }
+        "shader_graph_preview" => {
+            let node = optional_string(args, "node")?;
+            let size = optional_integer(args, "size")?.unwrap_or(256).clamp(16, 1024);
+            let pixels = server
+                .session()?
+                .graph_preview(&path, node.as_deref(), size)
+                .map_err(|e| e.to_string())?;
+            let mut png = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut png)
+                .write_image(&pixels, size, size, image::ExtendedColorType::Rgba8)
+                .map_err(|e| e.to_string())?;
+            let what = node.map(|n| format!("node {n} of ")).unwrap_or_default();
+            Ok(vec![image(&png), text(format!("{what}{name}, {size}x{size}"))])
+        }
+        other => Err(format!("no tool `{other}`")),
+    }
+}
+
 fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
     use scrap::animgraph::{Condition, Graph, Transition, ANY};
     let session = server.session()?;

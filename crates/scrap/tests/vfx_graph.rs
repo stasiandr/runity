@@ -21,6 +21,20 @@ fn write(path: &std::path::Path, text: &str, second: u64) {
 /// How many pixels above and below the emitter are lit, and the reddest
 /// lit pixel's colour.
 fn run(renderer: &mut Renderer, gpu: &Gpu, target: &OffscreenTarget, emitter: &Emitter, key: u64) -> (usize, usize, [u8; 4]) {
+    let (pixels, above, below, brightest) = run_with(renderer, gpu, target, emitter, key, None);
+    let _ = pixels;
+    (above, below, brightest)
+}
+
+/// [`run`], with a picture, and the pixels too.
+fn run_with(
+    renderer: &mut Renderer,
+    gpu: &Gpu,
+    target: &OffscreenTarget,
+    emitter: &Emitter,
+    key: u64,
+    picture: Option<scrap::asset::AssetId>,
+) -> (Vec<u8>, usize, usize, [u8; 4]) {
     let mut frame = Frame {
         sky: Sky {
             mode: SkyMode::Color,
@@ -44,6 +58,7 @@ fn run(renderer: &mut Renderer, gpu: &Gpu, target: &OffscreenTarget, emitter: &E
             emitter: emitter.clone(),
             born: (lived * emitter.rate) as u64,
             lived,
+            picture,
         }];
         renderer.render(gpu, target, &frame);
     }
@@ -57,7 +72,112 @@ fn run(renderer: &mut Renderer, gpu: &Gpu, target: &OffscreenTarget, emitter: &E
         .map(|i| OffscreenTarget::pixel(&pixels, SIZE, i % SIZE, i / SIZE))
         .max_by_key(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
         .unwrap();
-    (lit(0..SIZE / 2 - 2), lit(SIZE / 2 + 6..SIZE), brightest)
+    let (above, below) = (lit(0..SIZE / 2 - 2), lit(SIZE / 2 + 6..SIZE));
+    (pixels, above, below, brightest)
+}
+
+/// How many columns have a lit pixel: how wide what was drawn is.
+fn wide(pixels: &[u8]) -> usize {
+    (0..SIZE)
+        .filter(|&x| (0..SIZE).any(|y| OffscreenTarget::pixel(pixels, SIZE, x, y).iter().take(3).any(|c| *c > 40)))
+        .count()
+}
+
+#[test]
+fn an_effect_reads_its_emitters_numbers_keeps_its_own_and_is_born_in_its_shape() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("scrap-vfx-more-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A colour from the emitter's numbers, and a heat of each one's own,
+    // given at birth and kept: its green.
+    write(
+        &dir.join("tinted.vfx.ron"),
+        r#"(
+            params: [("tint", Color), "hot"],
+            nodes: {
+                "heat": Combine(x: 0.0, y: "hot", z: 0.0),
+                "lit": Add(a: "tint", b: "custom"),
+            },
+            spawn: (velocity: (0.0, 0.0, 0.0), custom: "heat"),
+            update: (velocity: (0.0, 0.0, 0.0)),
+            output: (color: "lit", size: 0.08),
+        )"#,
+        0,
+    );
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let mut shaders = MaterialShaders::new(&dir);
+    for (name, put) in shaders.poll(&mut renderer, &gpu) {
+        put.unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    let emitter = Emitter {
+        rate: 3000.0,
+        life: 2.0,
+        size: 0.08,
+        color: (1.0, 1.0, 1.0),
+        graph: "tinted".into(),
+        params: vec![1.0, 0.0, 0.0, 1.0],
+        ..Emitter::default()
+    };
+    // Born where the emitter is, and staying: a dot.
+    let (pixels, _, _, colour) = run_with(&mut renderer, &gpu, &target, &emitter, 1, None);
+    assert!(colour[0] > 100 && colour[1] > 100 && colour[2] < 20, "red from `tint` and green from `custom`: {colour:?}");
+    let dot = wide(&pixels);
+    // In a box four metres wide: across the picture.
+    let boxed = Emitter {
+        box_size: Some(Vec3::new(4.0, 0.1, 0.1)),
+        ..emitter.clone()
+    };
+    let (pixels, _, _, _) = run_with(&mut renderer, &gpu, &target, &boxed, 2, None);
+    assert!(wide(&pixels) > dot * 4 && wide(&pixels) > SIZE as usize / 2, "born along the box: {} columns, not {dot}", wide(&pixels));
+
+    // A picture, two frames across: red then blue. The emitter's `frames`
+    // take the first; the graph's `frame` the second.
+    let mut sheet = Vec::new();
+    for _y in 0..4 {
+        for x in 0..8 {
+            sheet.extend_from_slice(if x < 4 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+        }
+    }
+    let handle = renderer.upload_texture_rgba(&gpu, 8, 4, &sheet, false);
+    let id = scrap::asset::AssetId(0x5eed);
+    renderer.set_texture_asset(id, handle);
+    write(&dir.join("sheet.vfx.ron"), r#"(output: (color: (1.0, 1.0, 1.0), frame: 1.0, size: 0.3))"#, 1);
+    write(&dir.join("plain.vfx.ron"), r#"(output: (color: (1.0, 1.0, 1.0), size: 0.3))"#, 1);
+    shaders.look_again();
+    for (name, put) in shaders.poll(&mut renderer, &gpu) {
+        put.unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    let pictured = |graph: &str| Emitter {
+        rate: 200.0,
+        life: 2.0,
+        speed: 0.0,
+        sheet: Some((2, 1)),
+        frames: (0.0, 0.4),
+        graph: graph.into(),
+        ..Emitter::default()
+    };
+    // Pure red and pure blue pixels: a frame's edge blends into the next.
+    let count = |pixels: &[u8]| {
+        let (mut red, mut blue) = (0, 0);
+        for i in 0..SIZE * SIZE {
+            let p = OffscreenTarget::pixel(pixels, SIZE, i % SIZE, i / SIZE);
+            red += (p[0] > 100 && p[2] < 30) as usize;
+            blue += (p[2] > 100 && p[0] < 30) as usize;
+        }
+        (red, blue)
+    };
+    let (pixels, _, _, _) = run_with(&mut renderer, &gpu, &target, &pictured("plain"), 3, Some(id));
+    let (red, blue) = count(&pixels);
+    assert!(red > 50 && blue == 0, "the emitter's first frame, red: {red} red, {blue} blue");
+    let (pixels, _, _, _) = run_with(&mut renderer, &gpu, &target, &pictured("sheet"), 4, Some(id));
+    let (red, blue) = count(&pixels);
+    assert!(blue > 50 && red == 0, "the graph's frame 1, blue: {red} red, {blue} blue");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

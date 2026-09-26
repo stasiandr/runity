@@ -2,9 +2,9 @@
 //! prefab, Unity's asset preview — and what an agent looks at before
 //! placing one.
 
+use scrap::glam::Vec3;
 #[allow(unused_imports)]
 use scrap::prelude::*;
-use scrap::glam::Vec3;
 use scrap::render::{Camera, FogSettings};
 use scrap::{EntityDesc, OffscreenTarget, Scene};
 
@@ -207,25 +207,42 @@ impl Session {
     /// that node glowing on black — Shader Graph's main preview and a
     /// node's. Its numbers are those of the first material that uses the
     /// graph, or zeros. Refused in words when the graph does not build.
-    pub fn graph_preview(&mut self, path: &std::path::Path, node: Option<&str>, size: u32) -> EditResult<Vec<u8>> {
+    pub fn graph_preview(
+        &mut self,
+        path: &std::path::Path,
+        node: Option<&str>,
+        size: u32,
+    ) -> EditResult<Vec<u8>> {
         let size = size.clamp(16, 1024);
         let text = std::fs::read_to_string(path).map_err(|e| EditError::Io(e.to_string()))?;
         let name = path
             .file_name()
             .and_then(|f| f.to_str())
             .and_then(scrap::shader_graph::shader_name)
-            .ok_or_else(|| EditError::Scene(format!("{} is not a material's shader graph", path.display())))?
+            .ok_or_else(|| {
+                EditError::Scene(format!(
+                    "{} is not a material's shader graph",
+                    path.display()
+                ))
+            })?
             .to_string();
         let graph = scrap::shader_graph::surface::parse(&text).map_err(EditError::Scene)?;
         let library = scrap::render::subgraphs_beside(path);
         let shown = match node {
-            Some(node) => scrap::shader_graph::surface::preview_of(&graph, node, &library).map_err(EditError::Scene)?,
+            Some(node) => scrap::shader_graph::surface::preview_of(&graph, node, &library)
+                .map_err(EditError::Scene)?,
             None => graph,
         };
-        let wgsl = scrap::shader_graph::surface::to_wgsl_with(&shown, &format!("shaders/{name}.graph.ron"), &library)
-            .map_err(EditError::Scene)?;
+        let wgsl = scrap::shader_graph::surface::to_wgsl_with(
+            &shown,
+            &format!("shaders/{name}.graph.ron"),
+            &library,
+        )
+        .map_err(EditError::Scene)?;
         let id = scrap::asset::shader_id(PREVIEW_SHADER);
-        self.renderer.set_material_shader(&self.gpu, id, &wgsl).map_err(EditError::Scene)?;
+        self.renderer
+            .set_material_shader(&self.gpu, id, &wgsl)
+            .map_err(EditError::Scene)?;
         let own = scrap::asset::shader_id(&name);
         let params = self
             .palette()
@@ -236,7 +253,9 @@ impl Session {
         let ball = match self.uploaded.iter().find(|(n, _)| n == "builtin:sphere") {
             Some(found) => found.1,
             None => {
-                let handle = self.renderer.upload_mesh_owned(&self.gpu, &scrap::builtin::sphere(0.5, 48, 32));
+                let handle = self
+                    .renderer
+                    .upload_mesh_owned(&self.gpu, &scrap::builtin::sphere(0.5, 48, 32));
                 self.uploaded.push(("builtin:sphere".to_string(), handle));
                 handle
             }
@@ -255,7 +274,11 @@ impl Session {
                 transform: scrap::glam::Mat4::IDENTITY,
                 texture: scrap::render::TextureHandle::WHITE,
                 material: scrap::Material {
-                    shading: if node.is_some() { scrap::material::Shading::Unlit } else { scrap::material::Shading::Lit },
+                    shading: if node.is_some() {
+                        scrap::material::Shading::Unlit
+                    } else {
+                        scrap::material::Shading::Lit
+                    },
                     shader: Some(id),
                     params,
                     ..scrap::Material::new(1.0, 1.0, 1.0)

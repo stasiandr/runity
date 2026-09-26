@@ -47,3 +47,7 @@ path = "src/main.rs"
 [[example]]
 name = "frame_bench"
 path = "examples/frame_bench.rs"
+
+[target.'cfg(unix)'.dev-dependencies]
+# The tests' measure of the editor's own work: its thread's time on a core.
+libc = "0.2"

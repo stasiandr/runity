@@ -5312,6 +5312,7 @@ fn an_open_blender_sends_its_saves_and_its_drags_over_the_link() {
     let plugin =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/blender/scrap");
     let source = root.join("assets/yard.blend");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     let script = format!(
         r#"
 import sys, bpy
