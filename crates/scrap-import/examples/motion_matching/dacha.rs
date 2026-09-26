@@ -52,6 +52,10 @@ pub struct Robot {
     /// glove has flown to what it holds (0 to 1).
     forearms: [Option<usize>; 2],
     grip: [f32; 2],
+    /// The body piece, and the egg its mesh fills in its own frame: its
+    /// middle and half its size. A glove is kept out of it — the takes'
+    /// hands swing by a man's hips, and the robot is wider.
+    body: Option<(Entity, Vec3, Vec3)>,
 }
 
 /// A bone's frame without scale.
@@ -189,7 +193,12 @@ impl Robot {
         let head_bone = skeleton.joints.iter().position(|j| j.name.ends_with(":Head")).unwrap_or(0);
         let head_rest = skeleton.world_matrices(&skeleton.rest_pose())[head_bone].w_axis.truncate();
         let mut spawned = Vec::new();
+        let mut body = None;
         for (prefab, frame, local) in pieces {
+            let is_body = prefab.contains("Character_Body");
+            if is_body {
+                body = body_egg(dir, live, &prefab);
+            }
             let frame = match frame {
                 Ok(bone) => match skeleton.joints.iter().position(|j| j.name == bone) {
                     Some(j) => Frame::Bone(j),
@@ -198,7 +207,12 @@ impl Robot {
                 Err(()) => Frame::Head,
             };
             match live.spawn_prefab(&prefab, Transform::default(), None, world, gpu, renderer) {
-                Ok(done) => spawned.push((done.root, frame, local)),
+                Ok(done) => {
+                    if let (true, Some((_, middle, half))) = (is_body, body) {
+                        body = Some((done.root, middle, half));
+                    }
+                    spawned.push((done.root, frame, local));
+                }
                 Err(why) => eprintln!("{prefab}: {why}"),
             }
         }
@@ -207,7 +221,8 @@ impl Robot {
         // the character ahead.
         let rig_at = Mat4::from_scale(scale);
         let forearms = ["mixamorig:LeftForeArm", "mixamorig:RightForeArm"].map(|n| skeleton.joints.iter().position(|j| j.name == n));
-        Ok(Robot { skeleton, height_ratio: 1.0, scale: scale.x, rig_at, head_bone, head_rest, pieces: spawned, forearms, grip: [0.0; 2] })
+        let body = body.filter(|b| b.0 != Entity::DANGLING);
+        Ok(Robot { skeleton, height_ratio: 1.0, scale: scale.x, rig_at, head_bone, head_rest, pieces: spawned, forearms, grip: [0.0; 2], body })
     }
 
     /// Every piece where the pose puts it: `placed` is the character's place,
@@ -222,13 +237,44 @@ impl Robot {
         }
         let rig = placed * self.rig_at;
         let head_moved = posed[self.head_bone].w_axis.truncate() - self.head_rest;
+        let on_bone = |j: usize, local: Mat4| {
+            let (_, turn, at) = posed[j].to_scale_rotation_translation();
+            rig * unscaled(Mat4::from_rotation_translation(turn, at / self.scale)) * local
+        };
+        // Where the body is this frame, and so the egg the gloves keep out of.
+        let egg = self.body.and_then(|(entity, middle, half)| {
+            let &(_, frame, local) = self.pieces.iter().find(|p| p.0 == entity)?;
+            let Frame::Bone(j) = frame else { return None };
+            Some((on_bone(j, local), middle, half))
+        });
+        let outside = |at: Vec3| -> Vec3 {
+            let Some((body, middle, half)) = egg else { return at };
+            let local = body.inverse().transform_point3(at);
+            let q = (local - middle) / half;
+            // A glove's width clear of the shell.
+            const CLEAR: f32 = 1.2;
+            let d = q.length();
+            if d >= CLEAR || d < 1e-4 {
+                return at;
+            }
+            body.transform_point3(middle + q / d * CLEAR * half)
+        };
         for &(piece, frame, local) in &self.pieces {
             let at = match frame {
                 Frame::Bone(j) => {
                     // The bone in the rig's own units, as the pieces are.
                     let (_, turn, at) = posed[j].to_scale_rotation_translation();
                     let animated = rig * unscaled(Mat4::from_rotation_translation(turn, at / self.scale)) * local;
-                    match self.forearms.iter().position(|&f| f == Some(j)) {
+                    let glove = self.forearms.iter().position(|&f| f == Some(j));
+                    // A glove kept out of the body.
+                    let animated = match glove {
+                        Some(_) => {
+                            let (size, turn, at) = animated.to_scale_rotation_translation();
+                            Mat4::from_scale_rotation_translation(size, turn, outside(at))
+                        }
+                        None => animated,
+                    };
+                    match glove {
                         Some(side) if self.grip[side] > 1e-3 => {
                             // Flown to what it holds, as far as it has got.
                             let (size, turn, from) = animated.to_scale_rotation_translation();
@@ -271,4 +317,19 @@ pub fn database(robot: &mut Robot, from: &Skeleton, clips: &[scrap::animation::C
     let db = Database::build(robot, &retargeted, Setup::default()).map_err(anyhow::Error::msg)?;
     eprintln!("{} frames retargeted onto the robot in {:.1?}", db.len(), started.elapsed());
     Ok(db)
+}
+
+/// The egg a piece's mesh fills, in the piece's own frame: the middle of
+/// its bounds and half their size.
+fn body_egg(dir: &Path, live: &scrap::LiveScene, prefab: &str) -> Option<(Entity, Vec3, Vec3)> {
+    let (_, line) = scrap::Prefabs::read(dir.join("prefabs").join(format!("{prefab}.prefab"))).ok()?;
+    use scrap::prelude::GeometryLine;
+    let mesh = live.library()?.mesh_link(&line.model())?;
+    let (mut low, mut high) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for v in mesh.vertices.iter() {
+        let p = Vec3::new(v.position[0].to_native(), v.position[1].to_native(), v.position[2].to_native());
+        low = low.min(p);
+        high = high.max(p);
+    }
+    (low.x <= high.x).then(|| (Entity::DANGLING, (low + high) / 2.0, (high - low) / 2.0))
 }
