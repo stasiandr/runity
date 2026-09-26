@@ -116,6 +116,16 @@ fn particles(
         return;
     };
     let fresh = emitting(&emitter, resolve, palette);
+    // Spawned where there is no GPU (a game's fixed step): its particles'
+    // mesh comes with the next frame, as a model's does.
+    match fresh.as_ref().filter(|f| f.mesh == MeshHandle::TEST) {
+        Some(_) => {
+            let _ = world.insert_one(entity, EmitterMeshPending(particle_model(&emitter)));
+        }
+        None => {
+            let _ = world.remove_one::<EmitterMeshPending>(entity);
+        }
+    }
     let running = world.get::<&mut crate::particles::Emitting>(entity).ok().map(|mut e| {
         // The knobs change; what is in the air stays.
         if let Some(fresh) = &fresh {
@@ -131,22 +141,33 @@ fn particles(
     }
 }
 
+/// What an emitter's particles are drawn as when it names no model: a
+/// quad that faces the eye, or a small cube.
+fn particle_stand_in(emitter: &crate::scene::Emitter) -> crate::AssetLink {
+    crate::AssetLink::named(if emitter.facing {
+        "builtin:plane"
+    } else {
+        "builtin:cube"
+    })
+}
+
+/// The model an emitter's particles are drawn as.
+pub fn particle_model(emitter: &crate::scene::Emitter) -> crate::AssetLink {
+    if emitter.model.is_empty() {
+        particle_stand_in(emitter)
+    } else {
+        emitter.model.clone()
+    }
+}
+
 fn emitting(
     emitter: &crate::scene::Emitter,
     resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Option<crate::particles::Emitting> {
-    let cube = crate::AssetLink::named(if emitter.facing {
-        "builtin:plane"
-    } else {
-        "builtin:cube"
-    });
-    let model = if emitter.model.is_empty() {
-        &cube
-    } else {
-        &emitter.model
-    };
-    let mesh = resolve(model).or_else(|| resolve(&cube))?;
+    let cube = particle_stand_in(emitter);
+    let model = particle_model(emitter);
+    let mesh = resolve(&model).or_else(|| resolve(&cube))?;
     let mut out = crate::particles::Emitting::new(emitter.clone(), mesh);
     out.material = emitter.material.as_ref().and_then(palette);
     Some(out)
@@ -156,6 +177,11 @@ fn emitting(
 /// uploaded: the link it names.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshPending(pub crate::AssetLink);
+
+/// An emitter spawned without a GPU, its particles drawn with nothing until
+/// their mesh is uploaded: the link they are drawn as.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmitterMeshPending(pub crate::AssetLink);
 
 /// Give an entity the mesh and surface its line names — or its decal, or
 /// its shaped ground — or take them away when the mesh cannot be found.

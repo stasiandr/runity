@@ -263,7 +263,15 @@ impl Metering {
                     layout: Some(&pipeline_layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    // Both passes clear what they share before reading it:
+                    // no zeroing of their own asked for, which on a device
+                    // without it natively is a loop over the group's size
+                    // that some translations (the Android emulator's
+                    // MoltenVK) cannot compile.
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        zero_initialize_workgroup_memory: false,
+                        ..Default::default()
+                    },
                     cache: None,
                 })
         };

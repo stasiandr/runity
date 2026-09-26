@@ -68,9 +68,16 @@ impl Surface {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: capabilities.alpha_modes[0],
             // The same bytes seen as plain RGBA, for a UI that blends as a
-            // browser does (`AcquiredFrame::ui_view`).
+            // browser does (`AcquiredFrame::ui_view`) — where the device can
+            // see a swapchain two ways: Android's Vulkan often cannot, and
+            // the game's overlay draws into the sRGB view anyway.
             view_formats: if view_format == format {
-                vec![format.remove_srgb_suffix()]
+                let can = gpu
+                    .adapter
+                    .get_downlevel_capabilities()
+                    .flags
+                    .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
+                if can { vec![format.remove_srgb_suffix()] } else { Vec::new() }
             } else {
                 vec![view_format]
             },

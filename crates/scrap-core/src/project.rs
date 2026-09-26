@@ -115,11 +115,24 @@ pub const DATA: &str = "data";
 /// The build is looked for first, so a shipped game never reaches for a
 /// path that only existed on the machine it was compiled on.
 pub fn data_file(dev_root: &str, relative: &str) -> PathBuf {
+    if let Some(dir) = DATA_DIR.get() {
+        return dir.join(relative);
+    }
     let shipped = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(DATA).join(relative)))
         .filter(|path| path.exists());
     shipped.unwrap_or_else(|| Path::new(dev_root).join(relative))
+}
+
+/// Where the host put the project's data, when it is not beside the
+/// executable: on Android, the app's own files, unpacked from the APK.
+static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Tell [`data_file`] where the data is, once, before the game reads any:
+/// a host whose executable has no folder of its own (Android's).
+pub fn set_data_dir(dir: PathBuf) {
+    let _ = DATA_DIR.set(dir);
 }
 
 /// Where a new project's game crate gets the engine from.

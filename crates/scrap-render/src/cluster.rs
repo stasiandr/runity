@@ -637,7 +637,7 @@ impl Clusters {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let can = gpu.device.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+        let can = crate::occlusion::can_draw_indirect(gpu)
             && gpu
                 .adapter
                 .get_downlevel_capabilities()
@@ -659,7 +659,7 @@ impl Clusters {
                 mapped_at_creation: false,
             }),
             job_capacity: 16,
-            args: storage(gpu, "cluster args", 16 * 16, wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC),
+            args: storage(gpu, "cluster args", 16 * 16, crate::occlusion::indirect(gpu) | wgpu::BufferUsages::COPY_SRC),
             args_capacity: 16,
             drawn: storage(gpu, "clusters kept", 1024 * 16, wgpu::BufferUsages::empty()),
             drawn_capacity: 1024,
@@ -744,7 +744,7 @@ impl Clusters {
                 gpu,
                 "cluster args",
                 self.args_capacity * 16,
-                wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
+                crate::occlusion::indirect(gpu) | wgpu::BufferUsages::COPY_SRC,
             );
         }
         let pairs: u64 = jobs.iter().map(|j| j.instances as u64 * j.clusters.count as u64).sum::<u64>() * 2;

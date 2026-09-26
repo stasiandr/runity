@@ -15,8 +15,12 @@ override LEAN: bool = false;
 struct Foliage {
     // level wind direction x and z, strength, time in seconds
     wind: vec4<f32>,
-    // position and radius of each; radius 0 bends nothing
-    benders: array<vec4<f32>, 8>,
+    // position and radius of each; radius 0 bends nothing. Eight
+    // columns of two matrices rather than an array of eight: the struct is
+    // handed to functions by value, and a copied array is what the
+    // Android emulator's MoltenVK (an old SPIRV-Cross) cannot translate.
+    benders: mat4x4<f32>,
+    benders_more: mat4x4<f32>,
     // the trample map's middle x and z, its size, 1 when there is one
     trample: vec4<f32>,
 };
@@ -996,7 +1000,7 @@ fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<
 
     // Pushed out of the way, and down, by what walks through it.
     for (var i = 0u; i < 8u; i = i + 1u) {
-        let b = f.benders[i];
+        let b = select(f.benders_more[i & 3u], f.benders[i & 3u], i < 4u);
         if b.w <= 0.0 {
             continue;
         }
@@ -1650,13 +1654,22 @@ struct FogRay {
     start_depth: f32,
 };
 
+/// The way from `near` to `far`, two points on one ray through the
+/// screen as the inverse view-projection gives them (not yet divided):
+/// forward even where `far` lies behind the eye — a mirror's oblique
+/// frustum tilts its far plane round until it does for part of the
+/// picture, and the sky there would be drawn looking backward.
+fn ray_between(near: vec4<f32>, far: vec4<f32>) -> vec3<f32> {
+    return normalize(far.xyz * near.w - near.xyz * far.w);
+}
+
 /// The ray through a place on the screen (0..1 across).
 fn fog_ray(uv: vec2<f32>) -> FogRay {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let a = frame.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
     let b = frame.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
     let start = a.xyz / a.w;
-    let direction = normalize(b.xyz / b.w - start);
+    let direction = ray_between(a, b);
     let per_metre = max(-dot(frame.view_depth.xyz, direction), 1e-4);
     return FogRay(start, direction, 1.0 / per_metre, -dot(frame.view_depth, vec4<f32>(start, 1.0)));
 }
@@ -2868,6 +2881,12 @@ fn fs_unlit(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @locatio
 /// What an unlit surface's colour looks like from the eye: through the
 /// dust and the fog, premultiplied when its blend wants it.
 fn unlit_seen(colour: vec3<f32>, alpha: f32, in: VertexOutput, flags: u32) -> vec4<f32> {
+    // A mirror's picture was fogged on its own way there: fogged again
+    // here the far half of the room would come back twice as thick
+    // (Dacha's Mirror shader has no fog).
+    if (flags & 32u) != 0u {
+        return vec4<f32>(select(colour, colour * alpha, (flags & 8u) != 0u), alpha);
+    }
     var seen = colour;
     if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
         let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
@@ -3495,7 +3514,7 @@ fn flying_sand(azimuth: f32, elevation: f32, d: vec3<f32>, layer: f32, t: f32, a
 fn fs_precipitation(in: SkyOut) -> @location(0) vec4<f32> {
     let near = frame.inverse_view_projection * vec4<f32>(in.ndc, 0.0, 1.0);
     let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
-    let d = normalize(far.xyz / far.w - near.xyz / near.w);
+    let d = ray_between(near, far);
     let azimuth = atan2(d.x, d.z);
     let elevation = asin(clamp(d.y, -1.0, 1.0));
     let t = frame.foliage.wind.w;
@@ -3744,7 +3763,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     }
     let near = frame.inverse_view_projection * vec4<f32>(in.ndc, 0.0, 1.0);
     let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
-    let direction = normalize(far.xyz / far.w - near.xyz / near.w);
+    let direction = ray_between(near, far);
     let up = direction.y;
     if frame.sky_zenith.w > 2.5 {
         // Unity's procedural sky: its own exposure, its own disc — a round
