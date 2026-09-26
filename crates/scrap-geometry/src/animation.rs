@@ -464,8 +464,160 @@ fn bracket(times: &[f32], t: f32) -> (usize, usize, f32) {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Posed(pub Vec<glam::Mat4>);
 
+impl Clip {
+    /// This clip, made on `from`, for `to`, through a pose both skeletons
+    /// can stand in — a T-pose, say — given as each one's joints
+    /// (`from_pose`, `to_pose`). Each joint turns in the world as its
+    /// counterpart turns away from that pose, so rigs whose rest poses have
+    /// nothing in common (a BVH's zero pose, a Mixamo bind) still agree:
+    /// Unreal's IK Retargeter without the chains. Joints are matched by
+    /// name less the rig's prefix, and through `aliases` (`("LeftToe",
+    /// "LeftToeBase")`); a joint of `to` with no counterpart turns with its
+    /// nearest ancestor that has one. The two poses are turned to face the
+    /// same way (by the thighs, `LeftUpLeg` and `RightUpLeg`); the root
+    /// moves as `from`'s does, scaled by how much higher `to`'s hips stand.
+    /// Sampled at `rate` frames a second.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retarget_through(
+        &self,
+        from: &Skeleton,
+        from_pose: &[PoseTransform],
+        to: &Skeleton,
+        to_pose: &[PoseTransform],
+        aliases: &[(&str, &str)],
+        rate: f32,
+    ) -> Clip {
+        let bare_to: Vec<&str> = to.joints.iter().map(|j| bare_joint_name(&j.name)).collect();
+        let counterpart: Vec<Option<usize>> = bare_to
+            .iter()
+            .map(|name| {
+                let wanted = aliases.iter().find(|(_, b)| b == name).map_or(*name, |(a, _)| *a);
+                from.joints.iter().position(|j| bare_joint_name(&j.name) == wanted)
+            })
+            .collect();
+        let turn_of = |m: &Mat4| m.to_scale_rotation_translation().1;
+        let from_rest = from.world_matrices(from_pose);
+        let to_rest = to.world_matrices(to_pose);
+        let facing = |skeleton: &Skeleton, world: &[Mat4]| {
+            let find = |n: &str| skeleton.joints.iter().position(|j| bare_joint_name(&j.name) == n);
+            let (l, r) = (find("LeftUpLeg")?, find("RightUpLeg")?);
+            let across = world[l].w_axis.truncate() - world[r].w_axis.truncate();
+            let ahead = across.cross(Vec3::Y);
+            Some(Vec3::new(ahead.x, 0.0, ahead.z).normalize_or(Vec3::Z))
+        };
+        // Turns `to`'s pose to face as `from`'s does.
+        let align = match (facing(from, &from_rest), facing(to, &to_rest)) {
+            (Some(a), Some(b)) => Quat::from_rotation_arc(b, a),
+            _ => Quat::IDENTITY,
+        };
+        let to_root = to.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
+        let from_root = counterpart[to_root].or_else(|| from.joints.iter().position(|j| j.parent.is_none())).unwrap_or(0);
+        let height = |world: &[Mat4], j: usize| world[j].w_axis.y;
+        let scale = if height(&from_rest, from_root).abs() > 1e-4 { height(&to_rest, to_root) / height(&from_rest, from_root) } else { 1.0 };
+        // Which joint of `from` each joint of `to` turns with.
+        let led: Vec<Option<usize>> = (0..to.len())
+            .map(|j| {
+                let mut at = Some(j);
+                while let Some(k) = at {
+                    if let Some(c) = counterpart[k] {
+                        return Some(c);
+                    }
+                    at = to.joints[k].parent.map(|p| p as usize);
+                }
+                None
+            })
+            .collect();
+        let count = (self.duration * rate).floor() as usize + 1;
+        let times: Vec<f32> = (0..count).map(|i| i as f32 / rate).collect();
+        let mut rotations = vec![Vec::with_capacity(count * 4); to.len()];
+        let mut places = Vec::with_capacity(count * 3);
+        let mut turned = vec![Quat::IDENTITY; to.len()];
+        for &t in &times {
+            let world = from.world_matrices(&self.sample(from, t, false));
+            for j in 0..to.len() {
+                let rest = align * turn_of(&to_rest[j]);
+                turned[j] = match led[j] {
+                    Some(c) => (turn_of(&world[c]) * turn_of(&from_rest[c]).inverse() * rest).normalize(),
+                    None => rest,
+                };
+            }
+            for j in 0..to.len() {
+                let parent = to.joints[j].parent.map_or(Quat::IDENTITY, |p| turned[p as usize]);
+                rotations[j].extend((parent.inverse() * turned[j]).normalize().to_array());
+            }
+            let root = world[from_root].w_axis.truncate();
+            places.extend((root * scale).to_array());
+        }
+        let mut channels = vec![Channel { joint: to_root as u16, path: Path::Translation, times: times.clone(), values: places }];
+        for (j, values) in rotations.into_iter().enumerate() {
+            channels.push(Channel { joint: j as u16, path: Path::Rotation, times: times.clone(), values });
+        }
+        Clip { name: self.name.clone(), duration: times.last().copied().unwrap_or(0.0), channels }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_clip_retargeted_through_a_pose_turns_the_other_rig_the_same_way() {
+        let joint = |name: &str, parent: Option<u16>, at: Vec3| Joint {
+            name: name.into(),
+            parent,
+            inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+            rest: PoseTransform { translation: at.to_array(), ..Default::default() },
+        };
+        // From: bones along +x at rest, as a BVH has them; its standing
+        // pose turns each thigh to hang down.
+        let from = Skeleton {
+            joints: vec![
+                joint("Hips", None, Vec3::new(0.0, 0.9, 0.0)),
+                joint("LeftUpLeg", Some(0), Vec3::new(0.0, 0.0, 0.1)),
+                joint("LeftLeg", Some(1), Vec3::new(0.45, 0.0, 0.0)),
+                joint("RightUpLeg", Some(0), Vec3::new(0.0, 0.0, -0.1)),
+                joint("RightLeg", Some(3), Vec3::new(0.45, 0.0, 0.0)),
+            ],
+        };
+        let down = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+        let mut from_pose = from.rest_pose();
+        for j in [1, 3] {
+            from_pose[j].rotation = down.to_array();
+        }
+        // To: prefixed names, bones hanging down at rest, facing +z, taller.
+        let to = Skeleton {
+            joints: vec![
+                joint("rig:Hips", None, Vec3::new(0.0, 1.0, 0.0)),
+                joint("rig:LeftUpLeg", Some(0), Vec3::new(0.1, 0.0, 0.0)),
+                joint("rig:LeftLeg", Some(1), Vec3::new(0.0, -0.5, 0.0)),
+                joint("rig:RightUpLeg", Some(0), Vec3::new(-0.1, 0.0, 0.0)),
+                joint("rig:RightLeg", Some(3), Vec3::new(0.0, -0.5, 0.0)),
+            ],
+        };
+        // The left thigh swung forward by half a right angle from standing.
+        let kick = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_4);
+        let turned = (kick * down).to_array();
+        let clip = Clip {
+            name: "kick".into(),
+            duration: 1.0,
+            channels: vec![
+                Channel { joint: 1, path: Path::Rotation, times: vec![0.0, 1.0], values: [turned, turned].concat() },
+                Channel { joint: 3, path: Path::Rotation, times: vec![0.0, 1.0], values: [down.to_array(), down.to_array()].concat() },
+            ],
+        };
+        let out = clip.retarget_through(&from, &from_pose, &to, &to.rest_pose(), &[], 30.0);
+        let thigh = |skeleton: &Skeleton, pose: &[PoseTransform], hip: usize, knee: usize| {
+            let w = skeleton.world_matrices(pose);
+            (w[knee].w_axis - w[hip].w_axis).truncate().normalize()
+        };
+        let a = thigh(&from, &clip.sample(&from, 0.5, false), 1, 2);
+        let b = thigh(&to, &out.sample(&to, 0.5, false), 1, 2);
+        // The target is turned to face as the source faces, so the thigh
+        // points the same way in the world.
+        assert!(a.distance(b) < 1e-3, "{a} {b}");
+        // The right thigh, untouched, hangs straight down on both.
+        assert!(thigh(&to, &out.sample(&to, 0.5, false), 3, 4).y < -0.999);
+    }
+
     use super::*;
 
     /// Root at the origin, then two joints a metre apart up the chain —
