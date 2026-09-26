@@ -259,7 +259,7 @@ impl scrap_core::world::Dress for GrainsDress {
                 let _ = world.insert_one(entity, GrainsState::new(g));
             }
             None => {
-                let _ = world.remove_one::<GrainsState>(entity);
+                scrap_core::world::take_off::<GrainsState>(world, entity);
             }
         }
     }

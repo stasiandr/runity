@@ -339,10 +339,33 @@ impl HairState {
         let width = self.hair.thickness.max(0.0005) * 0.5;
         let clump = self.hair.clump.clamp(0.0, 1.0);
         let curl = self.hair.curl.max(0.0);
-        let mut vertices = Vec::with_capacity(self.follows.len() * n * SIDES);
-        let mut indices = Vec::with_capacity(self.follows.len() * (n - 1) * SIDES * 6);
-        let mut line = vec![Vec3::ZERO; n];
-        for (k, f) in self.follows.iter().enumerate() {
+        // How each guide has turned at each of its points since it grew:
+        // the same for every strand that follows it, so found once here
+        // rather than once a strand (a guide leads dozens).
+        let turned_since: Vec<glam::Quat> = self
+            .rods
+            .iter()
+            .zip(&self.clamps)
+            .flat_map(|(rod, clamp)| {
+                let then = turn_now * *clamp;
+                (0..n).map(move |i| rod.turn_at(i) * then.inverse())
+            })
+            .collect();
+        // The sides' directions round a strand, the same at every point.
+        let round: [(f32, f32); SIDES] = std::array::from_fn(|s| {
+            let a = s as f32 / SIDES as f32 * std::f32::consts::TAU;
+            (a.cos(), a.sin())
+        });
+        // Each strand is its own `n × SIDES` vertices at a place known
+        // ahead: strands are made across the cores, straight into it.
+        let each = n * SIDES;
+        let blank = Vertex { position: [0.0; 3], normal: [0.0; 3], uv: [0.0; 2] };
+        let mut vertices = vec![blank; self.follows.len() * each];
+        scrap_core::jobs::for_each_chunk_mut(&mut vertices, each, |start, out| {
+            let k = start / each;
+            let f = &self.follows[k];
+            let mut line = vec![Vec3::ZERO; n];
+            let offset = turn_now * f.offset;
             // Along the guides it follows, its root's offset carried as
             // their links are turned, and drawn in toward the tip.
             for (i, point) in line.iter_mut().enumerate() {
@@ -350,13 +373,11 @@ impl HairState {
                 let mut at = Vec3::ZERO;
                 let mut turned = Vec3::ZERO;
                 for j in 0..3 {
-                    let rod = &self.rods[f.guides[j] as usize];
+                    let guide = f.guides[j] as usize;
+                    let rod = &self.rods[guide];
                     let w = f.weights[j];
                     at += rod.particles.x[i] * w;
-                    // How this guide has turned here since it grew.
-                    let now = rod.turn_at(i);
-                    let then = turn_now * self.clamps[f.guides[j] as usize];
-                    turned += (now * then.inverse()) * (turn_now * f.offset) * w;
+                    turned += turned_since[guide * n + i] * offset * w;
                 }
                 let wave = if curl > 0.0 {
                     let a = t * curl * std::f32::consts::TAU + k as f32;
@@ -368,7 +389,7 @@ impl HairState {
             }
             // Its own length: the last of it left off.
             let reach = ((n - 1) as f32 * f.length).clamp(1.0, (n - 1) as f32);
-            let first = vertices.len() as u32;
+            let mut out = out.iter_mut();
             for i in 0..n {
                 let t = (i as f32 / (n - 1) as f32 * reach).min(reach);
                 let (lo, frac) = (t.floor() as usize, t.fract());
@@ -380,16 +401,19 @@ impl HairState {
                 let up = tangent.cross(side);
                 let r = width * (1.0 - 0.85 * i as f32 / (n - 1) as f32);
                 let local = back.transform_point3(p);
-                for s in 0..SIDES {
-                    let a = s as f32 / SIDES as f32 * std::f32::consts::TAU;
-                    let normal = side * a.cos() + up * a.sin();
-                    vertices.push(Vertex {
+                for (s, &(cos, sin)) in round.iter().enumerate() {
+                    let normal = side * cos + up * sin;
+                    *out.next().expect("n × SIDES a strand") = Vertex {
                         position: (local + back.transform_vector3(normal * r)).to_array(),
                         normal: back.transform_vector3(normal).normalize_or(normal).to_array(),
                         uv: [s as f32 / SIDES as f32, i as f32 / (n - 1) as f32],
-                    });
+                    };
                 }
             }
+        });
+        let mut indices = Vec::with_capacity(self.follows.len() * (n - 1) * SIDES * 6);
+        for k in 0..self.follows.len() {
+            let first = (k * each) as u32;
             for i in 0..n as u32 - 1 {
                 for s in 0..SIDES as u32 {
                     let a = first + i * SIDES as u32 + s;
@@ -445,7 +469,7 @@ impl scrap_core::world::Dress for HairDress {
                 let _ = world.insert_one(entity, HairState::new(hair));
             }
             None => {
-                let _ = world.remove_one::<HairState>(entity);
+                scrap_core::world::take_off::<HairState>(world, entity);
             }
         }
     }

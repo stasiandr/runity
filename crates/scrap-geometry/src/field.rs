@@ -47,11 +47,30 @@ impl Field {
         let g = (p - self.origin) / self.cell;
         let r = (radius / self.cell).ceil() as i64;
         let (cx, cy, cz) = (g.x.round() as i64, g.y.round() as i64, g.z.round() as i64);
+        let r2 = radius * radius;
+        // The ball, not the box round it: a slice or a row wholly outside
+        // is passed over, and a row is walked only across the ball's
+        // chord (a point wider). Each point still in is summed exactly as
+        // before — a distance's part is never more than the distance, so
+        // nothing passed over could have added anything.
         for z in (cz - r).max(0)..=(cz + r).min(self.size[2] as i64 - 1) {
+            let dz = (self.origin.z + z as f32 * self.cell) - p.z;
+            let dz2 = dz * dz;
+            if 1.0 - dz2 / r2 <= 0.0 {
+                continue;
+            }
             for y in (cy - r).max(0)..=(cy + r).min(self.size[1] as i64 - 1) {
-                for x in (cx - r).max(0)..=(cx + r).min(self.size[0] as i64 - 1) {
+                let dy = (self.origin.y + y as f32 * self.cell) - p.y;
+                let dyz2 = dy * dy + dz2;
+                if 1.0 - dyz2 / r2 <= 0.0 {
+                    continue;
+                }
+                let half = (r2 - dyz2).max(0.0).sqrt() / self.cell;
+                let from = ((g.x - half).floor() as i64 - 1).max(cx - r).max(0);
+                let to = ((g.x + half).ceil() as i64 + 1).min(cx + r).min(self.size[0] as i64 - 1);
+                for x in from..=to {
                     let q = self.point(x as usize, y as usize, z as usize);
-                    let t = 1.0 - q.distance_squared(p) / (radius * radius);
+                    let t = 1.0 - q.distance_squared(p) / r2;
                     if t > 0.0 {
                         let i = self.index(x as usize, y as usize, z as usize);
                         self.values[i] += amount * t * t * t;
@@ -173,6 +192,50 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_splat_walking_only_the_ball_adds_what_walking_the_box_did() {
+        // The whole box round each ball, every point tried: what `splat`
+        // must match to the bit.
+        fn by_box(field: &mut Field, p: Vec3, radius: f32, amount: f32) {
+            let g = (p - field.origin) / field.cell;
+            let r = (radius / field.cell).ceil() as i64;
+            let (cx, cy, cz) = (g.x.round() as i64, g.y.round() as i64, g.z.round() as i64);
+            for z in (cz - r).max(0)..=(cz + r).min(field.size[2] as i64 - 1) {
+                for y in (cy - r).max(0)..=(cy + r).min(field.size[1] as i64 - 1) {
+                    for x in (cx - r).max(0)..=(cx + r).min(field.size[0] as i64 - 1) {
+                        let q = field.point(x as usize, y as usize, z as usize);
+                        let t = 1.0 - q.distance_squared(p) / (radius * radius);
+                        if t > 0.0 {
+                            let i = field.index(x as usize, y as usize, z as usize);
+                            field.values[i] += amount * t * t * t;
+                        }
+                    }
+                }
+            }
+        }
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        for (cell, radius) in [(0.06, 0.18), (0.05, 0.13), (0.1, 0.1), (0.07, 0.31)] {
+            let origin = Vec3::new(-0.37, 0.11, 2.03);
+            let mut ours = Field::new([24, 20, 22], origin, cell);
+            let mut theirs = ours.clone();
+            for _ in 0..400 {
+                // Some off the edges of the grid, to try the clamping.
+                let p = origin + Vec3::new(next(), next(), next()) * Vec3::new(26.0, 22.0, 24.0) * cell
+                    - Vec3::splat(cell);
+                ours.splat(p, radius, 1.0);
+                by_box(&mut theirs, p, radius, 1.0);
+            }
+            assert!(ours.values.iter().zip(&theirs.values).all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(ours.values.iter().any(|v| *v > 0.0));
+        }
+    }
 
     #[test]
     fn a_ball_in_the_field_comes_out_a_closed_ball_facing_out() {

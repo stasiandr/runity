@@ -133,7 +133,7 @@ impl Dress for DestructionLookDress {
         }
         let _ = fracture;
         if dents.is_some() && world.get::<&Dented>(entity).is_ok() {
-            let _ = world.remove_one::<crate::world::Model>(entity);
+            scrap_core::world::take_off::<crate::world::Model>(world, entity);
             if let Ok(mut d) = world.get::<&mut Dented>(entity) {
                 d.fresh = true;
             }

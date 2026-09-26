@@ -531,7 +531,7 @@ impl Party {
         // are in our copy of the world, and no one else will drive them.
         for (_, entity) in crate::net::addressable(world) {
             if world.get::<&SceneId>(entity).is_ok() || owner_of(world, entity) == old {
-                let _ = world.remove_one::<Owner>(entity);
+                scrap_core::world::take_off::<Owner>(world, entity);
             } else {
                 let _ = world.insert_one(entity, Owner(PeerId::HOST));
             }
@@ -686,7 +686,7 @@ impl Party {
                     if ours && world.get::<&NetId>(entity).is_ok() {
                         let _ = world.insert_one(entity, Owner(you));
                     } else if world.get::<&SceneId>(entity).is_ok() {
-                        let _ = world.remove_one::<Owner>(entity);
+                        scrap_core::world::take_off::<Owner>(world, entity);
                     }
                 }
                 self.sync = Sync::new(you, epoch);

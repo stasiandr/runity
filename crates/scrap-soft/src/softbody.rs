@@ -587,7 +587,7 @@ impl scrap_core::world::Dress for SoftBodyDress {
                 let _ = world.insert_one(entity, SoftBodyState::new(body, mesh));
             }
             None => {
-                let _ = world.remove_one::<SoftBodyState>(entity);
+                scrap_core::world::take_off::<SoftBodyState>(world, entity);
             }
         }
     }

@@ -112,7 +112,7 @@ fn write<T: hecs::Component + serde::Serialize>(
 }
 
 fn remove<T: hecs::Component>(world: &mut World, entity: hecs::Entity) {
-    let _ = world.remove_one::<T>(entity);
+    crate::world::take_off::<T>(world, entity);
 }
 
 impl Components {

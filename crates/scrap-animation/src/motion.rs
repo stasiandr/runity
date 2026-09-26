@@ -264,7 +264,7 @@ pub fn attach(
                 animates.graph
             ));
             // Not asked again every frame.
-            let _ = world.remove_one::<Animates>(entity);
+            scrap_core::world::take_off::<Animates>(world, entity);
             continue;
         };
         let names: Vec<String> = clips_of(graph)
@@ -272,7 +272,7 @@ pub fn attach(
             .filter(|c| motions.clips.contains_key(c))
             .collect();
         if names.is_empty() {
-            let _ = world.remove_one::<Animates>(entity);
+            scrap_core::world::take_off::<Animates>(world, entity);
             match skins(&animates.model) {
                 Some(skin) => {
                     let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
@@ -768,9 +768,9 @@ impl crate::world::Dress for MotionDress {
         _: &mut Vec<crate::world::Unresolved>,
     ) {
         if changed.has("animator") {
-            let _ = world.remove_one::<Moving>(entity);
+            scrap_core::world::take_off::<Moving>(world, entity);
             if line.animator().is_empty() {
-                let _ = world.remove_one::<Animates>(entity);
+                scrap_core::world::take_off::<Animates>(world, entity);
             } else {
                 let _ = world.insert_one(entity, animates(line));
             }
@@ -778,16 +778,16 @@ impl crate::world::Dress for MotionDress {
         // A model that may be skinned: bound to its bones by name once
         // spawned (`animator::bind_skins`).
         if changed.has("model") {
-            let _ = world.remove_one::<crate::animator::BoundSkin>(entity);
+            scrap_core::world::take_off::<crate::animator::BoundSkin>(world, entity);
             let model = line.model();
             if model.is_empty() {
-                let _ = world.remove_one::<crate::animator::SkinOf>(entity);
+                scrap_core::world::take_off::<crate::animator::SkinOf>(world, entity);
             } else {
                 let _ = world.insert_one(entity, crate::animator::SkinOf(model.clone()));
             }
         }
         if changed.has("ik") {
-            let _ = world.remove_one::<crate::ik::LookingAt>(entity);
+            scrap_core::world::take_off::<crate::ik::LookingAt>(world, entity);
             match line
                 .part::<crate::ik::Ik>()
                 .filter(|i| *i != crate::ik::Ik::default())
@@ -796,15 +796,15 @@ impl crate::world::Dress for MotionDress {
                     let _ = world.insert_one(entity, ik);
                 }
                 None => {
-                    let _ = world.remove_one::<crate::ik::Ik>(entity);
+                    scrap_core::world::take_off::<crate::ik::Ik>(world, entity);
                 }
             }
         }
         if changed.has("bone") {
             let bone = line.bone();
             if bone.is_empty() {
-                let _ = world.remove_one::<crate::world::OnBone>(entity);
-                let _ = world.remove_one::<crate::world::Between>(entity);
+                scrap_core::world::take_off::<crate::world::OnBone>(world, entity);
+                scrap_core::world::take_off::<crate::world::Between>(world, entity);
             } else {
                 let _ = world.insert_one(entity, crate::world::OnBone(bone));
             }

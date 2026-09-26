@@ -161,16 +161,19 @@ pub fn float(world: &World, physics: &mut crate::PhysicsWorld) {
 /// What each fluid looks like now, into what the render draws.
 pub fn show(world: &mut World, _seconds: f32) {
     for (state, placed, live, copies) in
-        world.query_mut::<(&MpmState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
+        world.query_mut::<(&mut MpmState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
     {
         match (live, copies) {
             // Asleep, it looks as it did: nothing to make again.
             (_, Some(copies)) if state.asleep() && !copies.placed.is_empty() => {}
             (Some(live), None) if state.asleep() && !live.is_empty() => {}
             (_, Some(copies)) => copies.placed = state.grains_placed(),
+            // As it was when its surface was last made (and that is still
+            // what is shown): not made — nor uploaded — again.
             (Some(live), None) => {
-                let (vertices, indices) = state.surface(placed.0);
-                live.set(vertices, indices);
+                if let Some((vertices, indices)) = state.surface_if_moved(placed.0, live.is_empty()) {
+                    live.set(vertices, indices);
+                }
             }
             _ => {}
         }
@@ -230,16 +233,16 @@ impl Dress for FluidLookDress<'_> {
             }
             return;
         }
-        let _ = world.remove_one::<crate::world::Model>(entity);
+        scrap_core::world::take_off::<crate::world::Model>(world, entity);
         let _ = world.insert(entity, (FluidLook, Surface(line.material_from(self.palette))));
         let grains = mpm.is_some_and(|m| matches!(m.material, MpmMaterial::Snow | MpmMaterial::Sand));
         if grains {
-            let _ = world.remove_one::<LiveMesh>(entity);
+            scrap_core::world::take_off::<LiveMesh>(world, entity);
             if let Some(mesh) = self.cube {
                 let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
             }
         } else {
-            let _ = world.remove_one::<Copies>(entity);
+            scrap_core::world::take_off::<Copies>(world, entity);
             if world.get::<&LiveMesh>(entity).is_err() {
                 let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
             }

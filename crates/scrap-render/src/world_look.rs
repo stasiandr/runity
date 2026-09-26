@@ -161,7 +161,7 @@ pub fn texture_views(
     cameras
         .into_iter()
         .map(|(camera, picture, plane)| {
-            let mut hidden: std::collections::HashSet<crate::id::EntityId> = world
+            let mut hidden: scrap_core::hash::FastSet<crate::id::EntityId> = world
                 .query::<(&Layer, &SceneId)>()
                 .iter()
                 .filter(|(layer, _)| picture.hide.contains(&layer.0))
@@ -539,9 +539,20 @@ pub fn run_cameras(world: &mut World, dt: f32) {
 /// [`camera_of`]. A camera at the top of the tree is moved in the world;
 /// one under a parent is left to its parent.
 pub fn follow_cameras(world: &mut World, dt: f32) {
-    let targets: std::collections::HashMap<crate::id::EntityId, glam::Vec3> = world
+    // Where each followed thing is — only those: a camera follows one or
+    // two, and the level is thousands.
+    let followed: scrap_core::hash::FastSet<crate::id::EntityId> = world
+        .query::<&CameraLens>()
+        .iter()
+        .filter_map(|lens| lens.0.follow.map(|f| f.target))
+        .collect();
+    if followed.is_empty() {
+        return;
+    }
+    let targets: scrap_core::hash::FastMap<crate::id::EntityId, glam::Vec3> = world
         .query::<(&SceneId, &WorldTransform)>()
         .iter()
+        .filter(|(id, _)| followed.contains(&id.0))
         .map(|(id, placed)| (id.0, placed.0.w_axis.truncate()))
         .collect();
     // Exponential: the same softness at any frame rate.
@@ -654,26 +665,27 @@ pub fn build_frame_where(
     keep: impl Fn(Option<crate::id::EntityId>) -> bool,
 ) -> Frame {
     // What is switched off, itself or by a parent, is not in the picture.
-    let off: std::collections::HashSet<crate::id::EntityId> = inactive_in_hierarchy(world)
+    let off: scrap_core::hash::FastSet<crate::id::EntityId> = inactive_in_hierarchy(world)
         .into_iter()
         .filter_map(|e| world.get::<&SceneId>(e).ok().map(|id| id.0))
         .collect();
     let keep =
         |line: Option<crate::id::EntityId>| line.is_none_or(|id| !off.contains(&id)) && keep(line);
-    let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
-    for (placed, shown, model, surface, textured, posed, line) in world
-        .query::<(
-            &WorldTransform,
-            Option<&crate::world::Shown>,
-            &Model,
-            &Surface,
-            Option<&Textured>,
-            Option<&Posed>,
-            Option<&SceneId>,
-        )>()
-        .iter()
-    {
+    let mut drawn = world.query::<(
+        &WorldTransform,
+        Option<&crate::world::Shown>,
+        &Model,
+        &Surface,
+        Option<&Textured>,
+        Option<&Posed>,
+        Option<&SceneId>,
+    )>();
+    let drawn = drawn.iter();
+    // A draw is a few hundred bytes: grown by doubling, a level's worth is
+    // copied over and over before the frame is built.
+    let mut draws = Vec::with_capacity(drawn.len());
+    for (placed, shown, model, surface, textured, posed, line) in drawn {
         if !keep(line.map(|l| l.0)) {
             continue;
         }

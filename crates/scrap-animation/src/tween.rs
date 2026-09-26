@@ -227,7 +227,7 @@ pub fn run_tweens(
         .map(|(e, _)| e)
         .collect();
     for entity in said {
-        let _ = world.remove_one::<TweensDone>(entity);
+        scrap_core::world::take_off::<TweensDone>(world, entity);
     }
     let running: Vec<Entity> = world
         .query::<(Entity, &Tweens)>()
@@ -272,7 +272,7 @@ pub fn run_tweens(
         });
         write(world, entity, &values, set);
         if tweens.0.is_empty() {
-            let _ = world.remove_one::<Tweens>(entity);
+            scrap_core::world::take_off::<Tweens>(world, entity);
         } else if let Ok(mut left) = world.get::<&mut Tweens>(entity) {
             // Any given by `set` meanwhile go after.
             let given = std::mem::replace(&mut left.0, tweens.0);
