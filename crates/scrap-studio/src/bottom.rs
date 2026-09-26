@@ -9,6 +9,8 @@
 //! **Console** is `Session::console`: what opening a scene skipped, an
 //! import warned about, an edit refused, what the running game printed —
 //! collapsed, a repeat counting up — with filters by level and Clear.
+//!
+//! **Git** is `git_tab`'s.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -154,13 +156,8 @@ pub struct Bottom {
     history_list: NodeId,
     /// Each History row: how many steps from the start it stands for.
     history_rows: HashMap<NodeId, usize>,
-    // Git
-    git_list: NodeId,
-    git_refresh: NodeId,
-    revisions: HashMap<NodeId, String>,
-    take_theirs: HashMap<NodeId, usize>,
-    /// Git is asked when the tab opens or on Refresh, not every frame.
-    git_stale: bool,
+    /// The Git tab: its own module.
+    pub git: crate::git_tab::GitTab,
 }
 
 impl Bottom {
@@ -396,36 +393,7 @@ impl Bottom {
         );
         ui.set_name(history_list, "history lines");
 
-        // Git
-        let git_bar = ui.add(
-            git,
-            Style::row()
-                .full_width()
-                .height(30.0)
-                .fixed()
-                .padding_x(SPACE_3)
-                .gap(SPACE_2)
-                .center_items(),
-        );
-        ui.add_text(
-            git_bar,
-            Style::default()
-                .text_size(11.5)
-                .text_color(MUTED)
-                .nowrap()
-                .fill(),
-            "The scene's history in git. Double-click a revision to bring it back — one undo step.",
-        );
-        let git_refresh = crate::theme::button(ui, git_bar, "git refresh", "Refresh", false);
-        let git_list = ui.add(
-            git,
-            Style::column()
-                .fill()
-                .full_width()
-                .padding_y(SPACE_1)
-                .clip(),
-        );
-        ui.set_name(git_list, "git lines");
+        let git_tab = crate::git_tab::GitTab::new(ui, git);
 
         Self {
             roots: [project, console, history, git],
@@ -478,11 +446,7 @@ impl Bottom {
             editor_command: crate::preferences::DEFAULT_EDITOR.to_string(),
             history_list,
             history_rows: HashMap::new(),
-            git_list,
-            git_refresh,
-            revisions: HashMap::new(),
-            take_theirs: HashMap::new(),
-            git_stale: true,
+            git: git_tab,
         }
     }
 
@@ -717,7 +681,7 @@ impl Bottom {
     /// tab clicked redoes nothing else.
     pub fn set_visible(&mut self, ui: &mut Ui, session: &Session, visible: [bool; 4]) {
         if visible[3] && !self.visible[3] {
-            self.git_stale = true;
+            self.git.mark_stale();
         }
         let history = visible[2] && !self.visible[2];
         self.visible = visible;
@@ -1710,92 +1674,15 @@ impl Bottom {
         }
     }
 
-    /// The scene's revisions in git and, mid-merge, its conflicts.
-    pub fn update_git(&mut self, ui: &mut Ui, session: &mut Session) {
-        if !self.visible[3] || !self.git_stale {
-            return;
-        }
-        self.git_stale = false;
-        ui.clear(self.git_list);
-        self.revisions.clear();
-        self.take_theirs.clear();
-        let small = |c| Style::default().text_size(11.5).text_color(c).nowrap();
-        match session.merge_conflicts() {
-            Ok(conflicts) if !conflicts.is_empty() => {
-                let h = ui.add(
-                    self.git_list,
-                    Style::row()
-                        .full_width()
-                        .padding_x(SPACE_4)
-                        .padding_y(SPACE_1),
-                );
-                ui.add_text(
-                    h,
-                    small(WARNING),
-                    &format!("{} conflicts in this merge", conflicts.len()),
-                );
-                for (i, c) in conflicts.iter().enumerate() {
-                    let row = ui.add(
-                        self.git_list,
-                        Style::row()
-                            .height(26.0)
-                            .fixed()
-                            .full_width()
-                            .padding_x(SPACE_4)
-                            .gap(SPACE_2)
-                            .center_items(),
-                    );
-                    icon(ui, row, "triangle-alert", WARNING);
-                    ui.add_text(row, small(TEXT).fill(), &c.to_string());
-                    let b = crate::theme::button(
-                        ui,
-                        row,
-                        &format!("take theirs {i}"),
-                        "Take theirs",
-                        false,
-                    );
-                    self.take_theirs.insert(b, i);
-                }
-            }
-            _ => {}
-        }
-        match session.scene_history() {
-            Ok(revisions) if !revisions.is_empty() => {
-                for r in revisions.iter().take(200) {
-                    let row = ui.add(
-                        self.git_list,
-                        Style::row()
-                            .height(22.0)
-                            .fixed()
-                            .full_width()
-                            .padding_x(SPACE_4)
-                            .gap(SPACE_3)
-                            .center_items()
-                            .hover(TEXT.alpha(5)),
-                    );
-                    ui.set_name(
-                        row,
-                        format!("revision {}", &r.commit[..r.commit.len().min(8)]),
-                    );
-                    ui.add_text(
-                        row,
-                        small(MUTED).mono().width(64.0).fixed(),
-                        &r.commit[..r.commit.len().min(7)],
-                    );
-                    ui.add_text(row, small(MUTED).width(84.0).fixed(), &r.date);
-                    ui.add_text(row, small(LABEL).width(120.0).fixed(), &r.author);
-                    ui.add_text(row, small(TEXT).fill(), &r.summary);
-                    self.revisions.insert(row, r.commit.clone());
-                }
-            }
-            Ok(_) => {
-                let h = ui.add(self.git_list, Style::row().padding_x(SPACE_4));
-                ui.add_text(h, small(MUTED), "No commits of this scene yet.");
-            }
-            Err(e) => {
-                let h = ui.add(self.git_list, Style::row().padding_x(SPACE_4));
-                ui.add_text(h, small(MUTED), &format!("No git history: {e}"));
-            }
+    /// The Git tab, when it is on top: see `git_tab`.
+    pub fn update_git(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        marks: &mut crate::git_marks::GitMarks,
+    ) {
+        if self.visible[3] {
+            self.git.update(ui, session, marks);
         }
     }
 
@@ -1807,32 +1694,10 @@ impl Bottom {
         event: &Event,
         requests: &mut Requests,
     ) {
+        if self.git.event(ui, session, node, event, requests) {
+            return;
+        }
         match event {
-            Event::Click { .. } if node == self.git_refresh => {
-                self.git_stale = true;
-            }
-            Event::Click { .. } if self.take_theirs.contains_key(&node) => {
-                let i = self.take_theirs[&node];
-                if let Err(e) = session.take_theirs(i) {
-                    session.say(Level::Error, e.to_string());
-                }
-                self.git_stale = true;
-                requests.refresh = true;
-            }
-            Event::Click { count, .. } if *count >= 2 && self.revisions.contains_key(&node) => {
-                let commit = self.revisions[&node].clone();
-                match session.restore_revision(&commit) {
-                    Ok(()) => session.say(
-                        Level::Info,
-                        format!(
-                            "brought back the scene as of {}",
-                            &commit[..commit.len().min(7)]
-                        ),
-                    ),
-                    Err(e) => session.say(Level::Error, e.to_string()),
-                }
-                requests.refresh = true;
-            }
             Event::Click { .. } if self.history_rows.contains_key(&node) => {
                 let target = self.history_rows[&node];
                 let now = session.undo_steps().len();

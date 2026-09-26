@@ -38,8 +38,9 @@ enum Node {
     Atom,
 }
 
+/// Which brackets a group has: `(…)` with fields, `{…}` with keys, `[…]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Kind {
+pub enum Kind {
     Struct,
     Map,
     List,
@@ -124,6 +125,56 @@ pub(crate) fn merge(old: &str, canon: &str, new: &str) -> Option<String> {
         merged,
         &old[old_range.end..]
     ))
+}
+
+/// A piece of a RON document as it is written, for reading it as a
+/// person wrote it rather than as a type would: a field's name or a map's
+/// key, the value's own text, and, for a group, what is in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Part<'a> {
+    /// A field's name or a map's key as written (a map's string key keeps
+    /// its quotes); `None` for a list's item.
+    pub key: Option<String>,
+    /// The value's text, from its first character to its last.
+    pub text: &'a str,
+    /// Where that text is in the document.
+    pub span: Range<usize>,
+    /// Where the entry begins: its key, or the value when it has none.
+    pub at: usize,
+    /// A struct, a map or a list, with its entries; `None` for anything
+    /// else: a number, a string, a tuple, an enum value without fields.
+    pub group: Option<(Kind, Vec<Part<'a>>)>,
+}
+
+/// `text`'s value, as written. `None` when it does not scan as RON.
+pub fn outline(text: &str) -> Option<Part<'_>> {
+    fn part<'a>(
+        text: &'a str,
+        key: Option<String>,
+        at: usize,
+        range: Range<usize>,
+        node: &Node,
+    ) -> Part<'a> {
+        let group = match node {
+            Node::Group { entries, kind, .. } => Some((
+                *kind,
+                entries
+                    .iter()
+                    .map(|e| part(text, e.key.clone(), e.body, e.value.clone(), &e.node))
+                    .collect(),
+            )),
+            Node::Atom => None,
+        };
+        Part {
+            key,
+            text: &text[range.clone()],
+            span: range,
+            at,
+            group,
+        }
+    }
+    let (node, range) = scan_document(text)?;
+    Some(part(text, None, range.start, range, &node))
 }
 
 #[derive(Clone)]
@@ -615,6 +666,26 @@ impl Scanner<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_outline_keeps_names_keys_and_text_as_written() {
+        let doc = "// a wolf\n(speed: 4.0, pack: [Alpha(howl: 2), Beta], home: {\"den\": (1, 2)})";
+        let top = outline(doc).unwrap();
+        let (kind, fields) = top.group.unwrap();
+        assert_eq!(kind, Kind::Struct);
+        let keys: Vec<_> = fields.iter().map(|f| f.key.clone().unwrap()).collect();
+        assert_eq!(keys, ["speed", "pack", "home"]);
+        assert_eq!(fields[0].text, "4.0");
+        let (kind, pack) = fields[1].group.clone().unwrap();
+        assert_eq!(kind, Kind::List);
+        assert_eq!(pack[0].text, "Alpha(howl: 2)");
+        assert_eq!(pack[1].text, "Beta");
+        let (kind, home) = fields[2].group.clone().unwrap();
+        assert_eq!(kind, Kind::Map);
+        assert_eq!(home[0].key.as_deref(), Some("\"den\""));
+        assert_eq!(home[0].text, "(1, 2)");
+        assert!(outline("(a: ").is_none());
+    }
 
     #[test]
     fn the_same_value_keeps_the_file_exactly() {

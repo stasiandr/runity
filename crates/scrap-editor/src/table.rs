@@ -94,7 +94,7 @@ impl Session {
     pub fn table_sources(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(project) = self.project() {
-            let dir = project.root().join(scrap::project::TUNING);
+            let dir = project.root().join(scrap::project::CONFIGS);
             let mut files = Vec::new();
             scrap_import::walk(&dir, &mut |p| {
                 if p.extension().is_some_and(|e| e == "ron") {
@@ -129,13 +129,13 @@ impl Session {
 
     fn source(&self, source: &str) -> EditResult<Source> {
         let source = source.trim();
-        let dir = format!("{}/", scrap::project::TUNING);
+        let dir = format!("{}/", scrap::project::CONFIGS);
         if let Some(rest) = source.strip_prefix(&dir) {
             let project = self.project().ok_or(EditError::NotInProject)?;
             let name = rest.strip_suffix(".ron").unwrap_or(rest).to_string();
             let path = project
                 .root()
-                .join(scrap::project::TUNING)
+                .join(scrap::project::CONFIGS)
                 .join(format!("{name}.ron"));
             if !path.is_file() {
                 let known: Vec<String> = self

@@ -137,6 +137,9 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "table",
         "set_cell",
         "undo_cell",
+        "configs",
+        "config_set",
+        "config_undo",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -553,7 +556,7 @@ fn the_scene_and_the_project_files_are_readable_resources() {
         .map(|r| r["name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"scenes/main.ron"), "{names:?}");
-    assert!(names.contains(&"tuning/world.ron"), "{names:?}");
+    assert!(names.contains(&"configs/world.ron"), "{names:?}");
 
     let document = agent.request("resources/read", json!({ "uri": "scrap://document" }));
     let text = document["result"]["contents"][0]["text"].as_str().unwrap();
@@ -790,19 +793,19 @@ fn an_agent_balances_records_in_a_table() {
         }
         Err(e) => panic!("{e}"),
     }
-    let file = root.join("tuning/enemies.ron");
+    let file = root.join("configs/enemies.ron");
     let text = "{\n    \"goblin\": (hp: 10, speed: 2.5),\n    \"orc\": (hp: 30), // slow\n}\n";
     std::fs::write(&file, text).unwrap();
 
     let sources = agent.text("table", json!({}));
-    assert!(sources.contains("tuning/enemies.ron"), "{sources}");
-    let table = agent.text("table", json!({ "source": "tuning/enemies.ron" }));
+    assert!(sources.contains("configs/enemies.ron"), "{sources}");
+    let table = agent.text("table", json!({ "source": "configs/enemies.ron" }));
     assert!(table.starts_with("key\tlabel\thp\tspeed"), "{table}");
     assert!(table.contains("orc\torc\t30\t"), "{table}");
 
     agent.text(
         "set_cell",
-        json!({ "source": "tuning/enemies.ron", "row": "orc", "column": "speed", "value": "1.5" }),
+        json!({ "source": "configs/enemies.ron", "row": "orc", "column": "speed", "value": "1.5" }),
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
@@ -811,7 +814,7 @@ fn an_agent_balances_records_in_a_table() {
     let e = agent
         .call(
             "set_cell",
-            json!({ "source": "tuning/enemies.ron", "row": "orcc", "column": "hp", "value": "1" }),
+            json!({ "source": "configs/enemies.ron", "row": "orcc", "column": "hp", "value": "1" }),
         )
         .unwrap_err();
     assert!(e.contains("did you mean `orc`?"), "{e}");
@@ -821,9 +824,9 @@ fn an_agent_balances_records_in_a_table() {
     // The world's numbers: one struct, one row.
     agent.text(
         "set_cell",
-        json!({ "source": "tuning/world.ron", "column": "gravity", "value": "-3.7" }),
+        json!({ "source": "configs/world.ron", "column": "gravity", "value": "-3.7" }),
     );
-    let world = std::fs::read_to_string(root.join("tuning/world.ron")).unwrap();
+    let world = std::fs::read_to_string(root.join("configs/world.ron")).unwrap();
     assert!(world.contains("gravity: -3.7"), "{world}");
     assert!(
         world.starts_with("// The world's numbers."),
@@ -913,4 +916,50 @@ fn an_agent_writes_plays_and_renames_in_a_dialogue() {
     let sheet = std::fs::read_to_string(root.join("build/lines/en.csv")).unwrap();
     assert!(sheet.contains("trader/hello,Trader,,Buying?"), "{sheet}");
     assert!(sheet.contains("trader/hello/1,,,Yes"), "{sheet}");
+}
+
+#[test]
+fn an_agent_reads_finds_and_sets_a_table_s_records() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-configs");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    std::fs::write(
+        root.join("configs/tools.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\", weight: 1.0),\n    \"Посох\": (base: \"Палка\", weight: 2.0),\n}\n",
+    )
+    .unwrap();
+    let listed = agent.text("configs", json!({}));
+    assert!(listed.contains("configs/tools.ron") && listed.contains("configs/world.ron"), "{listed}");
+    let found = agent.text("configs", json!({ "find": "по" }));
+    assert_eq!(found.trim(), "configs/tools.ron: Посох", "{found}");
+    let shown = agent.text("configs", json!({ "file": "configs/tools.ron" }));
+    assert!(shown.contains("name | base | weight") && shown.contains("Посох | \"Палка\" | 2.0"), "{shown}");
+
+    let set = agent.text(
+        "config_set",
+        json!({ "file": "configs/tools.ron", "record": "Палка", "field": "weight", "value": "1.5" }),
+    );
+    assert_eq!(set, "set tools.ron: Палка.weight");
+    let text = std::fs::read_to_string(root.join("configs/tools.ron")).unwrap();
+    assert!(text.contains("(id: \"4c1e\", weight: 1.5)"), "{text}");
+    assert!(text.contains("\"Посох\": (id: \""), "its id written: {text}");
+    // A top-level field of a struct of numbers.
+    agent.text(
+        "config_set",
+        json!({ "file": "configs/world.ron", "field": "gravity", "value": "-3.7" }),
+    );
+    assert!(std::fs::read_to_string(root.join("configs/world.ron")).unwrap().contains("-3.7"));
+    assert_eq!(agent.text("config_undo", json!({})), "undone: world.ron: gravity");
+    let err = agent
+        .call("config_set", json!({ "file": "configs/tools.ron", "record": "Кость", "field": "weight", "value": "1" }))
+        .unwrap_err();
+    assert!(err.contains("no record `Кость`"), "{err}");
 }

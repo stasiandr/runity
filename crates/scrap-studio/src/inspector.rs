@@ -1382,11 +1382,12 @@ impl Inspector {
                 Shape::Enum(variants) if !value.trim_end().ends_with(')') => {
                     SubKind::Enum(variants.clone())
                 }
-                Shape::Entity | Shape::Asset(_) => {
+                Shape::Entity | Shape::Asset(_) | Shape::Record(_) => {
                     // Unity's object field: the entity or the asset by
                     // name, or None; red when it is gone.
                     let (kind, holds) = match kind {
                         Shape::Asset(kind) => (kind.as_str(), Holds::Typed),
+                        Shape::Record(record) => (record.as_str(), Holds::Record),
                         _ => ("entity", Holds::EntityRef),
                     };
                     let target =

@@ -47,7 +47,7 @@ scrap new <folder> [--name NAME] [--engine-path PATH] [--set SET | --template NA
     --template NAME copies one of the engine's example projects instead.
 scrap run [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
-    assets, shaders and tuning reload while it runs; with --hot, so does its
+    assets, shaders and configs reload while it runs; with --hot, so does its
     own Rust (under `dx serve --hotpatch`, from `cargo install dioxus-cli`).
     With --players 2 to 4, that many windows play together on this machine:
     player 1 hosts, the others join, each line marked with whose it is.

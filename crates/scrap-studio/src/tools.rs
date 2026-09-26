@@ -2,7 +2,7 @@
 //!
 //! **Project Settings** is Unity's at the grain this engine has them: the
 //! project's own files, in git — `scrap.ron` (its modules, the game),
-//! `input.ron`, `layers.ron`, the tuning numbers in `tuning/`, the screens
+//! `input.ron`, `layers.ron`, the configs in `configs/`, the screens
 //! in `ui/` — listed, one open in a field of several lines, saved only
 //! when it still reads as RON. The engine picks the change up from disk
 //! as it picks up any other (DNA, postulate 1); nothing here knows what
@@ -110,7 +110,7 @@ impl Settings {
                 out.push(path);
             }
         }
-        for dir in [scrap::project::TUNING, scrap::project::UI] {
+        for dir in [scrap::project::CONFIGS, scrap::project::UI] {
             if let Ok(read) = std::fs::read_dir(root.join(dir)) {
                 let mut more: Vec<PathBuf> = read
                     .flatten()

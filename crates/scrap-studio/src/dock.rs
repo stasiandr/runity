@@ -35,6 +35,8 @@ pub enum Panel {
     Git,
     Settings,
     Profiler,
+    /// The project's `configs/`, as tables: `crate::configs`.
+    Configs,
     Animation,
     Screens,
     Animator,
@@ -47,7 +49,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 14] = [
+    pub const ALL: [Panel; 15] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -56,6 +58,7 @@ impl Panel {
         Panel::Git,
         Panel::Settings,
         Panel::Profiler,
+        Panel::Configs,
         Panel::Animation,
         Panel::Screens,
         Panel::Animator,
@@ -76,6 +79,7 @@ impl Panel {
             // before Preferences split off, so they still load.
             Panel::Settings => "settings",
             Panel::Profiler => "profiler",
+            Panel::Configs => "configs",
             Panel::Animation => "animation",
             Panel::Screens => "screens",
             Panel::Animator => "animator",
@@ -95,6 +99,7 @@ impl Panel {
             Panel::Git => "Git",
             Panel::Settings => "Project Settings",
             Panel::Profiler => "Profiler",
+            Panel::Configs => "Configs",
             Panel::Animation => "Animation",
             Panel::Screens => "UI Builder",
             Panel::Animator => "Animator",
@@ -114,6 +119,7 @@ impl Panel {
             Panel::Git => "layers-2",
             Panel::Settings => "settings",
             Panel::Profiler => "sliders-horizontal",
+            Panel::Configs => "grid-3x3",
             Panel::Animation => "play",
             Panel::Screens => "layout-dashboard",
             Panel::Animator => "route",
@@ -403,6 +409,7 @@ impl Arrangement {
                     Panel::Table,
                     Panel::Screens,
                     Panel::Settings,
+                    Panel::Configs,
                     Panel::Profiler,
                 ]),
             ],
@@ -432,6 +439,7 @@ impl Arrangement {
                     Panel::Table,
                     Panel::Screens,
                     Panel::Settings,
+                    Panel::Configs,
                     Panel::Profiler,
                 ]),
             ],
