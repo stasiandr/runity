@@ -6,17 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
-use scrap::dialogue::{Dialogue, DIR};
+use scrap::dialogue::Dialogue;
 use scrap::Project;
 
-/// A dialogue's name: its path in `dialogues/` without `.ron`, forward
-/// slashes — `captain`, `harbour/captain`.
-pub fn name(dir: &Path, path: &Path) -> String {
-    let rel = path.strip_prefix(dir).unwrap_or(path).with_extension("");
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
+/// A dialogue's name: its file's, less `.dialogue.ron` — `captain`; in the
+/// old `dialogues/`, its path there — `harbour/captain`.
+pub fn name(root: &Path, path: &Path) -> String {
+    scrap::layout::name_in(root, scrap::layout::Kind::Dialogue, path)
 }
 
 /// Whether a file in `dialogues/` is a dialogue's cases, not a dialogue.
@@ -27,19 +23,13 @@ pub fn is_cases(path: &Path) -> bool {
 /// Every dialogue of the project that reads, named, with its path; and
 /// what did not read.
 pub fn dialogues(project: &Project) -> (Vec<(PathBuf, Dialogue)>, Vec<String>) {
-    let dir = project.root().join(DIR);
-    let mut paths = Vec::new();
-    scrap_import::walk(&dir, &mut |p| {
-        if p.extension().is_some_and(|e| e == "ron") && !is_cases(p) {
-            paths.push(p.to_path_buf());
-        }
-    });
-    paths.sort();
+    let dir = project.root();
+    let paths = project.files(scrap::layout::Kind::Dialogue);
     let (mut found, mut failed) = (Vec::new(), Vec::new());
     for path in paths {
         match Dialogue::load(&path) {
             Ok(mut d) => {
-                d.name = name(&dir, &path);
+                d.name = name(dir, &path);
                 found.push((path, d));
             }
             Err(e) => failed.push(e),

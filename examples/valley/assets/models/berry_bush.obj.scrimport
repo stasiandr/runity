@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/models/berry_bush.obj",
-    hash: "5d366ab435017c7c6512114afac594cc",
-    id: Some("f5aaaed417651dc823c03806f67a4628"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

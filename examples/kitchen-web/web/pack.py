@@ -18,16 +18,22 @@ ROOT = Path(__file__).resolve().parent.parent
 # What the game never reads while it runs.
 SKIP_DIRS = {"src", "target", "web", "site", ".scrap"}
 SKIP_FILES = {"Cargo.toml", "Cargo.lock", "build.rs", "README.md", "CLAUDE.md"}
+# What the importer builds into library/: models, textures, sounds, fonts.
+SOURCES = {
+    ".glb", ".gltf", ".obj", ".blend", ".fbx", ".png", ".jpg", ".jpeg", ".tga", ".bmp",
+    ".wav", ".mp3", ".ogg", ".flac", ".ttf", ".otf", ".scrterrain", ".scrpoly", ".scrbrush",
+}
 
 
 def wanted(path: Path) -> bool:
     rel = path.relative_to(ROOT)
     if rel.parts[0] in SKIP_DIRS or rel.name in SKIP_FILES or rel.name.startswith("."):
         return False
-    # Raw assets are built into library/; their sidecars (ids) are kept.
-    if rel.parts[0] == "assets":
-        return rel.suffix == ".scrimport"
-    return True
+    # Sources are built into library/, wherever they lie (docs/layout.md);
+    # their sidecars (ids) are kept. A sandbox is not the game.
+    if "developers" in rel.parts:
+        return False
+    return rel.suffix.lower() not in SOURCES
 
 
 def main() -> None:

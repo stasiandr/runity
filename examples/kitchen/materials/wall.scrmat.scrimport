@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/wall.scrmat",
-    hash: "6b1af96f9cfca9d2d7248d3d469ccb6a",
-    id: Some("cbface08ab49a75fb74cb1ff92379070"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

@@ -211,19 +211,21 @@
 Карточка [layout.md](layout.md), решение DNA «Раскладка — по фичам, а не
 по типам» (2026-09-26).
 
-- [ ] Индекс проекта и таблица расширений, которую пополняют модули; все
-      обходы по папкам переходят на индекс, подпапки видны везде
-- [ ] Двойные расширения `.scene.ron`, `.screen.ron`, `.animator.ron`,
-      `.clip.ron`, `.dialogue.ron`; `scrap migrate-layout`; старые пути
-      читаются до 2026-10-31
-- [ ] `start_scene` и `animator` — ссылки; шейдер — имя, уникальное в
-      проекте; шаблон игры без путей `scenes/…`, `ui/…`
-- [ ] `build.rs` обходит весь `src/`: компоненты и системы по фичам
-- [ ] Раскладка по умолчанию — схема Unreal: `config/`,
+- [x] Индекс проекта: вид по расширению (`scrap::layout`), все обходы по
+      папкам переходят на него, подпапки видны везде
+- [x] Двойные расширения `.scene.ron`, `.screen.ron`, `.animator.ron`,
+      `.clip.ron`, `.dialogue.ron`, `.quest.ron`; `scrap migrate-layout`
+- [ ] Удалить чтение старой раскладки (простой `.ron` в корневых
+      `scenes/`, `ui/`…, `input.ron` в корне) — 2026-10-31
+- [ ] `start_scene` и `animator` — ссылки с ID; у шейдеров — сайдкары
+- [x] `build.rs` обходит весь `src/`: компоненты и системы по фичам
+- [x] Раскладка по умолчанию — схема Unreal: `config/`,
       `content/<проект>/maps|core|фичи`, `content/localization/`,
       `content/developers/` (не едет в сборку); шаблон `scrap new`,
-      `examples/kitchen` и `examples/valley` по ней; CLAUDE.md шаблона и
-      stack.md «Проект»
+      `examples/valley`, `examples/kitchen`, `examples/kitchen-web` по ней
+- [ ] `check` называет ссылку из игры в `developers/`
+- [ ] Таблицу расширений регистрируют модули, а не ядро
+- [ ] Бюджет обхода проекта в тесте (постулат 1); `.gitignore` в обходе
 - [ ] Компоненты экрана: экран ставит кусок UI, как сцена префаб (docs/ui.md)
 
 # Графовые редакторы
@@ -258,7 +260,7 @@
       проверки и ключи строк в `check`, окно Dialogues (чтение)
 - [x] Шейдер-граф (docs/shadergraph.md): `shaders/<name>.graph.ron` →
       WGSL `surface`, 40 узлов, горячая перезагрузка, `check` с узлом и
-      входом; пример — `valley/scenes/graphs.ron`
+      входом; пример — `valley/content/valley/maps/graphs.scene.ron`
 - [x] Граф эффекта (VFX Graph, docs/shadergraph.md):
       `shaders/<name>.vfx.ron` — `spawn`, `update`, `output` частиц на
       видеокарте, узлы `Random` и `Turbulence`; пример — угли в
@@ -359,7 +361,7 @@
         крутится с верёвкой; цепь — копии `builtin:link` через одну
         повёрнутые (`Copies`, инстансы)
   - [x] Поле в инспекторах редактора и студии, предпросмотр в редакторе,
-        пример `examples/valley/scenes/ropes.ron`, кривая 10…10 000 в
+        пример `examples/valley/content/valley/maps/ropes.scene.ron`, кривая 10…10 000 в
         `scaling.rs`
   - [ ] Тело на конце верёвки (фонарь, груз, крюк): связь с rapier в обе
         стороны — сейчас верёвка тела двигает не умеет
@@ -370,7 +372,7 @@
   - [x] `cloth` из ветки графики — на решатель `soft`: XPBD-расстояния
         (растяжение, сдвиг, изгиб через одну), ветер по треугольникам,
         `pinned: Free` — падает на коллайдеры (скатерть), пример
-        `examples/valley/scenes/cloth.ron`, кривая в `scaling.rs`
+        `examples/valley/content/valley/maps/cloth.scene.ron`, кривая в `scaling.rs`
   - [x] Самопересечение: сетка частиц раз в шаг, пары не соседей,
         трение между слоями (`self_collide`)
   - [ ] Персонаж: капсулы на костях скелета сами (сейчас — только
@@ -385,7 +387,7 @@
   - [x] `hair`: направляющие пряди — стержни Коссера, корень в коже,
         причёсаны тяжестью; рисуемые пряди интерполируются по трём
         ближайшим, `clump`, `curl`, `lie`; голова — препятствие; пример
-        `examples/valley/scenes/hair.ron`
+        `examples/valley/content/valley/maps/hair.scene.ron`
   - [ ] Корни по мешу модели (сейчас — сфера вокруг сущности)
   - [ ] Пряди на GPU: интерполяция и отрисовка в compute, сотни тысяч
         (TressFX); затенение волос (Marschner/Kajiya-Kay) вместо материала
@@ -395,7 +397,7 @@
   - [x] `soft_body`: решётка тетраэдров, XPBD рёбра и объём; `ShapeMatching`;
         модель вложена в решётку; `core` — плоть на кости
   - [x] `jiggle`: spring bones цепочками, карточки на костях; пример
-        `examples/valley/scenes/softbody.ron`, кадр `showreel --reel sim`
+        `examples/valley/content/valley/maps/softbody.scene.ron`, кадр `showreel --reel sim`
   - [ ] Модель из библиотеки в решётке (сейчас — только встроенные)
   - [ ] Мышцы как активные элементы (сейчас плоть — пассивная клетка)
 - [ ] 5. Разрушение
@@ -554,7 +556,7 @@ Steam) жил на scrap. Порядок — по риску: сначала т�
       шейдера (альбедо, альфа, металл, гладкость, нормаль, свечение; время
       в `in.time`). Перезагружаются при сохранении — в игре и в редакторе;
       сломанный отказывается словами, рисует прежний. Пример —
-      `examples/valley/shaders/water.wgsl`. `sync` пересобирает ассеты
+      `examples/valley/content/valley/water/water.wgsl`. `sync` пересобирает ассеты
       старой версии формата сам
 - [x] Импорт: материал со своим шейдером получает `shader:`, прозрачность,
       стороны, отсечение и Unlit — из самого шейдера (граф или теги

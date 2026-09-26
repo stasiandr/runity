@@ -191,12 +191,6 @@ impl Animator {
         false
     }
 
-    fn dir(session: &Session) -> Option<PathBuf> {
-        session
-            .project()
-            .map(|p| p.root().join(scrap::project::ANIMATORS))
-    }
-
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
         self.follow_game(ui, session);
         if self.listed {
@@ -209,16 +203,10 @@ impl Animator {
     fn list(&mut self, ui: &mut Ui, session: &Session) {
         ui.clear(self.files_list);
         self.parts.retain(|_, p| !matches!(p, Part::File(_)));
-        let mut paths: Vec<PathBuf> = Self::dir(session)
-            .and_then(|d| std::fs::read_dir(d).ok())
-            .map(|r| {
-                r.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-                    .collect()
-            })
+        let paths: Vec<PathBuf> = session
+            .project()
+            .map(|p| p.files(scrap::layout::Kind::Animator))
             .unwrap_or_default();
-        paths.sort();
         if paths.is_empty() {
             ui.add_text(
                 self.files_list,
@@ -1094,15 +1082,17 @@ impl Animator {
     }
 
     fn new_file(&mut self, ui: &mut Ui, session: &mut Session) {
-        let Some(dir) = Self::dir(session) else {
+        let Some(project) = session.project() else {
             return;
         };
-        let _ = std::fs::create_dir_all(&dir);
-        let mut path = dir.join("animator.ron");
+        let mut path = project.new_file(scrap::layout::Kind::Animator, "animator");
         let mut n = 2;
         while path.exists() {
-            path = dir.join(format!("animator_{n}.ron"));
+            path = project.new_file(scrap::layout::Kind::Animator, &format!("animator_{n}"));
             n += 1;
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
         }
         let text = "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\"),\n    },\n)\n";
         match std::fs::write(&path, text) {
@@ -1173,9 +1163,7 @@ fn box_style(
 }
 
 fn stem(path: &std::path::Path) -> String {
-    path.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    scrap::layout::name_of(path)
 }
 
 fn state(name: &str) -> State {

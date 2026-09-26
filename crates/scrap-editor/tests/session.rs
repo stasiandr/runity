@@ -5569,7 +5569,7 @@ fn a_picker_lists_textures_entities_and_bones_by_name() {
     std::fs::create_dir_all(&assets).unwrap();
     let valley = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley");
     std::fs::copy(
-        valley.join("assets/textures/marks.png"),
+        valley.join("content/valley/marks/marks.png"),
         assets.join("marks.png"),
     )
     .unwrap();

@@ -750,13 +750,8 @@ fn assets_of(session: &Session, entries: &[Entry]) -> Vec<Asset> {
     {
         let mut out = Vec::new();
         if let Some(project) = session.project() {
-            let dir = project.root().join("scenes");
-            if let Ok(read) = std::fs::read_dir(&dir) {
-                let mut scenes: Vec<PathBuf> = read
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-                    .collect();
-                scenes.sort();
+            {
+                let scenes = project.files(scrap::layout::Kind::Scene);
                 out.extend(scenes.into_iter().map(Asset::Scene));
             }
         }
@@ -1918,12 +1913,10 @@ fn asset_file(asset: &Asset, session: &Session) -> Option<String> {
         Asset::Scene(p) => rel(p.clone()),
         Asset::Model(_, file) => file.clone(),
         Asset::Prefab(n) => {
-            let p = root.join("prefabs").join(format!("{n}.prefab"));
-            p.is_file().then(|| rel(p)).flatten()
+            session.project()?.file(scrap::layout::Kind::Prefab, n).and_then(rel)
         }
         Asset::Material(n) => {
-            let p = root.join("materials").join(format!("{n}.scrmat"));
-            p.is_file().then(|| rel(p)).flatten()
+            session.project()?.file(scrap::layout::Kind::Material, n).and_then(rel)
         }
         Asset::Sound(_, file) => Some(file.clone()),
     }

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/trees/broadleaf_large.obj",
+    hash: "d58c382c77d9be1b00e49154909b7130",
+    id: Some("bf41d6d694d17b3b6b31d5cf95c0b6cb"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

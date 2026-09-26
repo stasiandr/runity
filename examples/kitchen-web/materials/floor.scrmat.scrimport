@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/floor.scrmat",
-    hash: "5138ead67bfcb1bc1bdd6b686df184d3",
-    id: Some("a955229ca7f5d54a9f3c385dc0bb91fe"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

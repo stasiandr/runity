@@ -94,14 +94,7 @@ impl Session {
     pub fn table_sources(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(project) = self.project() {
-            let dir = project.root().join(scrap::project::CONFIGS);
-            let mut files = Vec::new();
-            scrap_import::walk(&dir, &mut |p| {
-                if p.extension().is_some_and(|e| e == "ron") {
-                    files.push(p.to_path_buf());
-                }
-            });
-            files.sort();
+            let files = scrap::layout::data_files(project.root());
             out.extend(
                 files
                     .iter()
@@ -129,19 +122,17 @@ impl Session {
 
     fn source(&self, source: &str) -> EditResult<Source> {
         let source = source.trim();
-        let dir = format!("{}/", scrap::project::CONFIGS);
-        if let Some(rest) = source.strip_prefix(&dir) {
+        // A data file, by its path in the project: `configs/enemies.ron`,
+        // `content/game/core/world.ron` (docs/layout.md).
+        if source.ends_with(".ron") && !source.contains(':') {
             let project = self.project().ok_or(EditError::NotInProject)?;
-            let name = rest.strip_suffix(".ron").unwrap_or(rest).to_string();
-            let path = project
-                .root()
-                .join(scrap::project::CONFIGS)
-                .join(format!("{name}.ron"));
+            let path = project.root().join(source);
+            let name = scrap::layout::data_name(project.root(), &path);
             if !path.is_file() {
                 let known: Vec<String> = self
                     .table_sources()
                     .into_iter()
-                    .filter(|s| s.starts_with(&dir))
+                    .filter(|s| s.ends_with(".ron"))
                     .collect();
                 return Err(EditError::Scene(format!(
                     "no file {source}{}",

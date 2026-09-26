@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/audio/plop.wav",
+    hash: "31187828ffd3bbd7c256cd46b27d77c3",
+    id: Some("ecebdebbc917822e28c740ab5670219d"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

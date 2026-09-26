@@ -45,7 +45,7 @@ use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
 
 /// The engine's reference scene: every builtin, no import step.
-pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
+pub const REFERENCE_SCENE: &str = "examples/valley/content/valley/maps/first-light.scene.ron";
 
 /// The Scene view's picture, as the renderer knows it.
 const SCENE: ImageId = ImageId(0);
@@ -2521,7 +2521,13 @@ impl Studio {
                     self.session.entity_model(*id).is_some_and(|m| {
                         self.session
                             .project()
-                            .is_some_and(|p| p.assets().join(format!("{m}.scrterrain")).is_file())
+                            .is_some_and(|p| {
+                                let mut found = false;
+                                scrap_import::walk(p.root(), &mut |f| {
+                                    found |= f.extension().is_some_and(|e| e == "scrterrain") && f.file_stem().is_some_and(|s| *s.to_string_lossy() == *m);
+                                });
+                                found
+                            })
                     })
                 })
             });
@@ -3868,7 +3874,7 @@ impl Studio {
                 }
                 Action::OpenSceneDialog => {
                     let mut dialog = rfd::FileDialog::new().add_filter("scene", &["ron"]);
-                    if let Some(dir) = s.project().map(|p| p.root().join("scenes")) {
+                    if let Some(dir) = s.project().map(|p| p.scenes()) {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(path) = dialog.pick_file() {
@@ -3877,7 +3883,7 @@ impl Studio {
                 }
                 Action::SaveAs => {
                     let mut dialog = rfd::FileDialog::new().add_filter("scene", &["ron"]);
-                    if let Some(dir) = s.project().map(|p| p.root().join("scenes")) {
+                    if let Some(dir) = s.project().map(|p| p.scenes()) {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(path) = dialog.save_file() {
@@ -4701,7 +4707,7 @@ impl Studio {
                 if !added.called {
                     s.say(
                         Level::Warning,
-                        format!("src/main.rs has no `// systems, in order` line: call {} from step yourself", scrap_cli::add::system_call(text)),
+                        format!("src/main.rs has no `// systems, in order` line: call {} from step yourself", scrap_cli::add::system_call(&added.name)),
                     );
                 }
             }

@@ -3,18 +3,21 @@
 //! comfortable. Chop tomatoes or onions on a
 //! board, three of one kind into a pot, the soup onto a plate, the plate
 //! out of the window before the order walks out. The kitchen is the scene,
-//! greyboxed from the engine's shapes; the rules are `src/systems/`.
+//! greyboxed from the engine's shapes; the rules are the systems in
+//! `src/cooking/`, `src/orders/`, `src/players/` and `src/items/`.
 //!
-//! `cargo run` opens a window on `scenes/main.ron`. Save the scene, a
+//! `cargo run` opens a window on the scene `main`. Save the scene, a
 //! prefab, or re-import an asset while it runs, and the change is in the
 //! next frames without the game losing its state. Run under
 //! `dx serve --hotpatch` and a rebuilt system, `step` or `frame` takes
 //! effect without closing the window; a component given a new field is
 //! carried across too (`patched` below), keeping what a save keeps.
 //!
-//! Components are files in `src/components/`, systems files in
-//! `src/systems/` (`scrap add component NAME`, `scrap add system NAME`);
-//! `build.rs` finds them, and `step` below runs the systems in order.
+//! Code lies by feature: a component is a file that declares the struct of
+//! its name, a system a file with `pub fn run(`, in any folder under
+//! `src/` (`scrap add component cooking/NAME`, `scrap add system
+//! cooking/NAME`); `build.rs` finds them, and `step` below runs the
+//! systems in order.
 //!
 //! The game is played together: `party` is who else is in it. The host
 //! makes a Steam lobby (`lobby.rs`), friends join it from an invite or the
@@ -35,12 +38,12 @@ use scrap::widgets::Widgets;
 use scrap::{Actions, Components, LiveScene, Tuned};
 use serde::Deserialize;
 
-/// Every file in src/components/, registered by its file name.
+/// Every component under src/, registered by its file name.
 mod components {
     include!(concat!(env!("OUT_DIR"), "/components.rs"));
 }
 
-/// Every file in src/systems/.
+/// Every system under src/.
 mod systems {
     include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 }
@@ -65,7 +68,7 @@ mod noise;
 #[cfg(test)]
 mod play_tests;
 
-/// Numbers from `configs/world.ron`, reloaded while the game runs.
+/// Numbers from `core/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
@@ -75,7 +78,7 @@ struct Game {
     live: LiveScene,
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
-    /// The camera's tour while players gather, from `configs/flyby.ron`.
+    /// The camera's tour while players gather, from `core/flyby.ron`.
     tour: Tuned<scrap::tour::Tour>,
     flyby: scrap::tour::Flyby,
     layers: Tuned<scrap::layers::Layers>,
@@ -180,7 +183,7 @@ impl Game {
                 let _ = self.prefs.save();
             }
             Wish::Language(language) => {
-                let dir = scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings");
+                let dir = scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), scrap::strings::DIR);
                 match scrap::strings::Strings::load(dir, language) {
                     Ok(strings) => self.strings = strings,
                     Err(e) => eprintln!("{e}"),
@@ -545,13 +548,13 @@ fn main() -> anyhow::Result<()> {
     scrap::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
     // Volumes and the best score, kept in the player's folder.
     let prefs = scrap::player_prefs::PlayerPrefs::of_game(&project_name).unwrap_or_default();
-    // `scrap run --scene cave` plays scenes/cave.ron.
+    // `scrap run --scene cave` plays the scene `cave`, wherever it lies.
     let playing = std::env::var("SCRAP_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     // Started from the editor, the game watches the editor's document as it
     // stands (SCRAP_SCENE_FILE), so an edit shows here without a save.
     let scene = match std::env::var_os("SCRAP_SCENE_FILE") {
         Some(file) => std::path::PathBuf::from(file),
-        None => scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing)),
+        None => scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &playing),
     };
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
@@ -580,17 +583,17 @@ fn main() -> anyhow::Result<()> {
     for problem in &problems {
         eprintln!("{problem}");
     }
-    let actions = Actions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
+    let actions = Actions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "config/input.ron"))?;
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
-    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "configs/world.ron"))
+    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "content/kitchen/core/world.ron"))
         .map_err(anyhow::Error::msg)?;
-    let tour = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "configs/flyby.ron"))
+    let tour = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "content/kitchen/core/flyby.ron"))
         .map_err(anyhow::Error::msg)?;
-    let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
+    let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "config/layers.ron"))
         .map_err(anyhow::Error::msg)?;
-    let mut front = front::Front::load(&scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui"))
+    let mut front = front::Front::load(&scrap::project::data_root(env!("CARGO_MANIFEST_DIR")))
         .map_err(anyhow::Error::msg)?;
     // Steam as Spacewar; a session from the command line is UDP, and needs
     // no Steam.
@@ -609,7 +612,7 @@ fn main() -> anyhow::Result<()> {
         front.phase = if party.is_host() { front::Phase::Kitchen } else { front::Phase::Joining };
     }
     let strings = scrap::strings::Strings::load(
-        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), scrap::strings::DIR),
         &settings.language,
     )
     .map_err(anyhow::Error::msg)?;
@@ -628,7 +631,7 @@ fn main() -> anyhow::Result<()> {
         front.menu.set_chosen("language", i);
     }
     let strings = scrap::strings::Strings::load(
-        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), scrap::strings::DIR),
         &language,
     )
     .unwrap_or(strings);
@@ -645,7 +648,7 @@ fn main() -> anyhow::Result<()> {
         profile: scrap::perf::Profiler::new(600),
         show_profile: false,
         widgets: Widgets::with_style(front::style()),
-        shaders: scrap::render::MaterialShaders::new(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
+        shaders: scrap::render::MaterialShaders::new(scrap::project::data_root(env!("CARGO_MANIFEST_DIR"))),
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
@@ -673,10 +676,7 @@ mod tests {
     fn the_start_scene_plays() {
         write_shapes();
         let (_, settings) = scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
-        let scene = scrap::project::data_file(
-            env!("CARGO_MANIFEST_DIR"),
-            &format!("scenes/{}.ron", settings.start_scene),
-        );
+        let scene = scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &settings.start_scene);
         let (live, problems) = LiveScene::open(&scene).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let mut live = live.with_components(game_components());

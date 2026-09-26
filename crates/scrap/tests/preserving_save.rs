@@ -40,7 +40,10 @@ fn changed_lines(before: &str, after: &str) -> Vec<(String, String)> {
 
 #[test]
 fn saving_a_hand_written_scene_unchanged_writes_nothing_new() {
-    for scene in ["scenes/first-light.ron", "scenes/camp.ron"] {
+    for scene in [
+        "content/valley/maps/first-light.scene.ron",
+        "content/valley/maps/camp.scene.ron",
+    ] {
         let (path, original) = copy(scene, "unchanged");
         Scene::load(&path).unwrap().save(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "{scene}");
@@ -49,7 +52,7 @@ fn saving_a_hand_written_scene_unchanged_writes_nothing_new() {
 
 #[test]
 fn moving_one_tree_changes_its_line_and_no_other() {
-    let (path, original) = copy("scenes/first-light.ron", "move");
+    let (path, original) = copy("content/valley/maps/first-light.scene.ron", "move");
     let mut scene = Scene::load(&path).unwrap();
     let id = scene.find("tree mid").unwrap().id;
     scene.get_mut(id).unwrap().transform.position.x = 2.5;
@@ -70,7 +73,7 @@ fn moving_one_tree_changes_its_line_and_no_other() {
 
 #[test]
 fn a_new_entity_is_added_and_a_removed_one_goes_leaving_the_rest() {
-    let (path, original) = copy("scenes/first-light.ron", "add-remove");
+    let (path, original) = copy("content/valley/maps/first-light.scene.ron", "add-remove");
     let mut scene = Scene::load(&path).unwrap();
     let far = scene.find("tree far").unwrap().id;
     scrap::edit::remove(&mut scene, far);
@@ -127,7 +130,7 @@ fn a_first_save_writes_missing_ids_into_the_lines_as_they_are() {
 
 #[test]
 fn a_prefab_keeps_its_comments_through_a_save() {
-    let (path, original) = copy("prefabs/campfire.prefab", "prefab");
+    let (path, original) = copy("content/valley/camp/campfire/campfire.prefab", "prefab");
     let (_, desc) = Prefabs::read(&path).unwrap();
     Prefabs::save(&desc, &path).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/effects/circle_05.png",
+    hash: "ae082a63c17ef798fff6b5163dbd79e3",
+    id: Some("6541f5df8efbfddfe23f3db21024671f"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

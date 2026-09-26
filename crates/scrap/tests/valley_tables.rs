@@ -1,5 +1,5 @@
 //! The Valley's economy as tables: the materials and recipes of
-//! docs/design/05-economy.md (6.2, 6.3) in `examples/valley/configs/`, read
+//! docs/design/05-economy.md (6.2, 6.3) in `examples/valley/content/valley/crafting/`, read
 //! into the types a game would give them — the first tables a game of this
 //! engine has (docs/data.md).
 //!
@@ -101,16 +101,17 @@ fn valley() -> PathBuf {
 fn tables() -> Tables {
     let mut tables = Tables::new();
     tables
-        .register::<Material>("configs/materials.ron")
-        .register::<Recipe>("configs/recipes.ron");
+        .register::<Material>("content/valley/crafting/materials.ron")
+        .register::<Recipe>("content/valley/crafting/recipes.ron");
     tables
 }
 
 #[test]
 fn the_valley_s_economy_reads_into_its_types() {
     let root = valley();
-    let materials = Table::<Material>::load(root.join("configs/materials.ron")).unwrap();
-    let recipes = Table::<Recipe>::load(root.join("configs/recipes.ron")).unwrap();
+    let materials =
+        Table::<Material>::load(root.join("content/valley/crafting/materials.ron")).unwrap();
+    let recipes = Table::<Recipe>::load(root.join("content/valley/crafting/recipes.ron")).unwrap();
     assert_eq!(materials.len(), 14);
     assert_eq!(recipes.len(), 4);
 
@@ -163,7 +164,10 @@ fn the_valley_s_tables_hold_and_say_what_they_are() {
     let problems = tables().problems(&root);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
     // Every record carries its id, as the examples' entities do.
-    for file in ["configs/materials.ron", "configs/recipes.ron"] {
+    for file in [
+        "content/valley/crafting/materials.ron",
+        "content/valley/crafting/recipes.ron",
+    ] {
         let text = std::fs::read_to_string(root.join(file)).unwrap();
         assert_eq!(
             scrap::table::settle_ids(&text),

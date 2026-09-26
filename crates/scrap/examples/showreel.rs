@@ -53,7 +53,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "desert-walk",
             caption: "Пустыня: марево и мираж, физическое небо, отражённый свет от песка. Ходок оставляет следы, из-под ног пыль, ветер гонит перекати-поле",
-            scene: "desert.ron",
+            scene: "desert.scene.ron",
             seconds: 9.0,
             from: (v(6.0, 1.9, 7.0), v(2.0, 0.6, -4.0)),
             to: (v(5.0, 1.8, -2.0), v(1.5, 0.4, -12.0)),
@@ -68,7 +68,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "passage",
             caption: "Автоэкспозиция: из тёмного проезда на полуденное солнце — глаз привыкает за пару секунд",
-            scene: "desert.ron",
+            scene: "desert.scene.ron",
             seconds: 8.0,
             from: (v(-40.0, 1.6, 25.0), v(-40.0, 1.4, 5.0)),
             to: (v(-40.0, 1.6, 5.0), v(-38.0, 1.3, -15.0)),
@@ -83,7 +83,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "dunes",
             caption: "Дюны: рельеф с тесселяцией у камеры, с гребней ветер срывает песок, по полю бродят пылевые вихри",
-            scene: "desert.ron",
+            scene: "desert.scene.ron",
             seconds: 9.0,
             from: (v(-6.0, 3.0, -60.0), v(-20.0, 4.0, -160.0)),
             to: (v(6.0, 3.5, -64.0), v(25.0, 4.0, -160.0)),
@@ -101,7 +101,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "sandstorm",
             caption: "Песчаная буря: песок в воздухе волнами, позёмка по поверхности, солнце тусклым диском",
-            scene: "desert.ron",
+            scene: "desert.scene.ron",
             seconds: 7.0,
             from: (v(0.0, 1.7, 8.0), v(-10.0, 1.5, -30.0)),
             to: (v(0.0, 1.7, 3.0), v(10.0, 1.8, -30.0)),
@@ -123,7 +123,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "haboob",
             caption: "Хабуб: ярусная стена пыли идёт на камеру и поглощает её (время ускорено)",
-            scene: "haboob.ron",
+            scene: "haboob.scene.ron",
             seconds: 19.0,
             from: (v(0.0, 1.8, 0.0), v(-60.0, 16.0, -8.0)),
             to: (v(3.0, 1.8, 1.0), v(-60.0, 6.0, -14.0)),
@@ -138,7 +138,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "desert-night",
             caption: "Ночь в пустыне: солнце садится, светит луна, выходят звёзды и Млечный Путь (время ускорено)",
-            scene: "desert.ron",
+            scene: "desert.scene.ron",
             seconds: 10.0,
             from: (v(0.0, 1.7, 8.0), v(-40.0, 2.0, -40.0)),
             to: (v(0.0, 1.7, 8.0), v(-60.0, 14.0, -20.0)),
@@ -153,7 +153,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "bounce",
             caption: "Отражённый свет: пробы и SSGI, стены окрашивают пол, пол подсвечивает тень",
-            scene: "bounce.ron",
+            scene: "bounce.scene.ron",
             seconds: 7.0,
             from: (v(3.0, 2.2, 7.0), v(-0.5, 0.8, 0.0)),
             to: (v(-2.5, 2.0, 6.5), v(0.5, 0.8, 0.0)),
@@ -168,7 +168,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "meadow-sunset",
             caption: "Луг: живая трава на ветру, закат на физическом небе, объёмная дымка",
-            scene: "meadow.ron",
+            scene: "meadow.scene.ron",
             seconds: 9.0,
             from: (v(6.5, 1.1, 1.5), v(-4.0, 1.4, -1.5)),
             to: (v(4.0, 1.4, 4.5), v(-4.0, 1.2, -3.0)),
@@ -186,7 +186,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "clouds",
             caption: "Облака: объёмные, плывут по ветру, тени от них ползут по земле (время ускорено)",
-            scene: "meadow.ron",
+            scene: "meadow.scene.ron",
             seconds: 7.0,
             from: (v(8.0, 2.5, 6.0), v(-20.0, 12.0, -30.0)),
             to: (v(8.0, 2.5, 6.0), v(-30.0, 10.0, -10.0)),
@@ -204,7 +204,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "rain",
             caption: "Дождь: мокрые поверхности, лужи с кругами, отражения по экрану",
-            scene: "rain.ron",
+            scene: "rain.scene.ron",
             seconds: 7.0,
             from: (v(0.0, 2.4, 7.5), v(0.0, 0.9, 0.0)),
             to: (v(3.5, 1.6, 5.5), v(-0.5, 0.5, 0.0)),
@@ -219,7 +219,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "pond",
             caption: "Вода: волны, отражения, глубина и каустика",
-            scene: "pond.ron",
+            scene: "pond.scene.ron",
             seconds: 7.0,
             from: (v(1.5, 3.6, 7.0), v(0.0, -0.8, -4.0)),
             to: (v(-3.0, 2.2, 5.0), v(1.0, -0.6, -4.0)),
@@ -234,7 +234,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "night-camp",
             caption: "Ночь: лампы с тенями в дымке, Forward+",
-            scene: "camp.ron",
+            scene: "camp.scene.ron",
             seconds: 7.0,
             from: (v(0.0, 2.4, 6.0), v(0.0, 0.3, -1.6)),
             to: (v(4.0, 1.6, 4.0), v(0.0, 0.4, -1.6)),
@@ -262,7 +262,7 @@ fn later_shots() -> Vec<Shot> {
         Shot {
             name: "storm",
             caption: "Гроза: молнии бьют по часам мира, вспышка на миг — главный свет сцены, с тенями от перголы и решёток",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 8.0,
             from: (v(4.0, 1.7, 3.0), v(-30.0, 14.0, -3.0)),
             to: (v(3.0, 1.6, 4.0), v(-30.0, 11.0, -1.0)),
@@ -280,7 +280,7 @@ fn later_shots() -> Vec<Shot> {
         Shot {
             name: "takyr",
             caption: "После дождя: земля сохнет пятнами, лужи уходят, глина такыра трескается на плитки (время ускорено)",
-            scene: "desert.ron",
+            scene: "desert.scene.ron",
             seconds: 10.0,
             from: (v(15.5, 1.8, 9.5), v(24.0, 0.0, 1.0)),
             to: (v(19.0, 1.5, 8.0), v(25.0, 0.0, 0.0)),
@@ -298,7 +298,7 @@ fn later_shots() -> Vec<Shot> {
         Shot {
             name: "mist",
             caption: "Лучи в дымке: фонарь внутри павильона светит сквозь решётку, у каждой лампы свои тени в воздухе",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 8.0,
             from: (v(-11.8, 1.5, 10.2), v(-7.6, 1.6, 7.3)),
             to: (v(-10.6, 1.9, 11.4), v(-7.6, 1.5, 7.3)),
@@ -320,7 +320,7 @@ fn bazaar_shots() -> Vec<Shot> {
         Shot {
             name: "bazaar-wind",
             caption: "Ткань на ветру: навесы вздуваются, флаги полощутся, простыни на верёвке, гирлянда провисает и качается",
-            scene: "bazaar.ron",
+            scene: "bazaar.scene.ron",
             seconds: 9.0,
             from: (v(-3.0, 3.6, 11.0), v(-3.0, 1.8, -2.0)),
             to: (v(4.0, 3.4, 10.0), v(1.0, 2.0, -3.0)),
@@ -335,7 +335,7 @@ fn bazaar_shots() -> Vec<Shot> {
         Shot {
             name: "bazaar-wall",
             caption: "Разрушение: глинобитная стена рушится на блоки в облаке пыли, блоки падают и рассыпаются",
-            scene: "bazaar.ron",
+            scene: "bazaar.scene.ron",
             seconds: 12.0,
             from: (v(3.0, 2.2, 8.5), v(6.0, 1.2, 2.5)),
             to: (v(8.5, 2.0, 8.0), v(6.0, 0.6, 2.8)),
@@ -358,7 +358,7 @@ fn ray_shots() -> Vec<Shot> {
         Shot {
             name: "rt-pergola",
             caption: "Лучи: солнце сквозь перголу. Узор резкий у балок и мягкий вдали — полутень растёт с расстоянием, как у настоящего солнца",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 8.0,
             from: (v(-6.5, 1.5, 6.0), v(3.0, 0.5, -2.0)),
             to: (v(-5.5, 2.0, 2.5), v(4.0, 1.0, -4.0)),
@@ -373,7 +373,7 @@ fn ray_shots() -> Vec<Shot> {
         Shot {
             name: "rt-mirrors",
             caption: "Лучи: отражения. Вода с волнами, хром и бронза отражают весь двор — и то, что за камерой, чего на экране нет",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 9.0,
             from: (v(-4.5, 1.3, 7.5), v(-1.5, 0.4, 2.5)),
             to: (v(4.5, 1.1, 7.0), v(1.5, 0.4, 2.8)),
@@ -388,7 +388,7 @@ fn ray_shots() -> Vec<Shot> {
         Shot {
             name: "rt-glass",
             caption: "Лучи: преломление. Стеклянный шар — линза, двор в нём перевёрнут; дно бассейна изгибается под волнами",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 8.0,
             from: (v(-1.2, 0.9, 7.4), v(-2.9, 0.45, 4.9)),
             to: (v(-4.6, 0.8, 6.8), v(-2.8, 0.45, 4.9)),
@@ -403,7 +403,7 @@ fn ray_shots() -> Vec<Shot> {
         Shot {
             name: "rt-dusk",
             caption: "Лучи: садится солнце, зажигаются фонари. Каждый из четырнадцати даёт свою мягкую тень каждой планки (время ускорено)",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 10.0,
             from: (v(0.0, 1.8, 8.0), v(0.0, 1.0, -4.0)),
             to: (v(-1.5, 1.6, 6.0), v(1.0, 1.0, -4.0)),
@@ -418,7 +418,7 @@ fn ray_shots() -> Vec<Shot> {
         Shot {
             name: "rt-lanterns",
             caption: "Лучи: ночь. Фонари качаются — тени решёток ходят по стенам и полу, огни отражаются в воде и в шарах",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 10.0,
             from: (v(5.5, 1.5, 6.0), v(0.0, 1.0, -1.0)),
             to: (v(-5.0, 1.7, 5.0), v(0.0, 1.0, -2.0)),
@@ -433,7 +433,7 @@ fn ray_shots() -> Vec<Shot> {
         Shot {
             name: "rt-without",
             caption: "Для сравнения: слева тот же двор без лучей, справа с ними",
-            scene: "lanterns.ron",
+            scene: "lanterns.scene.ron",
             seconds: 7.0,
             from: (v(0.0, 1.5, 8.0), v(0.0, 0.6, 1.0)),
             to: (v(1.5, 1.6, 7.5), v(0.0, 0.6, 1.0)),
@@ -618,7 +618,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let out = out.ok_or("usage: showreel <out-dir>")?;
     std::fs::create_dir_all(&out)?;
-    let scenes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley/scenes");
+    let scenes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley/content/valley/maps");
     let gpu = Gpu::headless_blocking(false)?;
     let target = OffscreenTarget::new(&gpu, width, height);
 
@@ -708,7 +708,7 @@ fn render_shot(
     let mut renderer = Renderer::new(gpu, target);
     if let Some(project) = &project {
         let mut shaders =
-            scrap::render::MaterialShaders::new(project.root().join(scrap::project::SHADERS));
+            scrap::render::MaterialShaders::new(project.root());
         for (name, result) in shaders.poll(&mut renderer, gpu) {
             if let Err(problem) = result {
                 eprintln!("shader {name}: {problem}");
@@ -754,7 +754,7 @@ fn render_shot(
         let mut twin = Renderer::new(gpu, target);
         if let Some(project) = &project {
             let mut shaders =
-                scrap::render::MaterialShaders::new(project.root().join(scrap::project::SHADERS));
+                scrap::render::MaterialShaders::new(project.root());
             let _ = shaders.poll(&mut twin, gpu);
         }
         for (name, handle) in &uploaded {

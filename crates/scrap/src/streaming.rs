@@ -103,7 +103,7 @@ impl Streamer {
     }
 
     /// Put in what the camera at `eye` has come near, take out what it has
-    /// left: scenes from `scenes`, prefabs from `prefabs`, models from the
+    /// left: scenes found under `scenes` (a project's root: wherever they lie), prefabs from `prefabs`, models from the
     /// builtins and `library`.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
@@ -146,7 +146,8 @@ impl Streamer {
             if self.regions.contains_key(&owner) || eye.distance(at) > stream.radius {
                 continue;
             }
-            let path = scenes.join(format!("{}.ron", stream.scene));
+            let path = crate::layout::find(scenes, crate::layout::Kind::Scene, &stream.scene)
+                .unwrap_or_else(|| scenes.join(format!("{}.ron", stream.scene)));
             match self.load(owner, &stream.scene, &path, prefabs, library, world, gpu, renderer) {
                 Ok(count) => events.push(StreamEvent::In(stream.scene.clone(), count)),
                 Err(reason) => {

@@ -1390,33 +1390,31 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<scrap::a
     })?;
     let mut found = Vec::new();
     let mut names = Vec::new();
-    let mut stack = vec![project.assets()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let image = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .is_some_and(|e| ["png", "jpg", "jpeg", "tga", "bmp"].contains(&e.as_str()));
-            if !image {
-                continue;
-            }
-            let stem = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if stem == name {
-                found.push(path);
-            } else {
-                names.push(stem);
-            }
+    walk(project.root(), &mut |path| {
+        let image = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .is_some_and(|e| ["png", "jpg", "jpeg", "tga", "bmp"].contains(&e.as_str()));
+        if !image {
+            return;
+        }
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if stem == name {
+            found.push(path.to_path_buf());
+        } else {
+            names.push(stem);
+        }
+    });
+    found.sort();
+    // Two of one name: the one beside the material is the one it means —
+    // a feature's texture and material lie together (docs/layout.md).
+    if found.len() > 1 {
+        let beside: Vec<PathBuf> = found.iter().filter(|p| p.parent() == material.parent()).cloned().collect();
+        if beside.len() == 1 {
+            found = beside;
         }
     }
     match found.len() {
@@ -1425,7 +1423,7 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<scrap::a
                 .map(|n| format!(" — did you mean `{n}`?"))
                 .unwrap_or_default();
             anyhow::bail!(
-                "{}: no texture `{name}` under assets/{near}",
+                "{}: no texture `{name}` in the project{near}",
                 material.display()
             )
         }
@@ -1651,7 +1649,7 @@ fn parent_link(value: &ron::Value) -> Option<scrap::AssetLink> {
 /// or the one with the name.
 fn find_material(near: &Path, link: &scrap::AssetLink) -> Option<PathBuf> {
     let root = scrap::Project::find(near)
-        .map(|p| p.materials())
+        .map(|p| p.root().to_path_buf())
         .unwrap_or_else(|_| near.parent().map(Path::to_path_buf).unwrap_or_default());
     let mut found = Vec::new();
     walk(&root, &mut |p| {
@@ -2012,15 +2010,18 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
     }
     let mut sidecars = Vec::new();
     let mut sources = Vec::new();
-    for root in [project.assets(), project.materials()] {
-        walk(&root, &mut |path| {
-            if path.extension().and_then(|e| e.to_str()) == Some("scrimport") {
+    // Wherever they lie (docs/layout.md). A sidecar is an import's when
+    // what it is beside is a kind of file the importer takes; a scene's or a
+    // prefab's is `identify`'s.
+    walk(project.root(), &mut |path| {
+        if path.extension().and_then(|e| e.to_str()) == Some("scrimport") {
+            if importable(&path.with_extension("")) {
                 sidecars.push(path.to_path_buf());
-            } else if importable(path) {
-                sources.push(path.to_path_buf());
             }
-        });
-    }
+        } else if importable(path) {
+            sources.push(path.to_path_buf());
+        }
+    });
     sidecars.sort();
     sources.sort();
 
@@ -2167,15 +2168,21 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
     out
 }
 
-/// Where the project's own text assets are — prefabs, scenes, animator
-/// graphs, screens — with the extension each folder's files have.
-fn text_assets(project: &scrap::Project) -> [(PathBuf, &'static str); 4] {
-    [
-        (project.prefabs(), scrap::prefab::EXTENSION),
-        (project.scenes(), "ron"),
-        (project.root().join(scrap::project::ANIMATORS), "ron"),
-        (project.root().join(scrap::project::UI), "ron"),
-    ]
+/// The kinds of the project's own text assets — prefabs, scenes, animator
+/// graphs, screens — which get a sidecar with an ID and nothing to import.
+const TEXT_ASSETS: [scrap::layout::Kind; 4] = [
+    scrap::layout::Kind::Prefab,
+    scrap::layout::Kind::Scene,
+    scrap::layout::Kind::Animator,
+    scrap::layout::Kind::Screen,
+];
+
+/// Whether a file is one of [`TEXT_ASSETS`], by its path in the project.
+fn is_text_asset(project: &scrap::Project, path: &Path) -> bool {
+    project
+        .relative(path)
+        .and_then(|relative| scrap::layout::kind_of(&relative))
+        .is_some_and(|kind| TEXT_ASSETS.contains(&kind))
 }
 
 /// Give every prefab, scene, animator graph and screen a sidecar with its
@@ -2191,16 +2198,15 @@ fn text_assets(project: &scrap::Project) -> [(PathBuf, &'static str); 4] {
 pub fn identify(project: &scrap::Project) -> Vec<Reimported> {
     let mut sidecars = Vec::new();
     let mut files = Vec::new();
-    for (root, extension) in text_assets(project) {
-        walk(
-            &root,
-            &mut |path| match path.extension().and_then(|e| e.to_str()) {
-                Some("scrimport") => sidecars.push(path.to_path_buf()),
-                Some(e) if e == extension => files.push(path.to_path_buf()),
-                _ => {}
-            },
-        );
-    }
+    walk(project.root(), &mut |path| {
+        if path.extension().and_then(|e| e.to_str()) == Some("scrimport") {
+            if is_text_asset(project, &path.with_extension("")) {
+                sidecars.push(path.to_path_buf());
+            }
+        } else if is_text_asset(project, path) {
+            files.push(path.to_path_buf());
+        }
+    });
     sidecars.sort();
     files.sort();
     let name = |path: &Path| {
@@ -2297,17 +2303,19 @@ pub fn importable(path: &Path) -> bool {
 }
 
 /// Every file under `root`, depth first. Hidden files and folders are
-/// skipped: `.gitkeep`, editor droppings, a `.git` someone nested.
+/// skipped: `.gitkeep`, editor droppings, a `.git` someone nested. So is,
+/// in a project's root, what is derived or code — `library/`, `target/`,
+/// `build/`, `src/` ([`scrap::layout::SKIPPED`]) — so a project's root can
+/// be walked for its content, wherever it lies (docs/layout.md).
 pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
+    let project = root.join(scrap::project::FILE).is_file();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-        {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if name.starts_with('.') || (project && path.is_dir() && scrap::layout::SKIPPED.contains(&name.as_str())) {
             continue;
         }
         if path.is_dir() {

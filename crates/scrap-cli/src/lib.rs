@@ -6,6 +6,7 @@ pub mod build;
 pub mod check;
 pub mod lines;
 pub mod merge;
+pub mod migrate;
 pub mod modules;
 pub mod perf;
 pub mod rebuild;

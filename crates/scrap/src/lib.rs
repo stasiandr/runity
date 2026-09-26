@@ -198,6 +198,7 @@ pub use scrap_core::perf;
 pub use scrap_core::player;
 pub use scrap_core::player_prefs;
 pub use scrap_core::prefab;
+pub use scrap_core::layout;
 pub use scrap_core::project;
 #[cfg(feature = "navigation")]
 pub use scrap_navigation::navigation;

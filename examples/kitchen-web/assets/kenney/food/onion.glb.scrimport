@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/food/onion.glb",
-    hash: "a15a00a226fb1907a7c42c35bcd60e98",
-    id: Some("070ebb78f372ed0ea6f8a0bf7fa7a7a3"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/sounds/pop.wav",
-    hash: "507b15e89a949ee3f95ba6449786e131",
-    id: Some("c339947fef01ee9fbf45ce09916166c5"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

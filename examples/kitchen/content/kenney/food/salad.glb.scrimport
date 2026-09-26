@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/salad.glb",
+    hash: "942e8ce1bcc55f3c42df9de1a6914456",
+    id: Some("af37b8ab3e983a94fa0ced9692766057"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

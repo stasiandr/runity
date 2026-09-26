@@ -1604,13 +1604,15 @@ impl Inspector {
         self.showing.clear();
         let (name, kind, file) = match &asset {
             Asset::Model(n, f) => (n.clone(), "model", f.clone()),
-            Asset::Prefab(n) => (n.clone(), "prefab", Some(format!("prefabs/{n}.prefab"))),
+            Asset::Prefab(n) => (
+                n.clone(),
+                "prefab",
+                session.project().and_then(|p| p.file(scrap::layout::Kind::Prefab, n)).and_then(|f| session.project()?.relative(f)),
+            ),
             Asset::Material(n) => (n.clone(), "material", None),
             Asset::Sound(n, f) => (n.clone(), "sound", Some(f.clone())),
             Asset::Scene(p) => (
-                p.file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                scrap::layout::name_of(p),
                 "scene",
                 None,
             ),
@@ -2437,15 +2439,9 @@ impl Inspector {
             .collect();
         let mut names: Vec<String> = session.component_shapes().into_keys().collect();
         if let Some(project) = session.project() {
-            if let Ok(read) = std::fs::read_dir(project.root().join(scrap::project::COMPONENTS)) {
-                for e in read.flatten() {
-                    let p = e.path();
-                    if p.extension().is_some_and(|x| x == "rs") {
-                        let n = p.file_stem().unwrap().to_string_lossy().into_owned();
-                        if n != "mod" && !names.contains(&n) {
-                            names.push(n);
-                        }
-                    }
+            for n in project.component_names().unwrap_or_default() {
+                if !names.contains(&n) {
+                    names.push(n);
                 }
             }
         }

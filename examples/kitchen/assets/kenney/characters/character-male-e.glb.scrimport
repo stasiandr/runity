@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/characters/character-male-e.glb",
-    hash: "1ad6a24dc1df61e433374316c4b6bcc4",
-    id: Some("a8b5a8487b5d3cca2ec7ae30c4f9b159"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

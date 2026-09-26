@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/plants/blades.scrmat",
+    hash: "085f54257c3e25e7126110f6fe0a2854",
+    id: Some("661e506050b1fce08e69ab0db77aeac1"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

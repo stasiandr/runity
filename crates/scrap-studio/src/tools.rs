@@ -104,23 +104,13 @@ impl Settings {
         };
         let root = project.root();
         let mut out = vec![root.join(scrap::project::FILE)];
-        for file in [scrap::project::INPUT, scrap::layers::FILE] {
-            let path = root.join(file);
+        for path in [project.input_file(), project.layers_file()] {
             if path.is_file() {
                 out.push(path);
             }
         }
-        for dir in [scrap::project::CONFIGS, scrap::project::UI] {
-            if let Ok(read) = std::fs::read_dir(root.join(dir)) {
-                let mut more: Vec<PathBuf> = read
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-                    .collect();
-                more.sort();
-                out.extend(more);
-            }
-        }
+        out.extend(scrap::layout::data_files(root));
+        out.extend(project.files(scrap::layout::Kind::Screen));
         out
     }
 

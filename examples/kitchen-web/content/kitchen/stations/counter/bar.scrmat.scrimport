@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/stations/counter/bar.scrmat",
+    hash: "40eea7c87d22abc3786ee3e88a2b3657",
+    id: Some("1f3d4c0b41745866c604fb86e4730c3b"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/food/tomato.glb",
-    hash: "5b663c5174ad406b4b0f53a3c25abaac",
-    id: Some("4f1d1ea7eea500f0664f6acf1ac24f12"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

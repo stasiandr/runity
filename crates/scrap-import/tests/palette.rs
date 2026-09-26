@@ -216,19 +216,14 @@ fn the_example_palette_stands_in_for_the_builtins() {
         .parent()
         .and_then(Path::parent)
         .expect("crates/scrap-import is two levels down");
-    let sources = root.join("examples/valley/materials");
+    // Wherever they lie in the example: each beside what it colours
+    // (docs/layout.md).
+    let valley = root.join("examples/valley");
     let library_dir = temp("examples").join("library");
 
     let mut imported = 0;
-    for entry in std::fs::read_dir(&sources).expect("the example palette") {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("scrmat") {
-            continue;
-        }
-        let relative = format!(
-            "examples/valley/materials/{}",
-            path.file_name().unwrap().to_string_lossy()
-        );
+    for path in scrap::layout::files(&valley, scrap::layout::Kind::Material) {
+        let relative = format!("examples/valley/{}", scrap::layout::relative(&valley, &path));
         // The sidecar goes beside the temporary library, not beside the
         // committed source: a test must not write into the repository.
         let sidecar = library_dir.parent().unwrap().join(format!(
@@ -274,7 +269,7 @@ fn the_example_palette_stands_in_for_the_builtins() {
 
     // The reference scene names materials the palette now answers for, so
     // rendering it with a library and without one should agree.
-    let scene = Scene::load(root.join("examples/valley/scenes/first-light.ron")).unwrap();
+    let scene = Scene::load(root.join("examples/valley/content/valley/maps/first-light.scene.ron")).unwrap();
     let named = scene
         .flatten()
         .iter()

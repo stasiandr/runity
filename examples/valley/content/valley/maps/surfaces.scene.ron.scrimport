@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/surfaces.scene.ron",
+    id: Some("6c4f21a6a8c3cbaf751282abff5680f2"),
+)

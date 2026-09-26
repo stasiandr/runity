@@ -142,7 +142,7 @@ mod tests {
     fn packed_files_come_back_as_they_went_in() {
         let mut packed = 2u32.to_le_bytes().to_vec();
         for (path, body) in [
-            ("ui/menu.ron", &b"()"[..]),
+            ("content/kitchen/ui/screens/menu.screen.ron", &b"()"[..]),
             ("library/a.scrasset", &[1, 2, 3][..]),
         ] {
             packed.extend((path.len() as u32).to_le_bytes());
