@@ -402,6 +402,7 @@ impl Emitting {
             emitter: self.emitter.clone(),
             born: self.gpu_born,
             lived: self.lived,
+            picture: self.material.as_ref().and_then(|m| m.base_map),
         })
     }
 }

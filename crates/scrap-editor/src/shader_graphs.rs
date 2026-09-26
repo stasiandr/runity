@@ -464,7 +464,11 @@ pub fn describe(path: &Path, doc: &Doc) -> String {
                 out.push_str(&format!("textures: {}\n", g.textures.join(", ")));
             }
         }
-        Doc::Effect(_) => {}
+        Doc::Effect(g) => {
+            if !g.params.is_empty() {
+                out.push_str(&format!("params (the emitter's `params`): {}\n", params(&g.params)));
+            }
+        }
         Doc::Subgraph(g) => {
             for (name, input) in &g.inputs {
                 out.push_str(&format!("input {name} = {}\n", written(input)));

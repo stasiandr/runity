@@ -4687,6 +4687,12 @@ impl Renderer {
         handle
     }
 
+    /// A picture uploaded here answers to asset `id` from now, as one from
+    /// the library would: what a material's map naming it draws.
+    pub fn set_texture_asset(&mut self, id: crate::asset::AssetId, handle: TextureHandle) {
+        self.by_asset.insert(id, handle);
+    }
+
     /// The handle a texture asset was uploaded as, if it was.
     pub fn texture_for(&self, id: crate::asset::AssetId) -> Option<TextureHandle> {
         self.by_asset.get(&id).copied()
@@ -8264,6 +8270,7 @@ impl Renderer {
 
         // Particles on the GPU given off and stepped, for the colour pass.
         if probe.is_none() {
+            let (by_asset, textures) = (&self.by_asset, &self.textures);
             self.gpu_particles.run(
                 gpu,
                 &mut encoder,
@@ -8272,6 +8279,8 @@ impl Renderer {
                 frame.camera.apparent_eye(),
                 if prepass_drawn { &self.ssao.depth } else { &self.blank_depth },
                 prepass_drawn,
+                &|id| by_asset.get(&id).map(|h| textures[h.0 as usize].view.clone()),
+                &textures[TextureHandle::WHITE.0 as usize].view,
             );
         }
         // The prepass's depth is where the scene's starts, when they are

@@ -42,6 +42,9 @@ pub struct GpuEmitter {
     pub born: u64,
     /// Seconds it has run.
     pub lived: f32,
+    /// Its material's picture, drawn in its `sheet`'s frames: the base
+    /// map's asset.
+    pub picture: Option<crate::asset::AssetId>,
 }
 
 const SHADER: &str = r#"
@@ -65,6 +68,20 @@ struct Params {
     // 1 when they bounce off the scene's depth, the bounce, how thick a
     // surface is taken to be, 0
     collide: vec4<f32>,
+    // the emitter's eight numbers, for its effect's properties
+    values: array<vec4<f32>, 2>,
+    // where they are born in its own axes, and the radius about it
+    emit_from: vec4<f32>,
+    // the box they are born in, and 1 when there is one
+    emit_box: vec4<f32>,
+    // how the box is turned
+    emit_turn: mat4x4<f32>,
+    // its picture's frames across and down, and which over each one's life:
+    // from, to
+    sheet: vec4<f32>,
+    // 1 when drawn with its material's picture, 1 when a frame is picked
+    // at birth, 0, 0
+    picture: vec4<f32>,
 };
 
 struct Particle {
@@ -72,7 +89,7 @@ struct Particle {
     at: vec4<f32>,
     // how fast, and its life (0: a free slot)
     velocity: vec4<f32>,
-    // its own random number from 0 to 1, and room
+    // its own random number from 0 to 1, and its own vec3 (`custom`)
     extra: vec4<f32>,
 };
 
@@ -88,37 +105,58 @@ struct Effect {
     cone: vec3<f32>,
     position: vec3<f32>,
     velocity: vec3<f32>,
+    center: vec3<f32>,
+    custom: vec3<f32>,
 };
 
 struct Born {
     position: vec3<f32>,
     velocity: vec3<f32>,
     life: f32,
+    custom: vec3<f32>,
 };
 
 struct Moved {
     velocity: vec3<f32>,
     position: vec3<f32>,
+    custom: vec3<f32>,
 };
 
 struct Looks {
     color: vec3<f32>,
     alpha: f32,
     size: f32,
+    frame: f32,
 };
 
 // What an emitter with no graph does.
 fn born_default(e: Effect) -> Born {
-    return Born(e.origin, e.cone * params.motion.x, params.motion.w);
+    return Born(e.origin, e.cone * params.motion.x, params.motion.w, vec3<f32>(0.0));
 }
 
 fn moved_default(e: Effect) -> Moved {
-    return Moved(e.velocity + vec3<f32>(0.0, params.motion.z, 0.0) * e.dt, e.position);
+    return Moved(e.velocity + vec3<f32>(0.0, params.motion.z, 0.0) * e.dt, e.position, e.custom);
+}
+
+// The emitter's `frames`, 0 the first and 1 past the last: over its life,
+// or one picked at birth.
+fn frame_default(e: Effect) -> f32 {
+    let frames = max(params.sheet.x * params.sheet.y, 1.0);
+    let at = select(e.t, e.seed, params.picture.y > 0.5);
+    return floor(mix(params.sheet.z, params.sheet.w, at) * frames);
 }
 
 fn looks_default(e: Effect) -> Looks {
     let c = mix(params.color, params.end_color, e.t);
-    return Looks(c.rgb, c.a, mix(params.shape.x, params.shape.y, e.t));
+    return Looks(c.rgb, c.a, mix(params.shape.x, params.shape.y, e.t), frame_default(e));
+}
+
+// Where the emitter is: nothing, when they move in its own space.
+fn center_of() -> vec3<f32> {
+    if params.direction.w > 0.5 {
+        return vec3<f32>(0.0);
+    }
+    return (params.model * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
 }
 
 fn effect_of(p: Particle) -> Effect {
@@ -131,6 +169,8 @@ fn effect_of(p: Particle) -> Effect {
     e.dt = params.shape.w;
     e.position = p.at.xyz;
     e.velocity = p.velocity.xyz;
+    e.center = center_of();
+    e.custom = p.extra.yzw;
     return e;
 }
 
@@ -177,10 +217,28 @@ fn cs_spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     let other = cross(axis, side);
     let local_dir = axis * cos(off) + (side * cos(spin) + other * sin(spin)) * sin(off);
     let stays = params.direction.w > 0.5;
-    var origin = vec3<f32>(0.0);
+    // Where in its shape: anywhere in its box, turned; within its radius —
+    // across the cone's mouth, or in a ball when they leave every way.
+    var at = params.emit_from.xyz;
+    if params.emit_box.w > 0.5 {
+        let r = vec3<f32>(hash(n * 7u + 11u), hash(n * 7u + 12u), hash(n * 7u + 13u)) - 0.5;
+        at = at + (params.emit_turn * vec4<f32>(r * params.emit_box.xyz, 0.0)).xyz;
+    } else if params.emit_from.w > 0.0 {
+        let a = hash(n * 7u + 14u) * 6.2831853;
+        let reach = params.emit_from.w;
+        if params.motion.y >= 1.5707 {
+            let z = hash(n * 7u + 15u) * 2.0 - 1.0;
+            let ring = sqrt(max(1.0 - z * z, 0.0));
+            let ball = vec3<f32>(ring * cos(a), z, ring * sin(a));
+            at = at + ball * reach * pow(hash(n * 7u + 16u), 1.0 / 3.0);
+        } else {
+            at = at + (side * cos(a) + other * sin(a)) * reach * sqrt(hash(n * 7u + 15u));
+        }
+    }
+    var origin = at;
     var dir = local_dir;
     if !stays {
-        origin = (params.model * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
+        origin = (params.model * vec4<f32>(at, 1.0)).xyz;
         dir = normalize((params.model * vec4<f32>(local_dir, 0.0)).xyz);
     }
     var e: Effect;
@@ -189,6 +247,7 @@ fn cs_spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     e.dt = params.shape.w;
     e.origin = origin;
     e.cone = dir;
+    e.center = center_of();
     let b = effect_spawn(e);
     // Given off some time within the step, as far on as it would be.
     let born = hash(n * 3u + 2u) * params.shape.w;
@@ -196,7 +255,7 @@ fn cs_spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     var p: Particle;
     p.at = vec4<f32>(b.position + b.velocity * born + pull * (0.5 * born * born), born);
     p.velocity = vec4<f32>(b.velocity + pull * born, max(b.life, 1e-3));
-    p.extra = vec4<f32>(e.seed, 0.0, 0.0, 0.0);
+    p.extra = vec4<f32>(e.seed, b.custom);
     particles[slot] = p;
 }
 
@@ -214,6 +273,7 @@ fn cs_step(@builtin(global_invocation_id) id: vec3<u32>) {
     let m = effect_update(effect_of(p));
     p.velocity = vec4<f32>(m.velocity, p.velocity.w);
     p.at = vec4<f32>(m.position, p.at.w + dt);
+    p.extra = vec4<f32>(p.extra.x, m.custom);
     // Behind what is drawn, and not far behind: back onto the surface, and
     // bounced off it.
     if params.collide.x > 0.5 {
@@ -253,7 +313,13 @@ struct Varyings {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    // where in its material's picture: the frame's corner and size
+    @location(2) sheet: vec4<f32>,
 };
+
+// Its material's picture, when it has one.
+@group(0) @binding(3) var picture: texture_2d<f32>;
+@group(0) @binding(4) var picture_sampler: sampler;
 
 @vertex
 fn vs_particle(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -> Varyings {
@@ -290,18 +356,27 @@ fn vs_particle(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -
     out.clip = params.view_projection * vec4<f32>(world, 1.0);
     out.uv = c;
     out.color = vec4<f32>(looks.color, looks.alpha);
+    // The frame, read left to right and down, as Unity's sheets are.
+    let cols = max(params.sheet.x, 1.0);
+    let rows = max(params.sheet.y, 1.0);
+    let f = clamp(floor(looks.frame), 0.0, cols * rows - 1.0);
+    let cell = vec2<f32>(f - floor(f / cols) * cols, floor(f / cols));
+    out.sheet = vec4<f32>(cell / vec2<f32>(cols, rows), 1.0 / cols, 1.0 / rows);
     return out;
 }
 
 @fragment
 fn fs_particle(in: Varyings) -> @location(0) vec4<f32> {
-    // A soft disc.
+    // Its material's picture, in its frame; or a soft disc.
+    let within = vec2<f32>(in.uv.x, -in.uv.y) * 0.5 + 0.5;
+    let seen = textureSample(picture, picture_sampler, in.sheet.xy + within * in.sheet.zw);
     let d = length(in.uv);
-    let a = (1.0 - smoothstep(0.55, 1.0, d)) * in.color.a;
-    if a <= 0.002 {
+    let disc = vec4<f32>(1.0, 1.0, 1.0, 1.0 - smoothstep(0.55, 1.0, d));
+    let look = select(disc, seen, params.picture.x > 0.5) * in.color;
+    if look.a <= 0.002 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * a, a);
+    return vec4<f32>(look.rgb * look.a, look.a);
 }
 
 // scrap:effect
@@ -345,15 +420,23 @@ struct Params {
     counts: [u32; 4],
     inverse_view_projection: [[f32; 4]; 4],
     collide: [f32; 4],
+    values: [[f32; 4]; 2],
+    emit_from: [f32; 4],
+    emit_box: [f32; 4],
+    emit_turn: [[f32; 4]; 4],
+    sheet: [f32; 4],
+    picture: [f32; 4],
 }
 
 struct Pool {
-    /// Held for the bind group.
-    _buffer: wgpu::Buffer,
+    /// The slots: bound to step them, and to draw them.
+    buffer: wgpu::Buffer,
     params: wgpu::Buffer,
     group: wgpu::BindGroup,
     draw_group: wgpu::BindGroup,
     capacity: u32,
+    /// The picture its drawing binds.
+    picture: Option<crate::asset::AssetId>,
     head: u32,
     born: u64,
     lived: f32,
@@ -380,6 +463,7 @@ pub(crate) struct Draws {
 /// for each emitter.
 pub(crate) struct GpuParticles {
     layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     draw_layout: wgpu::BindGroupLayout,
     depth_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -434,9 +518,32 @@ impl GpuParticles {
         let draw_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gpu particles draw"),
             entries: &[
-                uniform(wgpu::ShaderStages::VERTEX),
+                uniform(wgpu::ShaderStages::VERTEX_FRAGMENT),
                 storage(2, wgpu::ShaderStages::VERTEX, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
+        });
+        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("gpu particles picture"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
         });
         let depth_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gpu particles depth"),
@@ -463,6 +570,7 @@ impl GpuParticles {
         });
         let mut particles = Self {
             layout,
+            sampler,
             draw_layout,
             depth_layout,
             pipeline_layout,
@@ -598,7 +706,36 @@ impl GpuParticles {
         old
     }
 
+    /// The drawing's bindings: the params, the slots read, a picture.
+    fn draw_group(&self, gpu: &Gpu, params: &wgpu::Buffer, buffer: &wgpu::Buffer, picture: &wgpu::TextureView) -> wgpu::BindGroup {
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu particles draw"),
+            layout: &self.draw_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(picture),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
+    }
+
     /// Give off and step this frame's particles, before the colour pass.
+    /// `pictures` finds a material's picture by its asset, or `None` when
+    /// it is not uploaded; `white` is drawn with when there is none.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         &mut self,
         gpu: &Gpu,
@@ -608,6 +745,8 @@ impl GpuParticles {
         eye: Vec3,
         depth: &wgpu::TextureView,
         depth_drawn: bool,
+        pictures: &dyn Fn(crate::asset::AssetId) -> Option<wgpu::TextureView>,
+        white: &wgpu::TextureView,
     ) {
         self.frame += 1;
         self.drawn.clear();
@@ -657,20 +796,7 @@ impl GpuParticles {
                         },
                     ],
                 });
-                let draw_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("gpu particles draw"),
-                    layout: &self.draw_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: buffer.as_entire_binding(),
-                        },
-                    ],
-                });
+                let draw_group = self.draw_group(gpu, &params, &buffer, white);
                 let (born, lived) = self
                     .pools
                     .get(&e.key)
@@ -678,11 +804,12 @@ impl GpuParticles {
                 self.pools.insert(
                     e.key,
                     Pool {
-                        _buffer: buffer,
+                        buffer,
                         params,
                         group,
                         draw_group,
                         capacity: want,
+                        picture: None,
                         head: 0,
                         born,
                         lived,
@@ -690,6 +817,18 @@ impl GpuParticles {
                     },
                 );
             }
+            // Its picture, bound when it changes (or first arrives).
+            let found = e.picture.and_then(|id| pictures(id).map(|v| (id, v)));
+            let bound = self.pools[&e.key].picture;
+            if found.as_ref().map(|(id, _)| *id) != bound {
+                let pool = &self.pools[&e.key];
+                let view = found.as_ref().map_or(white, |(_, v)| v);
+                let group = self.draw_group(gpu, &pool.params, &pool.buffer, view);
+                let pool = self.pools.get_mut(&e.key).expect("made above");
+                pool.draw_group = group;
+                pool.picture = found.as_ref().map(|(id, _)| *id);
+            }
+            let has_picture = found.is_some();
             let pool = self.pools.get_mut(&e.key).expect("made above");
             pool.seen = self.frame;
             // Given off since last frame (a restart counts from nothing).
@@ -718,6 +857,30 @@ impl GpuParticles {
                 counts: [pool.capacity, pool.head, spawn, first],
                 inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
                 collide: [if em.collide && depth_drawn { 1.0 } else { 0.0 }, 0.35, 0.4, 0.0],
+                values: {
+                    let mut v = [0.0f32; 8];
+                    for (slot, n) in v.iter_mut().zip(&em.params) {
+                        *slot = *n;
+                    }
+                    [[v[0], v[1], v[2], v[3]], [v[4], v[5], v[6], v[7]]]
+                },
+                emit_from: {
+                    let f = em.from.unwrap_or(Vec3::ZERO);
+                    [f.x, f.y, f.z, em.radius.max(0.0)]
+                },
+                emit_box: match em.box_size {
+                    Some(b) => [b.x, b.y, b.z, 1.0],
+                    None => [0.0; 4],
+                },
+                emit_turn: Mat4::from_quat(em.shape_turn_deg.map_or(glam::Quat::IDENTITY, |d| {
+                    glam::Quat::from_euler(glam::EulerRot::YXZ, d.y.to_radians(), d.x.to_radians(), d.z.to_radians())
+                }))
+                .to_cols_array_2d(),
+                sheet: {
+                    let (across, down) = em.sheet.unwrap_or((1, 1));
+                    [across.max(1) as f32, down.max(1) as f32, em.frames.0, em.frames.1]
+                },
+                picture: [if has_picture { 1.0 } else { 0.0 }, if em.frames_random { 1.0 } else { 0.0 }, 0.0, 0.0],
             };
             gpu.queue.write_buffer(&pool.params, 0, bytemuck::bytes_of(&params));
             pool.head = (pool.head + spawn) % pool.capacity;

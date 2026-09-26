@@ -177,9 +177,14 @@ impl Kind {
 
 /// Where each property starts in the eight numbers, in order.
 pub fn slots(graph: &ShaderGraph) -> Vec<(&Param, usize)> {
+    slots_of(&graph.params)
+}
+
+/// Where each of `params` starts in the eight numbers, in order: a
+/// material's or an emitter's.
+pub fn slots_of(params: &[Param]) -> Vec<(&Param, usize)> {
     let mut at = 0;
-    graph
-        .params
+    params
         .iter()
         .map(|p| {
             let here = at;
@@ -192,8 +197,12 @@ pub fn slots(graph: &ShaderGraph) -> Vec<(&Param, usize)> {
 /// The names of the eight numbers a graph uses, as its `// scrap:params`
 /// line gives them: `speed tint.r tint.g tint.b on`.
 pub fn slot_names(graph: &ShaderGraph) -> Vec<String> {
-    graph
-        .params
+    slot_names_of(&graph.params)
+}
+
+/// [`slot_names`] of any list of properties.
+pub fn slot_names_of(params: &[Param]) -> Vec<String> {
+    params
         .iter()
         .flat_map(|p| {
             p.kind()
@@ -207,7 +216,12 @@ pub fn slot_names(graph: &ShaderGraph) -> Vec<String> {
 /// A property read by a node, from the eight numbers at `numbers` (WGSL:
 /// an `array<vec4<f32>, 2>`).
 fn param_value(graph: &ShaderGraph, name: &str, numbers: &str) -> Option<Value> {
-    let (param, at) = slots(graph).into_iter().find(|(p, _)| p.name() == name)?;
+    param_value_of(&graph.params, name, numbers)
+}
+
+/// [`param_value`] of any list of properties.
+pub(crate) fn param_value_of(params: &[Param], name: &str, numbers: &str) -> Option<Value> {
+    let (param, at) = slots_of(params).into_iter().find(|(p, _)| p.name() == name)?;
     let one = |i: usize| format!("{numbers}[{}].{}", i / 4, ["x", "y", "z", "w"][i % 4]);
     let kind = param.kind();
     Some(match kind {
