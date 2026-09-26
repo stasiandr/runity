@@ -58,7 +58,15 @@ pub(crate) struct Lean<K: Copy + Eq + std::hash::Hash + Send + 'static> {
     pub(crate) enabled: bool,
     pub(crate) ready: HashMap<K, wgpu::RenderPipeline>,
     pending: HashSet<K>,
+    /// Counts what was asked; a job carries the count it was asked at.
     generation: u64,
+    /// What was asked before this is stale, all of it ([`Lean::forget`]).
+    floor: u64,
+    /// What was asked for a key before its number here is stale
+    /// ([`Lean::forget_where`]).
+    stale_before: HashMap<K, u64>,
+    /// How many threads build, when they are started.
+    pub(crate) workers: usize,
     jobs: Option<mpsc::Sender<Job<K>>>,
     done: Option<mpsc::Receiver<(K, u64, wgpu::RenderPipeline)>>,
 }
@@ -71,6 +79,9 @@ impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Default for Lean<K> {
             ready: HashMap::new(),
             pending: HashSet::new(),
             generation: 0,
+            floor: 0,
+            stale_before: HashMap::new(),
+            workers: 1,
             jobs: None,
             done: None,
         }
@@ -78,11 +89,42 @@ impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Default for Lean<K> {
 }
 
 impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Lean<K> {
+    /// A builder always on, of `workers` threads: the lit pipelines as
+    /// they are (the renderer's `full`).
+    pub(crate) fn always(workers: usize) -> Self {
+        Self { enabled: true, workers, ..Default::default() }
+    }
+
     /// What was built is stale: the shaders or the samples changed.
     pub(crate) fn forget(&mut self) {
         self.generation += 1;
+        self.floor = self.generation;
         self.ready.clear();
         self.pending.clear();
+        self.stale_before.clear();
+    }
+
+    /// What was built for these keys is stale (one material's shader set
+    /// again): the rest is kept.
+    pub(crate) fn forget_where(&mut self, stale: impl Fn(&K) -> bool) {
+        self.generation += 1;
+        let keys: Vec<K> = self.ready.keys().chain(self.pending.iter()).copied().filter(|k| stale(k)).collect();
+        for key in keys {
+            self.ready.remove(&key);
+            self.pending.remove(&key);
+            self.stale_before.insert(key, self.generation);
+        }
+    }
+
+    /// Put in a pipeline built here, not on the worker.
+    pub(crate) fn put(&mut self, key: K, pipeline: wgpu::RenderPipeline) {
+        self.pending.remove(&key);
+        self.ready.insert(key, pipeline);
+    }
+
+    /// How many asked for are not in yet.
+    pub(crate) fn waiting(&self) -> usize {
+        self.pending.len()
     }
 
     /// Whether this key was asked for already (and so is in, or coming).
@@ -98,16 +140,25 @@ impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Lean<K> {
         if self.jobs.is_none() {
             let (jobs, inbox) = mpsc::channel::<Job<K>>();
             let (outbox, done) = mpsc::channel();
-            let device = device.clone();
-            let spawned = std::thread::Builder::new().name("scrap-lean-pipelines".into()).spawn(move || {
-                for job in inbox {
+            // The workers take jobs off one queue, each as it is free.
+            let inbox = std::sync::Arc::new(std::sync::Mutex::new(inbox));
+            let mut started = 0;
+            for _ in 0..self.workers.max(1) {
+                let device = device.clone();
+                let inbox = inbox.clone();
+                let outbox = outbox.clone();
+                let spawned = std::thread::Builder::new().name("scrap-pipelines".into()).spawn(move || loop {
+                    let Ok(job) = inbox.lock().map_err(|_| ()).and_then(|q| q.recv().map_err(|_| ())) else {
+                        break;
+                    };
                     let pipeline = (job.build)(&device);
                     if outbox.send((job.key, job.generation, pipeline)).is_err() {
                         break;
                     }
-                }
-            });
-            if spawned.is_err() {
+                });
+                started += spawned.is_ok() as usize;
+            }
+            if started == 0 {
                 self.enabled = false;
                 return;
             }
@@ -124,7 +175,7 @@ impl<K: Copy + Eq + std::hash::Hash + Send + 'static> Lean<K> {
     pub(crate) fn collect(&mut self) {
         let Some(done) = &self.done else { return };
         while let Ok((key, generation, pipeline)) = done.try_recv() {
-            if generation == self.generation {
+            if generation >= self.floor && generation >= self.stale_before.get(&key).copied().unwrap_or(0) && self.pending.contains(&key) {
                 self.pending.remove(&key);
                 self.ready.insert(key, pipeline);
             }

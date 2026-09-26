@@ -177,6 +177,16 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
     // What hangs on a part of an instance rather than on the instance.
     let mut on_part: HashMap<i64, (i64, String)> = HashMap::new();
     // Every entity, and its parent entity.
+    // Each GameObject's RectTransform's size: a TextMeshPro's box.
+    let rect_size: HashMap<i64, [f32; 2]> = docs
+        .iter()
+        .filter(|d| d.class == RECT_TRANSFORM && !d.stripped)
+        .filter_map(|d| {
+            let go = d.body.reference("m_GameObject")?.file_id;
+            let s = &d.body["m_SizeDelta"];
+            Some((go, [s.f32("x")?, s.f32("y")?]))
+        })
+        .collect();
     let mut entities: BTreeMap<i64, EntityDesc> = BTreeMap::new();
     let mut parent: HashMap<i64, i64> = HashMap::new();
     let mut order: HashMap<i64, usize> = HashMap::new();
@@ -200,6 +210,10 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     desc.inactive = true;
                 }
                 for c in components.get(&d.file_id).into_iter().flatten() {
+                    if is_text_mesh_pro(c) {
+                        text_mesh_pro(&mut desc, &c.body, rect_size.get(&d.file_id).copied(), report);
+                        continue;
+                    }
                     component(&mut desc, c, &refs, report);
                 }
                 // A switched-off renderer draws nothing, and a mesh with no
@@ -291,7 +305,33 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         let Some(instance) = d.body.reference("m_PrefabInstance") else {
             continue;
         };
-        let added = components.get(&d.file_id).into_iter().flatten();
+        // What the prefab's part has already: a script added again beside
+        // its own is not the one that counts — Dacha's providers contribute
+        // only what is absent, and the prefab's comes first — so the
+        // prefab's stays (a heap's own drops, its burst of scrap with them).
+        let had: HashSet<String> = part_of_stripped(d.file_id)
+            .map(|(fid, guid)| {
+                let of = parts.of(unity, &guid, 0);
+                let key = of.keys.get(&fid).copied();
+                of.components
+                    .values()
+                    .filter(|(on, _)| Some(*on) == key)
+                    .map(|(_, name)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let added = components
+            .get(&d.file_id)
+            .into_iter()
+            .flatten()
+            .filter(|c| {
+                let again = c.kind == "MonoBehaviour" && removal(c, unity).is_some_and(|name| had.contains(&name));
+                if again {
+                    report.skip("a script added to a prefab's part that has one already (the prefab's kept)");
+                }
+                !again
+            })
+            .collect::<Vec<_>>();
         let part = part_of_stripped(d.file_id).and_then(|(fid, guid)| {
             let of = parts.of(unity, &guid, 0);
             of.keys.get(&fid).copied().filter(|k| Some(*k) != of.root)
@@ -908,6 +948,7 @@ fn removal(d: &Doc, unity: &Unity) -> Option<String> {
             "ParticleSystem" | "ParticleSystemRenderer" => "particles",
             "AudioSource" => "sound",
             "Animator" => "animator",
+            "NavMeshAgent" => "nav_mesh_agent",
             "MonoBehaviour" => {
                 let script = d.body.reference("m_Script")?;
                 let path = unity.guids.get(script.guid.as_deref()?)?;
@@ -1216,18 +1257,22 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     }
     match c.kind.as_str() {
         "MeshFilter" => {
-            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                let model = piece(refs.unity, model, &desc.name);
-                desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+            if let Some(r) = b.reference("m_Mesh") {
+                if let Some(model) = model(&r, refs.unity) {
+                    let model = piece_of(refs.unity, model, &desc.name, &r);
+                    desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                }
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 // Its piece, with its skin: bent by the bones of the scene
                 // it is under, found by name when it is spawned.
-                if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                    let model = piece(refs.unity, model, &desc.name);
-                    desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                if let Some(r) = b.reference("m_Mesh") {
+                    if let Some(model) = model(&r, refs.unity) {
+                        let model = piece_of(refs.unity, model, &desc.name, &r);
+                        desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                    }
                 }
             }
             let materials = b.list("m_Materials");
@@ -1274,9 +1319,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
             // Its own mesh, which need not be the one drawn.
-            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                let model = piece(refs.unity, model, &desc.name);
-                desc.set_part(&scrap::scene::CollisionModel(AssetLink::named(model)));
+            if let Some(r) = b.reference("m_Mesh") {
+                if let Some(model) = model(&r, refs.unity) {
+                    let model = piece_of(refs.unity, model, &desc.name, &r);
+                    desc.set_part(&scrap::scene::CollisionModel(AssetLink::named(model)));
+                }
             }
             solid(desc, b);
         }
@@ -1303,6 +1350,15 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 mass: Some(b.f32("m_Mass").unwrap_or(1.0)),
                 // Continuous, speculative or dynamic: checked between steps.
                 fast: b.i64("m_CollisionDetection").is_some_and(|m| m != 0),
+                // A trigger on a Rigidbody meets what stands still too.
+                notices_still: kinematic && desc.body() == Body::Trigger,
+                // How a frame between steps draws it, as authored: None,
+                // Interpolate, Extrapolate. Unity's own default is None.
+                drawn: match b.i64("m_Interpolate") {
+                    Some(1) => scrap::scene::Drawn::Between,
+                    Some(2) => scrap::scene::Drawn::Ahead,
+                    _ => scrap::scene::Drawn::AtStep,
+                },
                 ..BodyProps::default()
             });
         }
@@ -1433,6 +1489,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             let Some(script) = b.reference("m_Script") else {
                 return;
             };
+            if is_text_mesh_pro(c) {
+                text_mesh_pro(desc, b, None, report);
+                return;
+            }
             let Some(path) = script.guid.as_deref().and_then(|g| refs.unity.guids.get(g)) else {
                 report.skip("a MonoBehaviour whose script is not in Assets/ (a package's)");
                 return;
@@ -1440,10 +1500,22 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             // Dacha's planar mirror: scrap's own, a camera reflected in
             // the plane the mirror's material shows.
             if super::stem(path) == "PlanarReflectionMirror" {
+                // Which local axis its glass looks along (its `facing`:
+                // Back, Forward, Up, Down, Right, Left), z mirrored as
+                // the scene is: Back, −z, right for Unity's Quad, is +z.
+                let facing = match b.i64("facing").unwrap_or(0) {
+                    1 => Vec3::NEG_Z,
+                    2 => Vec3::Y,
+                    3 => Vec3::NEG_Y,
+                    4 => Vec3::X,
+                    5 => Vec3::NEG_X,
+                    _ => Vec3::Z,
+                };
                 desc.set_part(&scrap::scene::RenderTexture {
                     name: "mirror".into(),
                     hide: Vec::new(),
                     mirror: true,
+                    facing,
                 });
                 return;
             }
@@ -1470,6 +1542,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             }
         }
         "AudioSource" => audio_source(desc, b, refs.unity, report),
+        "NavMeshAgent" => nav_mesh_agent(desc, b, report),
         "ParticleSystem" => {
             shuriken(desc, b, report);
             bind_custom(desc, refs.unity);
@@ -1503,6 +1576,97 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             bind_custom(desc, refs.unity);
         }
         other => report.skip(other.to_string()),
+    }
+}
+
+/// A NavMeshAgent as a `nav_mesh_agent` component: how the thing walks —
+/// its speed, acceleration and turn (degrees a second), where it counts
+/// as arrived, and its radius and height. Unity's navigation runs it; the
+/// game that reads these walks it here. A switched-off one is not brought.
+fn nav_mesh_agent(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
+    if b.i64("m_Enabled") == Some(0) {
+        report.skip("a switched-off NavMeshAgent");
+        return;
+    }
+    let f = |key: &str, default: f32| b.f32(key).unwrap_or(default);
+    let value = format!(
+        "(speed: {}, acceleration: {}, angularSpeed: {}, stoppingDistance: {}, radius: {}, height: {}, baseOffset: {})",
+        f("m_Speed", 3.5),
+        f("m_Acceleration", 8.0),
+        f("m_AngularSpeed", 120.0),
+        f("m_StoppingDistance", 0.0),
+        f("m_Radius", 0.5),
+        f("m_Height", 2.0),
+        f("m_BaseOffset", 0.0),
+    );
+    match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
+        Ok(raw) => {
+            desc.components.insert("nav_mesh_agent".into(), raw);
+        }
+        Err(_) => report.skip("a NavMeshAgent whose fields did not make RON"),
+    }
+}
+
+/// TextMeshPro's world-space text component (the package's `TMPro.TextMeshPro`;
+/// not `TextMeshProUGUI`, a canvas's, which a game's own screens draw).
+const TEXT_MESH_PRO: &str = "9541d86e2fd84c1d9990edf0852d74ab";
+
+fn is_text_mesh_pro(c: &Doc) -> bool {
+    c.kind == "MonoBehaviour"
+        && c.body.reference("m_Script").and_then(|r| r.guid).as_deref() == Some(TEXT_MESH_PRO)
+}
+
+/// Words a TextMeshPro puts in the world, as a `text_mesh_pro` component:
+/// its text as written (rich-text tags and all), its font size (TMP's
+/// last fitted one when it sizes itself), its colour and — when its
+/// vertex gradient is on — the four corners' tints over it (top left,
+/// top right, bottom left, bottom right), its RectTransform's box (`None`
+/// when the line changes only the component, in an instance), its
+/// alignments as TMP numbers them and its margins (left, top, right,
+/// bottom). The package's code draws it in Unity, so the game draws it
+/// here; a switched-off one is not brought.
+fn text_mesh_pro(desc: &mut EntityDesc, b: &Yaml, size: Option<[f32; 2]>, report: &mut Report) {
+    if b.i64("m_Enabled") == Some(0) {
+        report.skip("a switched-off TextMeshPro");
+        return;
+    }
+    let text = match &b["m_text"] {
+        Yaml::String(s) | Yaml::Real(s) => s.clone(),
+        Yaml::Integer(i) => i.to_string(),
+        Yaml::Boolean(v) => v.to_string(),
+        _ => String::new(),
+    };
+    let color = b.color("m_fontColor").unwrap_or([1.0; 4]);
+    let gradient: Vec<[f32; 4]> = if b.i64("m_enableVertexGradient") == Some(1) {
+        let g = &b["m_fontColorGradient"];
+        ["topLeft", "topRight", "bottomLeft", "bottomRight"]
+            .iter()
+            .map(|k| g.color(k).unwrap_or([1.0; 4]))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let m = &b["m_margin"];
+    let margin = [m.f32("x"), m.f32("y"), m.f32("z"), m.f32("w")].map(|v| v.unwrap_or(0.0));
+    let f = |v: f32| format!("{v:?}");
+    let c4 = |c: [f32; 4]| format!("({}, {}, {}, {})", f(c[0]), f(c[1]), f(c[2]), f(c[3]));
+    let value = format!(
+        "(text: {}, fontSize: {}, color: {}, gradient: [{}], size: {}, horizontal: {}, vertical: {}, margin: {}, style: {})",
+        ron::to_string(&text).unwrap_or_else(|_| "\"\"".into()),
+        f(b.f32("m_fontSize").unwrap_or(36.0)),
+        c4(color),
+        gradient.into_iter().map(c4).collect::<Vec<_>>().join(", "),
+        size.map_or("None".into(), |s| format!("Some(({}, {}))", f(s[0]), f(s[1]))),
+        b.i64("m_HorizontalAlignment").unwrap_or(1),
+        b.i64("m_VerticalAlignment").unwrap_or(256),
+        c4(margin),
+        b.i64("m_fontStyle").unwrap_or(0),
+    );
+    match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
+        Ok(raw) => {
+            desc.components.insert("text_mesh_pro".into(), raw);
+        }
+        Err(_) => report.skip("a TextMeshPro whose text did not make RON"),
     }
 }
 
@@ -1904,10 +2068,22 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
         e.frames = (start + from, start + to);
         e.frames_random = random;
     }
+    // Trails, of particles: a streak behind each, as long as it goes in
+    // the trail's lifetime (a share of the particle's).
+    let trails = &b["TrailModule"];
+    if trails.i64("enabled") == Some(1) {
+        if trails.i64("mode").unwrap_or(0) == 0 {
+            e.trail = min_max_mean(&trails["lifetime"]).unwrap_or(1.0) * e.life;
+            if trails.f32("ratio").unwrap_or(1.0) < 0.5 {
+                report.skip("a ParticleSystem's trails on only some of its particles (brought on all)");
+            }
+        } else {
+            report.skip("a ParticleSystem's ribbon trails");
+        }
+    }
     for module in [
         "NoiseModule",
         "CollisionModule",
-        "TrailModule",
         "SubModule",
         "VelocityModule",
         "ForceModule",
@@ -1925,6 +2101,14 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
 /// Unity said so.
 fn solid(desc: &mut EntityDesc, b: &Yaml) {
     if b.i64("m_IsTrigger") == Some(1) {
+        // Its kinematic Rigidbody read first: a trigger that follows its
+        // transform, and meets what stands still as Unity's does.
+        if desc.body() == Body::Kinematic {
+            if let Some(mut props) = desc.part::<BodyProps>() {
+                props.notices_still = true;
+                desc.set_part(&props);
+            }
+        }
         desc.set_part(&Body::Trigger);
     } else if desc.body() == Body::None {
         desc.set_part(&Body::Static);
@@ -1951,6 +2135,25 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
     }
     let (kind, name) = unity.named(guid)?;
     (kind == "model").then(|| name.to_string())
+}
+
+/// [`piece`], or — when the object's own name is none of the model's
+/// pieces — the piece the same mesh (the model's GUID and the mesh's
+/// fileID) is drawn as elsewhere, by an object named as that piece: a
+/// model's root object carries its body under the file's own name
+/// (Dacha's multitool: `SM_Multitool_01` draws `SM_Multitool_Body_01`,
+/// which its art prefab of that name draws too). Not the whole model: that
+/// draws every tool head and fan of it, still, over the ones its clips move.
+fn piece_of(unity: &Unity, model: String, object: &str, mesh: &Ref) -> String {
+    let named = piece(unity, model.clone(), object);
+    if named != model {
+        return named;
+    }
+    let key = (mesh.guid.clone().unwrap_or_default(), mesh.file_id);
+    match unity.mesh_pieces.get(&key) {
+        Some(p) => format!("{model}@{p}"),
+        None => model,
+    }
 }
 
 /// Which mesh of a model a renderer on `object` draws, in that object's
@@ -2262,6 +2465,7 @@ mod tests {
     fn unity() -> Unity {
         Unity {
             pieces: Default::default(),
+            mesh_pieces: Default::default(),
             declared_params: Default::default(),
             root: Default::default(),
             guids: [
@@ -2472,6 +2676,78 @@ ParticleSystemRenderer:
     }
 
     #[test]
+    fn a_models_root_draws_the_piece_its_mesh_is_elsewhere() {
+        // Dacha's multitool: the object `SM_Multitool_01` draws the mesh
+        // its art prefab `SM_Multitool_Body_01` draws — its body alone,
+        // not the whole model with every tool head in it.
+        let mut unity = unity();
+        unity.pieces.insert("tool".into(), vec!["Body".into(), "Fan".into(), "Head".into()]);
+        unity.mesh_pieces.insert(("g".into(), 868), "Body".into());
+        let mesh = |id| Ref { file_id: id, guid: Some("g".into()) };
+        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(868)), "tool@Body");
+        assert_eq!(piece_of(&unity, "tool".into(), "Fan (1)", &mesh(868)), "tool@Fan", "its own name first");
+        assert_eq!(piece_of(&unity, "tool".into(), "SM_Tool", &mesh(5)), "tool", "a mesh no prefab names: the whole");
+    }
+
+    #[test]
+    fn a_textmeshpro_in_the_world_keeps_its_words_box_and_colour() {
+        let text = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Label
+  m_IsActive: 1
+--- !u!224 &11
+RectTransform:
+  m_GameObject: {fileID: 10}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_AnchoredPosition: {x: 0, y: 0}
+  m_SizeDelta: {x: 20, y: 5}
+--- !u!114 &12
+MonoBehaviour:
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: 9541d86e2fd84c1d9990edf0852d74ab, type: 3}
+  m_Name: 
+  m_text: \"\\u041F\\u0438\\u043B\\u0430\"
+  m_fontColor: {r: 0, g: 1, b: 0.5, a: 1}
+  m_enableVertexGradient: 0
+  m_fontSize: 37.5
+  m_HorizontalAlignment: 2
+  m_VerticalAlignment: 512
+  m_margin: {x: 0, y: 0, z: 0, w: 0}
+--- !u!1 &20
+GameObject:
+  m_Name: Count
+  m_IsActive: 1
+--- !u!224 &21
+RectTransform:
+  m_GameObject: {fileID: 20}
+  m_Father: {fileID: 0}
+  m_SizeDelta: {x: 4, y: 2}
+--- !u!114 &22
+MonoBehaviour:
+  m_GameObject: {fileID: 20}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: 9541d86e2fd84c1d9990edf0852d74ab, type: 3}
+  m_text: 321
+  m_fontSize: 10
+";
+        let mut report = Report::default();
+        let lines = convert_file(&unity(), text, &mut report);
+        let label = lines.iter().find(|l| l.name == "Label").unwrap();
+        let tmp = label.components.get("text_mesh_pro").expect("the text brought").get_ron().to_string();
+        assert!(tmp.contains("text: \"Пила\""), "{tmp}");
+        assert!(tmp.contains("fontSize: 37.5") && tmp.contains("size: Some((20.0, 5.0))"), "{tmp}");
+        assert!(tmp.contains("color: (0.0, 1.0, 0.5, 1.0)") && tmp.contains("horizontal: 2"), "{tmp}");
+        let count = lines.iter().find(|l| l.name == "Count").unwrap();
+        let tmp = count.components.get("text_mesh_pro").unwrap().get_ron().to_string();
+        assert!(tmp.contains("text: \"321\""), "a number's words are words: {tmp}");
+    }
+
+    #[test]
     fn a_scriptable_object_becomes_data() {
         let text = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_Script: {fileID: 11500000, guid: sss, type: 3}\n  m_Name: GardenSoil\n  graphName: garden_soil\n  nodes:\n  - prefab: {fileID: 100, guid: ppp, type: 3}\n    branches:\n    - condition: 2\n      requires: [seeds]\n";
         let (script, body) = data_asset(&unity(), text).unwrap();
@@ -2481,6 +2757,65 @@ ParticleSystemRenderer:
         assert!(body.contains("condition: 2"), "{body}");
         assert!(!body.contains("m_Name"), "{body}");
         assert!(data_asset(&unity(), "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n  m_ObjectHideFlags: 0\n").is_none());
+    }
+
+    #[test]
+    fn a_script_added_again_to_an_instance_leaves_the_prefabs_own() {
+        let dir = std::env::temp_dir().join(format!("scrap-again-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heap = dir.join("Heap.prefab");
+        std::fs::write(
+            &heap,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Heap
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!114 &102
+MonoBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 2
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("hhh".into(), heap);
+        unity.names.insert("hhh".into(), "Heap".into());
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 100, guid: hhh, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 903}
+  m_SourcePrefab: {fileID: 100100000, guid: hhh, type: 3}
+--- !u!1 &902 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 100, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &903
+MonoBehaviour:
+  m_GameObject: {fileID: 902}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 1
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(roots[0].components.get("door").is_none(), "the prefab's own door counts: {:?}", roots[0].components);
     }
 
     #[test]
@@ -2713,6 +3048,41 @@ AudioSource:
     }
 
     #[test]
+    fn a_nav_mesh_agent_says_how_its_thing_walks() {
+        let text = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Mouse
+  m_Component:
+  - component: {fileID: 11}
+  - component: {fileID: 12}
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_Father: {fileID: 0}
+--- !u!195 &12
+NavMeshAgent:
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Radius: 0.18
+  m_Speed: 2
+  m_Acceleration: 20
+  avoidancePriority: 50
+  m_AngularSpeed: 600
+  m_StoppingDistance: 0.25
+  m_Height: 0.3
+  m_BaseOffset: 0
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), text, &mut report);
+        let agent = roots[0].components.get("nav_mesh_agent").expect("its agent").get_ron();
+        assert_eq!(
+            agent,
+            "(speed: 2, acceleration: 20, angularSpeed: 600, stoppingDistance: 0.25, radius: 0.18, height: 0.3, baseOffset: 0)"
+        );
+    }
+
+    #[test]
     fn a_shuriken_system_becomes_an_emitter() {
         let mut report = Report::default();
         let roots = convert_file(&unity(), SMOKE, &mut report);
@@ -2764,9 +3134,38 @@ Rigidbody:
         let mut report = Report::default();
         let roots = convert_file(&unity(), volume, &mut report);
         assert_eq!(roots[0].body(), Body::Trigger);
+        assert!(roots[0].part::<BodyProps>().is_some_and(|p| p.notices_still), "on a Rigidbody: it meets what stands still");
+        // The Rigidbody read before the collider: the same.
+        let (collider, rigidbody) = volume.split_at(volume.find("--- !u!54").unwrap());
+        let (head, collider) = collider.split_at(collider.find("--- !u!65").unwrap());
+        let swapped = format!("{head}{rigidbody}\n{collider}");
+        let roots = convert_file(&unity(), &swapped, &mut report);
+        assert_eq!(roots[0].body(), Body::Trigger);
+        assert!(roots[0].part::<BodyProps>().is_some_and(|p| p.notices_still), "read the other way round");
+        // A zone with no Rigidbody meets only what has one.
+        let bare = &volume[..volume.find("--- !u!54").unwrap()];
+        let roots = convert_file(&unity(), bare, &mut report);
+        assert_eq!(roots[0].body(), Body::Trigger);
+        assert!(!roots[0].part::<BodyProps>().is_some_and(|p| p.notices_still));
         let solid = volume.replace("m_IsTrigger: 1", "m_IsTrigger: 0");
         let roots = convert_file(&unity(), &solid, &mut report);
         assert_eq!(roots[0].body(), Body::Kinematic);
+    }
+
+    #[test]
+    fn a_rigidbody_is_drawn_between_its_steps_as_its_interpolation_says() {
+        use scrap::scene::Drawn;
+        let drawn = |scene: &str| {
+            let roots = convert_file(&unity(), scene, &mut Report::default());
+            let crate_ = roots.iter().find(|r| r.name == "Crate").unwrap();
+            crate_.parts.try_get::<BodyProps>().ok().flatten().unwrap_or_default().drawn
+        };
+        // Unity's own default, None: where the step left it.
+        assert_eq!(drawn(SCENE), Drawn::AtStep);
+        let with = |mode: &str| SCENE.replace("  m_UseGravity: 1\n", &format!("  m_UseGravity: 1\n  m_Interpolate: {mode}\n"));
+        assert_eq!(drawn(&with("1")), Drawn::Between);
+        assert_eq!(drawn(&with("2")), Drawn::Ahead);
+        assert_eq!(drawn(&with("0")), Drawn::AtStep);
     }
 
     #[test]

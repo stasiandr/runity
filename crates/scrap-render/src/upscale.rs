@@ -193,7 +193,7 @@ pub(crate) struct Upscaler {
     /// The picture made, at the screen's size.
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Where each pixel was last frame, at the size drawn.
-    #[cfg_attr(not(any(all(target_vendor = "apple", feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
+    #[cfg_attr(not(any(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
     motion: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Frames blended into the temporal history since it was last made,
     /// and where the camera was.
@@ -201,7 +201,7 @@ pub(crate) struct Upscaler {
     eye: Option<(glam::Vec3, glam::Vec3)>,
     pub(crate) used: Option<Used>,
     layout: wgpu::BindGroupLayout,
-    #[cfg_attr(not(any(all(target_vendor = "apple", feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
+    #[cfg_attr(not(any(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
     motion_pipeline: wgpu::RenderPipeline,
     upscale_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
@@ -209,7 +209,7 @@ pub(crate) struct Upscaler {
     /// A picture the size of a pixel, for the depth the spatial pass does
     /// not read.
     no_depth: wgpu::TextureView,
-    #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
+    #[cfg(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"))]
     metal: metal::MetalFx,
     #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
     dlss: Option<nvidia::Dlss>,
@@ -335,7 +335,7 @@ impl Upscaler {
             uniform,
             sampler,
             no_depth,
-            #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
+            #[cfg(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"))]
             metal: metal::MetalFx::new(gpu),
             #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
             dlss: nvidia::Dlss::new(gpu),
@@ -375,7 +375,7 @@ impl Upscaler {
     pub(crate) fn temporal(&self, settings: &Upscaling, taa: bool) -> bool {
         #[allow(unused_mut)]
         let mut has = false;
-        #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
+        #[cfg(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"))]
         {
             has |= self.metal.temporal_supported;
         }
@@ -428,7 +428,7 @@ impl Upscaler {
     }
 
     /// Where each pixel of the picture was last frame, into `motion`.
-    #[cfg_attr(not(any(all(target_vendor = "apple", feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
+    #[cfg_attr(not(any(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
     fn motion(
         &mut self,
         gpu: &Gpu,
@@ -566,7 +566,7 @@ impl Upscaler {
             }
         }
 
-        #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
+        #[cfg(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"))]
         {
             let spatial = matches!(settings.method, Method::Auto | Method::Spatial) && self.metal.spatial_supported;
             if temporal || spatial {
@@ -630,7 +630,7 @@ impl Upscaler {
 /// a hundredth of a pixel on a screen 4K wide.
 const MOTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
-#[cfg(all(target_vendor = "apple", feature = "metalfx"))]
+#[cfg(all(target_vendor = "apple", not(target_abi = "sim"), feature = "metalfx"))]
 mod metal {
     //! MetalFX, through wgpu's Metal handles.
 

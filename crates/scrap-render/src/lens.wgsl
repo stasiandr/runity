@@ -201,7 +201,7 @@ fn fs_heat_haze(in: Varyings) -> @location(0) vec4<f32> {
     let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
     let a = lens.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
     let b = lens.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
-    let direction = normalize(b.xyz / b.w - a.xyz / a.w);
+    let direction = normalize(b.xyz * a.w - a.xyz * b.w);
     let start = lens.heat.z;
 
     let through = smoothstep(start, start * 4.0 + 1.0, far_off);

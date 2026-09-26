@@ -171,6 +171,7 @@ pub fn blend(a: &Camera, b: &Camera, w: f32) -> Camera {
         near: lerp(a.near, b.near),
         far: lerp(a.far, b.far),
         ortho: a.ortho.zip(b.ortho).map(|(x, y)| lerp(x, y)),
+        clip: None,
     }
 }
 

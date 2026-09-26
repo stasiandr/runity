@@ -933,6 +933,9 @@ fn the_git_tab_commits_what_is_ticked_and_shows_what_a_commit_changed() {
     }
     git(&["config", "user.email", "t@t"]);
     git(&["config", "user.name", "Tess"]);
+    // What the studio keeps of itself and what import derives stay out, as a new project's
+    // `.gitignore` keeps it.
+    std::fs::write(dir.join(".gitignore"), ".scrap/\nlibrary/\n").unwrap();
     git(&["add", "."]);
     git(&["commit", "-qm", "first light"]);
 

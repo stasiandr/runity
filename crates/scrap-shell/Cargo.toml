@@ -13,9 +13,23 @@ scrap-gpu = { path = "../scrap-gpu", features = ["winit"] }
 scrap-overlay = { path = "../scrap-overlay" }
 scrap-render = { path = "../scrap-render" }
 anyhow = "1.0.104"
+glam = "0.32"
 gilrs = "0.11"
 subsecond = "0.7.10"
 winit = "0.30.13"
+
+# On Android: the Activity's loop (NativeActivity: no Java to build),
+# logcat for what the game prints and what wgpu warns of.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+libc = "0.2"
+log = "0.4"
+
+# On iOS: the scene delegate UIKit asks for (`ios`).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSObject"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIResponder", "UIScene", "UISceneOptions", "UISceneSession", "UIView", "UIWindow", "UIWindowScene"] }
 
 # In the browser: the canvas, the page's clock, the device awaited.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -189,12 +189,25 @@ pub struct RenderTexture {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
-    /// A planar mirror instead: the entity's plane (its up the way it
-    /// faces) reflects what the screen's camera sees, no `camera` of its
-    /// own needed; its material shows the picture with `screen_map:
-    /// Mirror`. What is behind the plane is left out.
+    /// A planar mirror instead: the entity's plane (facing `facing`)
+    /// reflects what the screen's camera sees, no `camera` of its own
+    /// needed; its material shows the picture with `screen_map: Mirror`.
+    /// What is behind the plane is clipped away, a pixel at a time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mirror: bool,
+    /// Which of its own axes a mirror's glass looks along: its up, or
+    /// `(0.0, 0.0, 1.0)` for Unity's Quad (its −z, the scene mirrored) —
+    /// Dacha's `PlanarReflectionMirror.facing`.
+    #[serde(default = "up_axis", skip_serializing_if = "is_up_axis")]
+    pub facing: Vec3,
+}
+
+fn up_axis() -> Vec3 {
+    Vec3::Y
+}
+
+fn is_up_axis(v: &Vec3) -> bool {
+    *v == Vec3::Y
 }
 
 /// A place that looks different — the cellar darker and greener, the
@@ -291,6 +304,11 @@ pub struct Emitter {
     /// Unity's Stretched Billboard. Extra length per metre a second.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stretch: f32,
+    /// A streak left behind each as it goes, as long as it goes in this
+    /// many seconds of its own time, `size` wide: a spark's line of light.
+    /// Unity's Trails, the trail's lifetime times the particle's.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub trail: f32,
     /// They move with the emitter — a torch's flame follows the torch —
     /// instead of staying where they were given off. Unity's Simulation
     /// Space: Local.
@@ -356,8 +374,10 @@ pub struct Emitter {
     pub frames: (f32, f32),
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frames_random: bool,
-    /// Sizes times the entity's own scale in the world: a small emitter's
-    /// puffs are small. Unity's Scaling Mode Local and Hierarchy.
+    /// Sizes times the entity's own scale in the world — a small emitter's
+    /// puffs are small — and its speeds too, as its shape is: a small
+    /// emitter's sparks fly as far as it is big. Unity's Scaling Mode Local
+    /// and Hierarchy.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scaled: bool,
     /// Where they are born, in the entity's own axes: its origin when not

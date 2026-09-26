@@ -72,7 +72,16 @@ pub struct WindowConfig {
     /// steps (see the module). On by default; `SCRAP_RENDER_THREAD=0`
     /// turns it off, as does a target with no threads.
     pub render_thread: bool,
+    /// Sticks and buttons drawn on the screen and fed in as a pad's
+    /// ([`crate::touch_pad`]), while the pointer is captured. The
+    /// standard layout on iOS and Android and with `SCRAP_TOUCH_PAD=1`;
+    /// none elsewhere. A game lays out its own or turns it off.
+    pub touch_pad: Option<crate::touch_pad::TouchLayout>,
 }
+
+/// Whether the platform owns the screen and gives it to the game whole:
+/// the browser's page, a phone's. A size asked for there means nothing.
+const SCREEN_IS_GIVEN: bool = cfg!(any(target_arch = "wasm32", target_os = "ios", target_os = "android"));
 
 impl Default for WindowConfig {
     fn default() -> Self {
@@ -83,6 +92,12 @@ impl Default for WindowConfig {
             time: TimeSettings::default(),
             render_thread: cfg!(not(target_arch = "wasm32"))
                 && std::env::var("SCRAP_RENDER_THREAD").map_or(true, |v| v != "0"),
+            touch_pad: match std::env::var("SCRAP_TOUCH_PAD").as_deref() {
+                Ok("1") => true,
+                Ok(_) => false,
+                Err(_) => cfg!(any(target_os = "ios", target_os = "android")),
+            }
+            .then(crate::touch_pad::TouchLayout::standard),
         }
     }
 }
@@ -283,7 +298,17 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
     subsecond::register_handler(Arc::new(|| {
         PATCHED.store(true, std::sync::atomic::Ordering::Release)
     }));
-    let event_loop = EventLoop::<Running>::with_user_event().build()?;
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut builder = EventLoop::<Running>::with_user_event();
+    // On Android the loop is the Activity's: made on the app the game was
+    // handed (`android::start`).
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        let app = crate::android::app().ok_or_else(|| anyhow::anyhow!("scrap::shell::android::start was not called"))?;
+        builder.with_android_app(app);
+    }
+    let event_loop = builder.build()?;
     // Poll rather than Wait: a game draws continuously, and waiting for an
     // event means the world only advances when the mouse moves.
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -310,9 +335,15 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
             }
         },
         captured: false,
+        touch_pad: None,
+        #[cfg(target_os = "android")]
+        suspended: false,
         debugger: Default::default(),
         frozen: None,
     };
+    shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
+    #[cfg(target_os = "ios")]
+    crate::ios::register();
     #[cfg(not(target_arch = "wasm32"))]
     event_loop.run_app(&mut shell)?;
     #[cfg(target_arch = "wasm32")]
@@ -431,6 +462,12 @@ struct Shell<G: Game> {
     pads: Option<gilrs::Gilrs>,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
+    /// The pad on the screen, where there is one.
+    touch_pad: Option<crate::touch_pad::TouchPad>,
+    /// On Android, between the Activity going to the background and
+    /// coming back: its window is gone, and nothing is drawn.
+    #[cfg(target_os = "android")]
+    suspended: bool,
     /// The Frame Debugger's window (F9), and the frame it takes apart.
     debugger: frame_debugger::Panel,
     frozen: Option<Frame>,
@@ -564,6 +601,10 @@ impl<G: Game> Shell<G> {
     /// steps are owed, draw once — with a render thread, the next frame's
     /// steps beside the drawing.
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        if self.suspended {
+            return;
+        }
         // F9: the Frame Debugger opens on this frame, or lets the game go
         // on (shell/frame_debugger.rs).
         if self.input.pressed(frame_debugger::KEY) {
@@ -575,8 +616,12 @@ impl<G: Game> Shell<G> {
         // The window's size as it is now: a resize that came while the
         // device was still coming up (in the browser it comes up after the
         // canvas is laid out) was told to nobody.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         let (width, height) = state.window.inner_size().into();
+        // On iOS winit's inner size is the safe area, the screen less the
+        // notch and the home bar; the view it draws in is the whole screen.
+        #[cfg(target_os = "ios")]
+        let (width, height) = state.window.outer_size().into();
         // In the browser the canvas's pixels are the page's to keep up:
         // its laid-out size times the device's pixel ratio, the space
         // winit gives pointer and touch positions in.
@@ -628,7 +673,25 @@ impl<G: Game> Shell<G> {
         if let Some(on) = wanted.filter(|on| *on != self.captured) {
             set_captured(&state.window, on);
             self.captured = on;
+            if let (false, Some(pad)) = (on, self.touch_pad.as_mut()) {
+                for event in pad.release_all() {
+                    self.input.handle(&event);
+                }
+            }
         }
+        // The pad on the screen over the game's overlay, while playing.
+        let padded = match self.touch_pad.as_mut() {
+            Some(pad) if self.captured => {
+                pad.resize(
+                    glam::Vec2::new(size.0 as f32, size.1 as f32),
+                    state.window.scale_factor() as f32,
+                );
+                let mut ui = self.game.overlay().clone();
+                pad.draw(&mut ui);
+                Some(ui)
+            }
+            _ => None,
+        };
 
         let mut times = Vec::with_capacity(3);
         #[cfg(not(target_arch = "wasm32"))]
@@ -640,7 +703,7 @@ impl<G: Game> Shell<G> {
             {
                 // The overlay is the game's, which the steps are about to
                 // change: the drawing gets its own copy.
-                let ui = self.game.overlay().clone();
+                let ui = padded.unwrap_or_else(|| self.game.overlay().clone());
                 let thread = state
                     .render
                     .get_or_insert_with(|| RenderThread::new(state.gpu.clone()));
@@ -670,7 +733,7 @@ impl<G: Game> Shell<G> {
                 &mut d.renderer,
                 &mut d.overlay,
                 &frame,
-                self.game.overlay(),
+                padded.as_ref().unwrap_or_else(|| self.game.overlay()),
                 &mut times,
             )
         };
@@ -678,10 +741,34 @@ impl<G: Game> Shell<G> {
             self.loop_times.record(name, took);
         }
         match drawn {
-            Drawn::Shown => quit |= startup_frame(),
+            Drawn::Shown => {
+                quit |= startup_frame();
+                if STARTUP.is_some() {
+                    use std::sync::atomic::{AtomicU8, Ordering};
+                    // 0 nothing yet, 1 building, 2 all in once.
+                    static BUILT: AtomicU8 = AtomicU8::new(0);
+                    let building = state.drawing.as_ref().map_or(0, |d| d.renderer.pipelines_building());
+                    match (BUILT.load(Ordering::Relaxed), building) {
+                        (0, n) if n > 0 => BUILT.store(1, Ordering::Relaxed),
+                        (1, 0) => {
+                            BUILT.store(2, Ordering::Relaxed);
+                            startup("every pipeline the frames asked for is in");
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // Routine: the window is being dragged or is minimised. Rebuild
             // the swapchain and let the next frame have it.
             Drawn::Outdated => {
+                {
+                    use std::sync::atomic::{AtomicU32, Ordering};
+                    static OUTDATED: AtomicU32 = AtomicU32::new(0);
+                    let n = OUTDATED.fetch_add(1, Ordering::Relaxed);
+                    if n.is_power_of_two() || n == 0 {
+                        startup(&format!("frame not shown: the surface is outdated ({} times; the window {size:?}, occluded {:?}, visible {:?})", n + 1, state.window.is_minimized(), state.window.is_visible()));
+                    }
+                }
                 if let Some(d) = state.drawing.as_ref() {
                     d.surface.reconfigure(&state.gpu);
                 }
@@ -852,13 +939,25 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Called again after the window is destroyed and recreated, which on
         // Android happens whenever the app comes back to the foreground.
+        // Android's is a new window under the same `Window`: the surface
+        // is made again on it, the device and the game kept.
+        #[cfg(target_os = "android")]
+        if let (true, Some(state)) = (std::mem::take(&mut self.suspended), self.state.as_mut()) {
+            if let Some(d) = state.drawing.as_mut() {
+                match Surface::from_window(&state.gpu, state.window.clone()) {
+                    Ok(surface) => d.surface = surface,
+                    Err(e) => eprintln!("no surface on the window come back: {e}"),
+                }
+            }
+            return;
+        }
         if self.state.is_some() || self.proxy.is_none() {
             return;
         }
         let mut attributes = Window::default_attributes().with_title(self.config.title.clone());
-        // In the browser the page's layout sizes the canvas; a size here
-        // would pin it in pixels.
-        if cfg!(not(target_arch = "wasm32")) {
+        // In the browser the page's layout sizes the canvas, on a phone the
+        // screen is the window; a size here would pin it in pixels.
+        if !SCREEN_IS_GIVEN {
             attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(
                 self.config.width,
                 self.config.height,
@@ -893,6 +992,13 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             }
         };
 
+        #[cfg(target_os = "ios")]
+        {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(RawWindowHandle::UiKit(h)) = window.window_handle().map(|h| h.as_raw()) {
+                crate::ios::window_made(h.ui_view.as_ptr());
+            }
+        }
         let proxy = self.proxy.take().expect("the window is made once");
         // The browser gives its device only asynchronously: made there and
         // handed back to the loop as an event.
@@ -937,6 +1043,13 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
         }
     }
 
+    /// Android's Activity went to the background and took its window with
+    /// it: nothing is drawn until [`Self::resumed`] brings one back.
+    #[cfg(target_os = "android")]
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.suspended = self.state.is_some();
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -952,6 +1065,19 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             // Captured, the pointer's position means nothing: only how far
             // it moves counts, and that comes as device motion.
             WindowEvent::CursorMoved { .. } if self.captured => {}
+            WindowEvent::Touch(touch) if self.touch_pad.is_some() => {
+                let pad = self.touch_pad.as_mut().expect("just checked");
+                let phase = match touch.phase {
+                    winit::event::TouchPhase::Started => crate::input::TouchPhase::Started,
+                    winit::event::TouchPhase::Moved => crate::input::TouchPhase::Moved,
+                    winit::event::TouchPhase::Ended => crate::input::TouchPhase::Ended,
+                    winit::event::TouchPhase::Cancelled => crate::input::TouchPhase::Cancelled,
+                };
+                let (x, y) = (touch.location.x as f32, touch.location.y as f32);
+                for event in pad.touch(touch.id, phase, x, y, self.captured) {
+                    self.input.handle(&event);
+                }
+            }
             other => {
                 for event in translate(&other) {
                     self.input.handle(&event);
@@ -989,6 +1115,10 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
         }
         // Asking for a redraw here rather than drawing here is what keeps the
         // frame on the compositor's schedule instead of ahead of it.
+        #[cfg(target_os = "android")]
+        if self.suspended {
+            return;
+        }
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }

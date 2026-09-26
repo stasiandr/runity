@@ -166,7 +166,7 @@ fn cs_aerial(@builtin(global_invocation_id) id: vec3<u32>) {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let a = air.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
     let b = air.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
-    let d = normalize(b.xyz / b.w - a.xyz / a.w);
+    let d = normalize(b.xyz * a.w - a.xyz * b.w);
     let o = vec3<f32>(0.0, PLANET + max(air.to_sun.w, 1.0), 0.0);
     let far = air.eye.w;
     var light = vec3<f32>(0.0);

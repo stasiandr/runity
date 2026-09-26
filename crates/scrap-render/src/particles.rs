@@ -218,8 +218,12 @@ impl Emitting {
                     axis * Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach)
                 };
             }
+            // Leaving in the world, a scaled emitter's speed is scaled with
+            // it, as its shape is (in its own space the drawing scales it).
             let (from, direction) = if e.local {
                 (at, along)
+            } else if e.scaled {
+                (self.placed.transform_point3(at), self.placed.transform_vector3(along))
             } else {
                 (self.placed.transform_point3(at), turn * along)
             };
@@ -280,14 +284,23 @@ impl Emitting {
             } else {
                 (p.at, p.velocity)
             };
+            // A trail runs back from it along its way; the square is drawn
+            // over the whole of it.
+            let trail = if e.trail > 0.0 && size > 0.0 {
+                velocity.length() * e.trail * if e.local { times } else { 1.0 }
+            } else {
+                0.0
+            };
+            let at = if trail > 0.0 { at - velocity.normalize_or_zero() * trail * 0.5 } else { at };
+            let streak = e.stretch + if trail > 0.0 { trail / (size * velocity.length().max(1e-6)) } else { 0.0 };
             let to_eye = eye.map(|eye| eye - at).filter(|d| d.length() > 1e-4);
             let (scale, rotation) = if let Some(n) = to_eye.filter(|_| e.facing) {
                 // The square's normal (its y) to the eye; its z along the
                 // way it goes, as the eye sees it.
                 let n = n.normalize();
                 let seen = velocity - n * velocity.dot(n);
-                let (z, long) = if e.stretch > 0.0 && seen.length() > 1e-4 {
-                    (seen.normalize(), 1.0 + velocity.length() * e.stretch)
+                let (z, long) = if streak > 0.0 && seen.length() > 1e-4 {
+                    (seen.normalize(), 1.0 + velocity.length() * streak)
                 } else {
                     (n.any_orthonormal_vector(), 1.0)
                 };
@@ -296,9 +309,9 @@ impl Emitting {
                     Vec3::new(size, size, size * long),
                     Quat::from_mat3(&glam::Mat3::from_cols(x, n, z)),
                 )
-            } else if e.stretch > 0.0 && velocity.length() > 1e-4 {
+            } else if streak > 0.0 && velocity.length() > 1e-4 {
                 (
-                    Vec3::new(size, size * (1.0 + velocity.length() * e.stretch), size),
+                    Vec3::new(size, size * (1.0 + velocity.length() * streak), size),
                     Quat::from_rotation_arc(Vec3::Y, velocity.normalize()),
                 )
             } else {
@@ -587,6 +600,36 @@ mod tests {
         let d = emitting.draws().next().unwrap();
         let (scale, _, _) = d.transform.to_scale_rotation_translation();
         assert!(scale.y > scale.x * 1.5, "{scale}");
+    }
+
+    #[test]
+    fn a_small_emitters_sparks_fly_as_far_as_it_is_big_and_trail_behind() {
+        // A saw's sparks: 20 metres a second as authored, the emitter a
+        // fifth of a metre: 4 metres a second in the world, and a trail as
+        // long as a tenth of a second of that.
+        let spark = |scaled: bool| -> Emitter {
+            ron::from_str(&format!(
+                "(rate: 0.0, life: 1.0, speed: 20.0, spread_deg: 0.0, size: 0.1, end_size: 0.1, scaled: {scaled}, trail: 0.1)"
+            ))
+            .unwrap()
+        };
+        let placed = Mat4::from_scale(Vec3::splat(0.2));
+        let mut small = Emitting::new(spark(true), MeshHandle::TEST);
+        small.advance(placed, 0.0);
+        small.emit(1);
+        small.advance(placed, 0.25);
+        let d = small.draws().next().unwrap();
+        let (scale, _, at) = d.transform.to_scale_rotation_translation();
+        // Its head a metre up; the square over the 0.4 m of trail behind.
+        assert!((at.y - (1.0 - 0.2)).abs() < 0.02, "{at}");
+        assert!((scale.y - 0.4).abs() < 0.03 && (scale.x - 0.02).abs() < 1e-3, "{scale}");
+        // Not scaled: the speed as authored.
+        let mut big = Emitting::new(spark(false), MeshHandle::TEST);
+        big.advance(placed, 0.0);
+        big.emit(1);
+        big.advance(placed, 0.25);
+        let (_, _, at) = big.draws().next().unwrap().transform.to_scale_rotation_translation();
+        assert!((at.y - (5.0 - 1.0)).abs() < 0.05, "{at}");
     }
 
     fn sparks() -> Emitter {
