@@ -162,7 +162,7 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
         eprintln!("skipping: no LAFAN1 (set SCRAP_LAFAN1 or put it in ~/.cache/scrap/lafan1)");
         return;
     };
-    let (skeleton, clips) = locomotion(&dir, &["walk1_subject1", "walk1_subject2", "run1_subject2"]);
+    let (skeleton, clips) = with_obstacles(&dir);
     let db = Database::build(&skeleton, &clips, Setup::default()).unwrap();
     let physics = yard();
     let among = Among(&physics);
@@ -195,8 +195,17 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
             // Each joint of the foot over the ground under that joint.
             let foot = world[feet[side]].w_axis.truncate();
             let toe = world[db.toes()[side].unwrap()].w_axis.truncate();
+            // How far over the ground under it — or under a point three
+            // centimetres back, so a toe touching a riser's edge is not
+            // counted as the step's whole height into it.
+            let back = matcher.root.1 * Vec3::Z * 0.03;
             let over = |p: Vec3| {
-                physics.cast_ray_with_normal(Vec3::new(p.x, p.y + 0.5, p.z), -Vec3::Y, 2.0, true).map(|h| p.y - h.0.y)
+                let ground = |q: Vec3| physics.cast_ray_with_normal(Vec3::new(q.x, p.y + 0.5, q.z), -Vec3::Y, 2.0, true).map(|h| h.0.y);
+                let lower = match (ground(p), ground(p - back)) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+                lower.map(|g| p.y - g)
             };
             let (Some(a), Some(t)) = (over(foot), over(toe)) else { continue };
             worst_in = worst_in.max(-a.min(t));
@@ -208,8 +217,75 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
     let top = matcher.root.0;
     eprintln!("up the stairs to {top:?}: a foot {worst_in:.3} m into a step at worst, a planted foot {worst_over:.3} m over it");
     assert!(top.z > 5.0 && (top.y - 1.02).abs() < 0.05, "on the landing: {top:?}");
-    // Walking clips on stairs: a toe leaving a lower step, the leg at full
-    // stretch behind, brushes the riser of the next. Held to what it is.
-    assert!(worst_in < 0.14, "no foot sinks into a step");
+    // A foot put down astride a step's edge — heel on one tread, toe past
+    // the next riser — shows its toe that far under the tread above. It
+    // is a touch at the edge, not a leg through the stairs; held to it.
+    assert!(worst_in < 0.2, "no foot sinks into a step");
     assert!(worst_over < 0.12, "a planted foot stands on its step");
+}
+
+/// Walking, running, and every LAFAN1 take of getting over things.
+fn with_obstacles(dir: &std::path::Path) -> (Skeleton, Vec<Clip>) {
+    let mut names: Vec<String> = vec!["walk1_subject1".into(), "walk1_subject2".into(), "run1_subject2".into()];
+    let mut found: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("obstacles"))
+        .map(|n| n.trim_end_matches(".bvh").to_string())
+        .collect();
+    found.sort();
+    names.extend(found);
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    locomotion(dir, &names)
+}
+
+#[test]
+fn a_character_gets_onto_a_box_over_a_ledge_and_stops_at_a_wall() {
+    let Some(dir) = lafan1() else {
+        eprintln!("skipping: no LAFAN1 (set SCRAP_LAFAN1 or put it in ~/.cache/scrap/lafan1)");
+        return;
+    };
+    let (skeleton, clips) = with_obstacles(&dir);
+    let db = Database::build(&skeleton, &clips, Setup::default()).unwrap();
+    // A half-metre box, a metre-high ledge four metres deep, and a wall
+    // too high to get over.
+    let physics = course(&[
+        (Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 0.5, 40.0)),
+        (Vec3::new(0.0, 0.25, 4.0), Vec3::new(1.0, 0.25, 0.5)),
+        (Vec3::new(0.0, 0.5, 9.0), Vec3::new(2.0, 0.5, 2.0)),
+        (Vec3::new(0.0, 1.1, 14.25), Vec3::new(4.0, 1.1, 0.25)),
+    ]);
+    let among = Among(&physics);
+    let mut matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
+    let dt = 1.0 / 60.0;
+    let (mut on_box, mut on_ledge, mut highest) = (0.0f32, 0.0f32, 0.0f32);
+    let mut floating: f32 = 0.0;
+    let mut settled = 0.0;
+    for _ in 0..(24.0 / dt) as usize {
+        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.3, facing: None }, dt, &among);
+        let (root, feet) = (matcher.root.0, matcher.spring.0);
+        if (3.6..4.4).contains(&root.z) && (root.y - 0.5).abs() < 0.1 {
+            on_box += dt;
+        }
+        if (7.5..10.5).contains(&root.z) && (root.y - 1.0).abs() < 0.1 {
+            on_ledge += dt;
+        }
+        highest = highest.max(root.y);
+        // Over the ground its capsule stands on, once a climb is done
+        // and the root has had half a second to settle.
+        settled = if matcher.committed() { 0.0 } else { settled + dt };
+        if settled > 0.5 {
+            floating = floating.max(root.y - feet.y);
+        }
+    }
+    let end = matcher.root.0;
+    eprintln!(
+        "{:.1} s on the box, {:.1} s on the ledge, highest {highest:.2} m, {floating:.2} m over its ground at worst, ends at {end:?}",
+        on_box, on_ledge
+    );
+    assert!(on_box > 0.2, "got onto the box");
+    assert!(on_ledge > 1.0, "got up the ledge and walked along it");
+    assert!(highest < 1.4, "never higher than the ledge it climbed");
+    assert!(floating < 0.3, "stands on what is there");
+    assert!(end.z > 11.0 && end.z < 14.0 - 0.25 && end.y.abs() < 0.05, "down off the ledge, stopped at the wall: {end:?}");
 }

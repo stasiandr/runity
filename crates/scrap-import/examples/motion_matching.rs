@@ -24,6 +24,8 @@ use scrap::render::{Camera, Draw, Frame, MeshHandle, TextureHandle};
 use scrap::shell::{run, Context, Game, StepContext, WindowConfig};
 use scrap::{builtin, Gpu, Key, Material, Renderer};
 
+/// Walking, running, and every take of getting over things: stairs,
+/// boxes, ledges.
 const CLIPS: &[&str] = &[
     "walk1_subject1",
     "walk1_subject2",
@@ -31,6 +33,7 @@ const CLIPS: &[&str] = &[
     "run1_subject2",
     "run1_subject5",
     "sprint1_subject2",
+    "obstacles*",
 ];
 
 fn lafan1() -> PathBuf {
@@ -44,7 +47,22 @@ fn database() -> anyhow::Result<Database> {
     let started = std::time::Instant::now();
     let mut skeleton = None;
     let mut clips = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     for name in CLIPS {
+        match name.strip_suffix('*') {
+            Some(prefix) => {
+                let mut found: Vec<String> = std::fs::read_dir(&dir)?
+                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .filter(|n| n.starts_with(prefix) && n.ends_with(".bvh"))
+                    .map(|n| n.trim_end_matches(".bvh").to_string())
+                    .collect();
+                found.sort();
+                names.extend(found);
+            }
+            None => names.push(name.to_string()),
+        }
+    }
+    for name in &names {
         let path = dir.join(format!("{name}.bvh"));
         let text = std::fs::read_to_string(&path).map_err(|e| {
             anyhow::anyhow!("{}: {e} — LAFAN1 goes in ~/.cache/scrap/lafan1 (or $SCRAP_LAFAN1)", path.display())
@@ -59,9 +77,13 @@ fn database() -> anyhow::Result<Database> {
 }
 
 /// The yard: a wall across the way, a flight of stairs up to a landing
-/// and down again, and boxes to get over. `(centre, half size)`.
+/// and down again, a box and a ledge to get over. `(centre, half size)`.
 fn yard() -> Vec<(Vec3, Vec3)> {
-    let mut boxes = vec![(Vec3::new(0.0, 1.0, 4.25), Vec3::new(2.0, 1.0, 0.25))];
+    let mut boxes = vec![
+        (Vec3::new(0.0, 1.0, 4.25), Vec3::new(2.0, 1.0, 0.25)),
+        (Vec3::new(-6.0, 0.25, 4.0), Vec3::new(1.0, 0.25, 0.5)),
+        (Vec3::new(-6.0, 0.5, 9.0), Vec3::new(2.0, 0.5, 2.0)),
+    ];
     let rise = 0.17;
     for i in 0..6 {
         let top = rise * (i + 1) as f32;
@@ -250,17 +272,16 @@ impl Game for Drive {
 }
 
 /// The path `--video` drives, leg by leg: where to, how fast, and for no
-/// longer than so many seconds. Into the wall (it stops), round it, up the
-/// stairs, over the landing and down, then a run.
+/// longer than so many seconds. Into the wall (it stops), over a box and
+/// a ledge, then up the stairs, over the landing and down.
 const LEGS: &[([f32; 2], f32, f32)] = &[
     ([0.0, 0.0], 0.0, 1.5),
-    ([0.0, 6.0], 1.4, 4.5),
-    ([3.5, 2.5], 1.4, 3.0),
-    ([6.0, 1.0], 1.4, 3.0),
-    ([6.0, 12.5], 1.2, 12.0),
-    ([6.0, 14.0], 1.4, 2.0),
-    ([14.0, 14.0], 3.8, 3.0),
-    ([14.0, 14.0], 0.0, 2.0),
+    ([0.0, 6.0], 1.4, 4.0),
+    ([-6.0, 1.0], 1.4, 5.0),
+    ([-6.0, 14.0], 1.3, 13.0),
+    ([6.0, 14.0], 1.4, 12.0),
+    ([6.0, 0.5], 1.2, 13.0),
+    ([6.0, 0.5], 0.0, 2.0),
 ];
 
 /// The velocity the legs ask for at a place and time; `None` past the end.
@@ -313,6 +334,18 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
         stdin.write_all(&target.read_rgba(&gpu))?;
         if frame % 60 == 0 {
             eprintln!("{frame}/{frames}");
+        }
+        if std::env::var_os("MM_TRACE").is_some() && frame % 8 == 0 {
+            let m = &walker.matcher;
+            eprintln!(
+                "{:5.1}s root {:.2?} spring {:.2?} {} {} committed {}",
+                frame as f32 / fps as f32,
+                m.root.0,
+                m.spring.0,
+                walker.db.clips[walker.db.clip_of(m.frame)].0,
+                m.frame - walker.db.clips[walker.db.clip_of(m.frame)].1.start,
+                m.committed()
+            );
         }
     }
     drop(ffmpeg.stdin.take());
