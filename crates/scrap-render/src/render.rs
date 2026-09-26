@@ -1254,6 +1254,9 @@ pub struct Renderer {
     /// megabytes copied over and over). Only the batches the last view
     /// had are kept.
     batch_pool: BatchPool,
+    /// The physical sky's light for a sun of strength one, and the air,
+    /// height and sun it was found for.
+    sky_light: Option<(crate::atmosphere::Atmosphere, f32, Vec3, (Vec3, Vec3))>,
     /// Every instance of a view, one after another, as uploaded: kept.
     flat: Vec<InstanceRaw>,
     /// Live meshes by their key: the mesh each is drawn with, and the
@@ -3414,6 +3417,7 @@ impl Renderer {
             free_meshes: Vec::new(),
             streams: scrap_core::hash::FastMap::default(),
             batch_pool: BatchPool::default(),
+            sky_light: None,
             flat: Vec::new(),
             live: std::collections::HashMap::new(),
             targets: std::collections::HashMap::new(),
@@ -5349,11 +5353,19 @@ impl Renderer {
         };
         let night = frame.lighting.night.clamp(0.0, 1.0);
         let (sun_light, sky_light, ground_light) = if physical {
-            let (sun, sky, _) =
-                frame
-                    .sky
-                    .atmosphere
-                    .lighting(altitude, sky_to_sun, sky_sun_intensity);
+            // The same air, height and sun as the last frame (the camera
+            // standing, the sun barely moving): the same light, not found
+            // again through thirty thousand steps of air.
+            let air = frame.sky.atmosphere;
+            let (sun, sky) = match self.sky_light {
+                Some((was, at, towards, light)) if was == air && at == altitude && towards == sky_to_sun => light,
+                _ => {
+                    let light = air.light_of_one(altitude, sky_to_sun);
+                    self.sky_light = Some((air, altitude, sky_to_sun, light));
+                    light
+                }
+            };
+            let (sun, sky) = (sun * sky_sun_intensity, sky * sky_sun_intensity);
             // At night the moon, as the scene's lighting has it, and the
             // night sky's own faint light on top of what the air still
             // glows with.
