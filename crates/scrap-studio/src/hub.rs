@@ -373,6 +373,11 @@ impl Hub {
                 self.fill(ui, &text);
                 Some(Outcome::Handled)
             }
+            // Enter opens the first line; leaving the field changed (a
+            // click on a pin, say) submits too, and must not.
+            Event::Submit(_) if node == field && ui.focused() != Some(field) => {
+                Some(Outcome::Handled)
+            }
             Event::Submit(_) if node == field => Some(
                 list.rows
                     .first()
@@ -428,7 +433,11 @@ impl Hub {
                 Some(Outcome::Handled)
             }
             Event::Click { .. } if node == form.create => Some(self.create(ui)),
-            Event::Submit(_) if node == form.name => Some(self.create(ui)),
+            // Enter makes it. Leaving the name for a choice below submits
+            // too, and must not make the project before it is chosen.
+            Event::Submit(_) if node == form.name && ui.focused() == Some(form.name) => {
+                Some(self.create(ui))
+            }
             _ if node == form.name => Some(Outcome::Handled),
             Event::Click { .. } if node == self.overlay => Some(Outcome::Handled),
             _ => None,

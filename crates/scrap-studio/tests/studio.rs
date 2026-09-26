@@ -5084,8 +5084,16 @@ fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
         hub.set_location(ui, place.clone());
     }
     click(&mut s, "new template valley");
+    // Typed as a person types it, then a choice clicked: leaving the name
+    // does not make the project before it is chosen.
     let name = s.ui.find("new name").unwrap();
-    s.ui.set_text(name, "meadow");
+    s.ui.set_text(name, "");
+    click(&mut s, "new name");
+    type_text(&mut s, "meadow");
+    s.frame();
+    click(&mut s, "new template graphs");
+    assert!(!place.join("meadow").exists(), "nothing made by leaving the name");
+    click(&mut s, "new template valley");
     click(&mut s, "new create");
     s.frame();
     assert!(s.ui.find("projects overlay").is_none(), "the screen goes");
@@ -5110,3 +5118,4 @@ fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
     let _ = std::fs::remove_dir_all(&place);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
