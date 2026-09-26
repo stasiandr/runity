@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! FAL_KEY=… cargo run -p scrap-gen --example generate -- \
-//!     examples/valley/content/valley/maps/valley.scene.ron well "an old stone well with a wooden roof"
+//!     examples/showreel/content/showreel/maps/first-light.scene.ron well "an old stone well with a wooden roof"
 //! ```
 //!
 //! Puts a greybox cube in the open scene, generates the model into it, and

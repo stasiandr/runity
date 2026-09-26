@@ -418,7 +418,7 @@ kitchen/
    add component cooking/pot`, `Project::component_names` — по тому же
    правилу.
 5. **Шаблон и примеры.** Сделано: `scrap new` пишет схему Unreal;
-   `examples/valley`, `examples/kitchen`, `examples/kitchen-web` разложены
+   `examples/showreel`, `examples/kitchen`, `examples/kitchen-web` разложены
    по фичам; CLAUDE.md шаблона, stack.md «Проект». `scrap build` не везёт
    `developers/`. Не сделано: `check` пока не называет ссылку из игры в
    `developers/`.

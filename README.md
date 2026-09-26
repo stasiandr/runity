@@ -2,11 +2,10 @@
 
 Игровой движок.
 
-Игрового кода здесь нет: движок проверяется на собственном — встроенных
-мешах и материалах, примерах ассетов и примерах сцен. Дизайн игры, ради
-которой всё затевалось, лежит в [docs/design/](docs/design/) — тринадцать
-документов, от мира и поселенцев до экономики и того, как это выглядит. Они
-задают, куда движок растёт.
+Движок общего назначения. Игрового кода здесь нет: движок проверяется на
+собственном — встроенных мешах и материалах и проектах-примерах в
+`examples/` (showreel, kitchen, graphs); игры на нём живут в своих
+репозиториях.
 
 ## Принцип
 
@@ -28,9 +27,8 @@ crates/scrap-cli      команда `scrap`: new, sync, check
 crates/scrap-editor   сессия редактора: правки, отмена, гизмо, импорт, режим игры — без UI
 crates/scrap-mcp      тот же редактор как MCP-сервер: всё, что умеет редактор, умеет агент
 crates/scrap-import   импорт исходных форматов в формат движка (в игру не линкуется)
-examples/valley/       проект-пример в стандартной раскладке: сцены, префабы, материалы,
+examples/showreel/     проект-пример в стандартной раскладке: сцены, префабы, материалы,
                        модели и текстуры (Kenney, CC0) — на нём всё проверяется
-docs/design/           дизайн игры, ради которой движок и делается
 docs/DNA.md            восемь постулатов, от которых проектируется каждая фича
 docs/stack.md          на чём и почему
 ```
@@ -112,7 +110,7 @@ claude mcp add scrap -- cargo run -q --release -p scrap-mcp
 ## Посмотреть на кадр
 
 ```
-cargo run --release --example scene_shot -- examples/valley/content/valley/maps/first-light.scene.ron -o frame.png
+cargo run --release --example scene_shot -- examples/showreel/content/showreel/maps/first-light.scene.ron -o frame.png
 ```
 
 Референсная сцена открывается без библиотеки и без импорта — все модели в ней
@@ -123,7 +121,7 @@ cargo run --release --example scene_shot -- examples/valley/content/valley/maps/
 ## Походить внутри
 
 ```
-cargo run --release --features desktop-shell --example walk -- examples/valley/content/valley/maps/first-light.scene.ron
+cargo run --release --features desktop-shell --example walk -- examples/showreel/content/showreel/maps/first-light.scene.ron
 ```
 
 WASD ходит, левая кнопка мыши крутит голову, Escape выходит. Сцену можно
@@ -135,7 +133,7 @@ WASD ходит, левая кнопка мыши крутит голову, Esc
 ## Префабы
 
 Вещь, собранная один раз, ставится много раз. Префаб — это одно поддерево
-сущностей в своём файле (`examples/valley/prefabs/campfire.prefab`), а сцена
+сущностей в своём файле (`examples/showreel/prefabs/campfire.prefab`), а сцена
 ссылается на него по имени:
 
 ```
@@ -149,7 +147,7 @@ WASD ходит, левая кнопка мыши крутит голову, Esc
 же.
 
 ```
-cargo run --release --example scene_shot -- examples/valley/content/valley/maps/camp.scene.ron -o camp.png
+cargo run --release --example scene_shot -- examples/showreel/content/showreel/maps/camp.scene.ron -o camp.png
 ```
 
 Переопределений глубже корня пока нет — «у этого костра третий камень
@@ -189,8 +187,8 @@ cargo nextest run -P daily     # + медленные: > 5 с каждый — C
 один раз, дальше движок открывает только своё:
 
 ```
-cargo run -p scrap-import -- examples/valley/assets/models/pine_large.obj --library examples/valley/library
-cargo run --release --example scene_shot -- examples/valley/content/valley/maps/my-scene.scene.ron
+cargo run -p scrap-import -- examples/showreel/assets/models/pine_large.obj --library examples/showreel/library
+cargo run --release --example scene_shot -- examples/showreel/content/showreel/maps/my-scene.scene.ron
 ```
 
 Понимает `.gltf`/`.glb` (то, чем экспортируют настоящие инструменты), `.obj`,
@@ -204,7 +202,7 @@ cargo run --release --example scene_shot -- examples/valley/content/valley/maps/
 девятнадцати сценам. `builtin:stone` — если нужен именно встроенный.
 
 ```
-cargo run -p scrap-cli -- sync examples/valley
+cargo run -p scrap-cli -- sync examples/showreel
 ```
 
 Библиотека (`library/`) производная и не коммитится: `sync` собирает её из

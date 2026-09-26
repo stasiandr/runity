@@ -45,7 +45,7 @@ use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
 
 /// The engine's reference scene: every builtin, no import step.
-pub const REFERENCE_SCENE: &str = "examples/valley/content/valley/maps/first-light.scene.ron";
+pub const REFERENCE_SCENE: &str = "examples/showreel/content/showreel/maps/first-light.scene.ron";
 
 /// The Scene view's picture, as the renderer knows it.
 const SCENE: ImageId = ImageId(0);
@@ -983,7 +983,7 @@ impl Studio {
     }
 
     /// What the window's title says, as Unity's does: the scene, the
-    /// project, the editor — `first-light — valley — scrap` — with a dot
+    /// project, the editor — `first-light — showreel — scrap` — with a dot
     /// in front while there are unsaved edits (the order an editor with
     /// tabs uses; macOS also marks the close button, `window.rs`).
     pub fn title(&self) -> String {

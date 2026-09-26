@@ -22,7 +22,7 @@ fn studio() -> Option<(Studio, std::path::PathBuf)> {
         let dir = std::env::temp_dir().join(format!("scrap-studio-config-{}", std::process::id()));
         std::env::set_var(scrap_studio::appearance::CONFIG_DIR_VAR, dir);
     });
-    let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/valley");
+    let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/showreel");
     // A number of its own as well: two tests starting in the same
     // nanosecond must not share a folder and delete each other's files.
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -38,14 +38,14 @@ fn studio() -> Option<(Studio, std::path::PathBuf)> {
     copy_dir(src.as_ref(), &dir);
     // Only the scene opened: the example's others would fill the Project
     // panel, which does not scroll, and push the tiles dragged here off it.
-    for entry in std::fs::read_dir(dir.join("content/valley/maps")).unwrap() {
+    for entry in std::fs::read_dir(dir.join("content/showreel/maps")).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         if !name.starts_with("first-light.") {
             std::fs::remove_file(&path).unwrap();
         }
     }
-    let scene = dir.join("content/valley/maps/first-light.scene.ron");
+    let scene = dir.join("content/showreel/maps/first-light.scene.ron");
     let session = match scrap_studio::open(&scene) {
         Ok(s) => s,
         Err(e) => {
@@ -404,10 +404,10 @@ fn the_title_is_scene_project_editor_with_a_dot_while_unsaved() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
-    assert_eq!(s.title(), "first-light — valley — scrap");
+    assert_eq!(s.title(), "first-light — showreel — scrap");
     click(&mut s, "line crate");
     key(&mut s, Key::Delete);
-    assert_eq!(s.title(), "• first-light — valley — scrap");
+    assert_eq!(s.title(), "• first-light — showreel — scrap");
 }
 
 #[test]
@@ -518,7 +518,7 @@ fn save_writes_the_file_and_clears_the_mark() {
     assert!(s.session.is_modified());
     click(&mut s, "save");
     assert!(!s.session.is_modified());
-    let text = std::fs::read_to_string(dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
+    let text = std::fs::read_to_string(dir.join("content/showreel/maps/first-light.scene.ron")).unwrap();
     assert!(
         !text.contains("\"crate\""),
         "the crate is gone from the file"
@@ -545,7 +545,7 @@ fn play_runs_the_game_itself_and_stops_it() {
     let Some((mut s, dir)) = studio() else {
         return;
     };
-    // The valley has no game of its own: Play says so, and simulates nothing.
+    // The showreel has no game of its own: Play says so, and simulates nothing.
     click(&mut s, "play");
     assert!(!s.session.is_playing() && !s.session.is_game_running());
     let said = |s: &Studio, text: &str| s.session.console().iter().any(|l| l.text.contains(text));
@@ -556,7 +556,7 @@ fn play_runs_the_game_itself_and_stops_it() {
     std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"not-built\"\n").unwrap();
     click(&mut s, "play");
     assert!(!s.session.is_playing(), "the game plays, not the editor");
-    assert!(said(&s, "playing content/valley/maps/first-light.scene.ron in the game"));
+    assert!(said(&s, "playing content/showreel/maps/first-light.scene.ron in the game"));
     s.session.stop_game();
 
     // While a game runs, the button is Stop, and stops it.
@@ -659,7 +659,7 @@ fn snap_and_views_from_the_corner() {
 #[test]
 fn a_scene_changed_on_disk_comes_in_by_itself() {
     let Some((mut s, dir)) = studio() else { return };
-    let path = dir.join("content/valley/maps/first-light.scene.ron");
+    let path = dir.join("content/showreel/maps/first-light.scene.ron");
     let text = std::fs::read_to_string(&path).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&path, text.replace("\"boulder\"", "\"big rock\"")).unwrap();
@@ -744,7 +744,7 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     click(&mut s, "prefab back");
     assert!(!s.session.is_prefab());
     assert_eq!(s.session.scene_path(), Some(scene.as_path()));
-    let prefab = std::fs::read_to_string(dir.join("content/valley/camp/campfire/campfire.prefab")).unwrap();
+    let prefab = std::fs::read_to_string(dir.join("content/showreel/camp/campfire/campfire.prefab")).unwrap();
     assert!(
         !prefab.contains("\"ember\""),
         "the prefab was saved without its ember"
@@ -1028,7 +1028,7 @@ fn the_git_tab_commits_what_is_ticked_and_shows_what_a_commit_changed() {
     click(&mut s, "tab git");
     s.frame();
     let dump = s.ui.dump();
-    assert!(dump.contains("#git file content/valley/maps/first-light.scene.ron"), "{dump}");
+    assert!(dump.contains("#git file content/showreel/maps/first-light.scene.ron"), "{dump}");
     assert!(dump.contains("\"unsaved\""), "the unsaved scene is a change: {dump}");
     assert!(dump.contains("#git file notes.txt"), "{dump}");
     assert!(dump.contains("\"main\""), "the branch: {dump}");
@@ -1087,7 +1087,7 @@ fn the_layout_is_kept_between_runs() {
     s.frame();
     drop(s);
 
-    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/showreel/maps/first-light.scene.ron")).unwrap();
     let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
     again.frame();
     again.ui.paint();
@@ -1317,7 +1317,7 @@ fn a_tab_dragged_to_another_dock_takes_its_panel_there_and_stays() {
     std::thread::sleep(std::time::Duration::from_millis(600));
     s.frame();
     drop(s);
-    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/showreel/maps/first-light.scene.ron")).unwrap();
     let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
     again.frame();
     again.ui.paint();
@@ -1582,7 +1582,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     assert!(s.ui.find("menu Rename…").is_some(), "{menu_dump:?}");
     click(&mut s, "menu Rename…");
     answer(&mut s, "soil");
-    assert!(dir.join("content/valley/nature/ground/soil.scrmat").is_file(), "renamed");
+    assert!(dir.join("content/showreel/nature/ground/soil.scrmat").is_file(), "renamed");
     let crate_id = s.session.find("crate").unwrap();
     assert_eq!(s.session.material_name(crate_id).as_deref(), Some("soil"));
 
@@ -1621,7 +1621,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     // The crate's colour as a material of its own.
     menu(&mut s, "Assets", "Save Material from Selection…");
     answer(&mut s, "rust");
-    assert!(dir.join("content/valley/rust.scrmat").is_file());
+    assert!(dir.join("content/showreel/rust.scrmat").is_file());
 
     // A variant of an instance of the campfire prefab.
     let fire = s.session.add_instance(None, "campfire").unwrap();
@@ -1672,7 +1672,7 @@ fn project_settings_open_and_save_only_what_reads() {
         .ui
         .text(s.ui.find("settings text").unwrap())
         .unwrap()
-        .contains("valley"));
+        .contains("showreel"));
     let select_all = |s: &mut Studio| {
         s.handle(&InputEvent::KeyDown(Key::LeftSuper));
         s.handle(&InputEvent::KeyDown(Key::A));
@@ -1681,7 +1681,7 @@ fn project_settings_open_and_save_only_what_reads() {
     };
     click(&mut s, "settings text");
     select_all(&mut s);
-    type_text(&mut s, "(name: \"valley\"");
+    type_text(&mut s, "(name: \"showreel\"");
     click(&mut s, "settings save");
     let text = std::fs::read_to_string(dir.join("scrap.ron")).unwrap();
     assert!(
@@ -1692,7 +1692,7 @@ fn project_settings_open_and_save_only_what_reads() {
     select_all(&mut s);
     type_text(
         &mut s,
-        "(name: \"valley\", engine: \"0.1.0\", game: (start_scene: \"camp\"))",
+        "(name: \"showreel\", engine: \"0.1.0\", game: (start_scene: \"camp\"))",
     );
     click(&mut s, "settings save");
     let text = std::fs::read_to_string(dir.join("scrap.ron")).unwrap();
@@ -1767,7 +1767,7 @@ fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
     impl scrap::Record for Material {}
 
     let Some((mut s, dir)) = studio() else { return };
-    let file = dir.join("content/valley/crafting/materials.ron");
+    let file = dir.join("content/showreel/crafting/materials.ron");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
         &file,
@@ -1775,13 +1775,13 @@ fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
     )
     .unwrap();
     let mut tables = scrap::Tables::new();
-    tables.register::<Material>("content/valley/crafting/materials.ron");
+    tables.register::<Material>("content/showreel/crafting/materials.ron");
     tables
         .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
         .unwrap();
     let read = || std::fs::read_to_string(&file).unwrap();
     click(&mut s, "tab configs");
-    click(&mut s, "configs content/valley/crafting/materials.ron");
+    click(&mut s, "configs content/showreel/crafting/materials.ron");
 
     // Typed: the cell's text, all of it, then a number and Enter.
     click(&mut s, "configs cell  Палка hard");
@@ -1970,7 +1970,7 @@ fn the_animation_tab_plays_a_clip_in_the_view() {
     let Some((mut s, dir)) = studio() else { return };
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../scrap-import/tests/fixtures/skinned_banner.gltf");
-    std::fs::copy(&fixture, dir.join("content/valley/banner.gltf")).unwrap();
+    std::fs::copy(&fixture, dir.join("content/showreel/banner.gltf")).unwrap();
     menu(&mut s, "Assets", "Refresh");
     let banner = s.session.add(None, "banner").unwrap();
     s.session.select(Some(banner)).unwrap();
@@ -2054,7 +2054,7 @@ fn silence() -> Vec<u8> {
 #[test]
 fn a_sound_is_listed_in_the_project_to_listen_to() {
     let Some((mut s, dir)) = studio() else { return };
-    std::fs::write(dir.join("content/valley/beep.wav"), silence()).unwrap();
+    std::fs::write(dir.join("content/showreel/beep.wav"), silence()).unwrap();
     menu(&mut s, "Assets", "Refresh");
     assert!(s.session.sound("beep").is_some(), "imported");
     click(&mut s, "project search");
@@ -2160,7 +2160,7 @@ fn the_project_goes_into_folders_and_back_up_its_path() {
     click(&mut s, "crumb Project");
     assert!(s.ui.find("asset first-light").is_none());
     // …in by a double click on a folder's tile, a level at a time.
-    for folder in ["content", "valley", "maps"] {
+    for folder in ["content", "showreel", "maps"] {
         double_click(&mut s, &format!("folder tile {folder}"));
     }
     assert!(s.ui.find("asset first-light").is_some());
@@ -2208,7 +2208,7 @@ fn ui_builder_moves_and_edits_a_screen() {
         &file,
         r#"// The main menu.
 (elements: [
-    (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("The Valley"), text_size: 40),
+    (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("Kitchen Rush"), text_size: 40),
     (id: "play", anchor: Center, at: (0, 0), size: (240, 48), kind: Button("Play")),
 ])"#,
     )
@@ -2937,7 +2937,7 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     press(&mut s, "asset stone", MouseButton::Right);
     click(&mut s, "menu Create Material Instance");
     s.frame();
-    let file = dir.join("content/valley/nature/rocks/stone_instance.scrmat");
+    let file = dir.join("content/showreel/nature/rocks/stone_instance.scrmat");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
         text.contains(r#"(parent: ("stone", ""#),
@@ -3078,12 +3078,12 @@ fn a_component_s_link_to_a_record_is_picked_from_its_table_and_a_wrong_one_named
     };
     std::fs::create_dir_all(dir.join("configs")).unwrap();
     std::fs::write(
-        dir.join("content/valley/crafting/materials.ron"),
+        dir.join("content/showreel/crafting/materials.ron"),
         "{\n    \"Палка\": (id: \"4c1e\", hard: 1),\n    \"Доска\": (id: \"9a02\", hard: 2),\n}\n",
     )
     .unwrap();
     let mut tables = scrap::Tables::new();
-    tables.register::<Material>("content/valley/crafting/materials.ron");
+    tables.register::<Material>("content/showreel/crafting/materials.ron");
     tables
         .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
         .unwrap();
@@ -3757,7 +3757,7 @@ fn a_materials_map_is_a_texture_picked_by_name() {
         .asset_ids_of_kind("texture")
         .into_iter()
         .find(|(n, _)| n.contains("marks"))
-        .expect("the valley's textures imported");
+        .expect("the showreel's textures imported");
     let crate_id = s.session.find("crate").unwrap();
     s.session
         .set_field(crate_id, "material", "(base_color: (0.5, 0.4, 0.3))")
@@ -3855,7 +3855,7 @@ fn a_bone_is_picked_from_the_parents_skeleton() {
     let Some((mut s, dir)) = studio() else {
         return;
     };
-    let assets = dir.join("content/valley");
+    let assets = dir.join("content/showreel");
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../scrap-import/tests/fixtures/skinned_banner.gltf"),
@@ -3952,7 +3952,7 @@ fn the_scene_is_the_first_line_and_its_menu_saves_and_reloads() {
     click(&mut s, "hierarchy scene menu");
     click(&mut s, "menu Save Scene");
     assert!(!s.session.is_modified());
-    let text = std::fs::read_to_string(dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
+    let text = std::fs::read_to_string(dir.join("content/showreel/maps/first-light.scene.ron")).unwrap();
     assert!(text.contains("\"box\""));
     assert_eq!(s.ui.text(name), Some("first-light"));
 
@@ -4051,8 +4051,8 @@ fn a_line_dropped_on_the_scene_line_goes_to_the_top() {
 /// A second scene beside the first, so there is somewhere to go.
 fn second_scene(s: &mut Studio, dir: &std::path::Path) {
     std::fs::copy(
-        dir.join("content/valley/maps/first-light.scene.ron"),
-        dir.join("content/valley/maps/second.scene.ron"),
+        dir.join("content/showreel/maps/first-light.scene.ron"),
+        dir.join("content/showreel/maps/second.scene.ron"),
     )
     .unwrap();
     s.refresh();
@@ -4077,7 +4077,7 @@ fn one_column_shows_files_inside_folders_and_is_remembered() {
     std::thread::sleep(std::time::Duration::from_millis(600));
     s.frame();
     drop(s);
-    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/showreel/maps/first-light.scene.ron")).unwrap();
     let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
     again.frame();
     again.ui.paint();
@@ -4091,7 +4091,7 @@ fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
     click(&mut s, "asset first-light");
     let dump = s.ui.dump();
     assert!(
-        dump.contains("\"content/valley/maps/\"") && dump.contains("\"first-light.scene.ron\""),
+        dump.contains("\"content/showreel/maps/\"") && dump.contains("\"first-light.scene.ron\""),
         "{dump}"
     );
     // The engine's own: under Built-in.
@@ -4110,7 +4110,7 @@ fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
 #[test]
 fn show_asset_goes_to_its_folder_and_chooses_it() {
     let Some((mut s, _dir)) = studio() else { return };
-    assert!(s.show_in_project("content/valley/maps/first-light.scene.ron"));
+    assert!(s.show_in_project("content/showreel/maps/first-light.scene.ron"));
     assert!(s.ui.find("crumb maps").is_some(), "in its folder");
     assert!(s.ui.dump().contains("\"first-light.scene.ron\""), "chosen");
     // By name, in one column: the tree opens down to it.
@@ -4137,8 +4137,8 @@ fn the_arrows_walk_the_project_and_enter_opens() {
     click(&mut s, "dialog cancel");
     click(&mut s, "asset first-light");
     key(&mut s, Key::Delete);
-    assert!(s.ui.dump().contains("Delete content/valley/maps/first-light.scene.ron"));
-    assert!(dir.join("content/valley/maps/first-light.scene.ron").exists(), "only asked");
+    assert!(s.ui.dump().contains("Delete content/showreel/maps/first-light.scene.ron"));
+    assert!(dir.join("content/showreel/maps/first-light.scene.ron").exists(), "only asked");
     // In one column: right opens a folder, down goes into it.
     key(&mut s, Key::Escape);
     click(&mut s, "project one column");
@@ -4146,7 +4146,7 @@ fn the_arrows_walk_the_project_and_enter_opens() {
     key(&mut s, Key::Right);
     key(&mut s, Key::Down);
     let dump = s.ui.dump();
-    assert!(dump.contains("\"content/valley/maps/\""), "a scene chosen: {dump}");
+    assert!(dump.contains("\"content/showreel/maps/\""), "a scene chosen: {dump}");
 }
 
 #[test]
@@ -4246,7 +4246,7 @@ fn a_tab_dropped_on_an_edge_splits_the_stack_which_is_kept_and_folds_when_emptie
     let text = std::fs::read_to_string(dir.join(".scrap/studio.ron")).unwrap();
     assert!(text.contains("left: down("), "{text}");
     drop(s);
-    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/showreel/maps/first-light.scene.ron")).unwrap();
     let mut s = Studio::new(session, 1440.0, 900.0, 1.0);
     s.frame();
     let top = rect(&mut s, "stack 0a");
@@ -4859,7 +4859,7 @@ fn a_materials_shader_properties_are_shown_by_name_and_set_there() {
     assert_eq!(s.ui.text(field), Some("0.08"));
     fill(&mut s, "shader property flow", "0.2");
     s.frame();
-    let text = std::fs::read_to_string(dir.join("content/valley/lava/lava.scrmat")).unwrap();
+    let text = std::fs::read_to_string(dir.join("content/showreel/lava/lava.scrmat")).unwrap();
     assert!(text.contains("params: [0.2]"), "{text}");
     fill(&mut s, "shader property flow", "fast");
     assert!(
@@ -4873,7 +4873,7 @@ fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
     let Some((mut s, dir)) = studio() else {
         return;
     };
-    let file = dir.join("content/valley/lava/lava.graph.ron");
+    let file = dir.join("content/showreel/lava/lava.graph.ron");
     click(&mut s, "tab shadergraph");
     s.frame();
     click(&mut s, "shader graphs wide");
@@ -4956,7 +4956,7 @@ fn the_projects_screen_lists_pins_forgets_and_opens() {
         other.join("scrap.ron"),
         std::fs::read_to_string(other.join("scrap.ron"))
             .unwrap()
-            .replace("name: \"valley\"", "name: \"meadow\""),
+            .replace("name: \"showreel\"", "name: \"meadow\""),
     )
     .unwrap();
     let gone = dir.with_file_name("scrap-hub-test-gone");
@@ -4986,7 +4986,7 @@ fn the_projects_screen_lists_pins_forgets_and_opens() {
     s.frame();
     {
         let entries = s.hub().unwrap().entries();
-        assert_eq!(entries[this].name, "valley");
+        assert_eq!(entries[this].name, "showreel");
         assert_eq!(entries[meadow].name, "meadow");
         assert_eq!(entries[missing].problem.as_deref(), Some("the folder is gone"));
         assert!(this < meadow, "the one opened comes before one never opened");
@@ -5073,17 +5073,17 @@ fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
     key(&mut s, Key::Escape);
     assert!(s.ui.find("projects overlay").is_some(), "Esc leaves it up");
 
-    // New: the example valley, as `meadow`, in a folder of the test's own.
+    // New: the showreel example, as `meadow`, in a folder of the test's own.
     click(&mut s, "projects new");
     assert!(s.ui.find("new set basic").is_some(), "an empty one on offer");
-    assert!(s.ui.find("new template valley").is_some(), "and the examples");
+    assert!(s.ui.find("new template showreel").is_some(), "and the examples");
     let place = dir.with_file_name(format!("{}-new", dir.file_name().unwrap().to_string_lossy()));
     std::fs::create_dir_all(&place).unwrap();
     {
         let (hub, ui) = s.hub_mut().unwrap();
         hub.set_location(ui, place.clone());
     }
-    click(&mut s, "new template valley");
+    click(&mut s, "new template showreel");
     // Typed as a person types it, then a choice clicked: leaving the name
     // does not make the project before it is chosen.
     let name = s.ui.find("new name").unwrap();
@@ -5093,7 +5093,7 @@ fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
     s.frame();
     click(&mut s, "new template graphs");
     assert!(!place.join("meadow").exists(), "nothing made by leaving the name");
-    click(&mut s, "new template valley");
+    click(&mut s, "new template showreel");
     click(&mut s, "new create");
     s.frame();
     assert!(s.ui.find("projects overlay").is_none(), "the screen goes");

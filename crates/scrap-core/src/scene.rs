@@ -73,7 +73,7 @@ impl Transform {
     }
 }
 
-/// One thing in the valley.
+/// One thing in the scene.
 ///
 /// The core's fields are its identity, its place and its tree; everything
 /// else on the line — `model`, `material`, `body`, `light`, `sound`… — is a

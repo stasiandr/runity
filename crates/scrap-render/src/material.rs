@@ -3,9 +3,8 @@
 //! A colour, how metallic and how smooth (the metallic workflow), what it
 //! emits, how see-through it is and how it is blended, whether it is cut
 //! out, which faces are drawn, and whether it takes highlights, reflections
-//! and shadows. Everything past the colour defaults to what the valley
-//! asks for (`docs/design/07-look.md`): not metallic, not smooth — a matte
-//! surface, flat colour on a characteristic shape, which is what a
+//! and shadows. Everything past the colour defaults to a matte look:
+//! not metallic, not smooth — flat colour on a characteristic shape, which is what a
 //! material that says only its colour still looks like. Anything else is
 //! a line in the material's file away.
 
