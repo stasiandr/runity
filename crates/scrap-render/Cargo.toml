@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 scrap-core = { path = "../scrap-core" }
+scrap-shadergraph = { path = "../scrap-shadergraph" }
 scrap-geometry = { path = "../scrap-geometry" }
 scrap-gpu = { path = "../scrap-gpu" }
 scrap-overlay = { path = "../scrap-overlay" }

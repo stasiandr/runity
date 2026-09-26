@@ -1,0 +1,3 @@
+// Lava: drawn by the shader graph shaders/lava.graph.ron; `params` is its
+// `flow`, how fast the cracks crawl.
+(color: "#231a16", shader: "lava", params: [0.08])

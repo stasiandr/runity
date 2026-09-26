@@ -1,0 +1,29 @@
+// Embers off the lava: born anywhere over the floor, carried up and about
+// by a wind that differs from place to place, each its own hue of fire,
+// flickering as they go and gone by the end of their lives.
+(
+    nodes: {
+        "spot": Random(low: (-5.0, 0.0, -5.0), high: (5.0, 0.0, 5.0)),
+        "born_at": Add(a: "origin", b: "spot"),
+        "rise": Random(low: (0.0, 0.6, 0.0), high: (0.0, 1.6, 0.0)),
+        "lasts": Random(low: 1.5, high: 3.5),
+
+        "wind": Turbulence(at: "position", scale: 0.6),
+        "gust": Multiply(a: "wind", b: 2.5),
+        "lift": Add(a: "gust", b: (0.0, 0.8, 0.0)),
+        "drag": Multiply(a: "velocity", b: -0.9),
+        "pull": Add(a: "lift", b: "drag"),
+        "change": Multiply(a: "pull", b: "dt"),
+        "carried": Add(a: "velocity", b: "change"),
+
+        "hue": Random(low: (1.0, 0.25, 0.02), high: (1.0, 0.7, 0.2)),
+        "hot": Multiply(a: "hue", b: 12.0),
+        "flicker": Noise(at: "position", scale: 5.0),
+        "fade": OneMinus(of: "t"),
+        "shine": Multiply(a: "fade", b: "flicker"),
+        "grain": Multiply(a: "size", b: "fade"),
+    },
+    spawn: (position: "born_at", velocity: "rise", life: "lasts"),
+    update: (velocity: "carried"),
+    output: (color: "hot", alpha: "shine", size: "grain"),
+)

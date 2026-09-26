@@ -60,6 +60,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shot.entities,
         shot.gpu.describe()
     );
+    // Two seconds of its particles: sparks already in the air.
+    shot.run_particles(2.0);
     let frame = &mut shot.frame;
     if virtual_shadows {
         frame.shadows.virtual_maps = true;

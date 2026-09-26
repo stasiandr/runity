@@ -1657,7 +1657,9 @@ pub fn with_surface(base: &str, surface: &str) -> Result<String, String> {
 }
 
 /// Every material shader in a folder — `shaders/water.wgsl` for
-/// `shader: "water"` — put into a renderer, and again when one changes.
+/// `shader: "water"`, `shaders/lava.graph.ron` for `shader: "lava"` — and
+/// every particle effect graph — `shaders/sparks.vfx.ron` for an emitter's
+/// `graph: "sparks"` — put into a renderer, and again when one changes.
 pub struct MaterialShaders {
     dir: std::path::PathBuf,
     stamps: std::collections::HashMap<std::path::PathBuf, Option<std::time::SystemTime>>,
@@ -1686,19 +1688,23 @@ impl MaterialShaders {
         let mut read = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_none_or(|e| e != "wgsl") {
+            let effect = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::effect_name).map(str::to_string);
+            let Some(name) = material_shader_name(&path).or(effect.clone()) else {
                 continue;
-            }
+            };
             let stamp = scrap_core::files::modified(&path);
             if self.stamps.get(&path) == Some(&stamp) {
                 continue;
             }
             self.stamps.insert(path.clone(), stamp);
-            let name = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            match scrap_core::files::read_to_string(&path) {
+            if effect.is_some() {
+                let result = effect_source(&path)
+                    .and_then(|source| renderer.set_effect_graph(gpu, &name, &source))
+                    .map_err(|e| format!("{}:\n{e}", path.display()));
+                out.push((name, result));
+                continue;
+            }
+            match material_shader_source(&path) {
                 Ok(source) => read.push((name, path, source)),
                 Err(e) => out.push((name, Err(format!("{}:\n{e}", path.display())))),
             }
@@ -1711,6 +1717,62 @@ impl MaterialShaders {
         }
         out
     }
+}
+
+/// A particle effect's functions from its file, `shaders/<name>.vfx.ron`:
+/// the graph compiled ([`scrap_shadergraph::effect`]). Built into the
+/// particles' shader by [`crate::particles_gpu::check_effect`] and
+/// [`Renderer::set_effect_graph`].
+pub fn effect_source(path: &std::path::Path) -> Result<String, String> {
+    let text = scrap_core::files::read_to_string(path).map_err(|e| e.to_string())?;
+    let graph = scrap_shadergraph::effect::parse(&text)?;
+    let from = path.file_name().map(|f| format!("shaders/{}", f.to_string_lossy())).unwrap_or_default();
+    scrap_shadergraph::effect::to_wgsl(&graph, &from)
+}
+
+/// Whether a material's `surface` builds over the standard shader, without
+/// a GPU: spliced in, parsed and validated as the renderer would, the
+/// error with its line and column. What `scrap check` asks of every shader.
+pub fn check_material_shader(surface: &str) -> Result<(), String> {
+    use wgpu::naga;
+    let full = with_surface(SHADER, surface)?;
+    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&full))?;
+    Ok(())
+}
+
+/// The shader a file in `shaders/` is, by name: `water.wgsl` and
+/// `lava.graph.ron` (a shader graph) are `water` and `lava`. `None` for
+/// anything else there.
+pub fn material_shader_name(path: &std::path::Path) -> Option<String> {
+    let file = path.file_name()?.to_str()?;
+    if let Some(name) = scrap_shadergraph::shader_name(file) {
+        return Some(name.to_string());
+    }
+    (path.extension()? == "wgsl").then(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))?
+}
+
+/// A material shader's `surface` source from its file: the file itself for
+/// `.wgsl`, the compiled graph for `.graph.ron`. A graph with a `.wgsl` of
+/// its name beside it is refused: one shader, one file.
+pub fn material_shader_source(path: &std::path::Path) -> Result<String, String> {
+    let text = scrap_core::files::read_to_string(path).map_err(|e| e.to_string())?;
+    let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
+        return Ok(text);
+    };
+    let Some(name) = scrap_shadergraph::shader_name(file) else {
+        return Ok(text);
+    };
+    let twin = path.with_file_name(format!("{name}.wgsl"));
+    if scrap_core::files::read_to_string(&twin).is_ok() {
+        return Err(format!(
+            "`{name}.wgsl` beside it is shader `{name}` too: one shader, one file — keep the graph or the WGSL"
+        ));
+    }
+    let graph = scrap_shadergraph::surface::parse(&text)?;
+    scrap_shadergraph::surface::to_wgsl(&graph, &format!("shaders/{file}"))
 }
 
 /// A shader source file, reloaded into a renderer when it changes. DNA,
@@ -1887,7 +1949,7 @@ struct SamplePipelines {
     samples: u32,
     scene: Pipelines,
     clusters: Option<crate::cluster::ClusterPipelines>,
-    particles: wgpu::RenderPipeline,
+    particles: crate::particles_gpu::Draws,
 }
 
 /// Every pipeline the renderer draws with.
@@ -2740,13 +2802,13 @@ impl Renderer {
                     samples: before,
                     scene: std::mem::replace(&mut self.pipelines, set.scene),
                     clusters: std::mem::replace(&mut self.clusters.pipelines, set.clusters),
-                    particles: self.gpu_particles.swap_draw(set.particles),
+                    particles: self.gpu_particles.swap_draw(gpu, set.particles),
                 };
                 self.samples = samples;
                 now
             }
             _ => {
-                let particles = self.gpu_particles.make_draw(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples);
+                let particles = self.gpu_particles.make_draw(gpu, samples);
                 let shader = self.base_shader.clone();
                 self.samples = samples;
                 // Built into place: what it replaces is what is kept.
@@ -2761,7 +2823,7 @@ impl Renderer {
                     samples: before,
                     scene: old_scene,
                     clusters: old_clusters,
-                    particles: self.gpu_particles.swap_draw(particles),
+                    particles: self.gpu_particles.swap_draw(gpu, particles),
                 }
             }
         };
@@ -2855,6 +2917,20 @@ impl Renderer {
     /// (see `render.wgsl`): the standard shader with it put in, checked,
     /// and its pipelines built. Refused in words — file, line, column —
     /// with whatever it had before kept drawing.
+    /// Put in effect `name` for the GPU's particles, from its graph's
+    /// functions ([`scrap_shadergraph::effect::to_wgsl`]): emitters with
+    /// `graph: "<name>"` move and look by it from the next frame. Refused
+    /// in words when it does not build, and the one before goes on.
+    pub fn set_effect_graph(&mut self, gpu: &Gpu, name: &str, effect: &str) -> Result<(), String> {
+        self.other_samples = None;
+        self.gpu_particles.set_effect(gpu, name, effect)
+    }
+
+    /// Whether effect `name` is in for the GPU's particles.
+    pub fn has_effect_graph(&self, name: &str) -> bool {
+        !name.is_empty() && self.gpu_particles.has_effect(name)
+    }
+
     pub fn set_material_shader(
         &mut self,
         gpu: &Gpu,
@@ -8630,6 +8706,83 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_shader_graph_of_every_kind_of_node_builds_over_the_standard_shader() {
+        let graph = scrap_shadergraph::surface::parse(
+            r#"(
+                params: ["speed", "glow", "tint_r"],
+                textures: ["_Main", "_Noise"],
+                nodes: {
+                    "t": Multiply(a: "time", b: "speed"),
+                    "moved": TilingOffset(tiling: (2.0, 3.0), offset: "t"),
+                    "turned": Rotate(uv: "moved", angle: "t"),
+                    "main": Texture(name: "_Main", uv: "turned"),
+                    "grain": Texture(name: "_Noise"),
+                    "n2": Noise(at: "uv", scale: 4.0),
+                    "n3": Noise(at: "position", scale: 0.5),
+                    "cells": Voronoi(scale: 6.0),
+                    "check": Checker(scale: 8.0),
+                    "rim": Fresnel(power: 3.0),
+                    "a": Add(a: "n2", b: "n3"),
+                    "s": Subtract(a: "a", b: 0.5),
+                    "d": Divide(a: "s", b: 2.0),
+                    "p": Power(a: "d", b: 2.0),
+                    "lo": Min(a: "p", b: "cells.y"),
+                    "hi": Max(a: "lo", b: "check"),
+                    "m": Modulo(a: "hi", b: 0.3),
+                    "st": Step(edge: 0.5, of: "m"),
+                    "dt": Dot(a: "normal", b: "view"),
+                    "ds": Distance(a: "position", b: (0.0, 1.0, 0.0)),
+                    "cr": Cross(a: "normal", b: "view"),
+                    "neg": Negate(of: "dt"),
+                    "om": OneMinus(of: "neg"),
+                    "ab": Abs(of: "om"),
+                    "fl": Floor(of: "ab"),
+                    "ce": Ceil(of: "fl"),
+                    "ro": Round(of: "ce"),
+                    "fr": Fract(of: "ds"),
+                    "sg": Sign(of: "fr"),
+                    "si": Sine(of: "t"),
+                    "co": Cosine(of: "si"),
+                    "sq": Sqrt(of: "co"),
+                    "ex": Exp(of: "sq"),
+                    "sa": Saturate(of: "ex"),
+                    "le": Length(of: "cr"),
+                    "no": Normalize(of: "cr"),
+                    "tu": Turbulence(scale: 2.0),
+                    "bent": Add(a: "no", b: "tu"),
+                    "mix": Lerp(a: (0.1, 0.2, 0.3), b: "main.rgb", t: "sa"),
+                    "cl": Clamp(of: "mix", low: 0.0, high: 2.0),
+                    "sm": Smoothstep(low: 0.2, high: 0.8, of: "st"),
+                    "rm": Remap(of: "sm", from: (0.0, 1.0), to: (-1.0, 1.0)),
+                    "po": Posterize(of: "rm", steps: 4.0),
+                    "cb": Combine(x: "po", y: "tint_r", z: "sg", w: "ro"),
+                    "tint": Multiply(a: "cl", b: "cb.rgb"),
+                    "glowing": Multiply(a: "rim", b: "glow"),
+                },
+                surface: (
+                    albedo: "tint",
+                    alpha: "grain.a",
+                    metallic: "le",
+                    smoothness: 0.5,
+                    normal: "bent",
+                    emission: "glowing",
+                    clip: 0.1,
+                ),
+            )"#,
+        )
+        .unwrap();
+        let kinds: std::collections::BTreeSet<&str> = graph.nodes.values().map(|n| n.kind()).collect();
+        // All but `Random`, which a surface has nothing to be random for.
+        assert_eq!(kinds.len(), scrap_shadergraph::Node::KINDS.len() - 1, "every kind of node is in the graph: {kinds:?}");
+        let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/every.graph.ron").unwrap();
+        assert!(wgsl.starts_with("// Made from shaders/every.graph.ron"), "{wgsl}");
+        assert!(wgsl.contains("// scrap:params speed glow tint_r"), "{wgsl}");
+        assert_eq!(declared_textures(&wgsl), vec!["_Main".to_string(), "_Noise".to_string()]);
+        check_material_shader(&wgsl).unwrap_or_else(|e| panic!("{e}\n{wgsl}"));
+        assert!(scrap_shadergraph::surface::problems(&graph).is_empty());
+    }
 
     #[test]
     fn a_world_box_is_the_box_round_its_eight_corners() {

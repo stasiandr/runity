@@ -49,11 +49,8 @@ impl Session {
                 .flatten()
                 .flatten()
                 .filter_map(|e| {
-                    let path = e.path();
-                    if path.extension().is_none_or(|x| x != "wgsl") {
-                        return None;
-                    }
-                    let name = path.file_stem()?.to_string_lossy().into_owned();
+                    // `water.wgsl` and a shader graph `lava.graph.ron` alike.
+                    let name = scrap::render::material_shader_name(&e.path())?;
                     let id = scrap::asset::shader_id(&name);
                     Some((name, id))
                 })
