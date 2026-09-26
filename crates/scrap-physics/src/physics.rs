@@ -2306,7 +2306,9 @@ impl PhysicsWorld {
         // Rapier misses ground under a mesh floor's seams: a short cast of
         // the shape down from where it ends, onto something not too steep,
         // is ground too — as a CharacterController's skin touching it is.
-        let mut grounded = moved.grounded;
+        // Going up is never landing (a CharacterController's flags say
+        // Below only for a move down): a jump beside a slope leaves it.
+        let mut grounded = moved.grounded && desired.y <= 0.0;
         if !grounded && desired.y <= 0.0 {
             let mut ended = at;
             ended.translation += t;
@@ -3771,6 +3773,44 @@ mod tests {
         );
     }
 
+    /// Game Kit's breakable box: a dynamic body colliding as its model's
+    /// hull, with a box collider on a child (one compound), resting on a
+    /// mesh floor.
+    #[test]
+    fn a_dynamic_hull_with_a_child_collider_rests_on_a_mesh_floor() {
+        for with_child in [false, true] {
+            let mut floor = entity("floor", -0.5, Body::Static, ColliderShape::Model);
+            floor.set_part(&crate::scene::ModelRef("builtin:cube".into()));
+            floor.transform.scale = Vec3::new(20.0, 1.0, 20.0);
+            let mut crate_ = entity("crate", 1.0, Body::Dynamic, ColliderShape::Model);
+            crate_.set_part(&crate::scene::ModelRef("builtin:cube".into()));
+            if with_child {
+                let child = entity(
+                    "crate collider",
+                    0.0,
+                    Body::None,
+                    ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO },
+                );
+                crate_.children.push(child);
+            }
+            let mut scene = Scene { entities: vec![floor, crate_], ..Default::default() };
+            scene.assign_ids();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            attach_scene_collision_meshes(&mut world, &scene, None);
+            let mut physics = PhysicsWorld::new(1.0 / 60.0);
+            run_for(&mut physics, &mut world, 120);
+            let body = world
+                .query::<(hecs::Entity, &Physics)>()
+                .iter()
+                .find(|(_, p)| p.0 == Body::Dynamic)
+                .map(|(e, _)| e)
+                .unwrap();
+            let y = world.get::<&Transform>(body).unwrap().position.y;
+            assert!((y - 0.5).abs() < 0.1, "with a child collider {with_child}: rests on the floor at {y}");
+        }
+    }
+
     #[test]
     fn a_body_someone_else_owns_is_moved_by_them_not_by_gravity() {
         let (mut physics, mut world, ball) = dropped(3.0);
@@ -4499,6 +4539,35 @@ mod tests {
         assert!(highest > 0.95, "up the 0.2 m step: {highest}");
         assert!(at.x < 7.5 && at.x > 7.0, "stopped at the wall: {at}");
         assert!(grounded, "on the floor");
+    }
+
+    /// A jump beside a slope leaves the ground: moving up is never landing.
+    #[test]
+    fn a_character_jumping_against_a_slope_is_not_grounded() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "floor", model: "m", body: Static,
+                 collider: Box(half: (20.0, 0.5, 20.0)), transform: (position: (0.0, -0.5, 0.0))),
+                (id: "00000000000000f2", name: "slope", model: "m", body: Static,
+                 collider: Box(half: (2.0, 2.0, 5.0)), transform: (position: (1.9, 0.0, 0.0), rotation_deg: (0.0, 0.0, 50.0))),
+                (id: "00000000000000f4", name: "ellen", model: "m", body: Kinematic,
+                 collider: Capsule(half_height: 0.5, radius: 0.3), transform: (position: (0.0, 0.82, 0.0))),
+            ])"#,
+        );
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let ellen = by_id(&world, "00000000000000f4".parse().unwrap());
+        let mut rose = 0.0;
+        for _ in 0..5 {
+            let (moved, on) = physics.move_character(&world, ellen, Vec3::new(0.1, 0.2, 0.0), 0.3, 45.0).unwrap();
+            assert!(!on, "going up is not landing");
+            rose += moved.y;
+            world.get::<&mut Transform>(ellen).unwrap().position += moved;
+            crate::world::apply_hierarchy(&mut world);
+            physics.sync_from_world(&mut world);
+            physics.refresh_queries();
+        }
+        assert!(rose > 0.5, "she rose: {rose}");
     }
 
     #[test]

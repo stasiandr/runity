@@ -520,6 +520,7 @@ AnimatorStateTransition:
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("run".to_string(), dir.join("A_Run.fbx"))]
@@ -570,6 +571,7 @@ AnimatorStateTransition:
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("hand".to_string(), dir.join("Hand.fbx"))].into_iter().collect(),
@@ -598,6 +600,7 @@ AnimatorStateTransition:
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("run".to_string(), dir.join("Run.fbx"))].into_iter().collect(),
@@ -620,6 +623,7 @@ AnimatorStateTransition:
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("idleclip".to_string(), dir.join("Idle.anim"))]
@@ -680,6 +684,7 @@ AnimatorStateTransition:
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("idleclip".to_string(), dir.join("Idle.anim")), ("runclip".to_string(), dir.join("Run.anim"))]
