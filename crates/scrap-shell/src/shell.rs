@@ -550,8 +550,12 @@ impl<G: Game> Shell<G> {
         // The window's size as it is now: a resize that came while the
         // device was still coming up (in the browser it comes up after the
         // canvas is laid out) was told to nobody.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
         let (width, height) = state.window.inner_size().into();
+        // On iOS winit's inner size is the safe area, the screen less the
+        // notch and the home bar; the view it draws in is the whole screen.
+        #[cfg(target_os = "ios")]
+        let (width, height) = state.window.outer_size().into();
         // In the browser the canvas's pixels are the page's to keep up:
         // its laid-out size times the device's pixel ratio, the space
         // winit gives pointer and touch positions in.
