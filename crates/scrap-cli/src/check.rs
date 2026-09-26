@@ -1287,12 +1287,18 @@ fn shaders(project: &Project, out: &mut Vec<Finding>) {
     paths.sort();
     for path in paths {
         let file = relative(project, &path);
+        if file.ends_with(".subgraph.ron") {
+            if let Err(e) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::subgraph::parse(&t)) {
+                out.push(error(&file, e));
+            }
+            continue;
+        }
         if file.ends_with(".vfx.ron") {
             match scrap::render::effect_source(&path).and_then(|s| scrap::particles_gpu::check_effect(&s)) {
                 Err(e) => out.push(error(&file, e)),
                 Ok(()) => {
                     if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::effect::parse(&t)) {
-                        for problem in scrap::shader_graph::effect::problems(&graph) {
+                        for problem in scrap::shader_graph::effect::problems_with(&graph, &scrap::render::subgraphs_beside(&path)) {
                             out.push(Finding {
                                 severity: Severity::Warning,
                                 file: file.clone(),
@@ -1320,7 +1326,7 @@ fn shaders(project: &Project, out: &mut Vec<Finding>) {
         }
         if file.ends_with(".graph.ron") {
             if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::surface::parse(&t)) {
-                for problem in scrap::shader_graph::surface::problems(&graph) {
+                for problem in scrap::shader_graph::surface::problems_with(&graph, &scrap::render::subgraphs_beside(&path)) {
                     out.push(Finding {
                         severity: Severity::Warning,
                         file: file.clone(),

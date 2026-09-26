@@ -1791,7 +1791,26 @@ impl MaterialShaders {
         // What is new or changed, read; then built all together.
         let mut out = Vec::new();
         let mut read = Vec::new();
-        for entry in entries.flatten() {
+        let entries: Vec<_> = entries.flatten().collect();
+        // A subgraph changed: every graph may call it, and is built again.
+        let mut subgraph_changed = false;
+        for entry in &entries {
+            let path = entry.path();
+            if path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::subgraph::subgraph_name).is_some() {
+                let stamp = scrap_core::files::modified(&path);
+                if self.stamps.get(&path) != Some(&stamp) {
+                    self.stamps.insert(path, stamp);
+                    subgraph_changed = true;
+                }
+            }
+        }
+        if subgraph_changed {
+            self.stamps.retain(|p, _| {
+                let f = p.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+                !(f.ends_with(".graph.ron") || f.ends_with(".vfx.ron"))
+            });
+        }
+        for entry in entries {
             let path = entry.path();
             let effect = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::effect_name).map(str::to_string);
             let Some(name) = material_shader_name(&path).or(effect.clone()) else {
@@ -1832,7 +1851,7 @@ pub fn effect_source(path: &std::path::Path) -> Result<String, String> {
     let text = scrap_core::files::read_to_string(path).map_err(|e| e.to_string())?;
     let graph = scrap_shadergraph::effect::parse(&text)?;
     let from = path.file_name().map(|f| format!("shaders/{}", f.to_string_lossy())).unwrap_or_default();
-    scrap_shadergraph::effect::to_wgsl(&graph, &from)
+    scrap_shadergraph::effect::to_wgsl_with(&graph, &from, &subgraphs_beside(path))
 }
 
 /// Whether a material's `surface` builds over the standard shader, without
@@ -1877,7 +1896,93 @@ pub fn material_shader_source(path: &std::path::Path) -> Result<String, String> 
         ));
     }
     let graph = scrap_shadergraph::surface::parse(&text)?;
-    scrap_shadergraph::surface::to_wgsl(&graph, &format!("shaders/{file}"))
+    scrap_shadergraph::surface::to_wgsl_with(&graph, &format!("shaders/{file}"), &subgraphs_beside(path))
+}
+
+/// What a property of a material's shader is, for an inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyKind {
+    Number,
+    Vector,
+    Color,
+    Boolean,
+}
+
+/// One property of a material's shader: its name, where its numbers start
+/// in the material's eight `params`, how many, and what it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Property {
+    pub name: String,
+    pub at: usize,
+    pub size: usize,
+    pub kind: PropertyKind,
+}
+
+/// The properties of the material shader called `name` in `dir` (a
+/// project's `shaders/`): a graph's as it types them; a hand-written one's
+/// from its `// scrap:params` line, `tint.r tint.g tint.b` read as a
+/// colour and `wind.x wind.y` as a vector.
+pub fn material_properties(dir: &std::path::Path, name: &str) -> Vec<Property> {
+    let graph = dir.join(format!("{name}.graph.ron"));
+    if let Ok(text) = scrap_core::files::read_to_string(&graph) {
+        let Ok(g) = scrap_shadergraph::surface::parse(&text) else {
+            return Vec::new();
+        };
+        return scrap_shadergraph::surface::slots(&g)
+            .into_iter()
+            .map(|(p, at)| {
+                use scrap_shadergraph::Kind;
+                Property {
+                    name: p.name().to_string(),
+                    at,
+                    size: p.kind().size(),
+                    kind: match p.kind() {
+                        Kind::Float => PropertyKind::Number,
+                        Kind::Boolean => PropertyKind::Boolean,
+                        Kind::Color => PropertyKind::Color,
+                        _ => PropertyKind::Vector,
+                    },
+                }
+            })
+            .collect();
+    }
+    let Ok(text) = scrap_core::files::read_to_string(dir.join(format!("{name}.wgsl"))) else {
+        return Vec::new();
+    };
+    let Some(line) = text.lines().find_map(|l| l.trim().strip_prefix("// scrap:params")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Property> = Vec::new();
+    for (i, slot) in line.split_whitespace().enumerate() {
+        let (base, part) = slot.split_once('.').unwrap_or((slot, ""));
+        let colour = matches!(part, "r" | "g" | "b" | "a");
+        match out.last_mut() {
+            Some(last) if !part.is_empty() && last.name == base && last.at + last.size == i => {
+                last.size += 1;
+                if colour {
+                    last.kind = PropertyKind::Color;
+                }
+            }
+            _ => out.push(Property {
+                name: base.to_string(),
+                at: i,
+                size: 1,
+                kind: if part.is_empty() {
+                    PropertyKind::Number
+                } else if colour {
+                    PropertyKind::Color
+                } else {
+                    PropertyKind::Vector
+                },
+            }),
+        }
+    }
+    out
+}
+
+/// The subgraphs a graph file calls: `<name>.subgraph.ron` in its folder.
+pub fn subgraphs_beside(path: &std::path::Path) -> scrap_shadergraph::subgraph::Folder {
+    scrap_shadergraph::subgraph::Folder(path.parent().map(std::path::Path::to_path_buf).unwrap_or_default())
 }
 
 /// A shader source file, reloaded into a renderer when it changes. DNA,
@@ -9363,8 +9468,9 @@ mod tests {
         )
         .unwrap();
         let kinds: std::collections::BTreeSet<&str> = graph.nodes.values().map(|n| n.kind()).collect();
-        // All but `Random`, which a surface has nothing to be random for.
-        assert_eq!(kinds.len(), scrap_shadergraph::Node::KINDS.len() - 1, "every kind of node is in the graph: {kinds:?}");
+        // All but `Random`, which a surface has nothing to be random for,
+        // and `Subgraph`, which is put in before this (its own tests).
+        assert_eq!(kinds.len(), scrap_shadergraph::Node::KINDS.len() - 2, "every kind of node is in the graph: {kinds:?}");
         let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/every.graph.ron").unwrap();
         assert!(wgsl.starts_with("// Made from shaders/every.graph.ron"), "{wgsl}");
         assert!(wgsl.contains("// scrap:params speed glow tint_r"), "{wgsl}");

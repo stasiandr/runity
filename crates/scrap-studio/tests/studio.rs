@@ -4775,3 +4775,28 @@ fn the_table_sets_a_cell_of_a_tuning_record_and_sorts_by_a_column() {
     click(&mut s, "table undo");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
 }
+
+#[test]
+fn a_materials_shader_properties_are_shown_by_name_and_set_there() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The lava material's shader is a graph with one property, `flow`.
+    find_in_project(&mut s, "lava");
+    s.frame();
+    click(&mut s, "asset lava");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("Shader properties (lava)"), "{dump}");
+    let field = s.ui.find("shader property flow").expect("its field");
+    assert_eq!(s.ui.text(field), Some("0.08"));
+    fill(&mut s, "shader property flow", "0.2");
+    s.frame();
+    let text = std::fs::read_to_string(dir.join("materials/lava.scrmat")).unwrap();
+    assert!(text.contains("params: [0.2]"), "{text}");
+    fill(&mut s, "shader property flow", "fast");
+    assert!(
+        s.session.console().iter().any(|l| l.text.contains("number")),
+        "a value that is not a number is refused"
+    );
+}

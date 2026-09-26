@@ -480,6 +480,9 @@ impl State<'_> {
                 let p = exactly(0, Ty::F2)?;
                 self.context.scene_color(&p).map_err(at)?
             }
+            Subgraph { name: sub, .. } => {
+                return Err(at(format!("subgraph `{sub}` was not put in: this graph was compiled without its subgraphs")));
+            }
             other => unreachable!("`{}` is compiled in expr.rs", other.kind()),
         };
         Ok(v)

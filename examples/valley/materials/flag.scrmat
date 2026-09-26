@@ -1,3 +1,4 @@
 // A flag: drawn and waved by the shader graph shaders/flag.graph.ron;
-// `params` is its `wind`, how far it flaps.
-(color: "#ffffff", shader: "flag", params: [0.35], render_face: Both)
+// `params` are its `wind`, how far it flaps, and its stripes' two colours,
+// `red` and `pale` (linear red, green, blue).
+(color: "#ffffff", shader: "flag", params: [0.35, 0.55, 0.02, 0.015, 0.9, 0.7, 0.36], render_face: Both)
