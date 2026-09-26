@@ -69,7 +69,7 @@ fn a_character_on_lafan1_goes_where_the_stick_points() {
     let steps = (16.0 / dt) as usize;
     for step in 0..steps {
         let t = step as f32 * dt;
-        let ask = Ask { velocity: stick(t), facing: None };
+        let ask = Ask { velocity: stick(t), ..Default::default() };
         let clock = std::time::Instant::now();
         let pose = matcher.advance(&db, &ask, dt);
         searching += clock.elapsed();
@@ -171,11 +171,11 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
     // At the wall: it walks up, stops short, and stands still.
     let mut matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
     for _ in 0..(6.0 / dt) as usize {
-        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.4, facing: None }, dt, &among);
+        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.4, ..Default::default() }, dt, &among);
     }
     let stopped = matcher.root.0;
     for _ in 0..30 {
-        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.4, facing: None }, dt, &among);
+        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.4, ..Default::default() }, dt, &among);
     }
     let pace = matcher.root.0.distance(stopped) / 0.5;
     eprintln!("at the wall: {stopped:?}, then {pace:.2} m/s");
@@ -190,7 +190,7 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
     let mut held = [0.0f32; 2];
     let mut on_landing = 0.0f32;
     for _ in 0..(7.0 / dt) as usize {
-        let pose = matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.2, facing: None }, dt, &among);
+        let pose = matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.2, ..Default::default() }, dt, &among);
         let world = matcher.world(&db, &pose);
         let at = matcher.root.0;
         if (4.0..8.5).contains(&at.z) && (at.y - 1.02).abs() < 0.05 {
@@ -274,7 +274,7 @@ fn a_character_gets_onto_a_box_over_a_ledge_and_stops_at_a_wall() {
     let mut floating: f32 = 0.0;
     let mut settled = 0.0;
     for _ in 0..(24.0 / dt) as usize {
-        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.3, facing: None }, dt, &among);
+        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.3, ..Default::default() }, dt, &among);
         let (root, feet) = (matcher.root.0, matcher.spring.0);
         if (3.6..4.4).contains(&root.z) && (root.y - 0.5).abs() < 0.1 {
             on_box += dt;
@@ -300,4 +300,38 @@ fn a_character_gets_onto_a_box_over_a_ledge_and_stops_at_a_wall() {
     assert!(highest < 1.4, "never higher than the ledge it climbed");
     assert!(floating < 0.3, "stands on what is there");
     assert!(end.z > 11.0 && end.z < 14.0 - 0.25 && end.y.abs() < 0.05, "down off the ledge, stopped at the wall: {end:?}");
+}
+
+#[test]
+fn debug_jumps() {
+    let Some(dir) = lafan1() else { return };
+    for name in ["jumps1_subject1", "jumps1_subject2", "jumps1_subject5", "multipleActions1_subject1"] {
+        if !dir.join(format!("{name}.bvh")).exists() { continue; }
+        let (skeleton, clips) = locomotion(&dir, &[name]);
+        let clip = &clips[0];
+        let n = (clip.duration * 30.0) as usize;
+        let find = |s: &str| skeleton.joints.iter().position(|j| j.name == s).unwrap();
+        let (lt, rt, lf, rf, hips) = (find("LeftToe"), find("RightToe"), find("LeftFoot"), find("RightFoot"), find("Hips"));
+        let w: Vec<Vec<scrap::glam::Mat4>> = (0..n).map(|i| skeleton.world_matrices(&clip.sample(&skeleton, i as f32 / 30.0, false))).collect();
+        let p = |i: usize, j: usize| w[i][j].w_axis.truncate();
+        let low = |i: usize| [lt, rt, lf, rf].iter().map(|&j| p(i, j).y).fold(f32::MAX, f32::min);
+        let mut i = 0;
+        let mut flights = Vec::new();
+        while i < n {
+            if low(i) > 0.12 {
+                let start = i;
+                while i < n && low(i) > 0.12 { i += 1; }
+                let end = i.min(n - 1);
+                let peak = (start..end).map(|k| low(k)).fold(0.0f32, f32::max);
+                let dist = Vec3::new(p(end, hips).x - p(start, hips).x, 0.0, p(end, hips).z - p(start, hips).z).length();
+                let run = if start > 15 { Vec3::new(p(start, hips).x - p(start - 15, hips).x, 0.0, p(start, hips).z - p(start - 15, hips).z).length() * 2.0 } else { 0.0 };
+                flights.push((start, end - start, peak, dist, run));
+            }
+            i += 1;
+        }
+        eprintln!("== {name}: {n} frames, {} flights", flights.len());
+        for f in flights.iter().filter(|f| f.1 >= 6) {
+            eprintln!("  at {:6.1}s for {:4.2}s, feet up {:.2} m, {:.2} m across, run-up {:.1} m/s", f.0 as f32 / 30.0, f.1 as f32 / 30.0, f.2, f.3, f.4);
+        }
+    }
 }

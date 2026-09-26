@@ -36,6 +36,8 @@ const CLIPS: &[&str] = &[
     "run1_subject5",
     "sprint1_subject2",
     "obstacles*",
+    "jumps1*",
+    "multipleActions1*",
 ];
 
 fn lafan1() -> PathBuf {
@@ -194,7 +196,11 @@ impl Walker {
     }
 
     pub fn step(&mut self, velocity: Vec3, dt: f32) {
-        self.ask = Ask { velocity, facing: None };
+        self.step_jumping(velocity, false, dt);
+    }
+
+    pub fn step_jumping(&mut self, velocity: Vec3, jump: bool, dt: f32) {
+        self.ask = Ask { velocity, facing: None, jump };
         let pose = self.matcher.advance_in(&self.db, &self.ask, dt, &Among(&self.physics));
         self.world = self.matcher.world(&self.db, &pose);
     }
@@ -349,7 +355,7 @@ fn video(db: std::sync::Arc<Database>, course: &str, out: &str, from: f32, to: O
         for sub in 0..2 {
             let t = (frame * 2 + sub) as f32 * dt;
             let clock = std::time::Instant::now();
-            walker.step((course.stick)(t, walker.matcher.root.0), dt);
+            walker.step_jumping((course.stick)(t, walker.matcher.root.0), course.jumps_at(t, dt), dt);
             stepping += clock.elapsed();
         }
         if (frame as f32) < from * fps as f32 {

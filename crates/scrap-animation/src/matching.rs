@@ -65,6 +65,9 @@ pub struct Setup {
     /// Each clip also mirrored, left for right: twice the frames, and a
     /// turn one way as good as the other.
     pub mirror: bool,
+    /// Takes, by the start of their name, looked in only for jumps: their
+    /// other frames are somebody larking about, not walking.
+    pub jump_only: Vec<String>,
 }
 
 impl Default for Setup {
@@ -79,6 +82,7 @@ impl Default for Setup {
             steepest_lean: 30.0,
             lowest_hands: 0.6,
             mirror: true,
+            jump_only: vec!["jumps".into(), "multipleActions".into()],
         }
     }
 }
@@ -110,6 +114,10 @@ pub struct Database {
     /// step within two thirds of a second: looked through on their own
     /// when a ledge is ahead.
     climb_starts: Vec<(usize, f32)>,
+    /// The jumps in the takes: where each is played from (a third of a
+    /// second before the feet leave), the frame they leave, and the frame
+    /// they land.
+    pub jumps: Vec<(usize, usize, usize)>,
     /// Runs of frames with the least and most of each feature over them,
     /// sixteen frames and sixty-four: a run whose nearest corner is
     /// further than what is found already is passed over whole.
@@ -141,6 +149,20 @@ pub struct Database {
     /// How high an ankle is over the floor it stands on, and a toe.
     ankle: f32,
     toe: f32,
+}
+
+/// A jump, by the take it is played from: `lift` the frame the feet leave,
+/// `land` the frame they come down.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Jumping {
+    /// Getting ready: playing up to the take's lift-off.
+    Up { lift: usize, land: usize },
+    /// In the air: going up at `rise` m/s, the take's air played at its
+    /// pace stretched to the flight's, the hips as high over the capsule as
+    /// they were at lift-off.
+    Air { lift: usize, land: usize, rise: f32, pace: f32 },
+    /// Landed: the take's landing played to the end before searching.
+    Down { until: usize },
 }
 
 /// A climb or a drop, checked against the world: its rise times `warp`
@@ -319,6 +341,7 @@ impl Database {
         let mut contacts = Vec::new();
         let mut toe_contacts = Vec::new();
         let mut hand_contacts = Vec::new();
+        let mut jumps = Vec::new();
         let mut raw = Vec::new();
         let mut ranges = Vec::new();
         let mut ankles = Vec::new();
@@ -413,6 +436,32 @@ impl Database {
                 })
                 .collect();
             let start = poses.len() / joints;
+            // Jumps: both feet off whatever the take stands on for a fifth of
+            // a second or more, the hips going up as they leave.
+            let off = |i: usize| {
+                (0..2).all(|side| {
+                    let foot = at(i, feet[side]).y - ankle - ground[i];
+                    let toe = match (toes[side], toe_floor[side]) {
+                        (Some(t), Some(floor)) => at(i, t).y - floor - ground[i],
+                        _ => foot,
+                    };
+                    foot > 0.1 && toe > 0.08
+                })
+            };
+            let mut i = 1;
+            while i < count {
+                if off(i) && !off(i - 1) {
+                    let lift = i;
+                    while i < count && off(i) {
+                        i += 1;
+                    }
+                    let rising = i + 0 < count && lift + 2 < count && (at(lift + 2, root).y - at(lift, root).y) * rate / 2.0 > 0.3;
+                    if i - lift >= 6 && i < count && rising && lift >= 10 {
+                        jumps.push((start + lift - 10, start + lift, start + i));
+                    }
+                }
+                i += 1;
+            }
             for i in 0..count {
                 let (here, turn) = roots[i];
                 let into = Mat4::from_rotation_translation(turn, here).inverse();
@@ -570,7 +619,10 @@ impl Database {
         let features: Vec<[f32; FEATURES]> = features;
         let tail = setup.ahead[0].max(10);
         let mut searchable = vec![false; features.len()];
-        for (_, r) in &ranges {
+        for (name, r) in &ranges {
+            if setup.jump_only.iter().any(|p| name.starts_with(p.as_str())) {
+                continue;
+            }
             let end = r.end.saturating_sub(tail).max(r.start + 1);
             for f in r.start..end {
                 searchable[f] = open[f];
@@ -620,6 +672,7 @@ impl Database {
             open,
             searchable,
             climb_starts,
+            jumps,
             small,
             large,
             features,
@@ -906,6 +959,8 @@ pub struct Ask {
     pub velocity: Vec3,
     /// Which way to face; along the velocity when `None`.
     pub facing: Option<Vec3>,
+    /// Jump now: the step the button is pressed.
+    pub jump: bool,
 }
 
 /// How the matcher reacts.
@@ -923,6 +978,10 @@ pub struct Feel {
     /// What a jump's pose change costs against the features: radians²
     /// summed over the joints, times this.
     pub pose_weight: f32,
+    /// How fast a jump leaves the ground, m/s, and what pulls it down,
+    /// m/s²: a game's jump, whatever the take's.
+    pub jump_speed: f32,
+    pub gravity: f32,
     /// How far a joint may turn in a jump for nothing, radians.
     pub pose_free: f32,
     /// What a climb's warping costs against the features: the squared
@@ -963,6 +1022,8 @@ impl Default for Feel {
             switch_margin: 0.0,
             pose_weight: 10.0,
             pose_free: 0.5,
+            jump_speed: 4.0,
+            gravity: 9.81,
             fit_weight: 30.0,
             blend_halflife: 0.1,
             upper_blend_halflife: 0.1,
@@ -1016,6 +1077,8 @@ pub struct Matcher {
     plan_top: f32,
     plan_base: f32,
     plan_face: (Vec3, Vec3),
+    /// A jump under way.
+    jumping: Option<Jumping>,
     /// How far each hand is laid on a ledge (0 to 1), eased, and how far
     /// the body is kept back from a ledge's face.
     hands_on: [f32; 2],
@@ -1086,6 +1149,7 @@ impl Matcher {
             plan_base: 0.0,
             plan_face: (Vec3::ZERO, Vec3::Z),
             hands_on: [0.0; 2],
+            jumping: None,
             face_push: 0.0,
             jumps: 0,
         }
@@ -1121,10 +1185,10 @@ impl Matcher {
         let (to, _) = world.walk(from, wanted * AHEAD, &climber, AHEAD);
         let can = flat(to - from) / AHEAD;
         if can.length() < wanted.length() * 0.25 {
-            Ask { velocity: Vec3::ZERO, facing: Some(ask.facing.unwrap_or(wanted)) }
+            Ask { velocity: Vec3::ZERO, facing: Some(ask.facing.unwrap_or(wanted)), jump: ask.jump }
         } else {
             // As fast as asked, along where it can go.
-            Ask { velocity: can.normalize() * wanted.length().min(can.length() * 1.5), facing: ask.facing }
+            Ask { velocity: can.normalize() * wanted.length().min(can.length() * 1.5), facing: ask.facing, jump: ask.jump }
         }
     }
 
@@ -1256,6 +1320,24 @@ impl Matcher {
     pub fn advance_in(&mut self, db: &Database, ask: &Ask, dt: f32, world: &dyn Surroundings) -> Vec<PoseTransform> {
         let ask = &self.possible(ask, world);
         let goal = self.goal_turn(ask);
+        // Jump: the take's jump that goes from the pose shown, at the speed
+        // it goes — its run-up, its lift-off, its landing.
+        if ask.jump && self.jumping.is_none() && self.grounded && !self.climbing_on && !db.jumps.is_empty() {
+            let query = self.query(db, ask, world);
+            let shown = self.blended(db);
+            let best = db
+                .jumps
+                .iter()
+                .map(|&(start, lift, land)| {
+                    let cost = db.cost(start, &query) + self.feel.pose_weight * pose_distance(&shown, db.pose(start), self.feel.pose_free);
+                    (start, lift, land, cost)
+                })
+                .min_by(|a, b| a.3.total_cmp(&b.3));
+            if let Some((start, lift, land, _)) = best {
+                self.jump(db, start);
+                self.jumping = Some(Jumping::Up { lift, land });
+            }
+        }
         // On the ground, snapping keeps it there (down steps too); pushing
         // down as well drags it along the floor.
         self.fall = if self.grounded { 0.0 } else { self.fall + 9.81 * dt };
@@ -1281,7 +1363,7 @@ impl Matcher {
             && db.clip_of(self.frame) == db.clip_of(self.plan_end)
             && !topped
             && !(steady && turned_away);
-        let wants = holding || over(self.climbing(db, 30));
+        let wants = self.jumping.is_none() && (holding || over(self.climbing(db, 30)));
         let committed = wants
             && (holding || {
                 // Only a climb the world has: where the take gets to, and
@@ -1308,7 +1390,41 @@ impl Matcher {
         // stands on now.
         let reach = if committed { self.plan_top - self.spring.0.y } else { 0.0 };
         let body = Capsule { step: self.feel.body.step.max((reach + 0.15).min(self.feel.climb)), ..self.feel.body };
-        if !committed {
+        let flying = matches!(self.jumping, Some(Jumping::Air { .. }));
+        if flying {
+            // In the air: across as the stick steers, slower to answer; up
+            // and down as thrown. Landed when the ground under it comes up
+            // to meet the feet.
+            let Some(Jumping::Air { lift, land, rise, pace }) = self.jumping else { unreachable!() };
+            let (x, v, a) = self.spring;
+            let (to, v_to, a_to) = chase(x, flat(v), flat(a), flat(ask.velocity), self.feel.velocity_halflife * 2.0, dt);
+            let across = Capsule { step: 0.0, ..self.feel.body };
+            let (h, _) = world.walk(x, flat(to - x), &across, dt);
+            let rise = rise - self.feel.gravity * dt;
+            let mut y = x.y + rise * dt;
+            let mut landed = false;
+            if rise < 0.0 {
+                if let Some((hit, _)) = world.ground(Vec3::new(h.x, x.y + 0.3, h.z), 0.6 - rise * dt) {
+                    if hit.y >= y {
+                        y = hit.y;
+                        landed = true;
+                    }
+                }
+            }
+            self.spring = (Vec3::new(h.x, y, h.z), v_to, a_to);
+            self.grounded = landed;
+            self.fall = 0.0;
+            self.jumping = Some(Jumping::Air { lift, land, rise, pace });
+            if landed {
+                // Down: from the take's own landing.
+                if self.frame + 2 < land || self.frame > land {
+                    self.jump(db, land);
+                }
+                self.jumping = Some(Jumping::Down { until: land + 12 });
+            }
+            let (q, w) = self.spring_turn;
+            self.spring_turn = turn_to(q, w, goal, self.feel.facing_halflife, dt);
+        } else if !committed {
             let (x, v, a) = self.spring;
             let (to, v_to, a_to) = chase(x, flat(v), flat(a), flat(ask.velocity), self.feel.velocity_halflife, dt);
             let want = flat(to - x);
@@ -1334,20 +1450,46 @@ impl Matcher {
             self.spring_turn = turn_to(q, w, goal, self.feel.facing_halflife, dt);
         }
 
-        // Play on, a frame at a time.
-        self.between += dt * db.setup.rate;
+        // Play on, a frame at a time: in the air, at the pace that makes
+        // the take's flight as long as this one, and not down before it is.
+        let pace = match self.jumping {
+            Some(Jumping::Air { pace, .. }) => pace,
+            _ => 1.0,
+        };
+        self.between += dt * db.setup.rate * pace;
         let mut forced = false;
         while self.between >= 1.0 {
             self.between -= 1.0;
             if db.at_end(self.frame) {
                 forced = true;
                 self.between = 0.0;
+            } else if matches!(self.jumping, Some(Jumping::Air { land, .. }) if self.frame + 1 >= land) {
+                self.between = 0.0;
             } else {
                 self.frame += 1;
             }
         }
+        // Off the ground at the take's lift-off, thrown as hard as the game
+        // throws; the flight it makes is known, and the take's air is paced
+        // to it.
+        if let Some(Jumping::Up { lift, land }) = self.jumping {
+            if self.frame >= lift {
+                let rise = self.feel.jump_speed;
+                let flight = 2.0 * rise / self.feel.gravity.max(0.1);
+                let pace = ((land - lift) as f32 / db.setup.rate / flight).clamp(0.2, 2.0);
+                self.jumping = Some(Jumping::Air { lift, land, rise, pace });
+                self.grounded = false;
+            } else if db.clip_of(self.frame) != db.clip_of(lift) {
+                self.jumping = None;
+            }
+        }
+        if let Some(Jumping::Down { until }) = self.jumping {
+            if self.frame >= until || forced {
+                self.jumping = None;
+            }
+        }
         self.since_search += dt;
-        if forced || (!committed && self.since_search >= self.feel.search_every) {
+        if forced || (!committed && self.jumping.is_none() && self.since_search >= self.feel.search_every) {
             self.since_search = 0.0;
             let query = self.query(db, ask, world);
             // Played on into a frame that is not walking, or into a climb
@@ -1486,6 +1628,14 @@ impl Matcher {
             ground = flat(held);
             // Up and down a step smoothly: the feet find the steps.
             let height = at.y + (spring.y - at.y) * pull(self.feel.climb_halflife);
+            let mut height = height;
+            if let Some(Jumping::Air { lift, .. }) = self.jumping {
+                // The capsule is where the body flies; the take's hips went
+                // up too, and are taken off so they do not go up twice.
+                let root_joint = db.skeleton.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
+                let up = |f: usize| db.pose(f)[root_joint].translation[1];
+                height = spring.y - (up(self.frame) - up(lift)).max(0.0);
+            }
             self.root = (Vec3::new(ground.x, height, ground.z), turn);
         }
         let mut pose = self.blended(db);

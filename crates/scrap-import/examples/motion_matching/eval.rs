@@ -18,6 +18,15 @@ pub struct Course {
     pub start: Vec3,
     pub seconds: f32,
     pub stick: Box<dyn Fn(f32, Vec3) -> Vec3>,
+    /// When the jump button is pressed, seconds.
+    pub jumps: Vec<f32>,
+}
+
+impl Course {
+    /// Whether the jump button goes down in the step at `t`.
+    pub fn jumps_at(&self, t: f32, dt: f32) -> bool {
+        self.jumps.iter().any(|&j| j >= t && j < t + dt)
+    }
 }
 
 /// A course by name.
@@ -83,7 +92,7 @@ fn courses() -> Vec<Course> {
         row.push((Vec3::new(0.0, h / 2.0, 5.0 + 7.0 * i as f32), Vec3::new(1.5, h / 2.0, 0.6)));
     }
     vec![
-        Course { name: "flat", boxes: Vec::new(), start: Vec3::ZERO, seconds: 90.0, stick: wander() },
+        Course { name: "flat", boxes: Vec::new(), start: Vec3::ZERO, seconds: 90.0, stick: wander(), jumps: Vec::new() },
         Course {
             name: "walls",
             boxes: vec![(Vec3::new(0.0, 1.5, 4.25), Vec3::new(10.0, 1.5, 0.25))],
@@ -98,6 +107,7 @@ fn courses() -> Vec<Course> {
                 ([3.0, 8.0], 3.5, 4.0),
                 ([3.0, 8.0], 0.0, 5.0),
             ]),
+            jumps: Vec::new(),
         },
         Course {
             name: "stairs",
@@ -111,9 +121,24 @@ fn courses() -> Vec<Course> {
                 ([0.0, 0.0], 2.5, 7.0),
                 ([0.0, 0.0], 0.0, 6.0),
             ]),
+            jumps: Vec::new(),
         },
-        Course { name: "boxes", boxes: row, start: Vec3::ZERO, seconds: 40.0, stick: follow(vec![([0.0, 40.0], 1.3, 40.0)]) },
-        Course { name: "yard", boxes: crate::yard(), start: Vec3::ZERO, seconds: crate::LEGS.iter().map(|l| l.2).sum(), stick: follow(crate::LEGS.to_vec()) },
+        Course { name: "boxes", boxes: row, start: Vec3::ZERO, seconds: 40.0, stick: follow(vec![([0.0, 40.0], 1.3, 40.0)]), jumps: Vec::new() },
+        Course { name: "yard", boxes: crate::yard(), start: Vec3::ZERO, seconds: crate::LEGS.iter().map(|l| l.2).sum(), stick: follow(crate::LEGS.to_vec()), jumps: Vec::new() },
+        Course {
+            name: "jumps",
+            boxes: vec![(Vec3::new(0.0, 0.25, 40.0), Vec3::new(2.0, 0.25, 1.5))],
+            start: Vec3::ZERO,
+            seconds: 26.0,
+            stick: follow(vec![
+                ([0.0, 30.0], 3.5, 8.0),
+                ([0.0, 34.0], 1.4, 4.0),
+                ([0.0, 34.0], 0.0, 5.0),
+                ([0.0, 45.0], 2.5, 9.0),
+            ]),
+            // Running, walking, standing, and onto a box.
+            jumps: vec![2.0, 4.0, 5.2, 6.4, 9.0, 11.0, 13.5, 15.0, 16.0, 18.9],
+        },
     ]
 }
 
@@ -223,7 +248,7 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
                 }
             }
             let started = std::time::Instant::now();
-            walker.step(ask, dt);
+            walker.step_jumping(ask, course.jumps_at(t, dt), dt);
             clock += started.elapsed();
             if let (false, Some((warp, stretch))) = (was_climbing, walker.matcher.climb()) {
                 if std::env::var_os("MM_CLIMBS").is_some() {
