@@ -48,6 +48,10 @@ pub struct Robot {
     head_bone: usize,
     head_rest: Vec3,
     pieces: Vec<(Entity, Frame, Mat4)>,
+    /// The forearms the gloves hang off, left then right, and how far each
+    /// glove has flown to what it holds (0 to 1).
+    forearms: [Option<usize>; 2],
+    grip: [f32; 2],
 }
 
 /// A bone's frame without scale.
@@ -202,12 +206,20 @@ impl Robot {
         // The rig's scale, and none of its turn: the database already faces
         // the character ahead.
         let rig_at = Mat4::from_scale(scale);
-        Ok(Robot { skeleton, height_ratio: 1.0, scale: scale.x, rig_at, head_bone, head_rest, pieces: spawned })
+        let forearms = ["mixamorig:LeftForeArm", "mixamorig:RightForeArm"].map(|n| skeleton.joints.iter().position(|j| j.name == n));
+        Ok(Robot { skeleton, height_ratio: 1.0, scale: scale.x, rig_at, head_bone, head_rest, pieces: spawned, forearms, grip: [0.0; 2] })
     }
 
     /// Every piece where the pose puts it: `placed` is the character's place,
     /// `posed` its joints in its own frame (metres).
-    pub fn pose(&self, world: &mut World, placed: Mat4, posed: &[Mat4]) {
+    /// A glove held on to something flies to it, as Dacha's do: `holds`,
+    /// each hand's point in the world, or `None` to follow the animation.
+    pub fn pose(&mut self, world: &mut World, placed: Mat4, posed: &[Mat4], holds: [Option<Vec3>; 2], dt: f32) {
+        let ease = 1.0 - (-std::f32::consts::LN_2 * dt / 0.05).exp();
+        for side in 0..2 {
+            let on = holds[side].is_some() as u8 as f32;
+            self.grip[side] += (on - self.grip[side]) * ease;
+        }
         let rig = placed * self.rig_at;
         let head_moved = posed[self.head_bone].w_axis.truncate() - self.head_rest;
         for &(piece, frame, local) in &self.pieces {
@@ -215,7 +227,17 @@ impl Robot {
                 Frame::Bone(j) => {
                     // The bone in the rig's own units, as the pieces are.
                     let (_, turn, at) = posed[j].to_scale_rotation_translation();
-                    rig * unscaled(Mat4::from_rotation_translation(turn, at / self.scale)) * local
+                    let animated = rig * unscaled(Mat4::from_rotation_translation(turn, at / self.scale)) * local;
+                    match self.forearms.iter().position(|&f| f == Some(j)) {
+                        Some(side) if self.grip[side] > 1e-3 => {
+                            // Flown to what it holds, as far as it has got.
+                            let (size, turn, from) = animated.to_scale_rotation_translation();
+                            let to = holds[side].unwrap_or(from);
+                            let k = self.grip[side] * self.grip[side] * (3.0 - 2.0 * self.grip[side]);
+                            Mat4::from_scale_rotation_translation(size, turn, from.lerp(to, k))
+                        }
+                        _ => animated,
+                    }
                 }
                 Frame::Head => placed * Mat4::from_translation(Vec3::Y * EYE + head_moved) * local,
             };

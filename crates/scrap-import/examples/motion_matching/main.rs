@@ -425,7 +425,9 @@ fn video(
         if let Some((robot, world, _)) = &mut dressed {
             let placed = Mat4::from_rotation_translation(walker.matcher.root.1, walker.matcher.root.0);
             let posed = walker.db.skeleton.world_matrices(&walker.pose);
-            robot.pose(world, placed, &posed);
+            let t = frame as f32 / fps as f32;
+            let holds = course.holds_at(t, walker.matcher.root.1 * Vec3::Z);
+            robot.pose(world, placed, &posed, holds, 1.0 / fps as f32);
             scrap::world::apply_hierarchy(world);
             let robot_frame = scrap::build_frame(world, picture.camera, picture.lighting, picture.fog);
             picture.draws.extend(robot_frame.draws);

@@ -20,9 +20,24 @@ pub struct Course {
     pub stick: Box<dyn Fn(f32, Vec3) -> Vec3>,
     /// When the jump button is pressed, seconds.
     pub jumps: Vec<f32>,
+    /// When the hands hold on to something, and where: from, until, the
+    /// thing's middle and half its width.
+    pub grabs: Vec<(f32, f32, Vec3, f32)>,
 }
 
 impl Course {
+    /// Where each hand holds at `t`, if it does: either side of the thing,
+    /// across the way `facing` faces.
+    pub fn holds_at(&self, t: f32, facing: Vec3) -> [Option<Vec3>; 2] {
+        match self.grabs.iter().find(|g| t >= g.0 && t < g.1) {
+            Some(&(_, _, middle, half)) => {
+                let left = Vec3::new(facing.z, 0.0, -facing.x).normalize_or_zero();
+                [Some(middle + left * half), Some(middle - left * half)]
+            }
+            None => [None, None],
+        }
+    }
+
     /// Whether the jump button goes down in the step at `t`.
     pub fn jumps_at(&self, t: f32, dt: f32) -> bool {
         self.jumps.iter().any(|&j| j >= t && j < t + dt)
@@ -92,7 +107,7 @@ fn courses() -> Vec<Course> {
         row.push((Vec3::new(0.0, h / 2.0, 5.0 + 7.0 * i as f32), Vec3::new(1.5, h / 2.0, 0.6)));
     }
     vec![
-        Course { name: "flat", boxes: Vec::new(), start: Vec3::ZERO, seconds: 90.0, stick: wander(), jumps: Vec::new() },
+        Course { name: "flat", boxes: Vec::new(), start: Vec3::ZERO, seconds: 90.0, stick: wander(), jumps: Vec::new(), grabs: Vec::new() },
         Course {
             name: "walls",
             boxes: vec![(Vec3::new(0.0, 1.5, 4.25), Vec3::new(10.0, 1.5, 0.25))],
@@ -108,6 +123,7 @@ fn courses() -> Vec<Course> {
                 ([3.0, 8.0], 0.0, 5.0),
             ]),
             jumps: Vec::new(),
+            grabs: Vec::new(),
         },
         Course {
             name: "stairs",
@@ -122,9 +138,10 @@ fn courses() -> Vec<Course> {
                 ([0.0, 0.0], 0.0, 6.0),
             ]),
             jumps: Vec::new(),
+            grabs: Vec::new(),
         },
-        Course { name: "boxes", boxes: row, start: Vec3::ZERO, seconds: 40.0, stick: follow(vec![([0.0, 40.0], 1.3, 40.0)]), jumps: Vec::new() },
-        Course { name: "yard", boxes: crate::yard(), start: Vec3::ZERO, seconds: crate::LEGS.iter().map(|l| l.2).sum(), stick: follow(crate::LEGS.to_vec()), jumps: Vec::new() },
+        Course { name: "boxes", boxes: row, start: Vec3::ZERO, seconds: 40.0, stick: follow(vec![([0.0, 40.0], 1.3, 40.0)]), jumps: Vec::new(), grabs: Vec::new() },
+        Course { name: "yard", boxes: crate::yard(), start: Vec3::ZERO, seconds: crate::LEGS.iter().map(|l| l.2).sum(), stick: follow(crate::LEGS.to_vec()), jumps: Vec::new(), grabs: Vec::new() },
         Course {
             name: "jumps",
             boxes: vec![(Vec3::new(0.0, 0.25, 40.0), Vec3::new(2.0, 0.25, 1.5))],
@@ -138,6 +155,27 @@ fn courses() -> Vec<Course> {
             ]),
             // Running, walking, standing, and onto a box.
             jumps: vec![2.0, 4.0, 5.2, 6.4, 9.0, 11.0, 13.5, 15.0, 16.0, 18.9],
+            grabs: Vec::new(),
+        },
+        Course {
+            name: "grab",
+            // A crate on the floor, and one on a shelf.
+            boxes: vec![
+                (Vec3::new(0.0, 0.2, 4.0), Vec3::splat(0.2)),
+                (Vec3::new(3.0, 0.45, 6.5), Vec3::new(0.6, 0.45, 0.3)),
+                (Vec3::new(3.0, 1.05, 6.5), Vec3::splat(0.15)),
+            ],
+            start: Vec3::ZERO,
+            seconds: 16.0,
+            stick: follow(vec![
+                ([0.0, 3.3], 1.3, 3.5),
+                ([0.0, 3.3], 0.0, 3.0),
+                ([3.0, 5.6], 1.3, 3.5),
+                ([3.0, 5.6], 0.0, 3.0),
+                ([3.0, 0.0], 1.3, 3.0),
+            ]),
+            jumps: Vec::new(),
+            grabs: vec![(3.8, 5.8, Vec3::new(0.0, 0.25, 4.0), 0.2), (10.5, 12.5, Vec3::new(3.0, 1.05, 6.5), 0.15)],
         },
     ]
 }
