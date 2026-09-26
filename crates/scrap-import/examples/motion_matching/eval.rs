@@ -197,6 +197,12 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
             last_ask = ask;
             since_change += dt;
             let jumps = walker.matcher.jumps;
+            if let Some((name, at)) = std::env::var("MM_AT").ok().and_then(|v| v.split_once(':').map(|(a, b)| (a.to_string(), b.parse::<f32>().unwrap_or(0.0)))) {
+                walker.matcher.debug = name == course.name && (t - at).abs() < 0.06;
+                if walker.matcher.debug {
+                    eprintln!("{t:.3}s frame {}", walker.matcher.frame);
+                }
+            }
             let started = std::time::Instant::now();
             walker.step(ask, dt);
             clock += started.elapsed();

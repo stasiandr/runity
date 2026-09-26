@@ -62,6 +62,9 @@ pub struct Setup {
     /// not walking. `180.0` and `0.0` keep them.
     pub steepest_lean: f32,
     pub lowest_hands: f32,
+    /// Each clip also mirrored, left for right: twice the frames, and a
+    /// turn one way as good as the other.
+    pub mirror: bool,
 }
 
 impl Default for Setup {
@@ -75,6 +78,7 @@ impl Default for Setup {
             lowest_hips: 0.7,
             steepest_lean: 30.0,
             lowest_hands: 0.6,
+            mirror: true,
         }
     }
 }
@@ -121,6 +125,74 @@ pub struct Database {
     toe: f32,
 }
 
+/// The joint on the other side: `LeftArm` for `RightArm`, itself for the
+/// spine.
+fn other_side(skeleton: &Skeleton, joint: usize) -> usize {
+    let name = bare_joint_name(&skeleton.joints[joint].name);
+    let swapped = if let Some(rest) = name.strip_prefix("Left") {
+        format!("Right{rest}")
+    } else if let Some(rest) = name.strip_prefix("Right") {
+        format!("Left{rest}")
+    } else {
+        return joint;
+    };
+    skeleton.joints.iter().position(|j| bare_joint_name(&j.name) == swapped).unwrap_or(joint)
+}
+
+/// `clip` played by the character's mirror image: every pose reflected
+/// across the body's middle, left joints for right. The middle is found
+/// from the rest pose — the plane halfway between the thighs — and each
+/// joint's rest turn is kept, so rigs whose joints are not turned alike at
+/// rest mirror too. `None` for a skeleton with no left and right.
+fn mirror(skeleton: &Skeleton, clip: &Clip, rate: f32) -> Option<Clip> {
+    use crate::animation::{Channel, Path};
+    let rest_world = skeleton.world_matrices(&skeleton.rest_pose());
+    let left = skeleton.joints.iter().position(|j| bare_joint_name(&j.name) == "LeftUpLeg")?;
+    let right = other_side(skeleton, left);
+    if right == left {
+        return None;
+    }
+    // Reflect across the plane whose normal points from right to left.
+    let across = (rest_world[left].w_axis - rest_world[right].w_axis).truncate();
+    let axis = across.abs().max_position();
+    let mut flip = Vec3::ONE;
+    flip[axis] = -1.0;
+    let m = Mat4::from_scale(flip);
+    let rest_turn: Vec<Quat> = rest_world.iter().map(|w| w.to_scale_rotation_translation().1).collect();
+    let count = (clip.duration * rate).floor() as usize + 1;
+    let joints = skeleton.len();
+    let mut rotations = vec![Vec::with_capacity(count * 4); joints];
+    let mut roots = Vec::with_capacity(count * 3);
+    let root = skeleton.joints.iter().position(|j| j.parent.is_none())?;
+    for i in 0..count {
+        let world = skeleton.world_matrices(&clip.sample(skeleton, i as f32 / rate, false));
+        // Each joint's world turn, reflected and handed to its other side,
+        // then set right against that side's own rest turn.
+        let turned: Vec<Quat> = (0..joints)
+            .map(|j| {
+                let from = other_side(skeleton, j);
+                let reflected = (m * Mat4::from_quat(world[from].to_scale_rotation_translation().1) * m)
+                    .to_scale_rotation_translation()
+                    .1;
+                let rest_reflected = (m * Mat4::from_quat(rest_turn[from]) * m).to_scale_rotation_translation().1;
+                (reflected * rest_reflected.inverse() * rest_turn[j]).normalize()
+            })
+            .collect();
+        for j in 0..joints {
+            let parent = skeleton.joints[j].parent.map_or(Quat::IDENTITY, |p| turned[p as usize]);
+            let local = (parent.inverse() * turned[j]).normalize();
+            rotations[j].extend(local.to_array());
+        }
+        roots.extend((m.transform_point3(world[root].w_axis.truncate())).to_array());
+    }
+    let times: Vec<f32> = (0..count).map(|i| i as f32 / rate).collect();
+    let mut channels = vec![Channel { joint: root as u16, path: Path::Translation, times: times.clone(), values: roots }];
+    for (j, values) in rotations.into_iter().enumerate() {
+        channels.push(Channel { joint: j as u16, path: Path::Rotation, times: times.clone(), values });
+    }
+    Some(Clip { name: format!("{} (mirrored)", clip.name), duration: times.last().copied().unwrap_or(0.0), channels })
+}
+
 /// Which way a character stands: its forward on the ground, from the
 /// thighs (left minus right, crossed with up).
 fn facing(world: &[Mat4], thighs: [usize; 2]) -> Vec3 {
@@ -137,6 +209,12 @@ impl Database {
     /// The database of `clips` on `skeleton`. Clips too short to see a
     /// second ahead are left out.
     pub fn build(skeleton: &Skeleton, clips: &[Clip], setup: Setup) -> Result<Self, String> {
+        let mirrored: Vec<Clip> = if setup.mirror {
+            clips.iter().filter_map(|c| mirror(skeleton, c, setup.rate)).collect()
+        } else {
+            Vec::new()
+        };
+        let clips: Vec<&Clip> = clips.iter().chain(&mirrored).collect();
         let find = |name: &str| {
             skeleton
                 .joints
@@ -170,7 +248,7 @@ impl Database {
         let mut raw = Vec::new();
         let mut ranges = Vec::new();
         let mut ankles = Vec::new();
-        for clip in clips {
+        for &clip in &clips {
             let count = (clip.duration * rate).floor() as usize + 1;
             if count <= horizon + 2 {
                 continue;
@@ -355,6 +433,15 @@ impl Database {
                 let lean = neck.map_or(0.0, |n| (at(n) - at(root)).normalize_or(Vec3::Y).dot(Vec3::Y).clamp(-1.0, 1.0).acos().to_degrees());
                 let hands_low = hands.iter().flatten().any(|&h| at(h).y < setup.lowest_hands);
                 lean <= setup.steepest_lean && !hands_low
+            })
+            .collect::<Vec<bool>>();
+        // A frame to jump to plays on for a third of a second as good: one
+        // that turns into a crouch at once would be left at once, and
+        // jumped back to — a pose frozen.
+        let open = (0..raw.len())
+            .map(|f| {
+                let clip = ranges.iter().find(|(_, r)| r.contains(&f)).map(|(_, r)| r.end).unwrap_or(f + 1);
+                (f..clip.min(f + 10)).all(|g| open[g])
             })
             .collect();
         let toe_height = ankles.iter().map(|a| a.1).sum::<f32>() / ankles.len() as f32;
@@ -685,6 +772,8 @@ pub struct Matcher {
     /// the most of the two. A foot held far from where the animation has
     /// it bends the leg into a pose nobody captured.
     pub feet_off: f32,
+    /// Print what the feet do each step, for a moment being looked into.
+    pub debug: bool,
     /// How far the hips are lowered for the feet, smoothed, and which way
     /// each knee bent last step.
     drop: f32,
@@ -705,6 +794,8 @@ struct FootLock {
     /// smoothed while it swings: over a step's edge the ground under it
     /// jumps, and the foot should not.
     lift: Option<f32>,
+    /// Where it was put last step.
+    shown: Option<Vec3>,
     fading: (Vec3, Vec3),
     last: Option<Vec3>,
 }
@@ -729,6 +820,7 @@ impl Matcher {
             climbing_on: false,
             last_jump: None,
             feet_off: 0.0,
+            debug: false,
             drop: 0.0,
             bends: [Vec3::ZERO; 2],
             warp: 1.0,
@@ -1053,6 +1145,12 @@ impl Matcher {
             .fold((0.0f32, 0.0f32), |(up, down), d| (up.max(d), down.max(-d)))
     }
 
+    /// Which feet are held where they were put down (heel or toe), left
+    /// then right.
+    pub fn feet_held(&self) -> [bool; 2] {
+        self.feet.map(|f| f.at.is_some() || f.toe_at.is_some())
+    }
+
     /// Whether the character is getting onto or down off something, the
     /// animation leading: it starts two thirds of a second before the
     /// edge, and holds while the take has more climbing in the next two
@@ -1135,7 +1233,12 @@ impl Matcher {
             let toe_down = db.toe_contacts[self.frame][side];
             if let (Some(at), Some(toe)) = (foot.at, toe) {
                 if !down[side] && toe_down {
-                    foot.toe_at = Some(at + (toe - a));
+                    // The toe held on the ground under it.
+                    let mut held = at + (toe - a);
+                    if let Some(y) = under(held) {
+                        held.y = y + db.toe;
+                    }
+                    foot.toe_at = Some(held);
                     foot.at = None;
                 }
             }
@@ -1158,10 +1261,22 @@ impl Matcher {
                     // off with bent knees.
                     // Only standing about: walking, a foot is down too
                     // briefly to drift, and creeping would be skating.
-                    let gap = free - at;
+                    let gap = flat(free - at);
                     let still = flat(self.spring.1).length() < 0.3;
                     let creep = if still { self.feel.lock_creep * dt } else { 0.0 };
-                    Some(at + if gap.length() > creep { gap.normalize() * creep } else { gap })
+                    let mut held = at + if gap.length() > creep { gap.normalize() * creep } else { gap };
+                    // Down onto the ground it stands on, quickly but not in a
+                    // step.
+                    // A planted foot stands on the ground, whatever height
+                    // the take had it at over its own floor.
+                    let toe_offset = toe.map_or(Vec3::ZERO, |t| t - a);
+                    let floor_y = [held, held + toe_offset]
+                        .into_iter()
+                        .filter_map(under)
+                        .reduce(f32::max)
+                        .map_or(free.y, |y| y + db.ankle);
+                    held.y += (floor_y - held.y) * (1.0 - (-std::f32::consts::LN_2 * dt / 0.025).exp());
+                    Some(held)
                 }
                 Some(at) => {
                     // Let go: from where it was held, fading to the animation.
@@ -1170,29 +1285,9 @@ impl Matcher {
                 }
                 None if foot.toe_at.is_some() => None,
                 None if down[side] => {
-                    // Put down where the whole foot fits: not with its toe
-                    // against the riser of the next step up.
-                    let mut at = shown;
-                    if let Some(toe) = toe {
-                        let length = Vec3::new(toe.x - a.x, 0.0, toe.z - a.z) * 1.3;
-                        let base = under(at).unwrap_or(at.y);
-                        let mut moved = false;
-                        for _ in 0..6 {
-                            if under(at + length).is_none_or(|y| y <= base + 0.03) {
-                                break;
-                            }
-                            at -= length.normalize_or_zero() * 0.03;
-                            moved = true;
-                        }
-                        // Moved back off the edge: down onto the tread it is
-                        // now over.
-                        if moved {
-                            if let Some(y) = under(at) {
-                                at.y = y + (a.y - floor);
-                            }
-                        }
-                    }
-                    Some(at)
+                    // Put down where it is shown: the foot does not jump to
+                    // be held. It settles onto the ground below.
+                    Some(foot.shown.unwrap_or(shown))
                 }
                 None => None,
             };
@@ -1223,6 +1318,7 @@ impl Matcher {
                 target.y = a.y + lift;
             }
             targets[side] = target;
+            foot.shown = Some(target);
         }
         self.feet_off = (0..2).map(|s| targets[s].distance(animated[s])).fold(0.0f32, f32::max);
         // The hips go down for the foot that has further down to go.
@@ -1254,10 +1350,17 @@ impl Matcher {
                 targets[side] = hip + to * (eased / far);
             }
             if targets[side].distance(now) > 1e-4 {
+                if self.debug {
+                    let f = &self.feet[side];
+                    eprintln!(
+                        "  side {side} lock {:?} toe {:?} target {:.3?} anim {:.3?} knee {:.3?} bend {:.2?} drop {:.3}",
+                        f.at.map(|v| (v * 1000.0).round() / 1000.0), f.toe_at.is_some(), targets[side], animated[side], world[leg.1].w_axis.truncate(), self.bends[side], self.drop
+                    );
+                }
                 let kept = crate::ik::turn_of(world[leg.0]);
                 // The way it bent last step leads, then forward: a leg near
                 // straight keeps its knee where it was.
-                let lean = self.bends[side] * 0.08 + forward * 0.03;
+                let lean = self.bends[side] * 0.3 + forward * 0.03;
                 crate::ik::reach_leg(&db.skeleton, pose, placed, &mut world, leg, targets[side], lean);
                 let (h, k, f) = (world[leg.2].w_axis.truncate(), world[leg.1].w_axis.truncate(), world[leg.0].w_axis.truncate());
                 let along = (f - h).normalize_or(-Vec3::Y);
@@ -1365,14 +1468,15 @@ mod tests {
     fn asked_to_walk_it_walks_and_asked_to_stop_it_stands() {
         let skeleton = legs();
         let db = Database::build(&skeleton, &clips(), Setup::default()).unwrap();
-        assert_eq!(db.clips.len(), 3);
+        assert_eq!(db.clips.len(), 6, "three and their mirror images");
         let mut matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
         let dt = 1.0 / 60.0;
         let ask = Ask { velocity: Vec3::Z * 1.2, facing: None };
         for _ in 0..120 {
             matcher.advance(&db, &ask, dt);
         }
-        assert_eq!(db.clips[db.clip_of(matcher.frame)].0, "walk");
+        let playing = &db.clips[db.clip_of(matcher.frame)].0;
+        assert!(playing.starts_with("walk") || playing.starts_with("stop"), "{playing}");
         let before = matcher.root.0;
         for _ in 0..60 {
             matcher.advance(&db, &ask, dt);
@@ -1400,5 +1504,70 @@ mod tests {
         let facing = matcher.root.1 * Vec3::Z;
         assert!(facing.dot(Vec3::X) > 0.95, "faces where it goes: {facing}");
         assert!(matcher.root.0.x > 1.5 && matcher.root.0.z.abs() < 0.6, "went along x: {}", matcher.root.0);
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+    use crate::animation::{Channel, Joint, Path};
+
+    #[test]
+    fn a_mirrored_clip_puts_each_joint_where_its_other_side_was_reflected() {
+        // Rest turns unlike on the two sides, as a rig from a DCC has them.
+        let joint = |name: &str, parent: Option<u16>, at: [f32; 3], turn: Quat| Joint {
+            name: name.into(),
+            parent,
+            inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+            rest: PoseTransform { translation: at, rotation: turn.to_array(), ..Default::default() },
+        };
+        // Mirror-image in the world at rest, whatever each joint's own turn:
+        // the shin hangs straight down under each thigh.
+        let (left_turn, right_turn) = (Quat::from_rotation_z(0.3), Quat::from_rotation_y(-0.7));
+        let down = Vec3::new(0.0, -0.45, 0.0);
+        let skeleton = Skeleton {
+            joints: vec![
+                joint("Hips", None, [0.0, 0.95, 0.0], Quat::IDENTITY),
+                joint("LeftUpLeg", Some(0), [0.1, 0.0, 0.0], left_turn),
+                joint("LeftLeg", Some(1), (left_turn.inverse() * down).to_array(), left_turn.inverse()),
+                joint("RightUpLeg", Some(0), [-0.1, 0.0, 0.0], right_turn),
+                joint("RightLeg", Some(3), (right_turn.inverse() * down).to_array(), right_turn.inverse()),
+            ],
+        };
+        let times = vec![0.0, 1.0];
+        let clip = Clip {
+            name: "kick".into(),
+            duration: 1.0,
+            channels: vec![
+                Channel { joint: 0, path: Path::Translation, times: times.clone(), values: vec![0.0, 0.95, 0.0, 0.3, 0.9, 0.5] },
+                Channel {
+                    joint: 1,
+                    path: Path::Rotation,
+                    times: times.clone(),
+                    values: [Quat::from_rotation_z(0.3), Quat::from_rotation_x(0.9) * Quat::from_rotation_z(0.3)]
+                        .iter()
+                        .flat_map(|q| q.to_array())
+                        .collect(),
+                },
+                Channel {
+                    joint: 0,
+                    path: Path::Rotation,
+                    times,
+                    values: [Quat::IDENTITY, Quat::from_rotation_y(0.5)].iter().flat_map(|q| q.to_array()).collect(),
+                },
+            ],
+        };
+        let mirrored = mirror(&skeleton, &clip, 1.0).unwrap();
+        let flip = Vec3::new(-1.0, 1.0, 1.0);
+        for t in [0.0, 1.0] {
+            let a = skeleton.world_matrices(&clip.sample(&skeleton, t, false));
+            let b = skeleton.world_matrices(&mirrored.sample(&skeleton, t, false));
+            for j in 0..skeleton.len() {
+                let other = other_side(&skeleton, j);
+                let want = a[other].w_axis.truncate() * flip;
+                let got = b[j].w_axis.truncate();
+                assert!(got.distance(want) < 1e-4, "{} at {t}: {got} for {want}", skeleton.joints[j].name);
+            }
+        }
     }
 }

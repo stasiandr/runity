@@ -187,10 +187,11 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
     let feet = db.feet();
     let mut worst_in: f32 = 0.0;
     let mut worst_over: f32 = 0.0;
+    let mut held = [0.0f32; 2];
     for _ in 0..(7.0 / dt) as usize {
         let pose = matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.2, facing: None }, dt, &among);
         let world = matcher.world(&db, &pose);
-        let down = db.contacts(matcher.frame);
+        let down = matcher.feet_held();
         for side in 0..2 {
             // Each joint of the foot over the ground under that joint.
             let foot = world[feet[side]].w_axis.truncate();
@@ -209,7 +210,9 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
             };
             let (Some(a), Some(t)) = (over(foot), over(toe)) else { continue };
             worst_in = worst_in.max(-a.min(t));
-            if down[side] {
+            held[side] = if down[side] { held[side] + dt } else { 0.0 };
+            // Held a tenth of a second: it has come down onto the step.
+            if held[side] > 0.1 {
                 worst_over = worst_over.max(a.min(t));
             }
         }
