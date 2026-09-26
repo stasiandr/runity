@@ -16,8 +16,8 @@ fn example() -> Project {
         .parent()
         .and_then(Path::parent)
         .expect("crates/scrap-import is two levels down")
-        .join("examples/valley");
-    Project::open(root).expect("examples/valley is a project")
+        .join("examples/showreel");
+    Project::open(root).expect("examples/showreel is a project")
 }
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -41,7 +41,7 @@ fn every_example_source_has_a_current_sidecar() {
 
     for source in found {
         let sidecar = sidecar_for(&source);
-        let fix = "run `cargo run -p scrap-cli -- sync examples/valley` and commit the .scrimport";
+        let fix = "run `cargo run -p scrap-cli -- sync examples/showreel` and commit the .scrimport";
         let settings = ImportSettings::load(&sidecar)
             .unwrap_or_else(|e| panic!("{}: {e:#}; {fix}", sidecar.display()));
         assert_eq!(
@@ -63,7 +63,7 @@ fn every_example_source_has_a_current_sidecar() {
 #[test]
 fn every_example_prefab_and_scene_has_an_id() {
     let project = example();
-    let fix = "run `cargo run -p scrap-cli -- sync examples/valley` and commit the .scrimport";
+    let fix = "run `cargo run -p scrap-cli -- sync examples/showreel` and commit the .scrimport";
     let mut found = 0;
     for (dir, extension) in [(project.prefabs(), "prefab"), (project.scenes(), "ron")] {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {

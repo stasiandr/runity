@@ -1,5 +1,5 @@
 //! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME] [--reel main|rays|sim]` — the engine's
-//! look, as a video: each shot a scene of the valley example with a camera
+//! look, as a video: each shot a scene of the showreel example with a camera
 //! moving through it, the clock running and the sun going round, written
 //! frame by frame into ffmpeg as `<out-dir>/NN-name.mp4`, and a subtitle
 //! file naming each shot. Needs `ffmpeg` on the path.
@@ -618,7 +618,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let out = out.ok_or("usage: showreel <out-dir>")?;
     std::fs::create_dir_all(&out)?;
-    let scenes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley/content/valley/maps");
+    let scenes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/showreel/content/showreel/maps");
     let gpu = Gpu::headless_blocking(false)?;
     let target = OffscreenTarget::new(&gpu, width, height);
 

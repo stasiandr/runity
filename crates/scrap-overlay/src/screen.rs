@@ -12,7 +12,7 @@
 //! ```text
 //! (
 //!     elements: [
-//!         (id: "title",  anchor: Top,        at: (0, 60),   size: (600, 60), kind: Text("The Valley"), text_size: 40),
+//!         (id: "title",  anchor: Top,        at: (0, 60),   size: (600, 60), kind: Text("Kitchen Rush"), text_size: 40),
 //!         (id: "play",   anchor: Center,     at: (0, 0),    size: (240, 48), kind: Button("Play")),
 //!         (id: "volume", anchor: Center,     at: (0, 64),   size: (240, 32), kind: Slider(label: "Volume", min: 0.0, max: 1.0)),
 //!         (id: "health", anchor: BottomLeft, at: (24, -24), size: (220, 18), kind: Bar),
@@ -583,7 +583,7 @@ mod tests {
     use crate::input::{InputEvent, MouseButton};
 
     const MENU: &str = r#"(elements: [
-        (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("The Valley"), text_size: 40),
+        (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("Kitchen Rush"), text_size: 40),
         (id: "play", anchor: Center, size: (240, 48), kind: Button("Play")),
         (id: "health", anchor: BottomLeft, at: (24, -24), size: (220, 18), kind: Bar),
         (id: "mute", anchor: TopRight, at: (-20, 20), size: (120, 32), kind: Toggle("Mute")),

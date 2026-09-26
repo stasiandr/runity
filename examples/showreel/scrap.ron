@@ -1,0 +1,8 @@
+(
+    name: "showreel",
+    engine: "0.1.0",
+    game: (
+        start_scene: "first-light",
+        title: "Engine showreel",
+    ),
+)

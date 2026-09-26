@@ -1,8 +1,8 @@
 //! The screen-space layer: a draw list, not a widget toolkit.
 //!
-//! `docs/design/07-look.md` says the game has no HUD, with two exceptions.
-//! That is a decision about a game, not about an engine, and it can change —
-//! so what is fixed here is the *layer*, not what goes on it. Two lines of
+//! Whether a game has a HUD, and how much of one, is the game's decision,
+//! not the engine's — so what is fixed here is the *layer*, not what goes
+//! on it. Two lines of
 //! dialogue use this today; a full inventory would use the same thing.
 //!
 //! What it deliberately is not is a widget system. Layout, focus, hit

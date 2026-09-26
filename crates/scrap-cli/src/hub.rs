@@ -554,15 +554,15 @@ mod tests {
     fn a_project_starts_from_a_set_or_from_an_example() {
         let choices = choices();
         assert_eq!(choices[0].start, Start::Set("basic".into()), "the plain one first");
-        assert!(choices.iter().any(|c| c.start == Start::Template("valley".into())));
+        assert!(choices.iter().any(|c| c.start == Start::Template("showreel".into())));
 
         let dir = std::env::temp_dir().join(format!("scrap-hub-new-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let empty = create(&dir.join("moss"), &Start::Set("basic".into())).unwrap();
         assert!(empty.is_file(), "an empty project has a scene to open");
-        let copy = create(&dir.join("meadow"), &Start::Template("valley".into())).unwrap();
+        let copy = create(&dir.join("meadow"), &Start::Template("showreel".into())).unwrap();
         assert!(copy.is_file());
-        assert_eq!(describe(&dir.join("meadow")).name, "meadow", "renamed, not valley");
+        assert_eq!(describe(&dir.join("meadow")).name, "meadow", "renamed, not showreel");
         assert!(create(&dir.join("moss"), &Start::Set("basic".into())).is_err(), "not over one");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -576,11 +576,11 @@ mod tests {
 
     #[test]
     fn the_example_names_this_checkout_as_its_engine() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/showreel");
         let entry = describe(&root);
         assert_eq!(entry.problem, None);
-        assert_eq!(entry.name, "valley");
-        assert!(entry.scene.is_some(), "valley has a start scene");
+        assert_eq!(entry.name, "showreel");
+        assert!(entry.scene.is_some(), "the showreel has a start scene");
         assert_eq!(discover(&root.join("..")).len() >= 1, true);
     }
 }

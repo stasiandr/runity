@@ -45,7 +45,7 @@ fn check(entities: &[EntityDesc], file: &Path, seen: &mut HashSet<scrap::EntityI
 #[test]
 fn every_example_scene_names_every_entity() {
     let scenes = scrap::layout::files(
-        repository().join("examples/valley"),
+        repository().join("examples/showreel"),
         scrap::layout::Kind::Scene,
     );
     assert!(!scenes.is_empty());
@@ -62,7 +62,7 @@ fn every_example_scene_names_every_entity() {
 #[test]
 fn every_example_prefab_names_every_entity() {
     let prefabs = scrap::layout::files(
-        repository().join("examples/valley"),
+        repository().join("examples/showreel"),
         scrap::layout::Kind::Prefab,
     );
     assert!(!prefabs.is_empty());
@@ -78,12 +78,12 @@ fn every_example_prefab_names_every_entity() {
 fn the_example_is_a_project_in_the_standard_layout() {
     // It is what people and agents copy from, so it has to look like what
     // the generator makes — or the first copy teaches the wrong layout.
-    let root = repository().join("examples/valley");
-    let project = scrap::Project::open(&root).expect("examples/valley is a project");
-    assert_eq!(project.name(), "valley");
+    let root = repository().join("examples/showreel");
+    let project = scrap::Project::open(&root).expect("examples/showreel is a project");
+    assert_eq!(project.name(), "showreel");
     // Unreal's scheme (docs/layout.md): the project's own folder in
     // content/, its levels in maps/, and no folder per kind at the root.
-    assert!(!project.is_legacy(), "examples/valley has content/");
+    assert!(!project.is_legacy(), "examples/showreel has content/");
     assert!(
         project.scenes().is_dir(),
         "{} is missing",

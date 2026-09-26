@@ -6,8 +6,7 @@
 #
 # There is no game code here. What the engine is tested against is its own:
 # builtin meshes and materials, and an example project in the standard
-# layout, `examples/valley/`. `docs/design/` says what the engine is growing
-# toward.
+# layout, `examples/showreel/`.
 [workspace]
 resolver = "2"
 members = [

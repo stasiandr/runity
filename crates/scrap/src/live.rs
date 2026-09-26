@@ -13,7 +13,7 @@
 //!   while the game runs — is picked up, and entities that were waiting for
 //!   it get it.
 //! * A file that does not parse is reported, and the world keeps the last
-//!   version that did. Saving half a line should not empty the valley.
+//!   version that did. Saving half a line should not empty the level.
 //!
 //! The library is the importer's output, not the importer: a game does not
 //! link the importers (third postulate). Something else — the editor, or

@@ -222,7 +222,7 @@
 - [x] Раскладка по умолчанию — схема Unreal: `config/`,
       `content/<проект>/maps|core|фичи`, `content/localization/`,
       `content/developers/` (не едет в сборку); шаблон `scrap new`,
-      `examples/valley`, `examples/kitchen`, `examples/kitchen-web` по ней
+      `examples/showreel`, `examples/kitchen`, `examples/kitchen-web` по ней
 - [ ] `check` называет ссылку из игры в `developers/`
 - [ ] Таблицу расширений регистрируют модули, а не ядро
 - [ ] Бюджет обхода проекта в тесте (постулат 1); `.gitignore` в обходе
@@ -260,7 +260,7 @@
       проверки и ключи строк в `check`, окно Dialogues (чтение)
 - [x] Шейдер-граф (docs/shadergraph.md): `shaders/<name>.graph.ron` →
       WGSL `surface`, 40 узлов, горячая перезагрузка, `check` с узлом и
-      входом; пример — `valley/content/valley/maps/graphs.scene.ron`
+      входом; пример — `showreel/content/showreel/maps/graphs.scene.ron`
 - [x] Граф эффекта (VFX Graph, docs/shadergraph.md):
       `shaders/<name>.vfx.ron` — `spawn`, `update`, `output` частиц на
       видеокарте, узлы `Random` и `Turbulence`; пример — угли в
@@ -303,7 +303,7 @@
       апостроф — состояние и коллайдер вещи в центре вида
   - [ ] Выделение редактора — цель оверлея; категории оверлея от модулей
   - [ ] Запись состояния во времени и перемотка (Visual Logger, Rewind
-        Debugger) — строка 12 отчёта, самое ценное для симуляции Долины
+        Debugger) — строка 12 отчёта, самое ценное для симуляций
   - [ ] Команды доходят до всех окон, когда играют несколько
 - [x] 5. Кисти с вычитанием (docs/brush.md): `.scrbrush` — список выпуклых
       кистей `Add`/`Subtract`, импорт в меш с UV в метрах; Entity › Carve
@@ -371,7 +371,7 @@
         крутится с верёвкой; цепь — копии `builtin:link` через одну
         повёрнутые (`Copies`, инстансы)
   - [x] Поле в инспекторах редактора и студии, предпросмотр в редакторе,
-        пример `examples/valley/content/valley/maps/ropes.scene.ron`, кривая 10…10 000 в
+        пример `examples/showreel/content/showreel/maps/ropes.scene.ron`, кривая 10…10 000 в
         `scaling.rs`
   - [ ] Тело на конце верёвки (фонарь, груз, крюк): связь с rapier в обе
         стороны — сейчас верёвка тела двигает не умеет
@@ -382,7 +382,7 @@
   - [x] `cloth` из ветки графики — на решатель `soft`: XPBD-расстояния
         (растяжение, сдвиг, изгиб через одну), ветер по треугольникам,
         `pinned: Free` — падает на коллайдеры (скатерть), пример
-        `examples/valley/content/valley/maps/cloth.scene.ron`, кривая в `scaling.rs`
+        `examples/showreel/content/showreel/maps/cloth.scene.ron`, кривая в `scaling.rs`
   - [x] Самопересечение: сетка частиц раз в шаг, пары не соседей,
         трение между слоями (`self_collide`)
   - [ ] Персонаж: капсулы на костях скелета сами (сейчас — только
@@ -397,7 +397,7 @@
   - [x] `hair`: направляющие пряди — стержни Коссера, корень в коже,
         причёсаны тяжестью; рисуемые пряди интерполируются по трём
         ближайшим, `clump`, `curl`, `lie`; голова — препятствие; пример
-        `examples/valley/content/valley/maps/hair.scene.ron`
+        `examples/showreel/content/showreel/maps/hair.scene.ron`
   - [ ] Корни по мешу модели (сейчас — сфера вокруг сущности)
   - [ ] Пряди на GPU: интерполяция и отрисовка в compute, сотни тысяч
         (TressFX); затенение волос (Marschner/Kajiya-Kay) вместо материала
@@ -407,7 +407,7 @@
   - [x] `soft_body`: решётка тетраэдров, XPBD рёбра и объём; `ShapeMatching`;
         модель вложена в решётку; `core` — плоть на кости
   - [x] `jiggle`: spring bones цепочками, карточки на костях; пример
-        `examples/valley/content/valley/maps/softbody.scene.ron`, кадр `showreel --reel sim`
+        `examples/showreel/content/showreel/maps/softbody.scene.ron`, кадр `showreel --reel sim`
   - [ ] Модель из библиотеки в решётке (сейчас — только встроенные)
   - [ ] Мышцы как активные элементы (сейчас плоть — пассивная клетка)
 - [ ] 5. Разрушение
@@ -574,7 +574,7 @@ Steam) жил на scrap. Порядок — по риску: сначала т�
       шейдера (альбедо, альфа, металл, гладкость, нормаль, свечение; время
       в `in.time`). Перезагружаются при сохранении — в игре и в редакторе;
       сломанный отказывается словами, рисует прежний. Пример —
-      `examples/valley/content/valley/water/water.wgsl`. `sync` пересобирает ассеты
+      `examples/showreel/content/showreel/water/water.wgsl`. `sync` пересобирает ассеты
       старой версии формата сам
 - [x] Импорт: материал со своим шейдером получает `shader:`, прозрачность,
       стороны, отсечение и Unlit — из самого шейдера (граф или теги

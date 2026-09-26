@@ -10,7 +10,7 @@
 
 ## Как выглядит
 
-`shaders/lava.graph.ron` в проекте (пример — `examples/valley`, сцена
+`shaders/lava.graph.ron` в проекте (пример — `examples/showreel`, сцена
 `graphs.ron`; целая галерея графов — проект `examples/graphs`, ниже):
 
 ```ron

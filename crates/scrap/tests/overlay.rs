@@ -140,7 +140,7 @@ fn cyrillic_text_produces_glyphs() {
     // cannot draw these renders nothing at all, which looks like a layout
     // mistake and is not one.
     let mut with_text = Ui::new();
-    with_text.text(TextRun::new(8.0, 30.0, 28.0, Vec4::ONE, "Долина ждёт"));
+    with_text.text(TextRun::new(8.0, 30.0, 28.0, Vec4::ONE, "Кухня ждёт"));
     let text = shoot(&gpu, &with_text);
     let blank = shoot(&gpu, &Ui::new());
 

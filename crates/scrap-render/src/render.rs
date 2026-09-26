@@ -6,10 +6,10 @@
 //! hand-written Vulkan backend may eventually be worth it. Both should be an
 //! internal swap, not a rewrite of the game.
 //!
-//! The lighting is the one `docs/design/07-look.md` asks for and nothing
-//! more: one directional sun, flat shading, colour instead of material. Two
-//! things the old renderer lacked and this one has from the start, because
-//! their absence was most of why frames looked wrong:
+//! The lighting at its simplest: one directional sun, flat shading, colour
+//! instead of material. Two things the old renderer lacked and this one has
+//! from the start, because their absence was most of why frames looked
+//! wrong:
 //!
 //! * **Hemisphere ambient.** A constant ambient term gives every surface
 //!   turned away from the sun the same dead colour. Splitting it into a sky
