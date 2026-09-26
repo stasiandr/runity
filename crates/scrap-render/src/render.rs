@@ -6078,25 +6078,34 @@ impl Renderer {
                 .map(|(_, l)| l.len() as u32)
                 .sum::<u32>();
         let batched_total: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
-        let mut flat = std::mem::take(&mut self.flat);
-        flat.clear();
-        flat.extend(shadow_batches
+        // Every instance goes up in this order, written straight into the
+        // queue's staging memory from where it already is: not gathered
+        // into one list first, which was a copy of every instance (208
+        // bytes each) a frame. Only the singles and the see-through ones,
+        // which are not in lists of their own, are gathered.
+        let mut loose = std::mem::take(&mut self.flat);
+        loose.clear();
+        loose.extend(singles.iter().map(|single| single.4));
+        loose.extend(transparent.iter().map(|t| t.5));
+        let parts: Vec<&[InstanceRaw]> = shadow_batches
             .iter()
             .chain(clip_batches.iter())
             .chain(batches.iter())
-            .flat_map(|(_, l)| l.iter().copied())
-            .chain(singles.iter().map(|single| single.4))
-            .chain(transparent.iter().map(|t| t.5))
-            .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
-            .chain(outline_batches.iter().flat_map(|(_, l)| l.iter().copied()))
+            .map(|(_, l)| l.as_slice())
+            .chain(std::iter::once(loose.as_slice()))
+            .chain(overlay_batches.iter().map(|(_, l)| l.as_slice()))
+            .chain(outline_batches.iter().map(|(_, l)| l.as_slice()))
             .chain(
                 lamp_batches
                     .iter()
                     .flat_map(|(a, b)| a.iter().chain(b.iter()))
-                    .flat_map(|(_, l)| l.iter().copied()),
-            ));
-        if flat.len() as u64 > self.instance_capacity {
-            self.instance_capacity = (flat.len() as u64).next_power_of_two();
+                    .map(|(_, l)| l.as_slice()),
+            )
+            .filter(|part| !part.is_empty())
+            .collect();
+        let total: usize = parts.iter().map(|part| part.len()).sum();
+        if total as u64 > self.instance_capacity {
+            self.instance_capacity = (total as u64).next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
                 size: self.instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
@@ -6105,11 +6114,20 @@ impl Renderer {
                 mapped_at_creation: false,
             });
         }
-        if !flat.is_empty() {
-            gpu.queue
-                .write_buffer(&self.instances, 0, bytemuck::cast_slice(&flat));
+        if let Some(size) = wgpu::BufferSize::new((total * std::mem::size_of::<InstanceRaw>()) as u64) {
+            let mut view = gpu
+                .queue
+                .write_buffer_with(&self.instances, 0, size)
+                .expect("the instance buffer holds them all");
+            let mut at = 0;
+            for part in &parts {
+                let bytes: &[u8] = bytemuck::cast_slice(part);
+                view.slice(at..at + bytes.len()).copy_from_slice(bytes);
+                at += bytes.len();
+            }
         }
-        self.flat = flat;
+        drop(parts);
+        self.flat = loose;
 
         // Poses go in before the pass: one slot each, padded to the device's
         // dynamic-offset alignment, and a pose longer than MAX_JOINTS is
