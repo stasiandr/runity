@@ -638,7 +638,7 @@ impl Default for Feel {
             hold_halflife: 0.2,
             leash: 0.15,
             lock_feet: true,
-            lock_reach: 0.12,
+            lock_reach: 0.2,
             lock_creep: 0.1,
             body: Capsule::default(),
             climb_halflife: 0.08,
@@ -678,12 +678,17 @@ pub struct Matcher {
     climbing_on: bool,
     warp: f32,
     plan_end: usize,
-    /// How high the checked climb gets, in the world.
+    /// How high the checked climb gets, in the world, and from where.
     plan_top: f32,
+    plan_base: f32,
     /// How far the feet were moved off the animation this step, metres —
     /// the most of the two. A foot held far from where the animation has
     /// it bends the leg into a pose nobody captured.
     pub feet_off: f32,
+    /// How far the hips are lowered for the feet, smoothed, and which way
+    /// each knee bent last step.
+    drop: f32,
+    bends: [Vec3; 2],
     /// Jumps made, for tests and the debug view, and the last: how far
     /// off its pose was (the largest joint's turn, radians), from which
     /// frame to which.
@@ -724,9 +729,12 @@ impl Matcher {
             climbing_on: false,
             last_jump: None,
             feet_off: 0.0,
+            drop: 0.0,
+            bends: [Vec3::ZERO; 2],
             warp: 1.0,
             plan_end: 0,
             plan_top: 0.0,
+            plan_base: 0.0,
             jumps: 0,
         }
     }
@@ -916,6 +924,7 @@ impl Matcher {
                         self.warp = warp;
                         self.plan_end = end;
                         self.plan_top = top;
+                        self.plan_base = self.spring.0.y;
                         true
                     }
                     None => false,
@@ -1000,8 +1009,13 @@ impl Matcher {
             self.spring = (feet, flat(turn * velocity), Vec3::ZERO);
             self.spring_turn = (turn, Vec3::ZERO);
             // Not down before the edge: a drop taken where the take's box
-            // ended waits for this one's.
-            at.y = at.y.max(feet.y - 0.1);
+            // ended waits for this one's. Not higher than the checked climb
+            // tops out: the take's actor may have climbed higher.
+            let rising = self.plan_top > self.plan_base;
+            if !rising {
+                at.y = at.y.max(feet.y - 0.1);
+            }
+            at.y = at.y.min(self.plan_top.max(self.plan_base).max(feet.y) + 0.05);
             self.root = (at, turn);
         } else {
             // The animation moves the root; the spring holds it.
@@ -1086,6 +1100,13 @@ impl Matcher {
         let down = db.contacts[self.frame];
         let mut targets = [Vec3::ZERO; 2];
         let mut animated = [Vec3::ZERO; 2];
+        // Each leg's length: a foot held further from its hip than this is
+        // let go — the body has climbed away from it.
+        let leg_length: [f32; 2] = std::array::from_fn(|side| {
+            let (foot, knee, hip) = db.legs[side];
+            let at = |j: usize| world[j].w_axis.truncate();
+            at(hip).distance(at(knee)) + at(knee).distance(at(foot))
+        });
         for side in 0..2 {
             let leg = db.legs[side];
             let foot = &mut self.feet[side];
@@ -1126,13 +1147,20 @@ impl Matcher {
                 }
             }
             foot.at = match foot.at {
-                Some(at) if down[side] && flat(at - free).length() <= self.feel.lock_reach => {
+                Some(at)
+                    if down[side]
+                        && flat(at - free).length() <= self.feel.lock_reach
+                        && at.distance(world[leg.2].w_axis.truncate()) < leg_length[side] * 1.02 =>
+                {
                     // Held, but creeping after the animation: a stance the
                     // animation has moved a foot of — another take's idle, a
                     // shift of weight — is taken up slowly rather than held
                     // off with bent knees.
+                    // Only standing about: walking, a foot is down too
+                    // briefly to drift, and creeping would be skating.
                     let gap = free - at;
-                    let creep = self.feel.lock_creep * dt;
+                    let still = flat(self.spring.1).length() < 0.3;
+                    let creep = if still { self.feel.lock_creep * dt } else { 0.0 };
                     Some(at + if gap.length() > creep { gap.normalize() * creep } else { gap })
                 }
                 Some(at) => {
@@ -1199,7 +1227,10 @@ impl Matcher {
         self.feet_off = (0..2).map(|s| targets[s].distance(animated[s])).fold(0.0f32, f32::max);
         // The hips go down for the foot that has further down to go.
         let root = db.skeleton.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
-        let drop = (0..2).map(|s| targets[s].y - animated[s].y).fold(0.0f32, f32::min).max(-self.feel.body.step * 1.5);
+        let wanted = (0..2).map(|s| targets[s].y - animated[s].y).fold(0.0f32, f32::min).max(-self.feel.body.step * 1.5);
+        // Smoothed: a foot let go must not drop the hips back in a step.
+        let drop = self.drop + (wanted - self.drop) * (1.0 - (-std::f32::consts::LN_2 * dt / 0.05).exp());
+        self.drop = drop;
         if drop < -1e-4 {
             pose[root].translation[1] += drop;
             world = crate::ik::placed_joints(&db.skeleton, pose, placed);
@@ -1224,7 +1255,16 @@ impl Matcher {
             }
             if targets[side].distance(now) > 1e-4 {
                 let kept = crate::ik::turn_of(world[leg.0]);
-                crate::ik::reach_leg(&db.skeleton, pose, placed, &mut world, leg, targets[side], forward);
+                // The way it bent last step leads, then forward: a leg near
+                // straight keeps its knee where it was.
+                let lean = self.bends[side] * 0.08 + forward * 0.03;
+                crate::ik::reach_leg(&db.skeleton, pose, placed, &mut world, leg, targets[side], lean);
+                let (h, k, f) = (world[leg.2].w_axis.truncate(), world[leg.1].w_axis.truncate(), world[leg.0].w_axis.truncate());
+                let along = (f - h).normalize_or(-Vec3::Y);
+                let out = (k - h) - along * (k - h).dot(along);
+                if out.length() > 0.01 {
+                    self.bends[side] = out.normalize();
+                }
                 let turned = crate::ik::turn_of(world[leg.0]);
                 crate::ik::turn_joint(&db.skeleton, pose, &world, placed, leg.0, kept * turned.inverse());
                 world = crate::ik::placed_joints(&db.skeleton, pose, placed);

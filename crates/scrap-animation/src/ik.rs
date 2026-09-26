@@ -293,7 +293,7 @@ fn feet(
         // The foot keeps the animation's turn through the leg's, then
         // turns to the slope.
         let kept = turn_of(world[foot]);
-        reach_leg(skeleton, pose, placed, &mut world, (foot, knee, hip), target, forward);
+        reach_leg(skeleton, pose, placed, &mut world, (foot, knee, hip), target, forward.normalize_or_zero() * 0.03);
         let slope = Quat::IDENTITY.slerp(
             Quat::from_rotation_arc(up, normal),
             feet.align.clamp(0.0, 1.0),
@@ -312,8 +312,9 @@ fn feet(
 }
 
 /// Bend a leg — `(foot, knee, hip)` — so its foot is at `target`, the knee
-/// bending the way it already does (forward, `forward`, when straight).
-/// The foot's own turn is the leg's; `world` is refreshed.
+/// bending the way it already does, leaning by `lean` (a nudge added to
+/// the bend: forward, or the way it bent last step), so a near-straight leg
+/// does not flip. The foot's own turn is the leg's; `world` is refreshed.
 pub(crate) fn reach_leg(
     skeleton: &Skeleton,
     pose: &mut [PoseTransform],
@@ -321,7 +322,7 @@ pub(crate) fn reach_leg(
     world: &mut Vec<Mat4>,
     (foot, knee, hip): (usize, usize, usize),
     target: Vec3,
-    forward: Vec3,
+    lean: Vec3,
 ) {
     let up = Vec3::Y;
     let (h, k, f) = (
@@ -334,7 +335,7 @@ pub(crate) fn reach_leg(
     // the lean the knee could flip between steps.
     let along = (f - h).normalize_or(-up);
     let out = (k - h) - along * (k - h).dot(along);
-    let pole = k + out + forward.normalize_or_zero() * 0.03;
+    let pole = k + out + lean;
     let (knee_to, foot_to) = crate::geometry_ik::two_bone(h, h.distance(k), k.distance(f), target, pole);
     turn_joint(
         skeleton,

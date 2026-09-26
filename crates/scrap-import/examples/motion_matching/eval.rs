@@ -283,11 +283,16 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
                         score.slide.push(Vec3::new(b.x - a.x, 0.0, b.z - a.z).length() / dt);
                     }
                 }
-                for (a, b) in last.iter().zip(&world) {
+                for (j, (a, b)) in last.iter().zip(&world).enumerate() {
                     let moved = (b.w_axis.truncate() - a.w_axis.truncate()) - (at - last_root);
                     let speed = moved.length() / dt;
                     if speed > 12.0 && speed > score.pop {
-                        score.moments.push((t, speed, format!("pop {speed:.1} m/s")));
+                        let clip = &db.clips[db.clip_of(walker.matcher.frame)].0;
+                        score.moments.push((t, speed, format!(
+                            "pop {speed:.1} m/s {} ({clip} {}, committed {}, jumped {}, root dy {:.3})",
+                            skeleton.joints[j].name, walker.matcher.frame, walker.matcher.committed(),
+                            walker.matcher.jumps > jumps, at.y - last_root.y
+                        )));
                     }
                     score.pop = score.pop.max(speed);
                 }
