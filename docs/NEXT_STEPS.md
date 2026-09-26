@@ -265,7 +265,12 @@
       `shaders/<name>.vfx.ron` — `spawn`, `update`, `output` частиц на
       видеокарте, узлы `Random` и `Turbulence`; пример — угли в
       `graphs.ron`
-- [ ] Окна шейдер-графа и графа эффекта на `graph_view`
+- [x] Шейдер-граф дорос до Unity (docs/shadergraph.md): 97 узлов, данные
+      сцены (`screen`, `scene_depth`, `SceneColor`, `tangent`, свет),
+      вершинный этап с тенями, подграфы, свойства `Color`/`Vector`/
+      `Boolean` в инспекторе материала
+- [x] Окно Shader Graph на `graph_view`: графы материалов, эффектов и
+      подграфы, правка входов в файле, превью материала и узла
 
 # Инструменты дизайнера
 

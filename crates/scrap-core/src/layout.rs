@@ -113,13 +113,14 @@ impl Kind {
 
 /// The extensions that say a kind, the longest first so `.cases.ron` is
 /// not taken for something else.
-const SUFFIXES: [(&str, Kind); 12] = [
+const SUFFIXES: [(&str, Kind); 13] = [
     (".scene.ron", Kind::Scene),
     (".screen.ron", Kind::Screen),
     (".animator.ron", Kind::Animator),
     (".dialogue.ron", Kind::Dialogue),
     (".quest.ron", Kind::Quest),
     (".cases.ron", Kind::Cases),
+    (".subgraph.ron", Kind::Shader),
     (".graph.ron", Kind::Shader),
     (".clip.ron", Kind::Clip),
     (".vfx.ron", Kind::Shader),

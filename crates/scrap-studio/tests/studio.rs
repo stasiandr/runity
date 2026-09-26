@@ -1521,7 +1521,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     assert!(s.ui.find("menu Rename…").is_some(), "{menu_dump:?}");
     click(&mut s, "menu Rename…");
     answer(&mut s, "soil");
-    assert!(dir.join("materials/soil.scrmat").is_file(), "renamed");
+    assert!(dir.join("content/valley/nature/ground/soil.scrmat").is_file(), "renamed");
     let crate_id = s.session.find("crate").unwrap();
     assert_eq!(s.session.material_name(crate_id).as_deref(), Some("soil"));
 
@@ -1555,7 +1555,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     // The crate's colour as a material of its own.
     menu(&mut s, "Assets", "Save Material from Selection…");
     answer(&mut s, "rust");
-    assert!(dir.join("materials/rust.scrmat").is_file());
+    assert!(dir.join("content/valley/rust.scrmat").is_file());
 
     // A variant of an instance of the campfire prefab.
     let fire = s.session.add_instance(None, "campfire").unwrap();
@@ -2868,7 +2868,7 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     press(&mut s, "asset stone", MouseButton::Right);
     click(&mut s, "menu Create Material Instance");
     s.frame();
-    let file = dir.join("materials/stone_instance.scrmat");
+    let file = dir.join("content/valley/nature/rocks/stone_instance.scrmat");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
         text.contains(r#"(parent: ("stone", ""#),
@@ -4776,4 +4776,88 @@ fn the_table_sets_a_cell_of_a_tuning_record_and_sorts_by_a_column() {
 
     click(&mut s, "table undo");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
+fn a_materials_shader_properties_are_shown_by_name_and_set_there() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The lava material's shader is a graph with one property, `flow`.
+    find_in_project(&mut s, "lava");
+    s.frame();
+    click(&mut s, "asset lava");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("Shader properties (lava)"), "{dump}");
+    let field = s.ui.find("shader property flow").expect("its field");
+    assert_eq!(s.ui.text(field), Some("0.08"));
+    fill(&mut s, "shader property flow", "0.2");
+    s.frame();
+    let text = std::fs::read_to_string(dir.join("content/valley/lava/lava.scrmat")).unwrap();
+    assert!(text.contains("params: [0.2]"), "{text}");
+    fill(&mut s, "shader property flow", "fast");
+    assert!(
+        s.session.console().iter().any(|l| l.text.contains("number")),
+        "a value that is not a number is refused"
+    );
+}
+
+#[test]
+fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("content/valley/lava/lava.graph.ron");
+    click(&mut s, "tab shadergraph");
+    s.frame();
+    click(&mut s, "shader graphs wide");
+    s.frame();
+    click(&mut s, "graph lava.graph.ron");
+    s.frame();
+    for node in ["drift", "ground", "cracks", "churn", "glow", "surface"] {
+        assert!(s.ui.find(&format!("graph node {node}")).is_some(), "{node}: {}", s.ui.dump());
+    }
+    assert!(s.ui.find("graph edge 0").is_some(), "arrows");
+    assert!(s.ui.dump().contains("Builds."), "{}", s.ui.dump());
+    assert!(s.ui.find("graph preview").is_some(), "the material on a ball");
+
+    // A node chosen: its inputs, its own preview; an input set is one
+    // change in the file, the comment and the other lines as they were.
+    click(&mut s, "graph node churn");
+    s.frame();
+    assert!(s.ui.find("node preview").is_some());
+    let before = std::fs::read_to_string(&file).unwrap();
+    fill(&mut s, "graph input scale", "3.5");
+    s.frame();
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(after.contains(r#""churn": Noise(at: "position", scale: 3.5),"#), "{after}");
+    assert_eq!(before.lines().count(), after.lines().count());
+
+    // Misspelt: said in the compiler's words, and the file keeps it — it is
+    // the person's to fix — with the node marked.
+    fill(&mut s, "graph input at", "\"positon\"");
+    s.frame();
+    assert!(s.ui.dump().contains("did you mean `position`"), "{}", s.ui.dump());
+    fill(&mut s, "graph input at", "\"position\"");
+    s.frame();
+
+    // A node added, and taken out with its line.
+    fill(&mut s, "graph add node", "\"pulse\": Sine(of: \"time\")");
+    s.frame();
+    assert!(std::fs::read_to_string(&file).unwrap().contains(r#""pulse": Sine(of: "time"),"#));
+    assert!(s.ui.find("graph node pulse").is_some());
+    assert!(s.ui.dump().contains("node `pulse` is read by nothing"), "a warning: {}", s.ui.dump());
+    click(&mut s, "graph node pulse");
+    click(&mut s, "graph delete node");
+    s.frame();
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("pulse"));
+
+    // An effect's graph: its three parts are what it sets.
+    click(&mut s, "graph embers.vfx.ron");
+    s.frame();
+    for node in ["spawn", "update", "output", "wind", "hue"] {
+        assert!(s.ui.find(&format!("graph node {node}")).is_some(), "{node}: {}", s.ui.dump());
+    }
+    assert!(s.ui.dump().contains("Builds."));
 }

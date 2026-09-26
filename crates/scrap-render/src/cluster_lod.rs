@@ -103,7 +103,7 @@ pub(crate) fn levels(vertices: &[Vertex], sorted: &[u32], level0: &[ClusterRaw])
         if level.len() <= 1 {
             break;
         }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let groups = group(&level, &places, &all);
         let t_group = t0.elapsed();
         // Which group each place is in, to hold what groups share.

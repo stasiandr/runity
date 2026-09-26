@@ -196,3 +196,80 @@ impl Session {
         Ok(target.read_rgba(&self.gpu))
     }
 }
+
+/// The shader [`Session::graph_preview`] draws with, its own: never a
+/// material's.
+const PREVIEW_SHADER: &str = "__graph_preview";
+
+impl Session {
+    /// A `size`-pixel square picture, RGBA, of the shader graph at `path`
+    /// on a ball: the material it makes, lit, or with `node` the value of
+    /// that node glowing on black — Shader Graph's main preview and a
+    /// node's. Its numbers are those of the first material that uses the
+    /// graph, or zeros. Refused in words when the graph does not build.
+    pub fn graph_preview(&mut self, path: &std::path::Path, node: Option<&str>, size: u32) -> EditResult<Vec<u8>> {
+        let size = size.clamp(16, 1024);
+        let text = std::fs::read_to_string(path).map_err(|e| EditError::Io(e.to_string()))?;
+        let name = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .and_then(scrap::shader_graph::shader_name)
+            .ok_or_else(|| EditError::Scene(format!("{} is not a material's shader graph", path.display())))?
+            .to_string();
+        let graph = scrap::shader_graph::surface::parse(&text).map_err(EditError::Scene)?;
+        let library = scrap::render::subgraphs_beside(path);
+        let shown = match node {
+            Some(node) => scrap::shader_graph::surface::preview_of(&graph, node, &library).map_err(EditError::Scene)?,
+            None => graph,
+        };
+        let wgsl = scrap::shader_graph::surface::to_wgsl_with(&shown, &format!("shaders/{name}.graph.ron"), &library)
+            .map_err(EditError::Scene)?;
+        let id = scrap::asset::shader_id(PREVIEW_SHADER);
+        self.renderer.set_material_shader(&self.gpu, id, &wgsl).map_err(EditError::Scene)?;
+        let own = scrap::asset::shader_id(&name);
+        let params = self
+            .palette()
+            .into_iter()
+            .find(|(_, m)| m.shader == Some(own))
+            .map(|(_, m)| m.params)
+            .unwrap_or_default();
+        let ball = match self.uploaded.iter().find(|(n, _)| n == "builtin:sphere") {
+            Some(found) => found.1,
+            None => {
+                let handle = self.renderer.upload_mesh_owned(&self.gpu, &scrap::builtin::sphere(0.5, 48, 32));
+                self.uploaded.push(("builtin:sphere".to_string(), handle));
+                handle
+            }
+        };
+        let backdrop = Vec3::new(0.32, 0.33, 0.36);
+        let mut frame = scrap::render::Frame {
+            camera: Camera {
+                position: Vec3::new(0.0, 0.35, 1.9),
+                target: Vec3::ZERO,
+                fov_y_degrees: 35.0,
+                ..Camera::default()
+            },
+            clear_color: backdrop,
+            draws: vec![scrap::render::Draw {
+                mesh: ball,
+                transform: scrap::glam::Mat4::IDENTITY,
+                texture: scrap::render::TextureHandle::WHITE,
+                material: scrap::Material {
+                    shading: if node.is_some() { scrap::material::Shading::Unlit } else { scrap::material::Shading::Lit },
+                    shader: Some(id),
+                    params,
+                    ..scrap::Material::new(1.0, 1.0, 1.0)
+                },
+                pose: None,
+            }],
+            ..Default::default()
+        };
+        frame.sky.mode = scrap::render::SkyMode::Color;
+        frame.post.bloom.intensity = 0.0;
+        frame.post.taa = false;
+        frame.post.auto_exposure.enabled = false;
+        let target = OffscreenTarget::new(&self.gpu, size, size);
+        self.renderer.render(&self.gpu, &target, &frame);
+        Ok(target.read_rgba(&self.gpu))
+    }
+}

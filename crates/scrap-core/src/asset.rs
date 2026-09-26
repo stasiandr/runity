@@ -284,6 +284,38 @@ const FLAGS: usize = 13;
 /// web or a phone ships it ([`compressed`]); [`read`] unpacks it.
 pub const FLAG_ZSTD: u8 = 1;
 
+/// A flag, with [`FLAG_ZSTD`]: before compression the body's bytes were
+/// laid out by their place in each four — every first byte, then every
+/// second, … — so a mesh's floats and indices, whose high bytes repeat,
+/// compress far better. Undone on the way in.
+pub const FLAG_SHUFFLE: u8 = 2;
+
+/// `bytes` by their place in each four: the first of each, then the second,
+/// then the third, then the fourth; a tail short of four as it is.
+pub fn shuffle(bytes: &[u8]) -> Vec<u8> {
+    let whole = bytes.len() / 4 * 4;
+    let mut out = Vec::with_capacity(bytes.len());
+    for lane in 0..4 {
+        out.extend(bytes[..whole].iter().skip(lane).step_by(4));
+    }
+    out.extend_from_slice(&bytes[whole..]);
+    out
+}
+
+/// [`shuffle`] undone.
+pub fn unshuffle(bytes: &[u8]) -> Vec<u8> {
+    let whole = bytes.len() / 4 * 4;
+    let quarter = whole / 4;
+    let mut out = vec![0u8; bytes.len()];
+    for lane in 0..4 {
+        for (i, b) in bytes[lane * quarter..(lane + 1) * quarter].iter().enumerate() {
+            out[i * 4 + lane] = *b;
+        }
+    }
+    out[whole..].copy_from_slice(&bytes[whole..]);
+    out
+}
+
 /// An asset format, as a module defines one: what kind it is, and the ID
 /// and name it carries — which go in the file's header, so the core can
 /// keep a library of assets it does not know the insides of.
@@ -444,23 +476,33 @@ pub fn uncompressed(bytes: Vec<u8>) -> Result<Vec<u8>, AssetError> {
         return Err(AssetError::BadMagic);
     }
     use std::io::Read;
-    let mut out = Vec::with_capacity(len + (bytes.len() - len) * 3);
+    let mut body = Vec::with_capacity((bytes.len() - len) * 3);
     let mut frame = &bytes[len..];
     let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut frame).map_err(|e| AssetError::Corrupt(format!("its zstd body: {e}")))?;
+    decoder.read_to_end(&mut body).map_err(|e| AssetError::Corrupt(format!("its zstd body: {e}")))?;
+    if bytes[FLAGS] & FLAG_SHUFFLE != 0 {
+        body = unshuffle(&body);
+    }
+    let mut out = Vec::with_capacity(len + body.len());
     out.extend_from_slice(&bytes[..len]);
-    out[FLAGS] &= !FLAG_ZSTD;
-    decoder.read_to_end(&mut out).map_err(|e| AssetError::Corrupt(format!("its zstd body: {e}")))?;
+    out[FLAGS] &= !(FLAG_ZSTD | FLAG_SHUFFLE);
+    out.extend_from_slice(&body);
     Ok(out)
 }
 
 /// The same asset, its body a zstd frame made by `compress` (a build's
-/// tool: the runtime only unpacks).
-pub fn compressed(bytes: &[u8], compress: impl FnOnce(&[u8]) -> Vec<u8>) -> Result<Vec<u8>, AssetError> {
+/// tool: the runtime only unpacks) — [`shuffle`]d first with `shuffled`.
+pub fn compressed(bytes: &[u8], shuffled: bool, compress: impl FnOnce(&[u8]) -> Vec<u8>) -> Result<Vec<u8>, AssetError> {
     let body = split_header(bytes)?;
     let len = bytes.len() - body.len();
     let mut out = bytes[..len].to_vec();
     out[FLAGS] |= FLAG_ZSTD;
-    out.extend_from_slice(&compress(body));
+    if shuffled {
+        out[FLAGS] |= FLAG_SHUFFLE;
+        out.extend_from_slice(&compress(&shuffle(body)));
+    } else {
+        out.extend_from_slice(&compress(body));
+    }
     Ok(out)
 }
 

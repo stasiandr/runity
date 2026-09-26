@@ -287,6 +287,9 @@ enum Part {
     /// back to the parent's.
     MaterialParam(String, String),
     MaterialReset(String, String),
+    /// A property of a material's shader: where its numbers start in the
+    /// material's `params`, and how many.
+    MaterialProperty(String, usize, usize),
     /// The track of a material's parameter that goes from 0 to 1.
     MaterialSlide(String, String),
     /// A box of a field; `axis` for one number of a vector.
@@ -1589,6 +1592,60 @@ impl Inspector {
         }
     }
 
+    /// The properties of a material's shader, by name and kind — a colour
+    /// with its swatch — each its own numbers of the material's `params`:
+    /// Unity's material inspector over a Shader Graph's properties.
+    fn shader_properties(&mut self, ui: &mut Ui, session: &Session, material: &str, fields: &[(String, String, bool)]) {
+        let Some(shader) = fields
+            .iter()
+            .find(|(k, _, _)| k == "shader")
+            .map(|(_, v, _)| v.trim().trim_matches('"').to_string())
+            .filter(|v| !v.is_empty() && v != "None")
+        else {
+            return;
+        };
+        let Some(project) = session.project() else {
+            return;
+        };
+        let properties = scrap::render::material_properties(project.root(), &shader);
+        if properties.is_empty() {
+            return;
+        }
+        self.heading(ui, &format!("Shader properties ({shader})"));
+        let params = material_params(fields);
+        for property in properties {
+            let numbers: Vec<f32> = (property.at..property.at + property.size).map(|i| params.get(i).copied().unwrap_or(0.0)).collect();
+            let line = ui.add(
+                self.body,
+                Style::row().full_width().padding_x(SPACE_4).padding_y(2.0).gap(SPACE_2).center_items(),
+            );
+            ui.add_text(
+                line,
+                Style::default().width(120.0).fixed().text_size(12.0).text_color(LABEL).nowrap(),
+                &title(&property.name),
+            );
+            if property.kind == scrap::render::PropertyKind::Color && numbers.len() >= 3 {
+                let rgb = to_srgb([numbers[0], numbers[1], numbers[2]]);
+                ui.add(
+                    line,
+                    Style::row()
+                        .size(22.0, 22.0)
+                        .fixed()
+                        .radius(RADIUS_MD)
+                        .border(1.0, DIVIDER)
+                        .background(scrap_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255)),
+                );
+            }
+            let shown = match property.kind {
+                scrap::render::PropertyKind::Boolean => if numbers[0] > 0.5 { "1" } else { "0" }.to_string(),
+                _ => numbers.iter().map(|n| trim_number(&n.to_string())).collect::<Vec<_>>().join(", "),
+            };
+            let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &shown);
+            ui.set_name(f, format!("shader property {}", property.name));
+            self.parts.insert(f, Part::MaterialProperty(material.to_string(), property.at, property.size));
+        }
+    }
+
     /// Show an asset from the Project: its picture, how it is imported,
     /// where it is used — Unity's Inspector on a selected asset. Returns
     /// the preview's pixels (256 square) for the renderer, when it has one.
@@ -1694,7 +1751,7 @@ impl Inspector {
                     None => "Material".to_string(),
                 };
                 self.heading(ui, &title_text);
-                for (key, value, set) in layers.fields {
+                for (key, value, set) in layers.fields.clone() {
                     let line = ui.add(
                         self.body,
                         Style::row()
@@ -1744,6 +1801,7 @@ impl Inspector {
                             .insert(reset, Part::MaterialReset(name.clone(), key.clone()));
                     }
                 }
+                self.shader_properties(ui, session, &name, &layers.fields);
             }
         }
         // How it is imported: a model with a source in the project.
@@ -1963,6 +2021,25 @@ impl Inspector {
             }
             (Part::Slot { .. }, Event::Cancel) => {
                 requests.refresh = true;
+            }
+            (Part::MaterialProperty(material, at, size), Event::Submit(value)) => {
+                let numbers: Result<Vec<f32>, _> = value.split([',', ' ']).filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse::<f32>()).collect();
+                match numbers {
+                    Ok(numbers) if numbers.len() == size => {
+                        let fields = session.material_layers(&material).map(|l| l.fields).unwrap_or_default();
+                        let mut params = material_params(&fields);
+                        if params.len() < at + size {
+                            params.resize(at + size, 0.0);
+                        }
+                        params[at..at + size].copy_from_slice(&numbers);
+                        let text = format!("[{}]", params.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", "));
+                        if let Err(e) = session.set_material_param(&material, "params", Some(&text)) {
+                            session.say(Level::Error, e.to_string());
+                        }
+                    }
+                    _ => session.say(Level::Error, format!("{size} number(s), separated by commas")),
+                }
+                requests.inspect = Some(Asset::Material(material));
             }
             (Part::MaterialParam(material, key), Event::Submit(value)) => {
                 if let Err(e) = session.set_material_param(&material, &key, Some(value.trim())) {
@@ -2834,4 +2911,20 @@ mod tests {
         );
         assert_eq!(trim_number("-0.0"), "0");
     }
+}
+
+/// A material's eight numbers as its `params` field says them.
+fn material_params(fields: &[(String, String, bool)]) -> Vec<f32> {
+    fields
+        .iter()
+        .find(|(k, _, _)| k == "params")
+        .map(|(_, v, _)| {
+            v.trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .filter_map(|t| t.trim().parse::<f32>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }

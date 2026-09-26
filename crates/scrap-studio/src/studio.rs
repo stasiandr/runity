@@ -328,6 +328,7 @@ pub struct Studio {
     screens: Screens,
     animator: Animator,
     dialogues: crate::dialogues::Dialogues,
+    shader_graphs: crate::shader_graphs::ShaderGraphs,
     table: crate::table::Table,
     /// The network inspector, the world diff, the saves, the systems.
     /// What the last draw cost, for the Profiler.
@@ -685,6 +686,8 @@ impl Studio {
         roots.insert(Panel::Animator, animator.root);
         let dialogues = crate::dialogues::Dialogues::new(&mut ui, lower);
         roots.insert(Panel::Dialogues, dialogues.root);
+        let shader_graphs = crate::shader_graphs::ShaderGraphs::new(&mut ui, lower);
+        roots.insert(Panel::ShaderGraph, shader_graphs.root);
         let table = crate::table::Table::new(&mut ui, lower);
         roots.insert(Panel::Table, table.root);
         let docks = Docks::new(
@@ -746,6 +749,7 @@ impl Studio {
             screens,
             animator,
             dialogues,
+            shader_graphs,
             table,
             last_draw_ms: 0.0,
             aspect: None,
@@ -1416,6 +1420,8 @@ impl Studio {
         // The colour picker's pictures, as it makes them.
         let images = self.inspector.take_images();
         self.pending_images.extend(images);
+        let images = self.shader_graphs.take_images();
+        self.pending_images.extend(images);
         // An asset an action made, shown once the panels have caught up
         // (catching up clears what the Inspector showed).
         if let Some(asset) = self.show_next.take() {
@@ -1451,6 +1457,9 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Dialogues) {
                 self.dialogues.update(&mut self.ui, &self.session);
+            }
+            if self.docks.is_showing(Panel::ShaderGraph) {
+                self.shader_graphs.update(&mut self.ui, &self.session);
             }
             if self.docks.is_showing(Panel::Table) {
                 self.table.update(&mut self.ui, &self.session);
@@ -1491,6 +1500,8 @@ impl Studio {
             Some(Panel::Animator)
         } else if self.dialogues.wide && under(Panel::Dialogues) {
             Some(Panel::Dialogues)
+        } else if self.shader_graphs.wide && under(Panel::ShaderGraph) {
+            Some(Panel::ShaderGraph)
         } else {
             None
         };
@@ -3426,6 +3437,9 @@ impl Studio {
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.dialogues.owns(&self.ui, node) {
             self.dialogues
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.shader_graphs.owns(&self.ui, node) {
+            self.shader_graphs
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.table.owns(&self.ui, node) {
             self.table

@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use scrap::asset::{TextureAsset, TextureCoding, TextureLevel};
+use scrap::asset::{MeshAsset, TextureAsset, TextureCoding, TextureLevel};
 
 /// What a platform's build samples its textures as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +99,21 @@ fn encode_level(coding: TextureCoding, alpha: bool, srgb: bool, width: u32, heig
     }
 }
 
+/// A mesh's normals on a grid of a 4096th and its texture coordinates on
+/// one of a 65536th (a sixteenth of a texel of a 4096 atlas), for zstd:
+/// still f32 where they were, so nothing that reads a mesh changes, their
+/// low bits zeros now, and a shuffled body of zeros compresses to little.
+/// Not the positions: what collides is built from them, and a body resting
+/// a millimetre lower is a game that plays out otherwise.
+pub fn snap_mesh(mesh: &mut MeshAsset) {
+    let (turn, texel) = (2f32.powi(-12), 2f32.powi(-16));
+    let snap = |v: f32, step: f32| (v / step).round() * step;
+    for v in &mut mesh.vertices {
+        v.normal = v.normal.map(|n| snap(n, turn));
+        v.uv = v.uv.map(|u| snap(u, texel));
+    }
+}
+
 /// ASTC 4x4 blocks of an image of whole blocks, by ARM's encoder (Intel's
 /// has none): sRGB colour maps encoded as sRGB, the rest as data. One
 /// thread: the library's textures are encoded side by side already.
@@ -129,6 +144,9 @@ pub struct Cooked {
     pub compressed: usize,
     /// Files copied as they were: prefabs, and assets without zstd.
     pub copied: usize,
+    /// Asset files left out: of an older format or not ours, which a game
+    /// would refuse anyway (`scrap sync` rebuilds what is still used).
+    pub dropped: usize,
     /// Bytes of the library, and of what it became.
     pub bytes_in: u64,
     pub bytes_out: u64,
@@ -151,6 +169,7 @@ pub fn cook_library(library: &Path, out: &Path, coding: TextureCoding, zstd: boo
             Done::Cached => report.cached += 1,
             Done::Compressed => report.compressed += 1,
             Done::Copied => report.copied += 1,
+            Done::Dropped => report.dropped += 1,
         }
         report.bytes_in += bytes_in;
         report.bytes_out += bytes_out;
@@ -163,6 +182,7 @@ enum Done {
     Cached,
     Compressed,
     Copied,
+    Dropped,
 }
 
 fn collect(dir: &Path, into: &mut Vec<PathBuf>) -> Result<()> {
@@ -183,14 +203,24 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
         std::fs::create_dir_all(parent)?;
     }
     let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
-    let asset = file.extension().is_some_and(|e| e == "scrasset") && scrap::asset::split_header(&bytes).is_ok();
+    // `.rasset` is what an asset was called before the engine was scrap:
+    // stale, whatever it holds.
+    if file.extension().is_some_and(|e| e == "rasset") {
+        return Ok((Done::Dropped, bytes.len() as u64, 0));
+    }
+    let asset_file = file.extension().is_some_and(|e| e == "scrasset");
+    let asset = asset_file && scrap::asset::split_header(&bytes).is_ok();
+    if asset_file && !asset {
+        return Ok((Done::Dropped, bytes.len() as u64, 0));
+    }
     let texture = asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::asset::TEXTURE);
+    let mesh = asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::asset::MESH);
     if !texture && !(asset && zstd) {
         std::fs::write(&to, &bytes)?;
         return Ok((Done::Copied, bytes.len() as u64, bytes.len() as u64));
     }
     // Kept by what it was made from, and how.
-    let key = format!("{:032x}-{coding:?}{}.scrasset", fnv128(&bytes), if zstd { "-zstd" } else { "" });
+    let key = format!("{:032x}-{coding:?}{}.scrasset", fnv128(&bytes), if zstd { "-zstd5" } else { "" });
     let kept = cache.join(&key);
     if let Ok(done) = std::fs::read(&kept) {
         std::fs::write(&to, &done)?;
@@ -201,14 +231,30 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
         let asset: TextureAsset = rkyv::from_bytes::<TextureAsset, rkyv::rancor::Error>(body)
             .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
         match cook_texture(&asset, coding) {
-            Some(encoded) => (Done::Encoded, scrap::asset::to_bytes(&encoded, scrap::asset::TEXTURE)?),
+            Some(encoded) => {
+                let header = &bytes[..bytes.len() - body.len()];
+                let body = rkyv::to_bytes::<rkyv::rancor::Error>(&encoded).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+                (Done::Encoded, [header, body.as_slice()].concat())
+            }
             None => (Done::Copied, bytes.clone()),
         }
+    } else if mesh && zstd {
+        let body = scrap::asset::split_header(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        let mut asset: MeshAsset = rkyv::from_bytes::<MeshAsset, rkyv::rancor::Error>(body)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        snap_mesh(&mut asset);
+        // Its own header kept — the name it is found by is the importer's,
+        // not always the mesh's — and a new body after it.
+        let header = &bytes[..bytes.len() - body.len()];
+        let body = rkyv::to_bytes::<rkyv::rancor::Error>(&asset).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        (Done::Compressed, [header, body.as_slice()].concat())
     } else {
         (Done::Compressed, bytes.clone())
     };
     if zstd {
-        written = scrap::asset::compressed(&written, |body| zstd::bulk::compress(body, ZSTD_LEVEL).unwrap_or_default())?;
+        // Shuffled but where the body is GPU blocks, which it does not help.
+        let blocks = matches!(done, Done::Encoded);
+        written = scrap::asset::compressed(&written, !blocks, |body| zstd::bulk::compress(body, ZSTD_LEVEL).unwrap_or_default())?;
     }
     std::fs::create_dir_all(cache)?;
     std::fs::write(&kept, &written)?;
@@ -268,6 +314,37 @@ mod tests {
             }
             // The 1x1 level is one block.
             assert_eq!(cooked.mips.last().unwrap().pixels.len(), 16);
+        }
+    }
+
+    #[test]
+    fn a_meshs_positions_stay_exactly_and_its_normals_and_texture_coordinates_move_a_hair() {
+        use scrap::asset::{Bounds, Vertex};
+        let vertices = vec![
+            Vertex { position: [0.123456, 7.654321, -3.3], normal: [0.577, 0.5773, 0.57735], uv: [0.3141592, 12.718281] };
+            3
+        ];
+        let mut mesh = MeshAsset {
+            id: scrap::asset::AssetId(1),
+            name: "m".into(),
+            bounds: Bounds::of(&vertices),
+            vertices: vertices.clone(),
+            indices: vec![0, 1, 2],
+            submeshes: Vec::new(),
+            skin: None,
+            colors: Vec::new(),
+            look: None,
+        };
+        snap_mesh(&mut mesh);
+        for (a, b) in mesh.vertices.iter().zip(&vertices) {
+            assert_eq!(a.position, b.position, "what collides is built from them");
+            for (x, y) in a.normal.iter().zip(b.normal) {
+                assert!((x - y).abs() <= 2f32.powi(-13), "{x} {y}");
+            }
+            for (x, y) in a.uv.iter().zip(b.uv) {
+                assert!((x - y).abs() <= 2f32.powi(-17), "{x} {y}");
+                assert_eq!(x.to_bits() & 0xf, 0, "low bits zeros, for zstd");
+            }
         }
     }
 

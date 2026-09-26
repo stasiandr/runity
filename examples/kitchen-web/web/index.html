@@ -378,7 +378,12 @@
     stage("Fetching the kitchen");
     // The data first: the game's `main` runs as soon as it is loaded, and
     // reads it at once.
-    data = await fetchData("data.bin.gz");
+    // The library cooked for this GPU: BC7 where it samples BC (a
+    // desktop's), ASTC where only that (a phone's, an Apple one's); where
+    // neither, BC7, unpacked on load.
+    const features = adapter.features || new Set();
+    const pack = !features.has("texture-compression-bc") && features.has("texture-compression-astc") ? "astc" : "bc7";
+    data = await fetchData("data-" + pack + ".bin.gz");
     stage("Loading the game");
     bar.style.width = "100%";
     wasm = await import("./kitchen.js");

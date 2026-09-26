@@ -244,7 +244,7 @@ fn condition(c: &Yaml, kinds: &HashMap<String, i64>) -> Option<Condition> {
 }
 
 /// A controller as the text of an animator graph.
-pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
+pub fn convert(unity: &Unity, path: &Path, report: &mut super::Report) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let docs = yaml::documents(&text);
     let by_id = yaml::by_id(&docs);
@@ -282,7 +282,7 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
         let Some(state) = by_id.get(&id) else {
             continue;
         };
-        let name = state
+        let named = state
             .body
             .str("m_Name")
             .map(str::to_string)
@@ -290,6 +290,16 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
                 unnamed += 1;
                 format!("state_{unnamed}")
             });
+        // Unity keeps two states of one name apart by their fileIDs — a
+        // Mixamo clip dragged in twice is `mixamo_com` both times (Dacha's
+        // pawn, a jump standing and one running). Here a state is its
+        // name: the second is `mixamo_com 1`, as Unity names a copy.
+        let mut name = named.clone();
+        let mut copy = 0;
+        while states.contains_key(&name) {
+            copy += 1;
+            name = format!("{named} {copy}");
+        }
         let motion = state.body.reference("m_Motion");
         let mut out = State {
             clip: String::new(),
@@ -401,6 +411,23 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
         }
     }
     transitions.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
+    // What a flat graph of the base layer has no place for, said rather
+    // than dropped without a word (docs/animation.md: no nested machines).
+    for _ in 1..controller.body.list("m_AnimatorLayers").len() {
+        report.skip("an animator layer past the base one");
+    }
+    for doc in &docs {
+        match doc.kind.as_str() {
+            "AnimatorStateMachine" if doc.file_id != machine_id => {
+                report.skip("an animator's sub-state machine")
+            }
+            "AnimatorState" if !names.contains_key(&doc.file_id) => {
+                report.skip("an animator state inside a sub-state machine or a later layer")
+            }
+            "MonoBehaviour" => report.skip("a StateMachineBehaviour (state callbacks are game code)"),
+            _ => {}
+        }
+    }
     let graph = Graph {
         start,
         states,
@@ -596,7 +623,7 @@ AnimatorStateTransition:
                 .collect(),
             names: Default::default(),
         };
-        let text = convert(&unity, &path).unwrap();
+        let text = convert(&unity, &path, &mut Default::default()).unwrap();
         let graph: Graph = ron::from_str(
             &text
                 .lines()
@@ -615,6 +642,52 @@ AnimatorStateTransition:
             .transitions
             .iter()
             .any(|t| t.from == "Idle" && t.when == vec![Condition::Above("speed".into(), 0.1)]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two states Unity calls the same (Dacha's pawn has two `mixamo_com`,
+    /// a jump standing and one running): both come over, the second as
+    /// `mixamo_com 1`, each with its own clip and its own way in and out.
+    #[test]
+    fn two_states_of_one_name_both_come_over() {
+        let dir = std::env::temp_dir().join(format!("scrap-unity-twins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Pawn.controller");
+        let text = CONTROLLER
+            .replace("  - m_State: {fileID: 300}\n", "  - m_State: {fileID: 300}\n  - m_State: {fileID: 600}\n")
+            .replace("  m_Name: Jump\n", "  m_Name: mixamo_com\n")
+            + "--- !u!1102 &600
+AnimatorState:
+  m_Name: mixamo_com
+  m_Speed: 1
+  m_Transitions:
+  - {fileID: 700}
+  m_Motion: {fileID: 7400000, guid: runclip, type: 2}
+--- !u!1101 &700
+AnimatorStateTransition:
+  m_Conditions: []
+  m_DstState: {fileID: 200}
+  m_TransitionDuration: 0.3
+  m_HasExitTime: 1
+";
+        std::fs::write(&path, text).unwrap();
+        let unity = Unity {
+            pieces: Default::default(),
+            mesh_pieces: Default::default(),
+            declared_params: Default::default(),
+            layers: Default::default(),
+            root: dir.clone(),
+            guids: [("idleclip".to_string(), dir.join("Idle.anim")), ("runclip".to_string(), dir.join("Run.anim"))]
+                .into_iter()
+                .collect(),
+            names: Default::default(),
+        };
+        let text = convert(&unity, &path, &mut Default::default()).unwrap();
+        let graph: Graph = ron::from_str(&text.lines().filter(|l| !l.starts_with("//")).collect::<Vec<_>>().join("\n")).unwrap();
+        assert_eq!(graph.states["mixamo_com"].time_from.as_deref(), Some("speed"), "the first keeps the name");
+        assert_eq!(graph.states["mixamo_com 1"].clip, "Run", "the second is a state of its own");
+        assert!(graph.transitions.iter().any(|t| t.from == "Idle" && t.to == "mixamo_com"));
+        assert!(graph.transitions.iter().any(|t| t.from == "mixamo_com 1" && t.to == "Idle" && t.fade == 0.3));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

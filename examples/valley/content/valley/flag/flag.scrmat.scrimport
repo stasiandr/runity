@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/flag/flag.scrmat",
+    hash: "6de81a127243f426e14a4e9ffa55cd6f",
+    id: Some("da703988bdfeff5ee8a9adbac4bd8830"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

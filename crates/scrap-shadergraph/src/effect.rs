@@ -222,7 +222,40 @@ const RANDOM: &str = "fn sg_random(seed: f32, salt: u32) -> f32 {
 /// `effect_update`, `effect_output`, and the helpers they need. `from`
 /// names the file, in the first comment.
 pub fn to_wgsl(graph: &EffectGraph, from: &str) -> Result<String, String> {
+    to_wgsl_with(graph, from, &crate::subgraph::NoSubgraphs)
+}
+
+/// The graph with its subgraphs put in ([`crate::subgraph::expand`]).
+fn expanded(
+    graph: &EffectGraph,
+    library: &dyn crate::subgraph::Library,
+) -> Result<EffectGraph, String> {
+    let mut out = graph.clone();
+    let mut outputs: Vec<&mut Input> = [
+        &mut out.spawn.position,
+        &mut out.spawn.velocity,
+        &mut out.spawn.life,
+        &mut out.update.velocity,
+        &mut out.update.position,
+        &mut out.output.color,
+        &mut out.output.alpha,
+        &mut out.output.size,
+    ]
+    .into_iter()
+    .filter_map(Option::as_mut)
+    .collect();
+    out.nodes = crate::subgraph::expand(&graph.nodes, &mut outputs, library)?;
+    Ok(out)
+}
+
+/// [`to_wgsl`], its `Subgraph` nodes found in `library`.
+pub fn to_wgsl_with(
+    graph: &EffectGraph,
+    from: &str,
+    library: &dyn crate::subgraph::Library,
+) -> Result<String, String> {
     shape(graph)?;
+    let graph = &expanded(graph, library)?;
     let mut helpers: Vec<String> = Vec::new();
     let mut functions = String::new();
     for part in [Part::Spawn, Part::Update, Part::Output] {
@@ -277,6 +310,17 @@ pub fn to_wgsl(graph: &EffectGraph, from: &str) -> Result<String, String> {
 
 /// What a graph is fine with but is likely a mistake: nodes nothing reads.
 pub fn problems(graph: &EffectGraph) -> Vec<String> {
+    problems_with(graph, &crate::subgraph::NoSubgraphs)
+}
+
+/// [`problems`], its `Subgraph` nodes found in `library`: said of the
+/// nodes as written.
+pub fn problems_with(graph: &EffectGraph, library: &dyn crate::subgraph::Library) -> Vec<String> {
+    let Ok(expanded) = expanded(graph, library) else {
+        return Vec::new();
+    };
+    let original = graph;
+    let graph = &expanded;
     let mut unused: Option<Vec<String>> = None;
     for part in [Part::Spawn, Part::Update, Part::Output] {
         let fields = fields(graph, part);
@@ -293,10 +337,22 @@ pub fn problems(graph: &EffectGraph) -> Vec<String> {
                 .collect(),
         });
     }
-    unused
-        .unwrap_or_default()
-        .into_iter()
-        .map(|n| format!("node `{n}` is read by nothing the effect sets"))
+    let unused = unused.unwrap_or_default();
+    original
+        .nodes
+        .iter()
+        .filter(|(n, node)| match node {
+            Node::Subgraph { .. } => {
+                let outs: Vec<&String> = graph
+                    .nodes
+                    .keys()
+                    .filter(|k| k.starts_with(&format!("{n}__out__")))
+                    .collect();
+                !outs.is_empty() && outs.iter().all(|k| unused.contains(k))
+            }
+            _ => unused.contains(n),
+        })
+        .map(|(n, _)| format!("node `{n}` is read by nothing the effect sets"))
         .collect()
 }
 
@@ -422,5 +478,30 @@ mod tests {
     fn a_node_may_not_hide_an_input() {
         let g = parse(r#"(nodes: { "velocity": Random() })"#).unwrap();
         assert!(to_wgsl(&g, "x").unwrap_err().contains("would hide"));
+    }
+
+    #[test]
+    fn what_needs_pixels_is_refused_in_a_particles_graph_and_the_rest_is_there() {
+        let g = parse(r#"(nodes: { "soft": Ddx(of: "age") }, output: (size: "soft"))"#).unwrap();
+        let e = to_wgsl(&g, "x").unwrap_err();
+        assert!(
+            e.contains("node `soft` (Ddx)") && e.contains("no pixels"),
+            "{e}"
+        );
+        let g = parse(
+            r#"(nodes: {
+                "hue": Hue(of: "color", offset: "seed"),
+                "warm": Blend(base: "hue", blend: (1.0, 0.5, 0.0), mode: Multiply),
+                "fade": InverseLerp(a: 1.0, b: 0.0, of: "t"),
+                "late": Comparison(a: "t", b: 0.8, op: Greater),
+                "out": Branch(when: "late", yes: 0.0, no: "fade"),
+            }, output: (color: "warm", alpha: "out"))"#,
+        )
+        .unwrap();
+        let wgsl = to_wgsl(&g, "x").unwrap();
+        assert!(
+            wgsl.contains("fn sg_hsv_to_rgb") && wgsl.contains("select("),
+            "{wgsl}"
+        );
     }
 }
