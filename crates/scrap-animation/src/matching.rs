@@ -104,6 +104,13 @@ pub struct Database {
     support: Vec<f32>,
     /// Frames a search may jump to.
     open: Vec<bool>,
+    /// Frames a search looks at: open, and not at the end of a take.
+    searchable: Vec<bool>,
+    /// Runs of frames with the least and most of each feature over them,
+    /// sixteen frames and sixty-four: a run whose nearest corner is
+    /// further than what is found already is passed over whole.
+    small: Vec<Bounds>,
+    large: Vec<(Bounds, Range<usize>)>,
     /// Each frame's features, normalized and weighted.
     features: Vec<[f32; FEATURES]>,
     /// What was taken off each feature, and what it was divided by.
@@ -123,6 +130,42 @@ pub struct Database {
     /// How high an ankle is over the floor it stands on, and a toe.
     ankle: f32,
     toe: f32,
+}
+
+/// A run of frames and the box its features lie in.
+#[derive(Debug, Clone)]
+struct Bounds {
+    frames: Range<usize>,
+    low: [f32; FEATURES],
+    high: [f32; FEATURES],
+}
+
+impl Bounds {
+    fn over(features: &[[f32; FEATURES]], frames: Range<usize>) -> Self {
+        let mut low = [f32::INFINITY; FEATURES];
+        let mut high = [f32::NEG_INFINITY; FEATURES];
+        for f in &features[frames.clone()] {
+            for d in 0..FEATURES {
+                low[d] = low[d].min(f[d]);
+                high[d] = high[d].max(f[d]);
+            }
+        }
+        Self { frames, low, high }
+    }
+
+    /// The least cost any frame in the run can have, stopping at `worst`.
+    fn nearest(&self, query: &[f32; FEATURES], worst: f32) -> f32 {
+        let mut cost = 0.0;
+        for d in 0..FEATURES {
+            let q = query[d];
+            let gap = if q < self.low[d] { self.low[d] - q } else if q > self.high[d] { q - self.high[d] } else { 0.0 };
+            cost += gap * gap;
+            if cost >= worst {
+                break;
+            }
+        }
+        cost
+    }
 }
 
 /// The joint on the other side: `LeftArm` for `RightArm`, itself for the
@@ -452,7 +495,7 @@ impl Database {
                 let clip = ranges.iter().find(|(_, r)| r.contains(&f)).map(|(_, r)| r.end).unwrap_or(f + 1);
                 (f..clip.min(f + 10)).all(|g| open[g])
             })
-            .collect();
+            .collect::<Vec<bool>>();
         let toe_height = ankles.iter().map(|a| a.1).sum::<f32>() / ankles.len() as f32;
 
         // Each group divided by its own spread, then weighed: a centimetre
@@ -484,6 +527,31 @@ impl Database {
             .iter()
             .map(|f| std::array::from_fn(|d| (f[d] - offset[d]) / scale[d]))
             .collect();
+        let features: Vec<[f32; FEATURES]> = features;
+        let tail = setup.ahead[0].max(10);
+        let mut searchable = vec![false; features.len()];
+        for (_, r) in &ranges {
+            let end = r.end.saturating_sub(tail).max(r.start + 1);
+            for f in r.start..end {
+                searchable[f] = open[f];
+            }
+        }
+        let mut small = Vec::new();
+        let mut large = Vec::new();
+        for (_, r) in &ranges {
+            let mut at = r.start;
+            while at < r.end {
+                let end = (at + 64).min(r.end);
+                let first = small.len();
+                let mut s = at;
+                while s < end {
+                    small.push(Bounds::over(&features, s..(s + 16).min(end)));
+                    s += 16;
+                }
+                large.push((Bounds::over(&features, at..end), first..small.len()));
+                at = end;
+            }
+        }
         Ok(Self {
             skeleton: skeleton.clone(),
             setup,
@@ -491,6 +559,9 @@ impl Database {
             motion,
             support,
             open,
+            searchable,
+            small,
+            large,
             features,
             offset,
             scale,
@@ -532,10 +603,8 @@ impl Database {
     /// is nothing to play.
     fn searchable(&self) -> impl Iterator<Item = usize> + '_ {
         let tail = self.setup.ahead[0].max(10);
-        self.clips
-            .iter()
-            .flat_map(move |(_, r)| r.start..r.end.saturating_sub(tail).max(r.start + 1))
-            .filter(|&f| self.open[f])
+        let _ = tail;
+        (0..self.searchable.len()).filter(|&f| self.searchable[f])
     }
 
     /// Features as they are stored, from raw values.
@@ -568,21 +637,34 @@ impl Database {
     pub fn search_best(&self, query: &[f32; FEATURES], k: usize) -> Vec<(usize, f32)> {
         let mut best: Vec<(usize, f32)> = Vec::with_capacity(k + 1);
         let mut worst = f32::INFINITY;
-        for frame in self.searchable() {
-            let f = &self.features[frame];
-            let mut cost = 0.0;
-            for d in 0..FEATURES {
-                cost += (f[d] - query[d]).powi(2);
-                if cost >= worst {
-                    break;
-                }
+        for (large, smalls) in &self.large {
+            if large.nearest(query, worst) >= worst {
+                continue;
             }
-            if cost < worst {
-                let at = best.partition_point(|b| b.1 <= cost);
-                best.insert(at, (frame, cost));
-                best.truncate(k);
-                if best.len() == k {
-                    worst = best[k - 1].1;
+            for small in &self.small[smalls.clone()] {
+                if small.nearest(query, worst) >= worst {
+                    continue;
+                }
+                for frame in small.frames.clone() {
+                    if !self.searchable[frame] {
+                        continue;
+                    }
+                    let f = &self.features[frame];
+                    let mut cost = 0.0;
+                    for d in 0..FEATURES {
+                        cost += (f[d] - query[d]).powi(2);
+                        if cost >= worst {
+                            break;
+                        }
+                    }
+                    if cost < worst {
+                        let at = best.partition_point(|b| b.1 <= cost);
+                        best.insert(at, (frame, cost));
+                        best.truncate(k);
+                        if best.len() == k {
+                            worst = best[k - 1].1;
+                        }
+                    }
                 }
             }
         }
