@@ -27,9 +27,30 @@ pub use scrap_animation::animgraph;
 /// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
 #[cfg(feature = "animation")]
 pub use scrap_animation::ik as pose_ik;
-/// Motion matching: a skeleton played from every frame of its clips.
+/// Motion matching: a skeleton played from every frame of its clips —
+/// and [`matching::Among`], the scene's physics as what it walks among.
 #[cfg(feature = "animation")]
-pub use scrap_animation::matching;
+pub mod matching {
+    pub use scrap_animation::matching::*;
+
+    /// The physics world as a character's surroundings: its capsule swept
+    /// through the static colliders, its feet on what a ray finds.
+    #[cfg(feature = "physics")]
+    pub struct Among<'a>(pub &'a crate::physics::PhysicsWorld);
+
+    #[cfg(feature = "physics")]
+    impl Surroundings for Among<'_> {
+        fn walk(&self, feet: glam::Vec3, by: glam::Vec3, body: &Capsule, dt: f32) -> (glam::Vec3, bool) {
+            self.0.walk_capsule(feet, by, body.radius, body.height, body.step, body.slope, dt)
+        }
+
+        fn ground(&self, from: glam::Vec3, reach: f32) -> Option<(glam::Vec3, glam::Vec3)> {
+            self.0
+                .cast_ray_with_normal(from, -glam::Vec3::Y, reach, true)
+                .map(|(at, normal, _)| (at, normal))
+        }
+    }
+}
 /// The asset archive as the core has it: its header, its ID.
 pub use scrap_core::asset as asset_core;
 pub use scrap_geometry::animation;

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use scrap::animation::{Clip, Skeleton};
 use scrap::glam::Vec3;
-use scrap::matching::{Ask, Database, Matcher, Setup};
+use scrap::matching::{Among, Ask, Database, Matcher, Setup};
 
 pub fn lafan1() -> Option<PathBuf> {
     let dir = std::env::var_os("SCRAP_LAFAN1")
@@ -122,4 +122,94 @@ fn a_character_on_lafan1_goes_where_the_stick_points() {
     assert!(mean(&skate) < 0.05, "feet stay where they stand: the mocap itself rolls them 0.07 m/s");
     assert!(leash <= 0.151, "the character stays by its spring");
     assert!(pop < 10.0, "no joint pops: a sprinting foot is 8 m/s");
+}
+
+/// Static boxes, `(centre, half size)`, as a physics world.
+pub fn course(boxes: &[(Vec3, Vec3)]) -> scrap::PhysicsWorld {
+    let mut world = scrap::hecs::World::new();
+    for &(centre, half) in boxes {
+        world.spawn((
+            scrap::Transform { position: centre, ..Default::default() },
+            scrap::world::WorldTransform(scrap::glam::Mat4::from_translation(centre)),
+            scrap::world::Physics(scrap::Body::Static),
+            scrap::Shape(scrap::scene::Collider::Box { half, center: Vec3::ZERO }),
+        ));
+    }
+    let mut physics = scrap::PhysicsWorld::new(1.0 / 60.0);
+    physics.sync_from_world(&mut world);
+    physics.refresh_queries();
+    physics
+}
+
+/// A floor, a wall across the way at z = 4, and to the side a flight of
+/// six 17 cm steps up to a landing.
+fn yard() -> scrap::PhysicsWorld {
+    let mut boxes = vec![
+        (Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 0.5, 40.0)),
+        (Vec3::new(0.0, 1.0, 4.25), Vec3::new(2.0, 1.0, 0.25)),
+    ];
+    for i in 0..6 {
+        let top = 0.17 * (i + 1) as f32;
+        boxes.push((Vec3::new(6.0, top / 2.0, 2.0 + 0.3 * i as f32 + 0.15), Vec3::new(1.0, top / 2.0, 0.15)));
+    }
+    boxes.push((Vec3::new(6.0, 0.51, 4.3 + 2.0), Vec3::new(1.0, 0.51, 2.5)));
+    course(&boxes)
+}
+
+#[test]
+fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
+    let Some(dir) = lafan1() else {
+        eprintln!("skipping: no LAFAN1 (set SCRAP_LAFAN1 or put it in ~/.cache/scrap/lafan1)");
+        return;
+    };
+    let (skeleton, clips) = locomotion(&dir, &["walk1_subject1", "walk1_subject2", "run1_subject2"]);
+    let db = Database::build(&skeleton, &clips, Setup::default()).unwrap();
+    let physics = yard();
+    let among = Among(&physics);
+    let dt = 1.0 / 60.0;
+
+    // At the wall: it walks up, stops short, and stands still.
+    let mut matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
+    for _ in 0..(6.0 / dt) as usize {
+        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.4, facing: None }, dt, &among);
+    }
+    let stopped = matcher.root.0;
+    for _ in 0..30 {
+        matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.4, facing: None }, dt, &among);
+    }
+    let pace = matcher.root.0.distance(stopped) / 0.5;
+    eprintln!("at the wall: {stopped:?}, then {pace:.2} m/s");
+    assert!(stopped.z > 3.0 && stopped.z < 4.0 - 0.25, "stopped before the wall: {stopped:?}");
+    assert!(pace < 0.3, "and stands");
+
+    // Up the stairs: every foot that is down stands on a step, not in it.
+    let mut matcher = Matcher::new(&db, Vec3::new(6.0, 0.0, 0.0), Vec3::Z);
+    let feet = db.feet();
+    let mut worst_in: f32 = 0.0;
+    let mut worst_over: f32 = 0.0;
+    for _ in 0..(7.0 / dt) as usize {
+        let pose = matcher.advance_in(&db, &Ask { velocity: Vec3::Z * 1.2, facing: None }, dt, &among);
+        let world = matcher.world(&db, &pose);
+        let down = db.contacts(matcher.frame);
+        for side in 0..2 {
+            // Each joint of the foot over the ground under that joint.
+            let foot = world[feet[side]].w_axis.truncate();
+            let toe = world[db.toes()[side].unwrap()].w_axis.truncate();
+            let over = |p: Vec3| {
+                physics.cast_ray_with_normal(Vec3::new(p.x, p.y + 0.5, p.z), -Vec3::Y, 2.0, true).map(|h| p.y - h.0.y)
+            };
+            let (Some(a), Some(t)) = (over(foot), over(toe)) else { continue };
+            worst_in = worst_in.max(-a.min(t));
+            if down[side] {
+                worst_over = worst_over.max(a.min(t));
+            }
+        }
+    }
+    let top = matcher.root.0;
+    eprintln!("up the stairs to {top:?}: a foot {worst_in:.3} m into a step at worst, a planted foot {worst_over:.3} m over it");
+    assert!(top.z > 5.0 && (top.y - 1.02).abs() < 0.05, "on the landing: {top:?}");
+    // Walking clips on stairs: a toe leaving a lower step, the leg at full
+    // stretch behind, brushes the riser of the next. Held to what it is.
+    assert!(worst_in < 0.14, "no foot sinks into a step");
+    assert!(worst_over < 0.12, "a planted foot stands on its step");
 }

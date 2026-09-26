@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use scrap::glam::{Mat4, Quat, Vec3};
-use scrap::matching::{Ask, Database, Matcher, Setup};
+use scrap::matching::{Among, Ask, Database, Matcher, Setup};
 use scrap::render::{Camera, Draw, Frame, MeshHandle, TextureHandle};
 use scrap::shell::{run, Context, Game, StepContext, WindowConfig};
 use scrap::{builtin, Gpu, Key, Material, Renderer};
@@ -58,11 +58,46 @@ fn database() -> anyhow::Result<Database> {
     Ok(db)
 }
 
+/// The yard: a wall across the way, a flight of stairs up to a landing
+/// and down again, and boxes to get over. `(centre, half size)`.
+fn yard() -> Vec<(Vec3, Vec3)> {
+    let mut boxes = vec![(Vec3::new(0.0, 1.0, 4.25), Vec3::new(2.0, 1.0, 0.25))];
+    let rise = 0.17;
+    for i in 0..6 {
+        let top = rise * (i + 1) as f32;
+        let up = 2.0 + 0.3 * i as f32 + 0.15;
+        let down = 8.8 + 0.3 * (5 - i) as f32 + 0.15;
+        boxes.push((Vec3::new(6.0, top / 2.0, up), Vec3::new(1.0, top / 2.0, 0.15)));
+        boxes.push((Vec3::new(6.0, top / 2.0, down), Vec3::new(1.0, top / 2.0, 0.15)));
+    }
+    boxes.push((Vec3::new(6.0, 0.51, 6.3), Vec3::new(1.0, 0.51, 2.5)));
+    boxes
+}
+
+/// The yard's boxes and a floor, as a physics world.
+fn physics(boxes: &[(Vec3, Vec3)]) -> scrap::PhysicsWorld {
+    let mut world = scrap::hecs::World::new();
+    let floor = (Vec3::new(0.0, -0.5, 0.0), Vec3::new(200.0, 0.5, 200.0));
+    for &(centre, half) in boxes.iter().chain([&floor]) {
+        world.spawn((
+            scrap::Transform { position: centre, ..Default::default() },
+            scrap::world::WorldTransform(Mat4::from_translation(centre)),
+            scrap::world::Physics(scrap::Body::Static),
+            scrap::Shape(scrap::scene::Collider::Box { half, center: Vec3::ZERO }),
+        ));
+    }
+    let mut physics = scrap::PhysicsWorld::new(1.0 / 60.0);
+    physics.sync_from_world(&mut world);
+    physics.refresh_queries();
+    physics
+}
+
 /// Meshes the view draws with.
 struct Meshes {
     bone: MeshHandle,
     ball: MeshHandle,
     tile: MeshHandle,
+    cube: MeshHandle,
 }
 
 impl Meshes {
@@ -71,6 +106,7 @@ impl Meshes {
             bone: renderer.upload_mesh_owned(gpu, &builtin::cylinder(0.5, 1.0, 12)),
             ball: renderer.upload_mesh_owned(gpu, &builtin::sphere(0.5, 12, 8)),
             tile: renderer.upload_mesh_owned(gpu, &builtin::plane(1.0, 1)),
+            cube: renderer.upload_mesh_owned(gpu, &builtin::cube(1.0)),
         }
     }
 }
@@ -85,17 +121,21 @@ struct Walker {
     matcher: Matcher,
     ask: Ask,
     world: Vec<Mat4>,
+    boxes: Vec<(Vec3, Vec3)>,
+    physics: scrap::PhysicsWorld,
 }
 
 impl Walker {
     fn new(db: Database) -> Self {
         let matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
-        Self { db, matcher, ask: Ask::default(), world: Vec::new() }
+        let boxes = yard();
+        let physics = physics(&boxes);
+        Self { db, matcher, ask: Ask::default(), world: Vec::new(), boxes, physics }
     }
 
     fn step(&mut self, velocity: Vec3, dt: f32) {
         self.ask = Ask { velocity, facing: None };
-        let pose = self.matcher.advance(&self.db, &self.ask, dt);
+        let pose = self.matcher.advance_in(&self.db, &self.ask, dt, &Among(&self.physics));
         self.world = self.matcher.world(&self.db, &pose);
     }
 
@@ -115,6 +155,13 @@ impl Walker {
                     Material::new(shade, shade, shade * 0.97),
                 ));
             }
+        }
+        for &(centre, half) in &self.boxes {
+            draws.push(draw(
+                meshes.cube,
+                Mat4::from_scale_rotation_translation(half * 2.0, Quat::IDENTITY, centre),
+                Material::new(0.72, 0.6, 0.45),
+            ));
         }
         let skeleton = &self.db.skeleton;
         let down = self.db.contacts(self.matcher.frame);
@@ -141,7 +188,7 @@ impl Walker {
                 }
             }
         }
-        for (i, (point, facing)) in self.matcher.wanted(&self.db, &self.ask).into_iter().enumerate() {
+        for (i, (point, facing)) in self.matcher.wanted(&self.db, &self.ask, &Among(&self.physics)).into_iter().enumerate() {
             let size = if i == 0 { 0.1 } else { 0.07 };
             let lift = Vec3::Y * 0.03;
             draws.push(draw(meshes.ball, Mat4::from_scale_rotation_translation(Vec3::splat(size), Quat::IDENTITY, point + lift), Material::new(1.0, 1.0, 1.0)));
@@ -157,7 +204,13 @@ impl Walker {
     fn camera(&self, yaw: f32) -> Camera {
         let at = self.matcher.root.0 + Vec3::Y * 0.9;
         let back = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-        Camera { position: at - back * 4.5 + Vec3::Y * 1.6, target: at, ..Camera::default() }
+        // Pulled in front of whatever is between it and the character.
+        let away = -back * 4.5 + Vec3::Y * 1.6;
+        let reach = match self.physics.cast_ray(at, away, away.length()) {
+            Some(hit) => (hit.distance - 0.3).max(0.5),
+            None => away.length(),
+        };
+        Camera { position: at + away.normalize() * reach, target: at, ..Camera::default() }
     }
 }
 
@@ -196,22 +249,31 @@ impl Game for Drive {
     }
 }
 
-/// The path `--video` drives: stand, walk ahead, turn, circle, run back,
-/// stop.
-fn scripted(t: f32) -> Vec3 {
-    let walk = 1.5;
-    match t {
-        t if t < 1.5 => Vec3::ZERO,
-        t if t < 5.0 => Vec3::Z * walk,
-        t if t < 8.0 => Vec3::X * walk,
-        t if t < 12.0 => {
-            let a = (t - 8.0) * 0.8;
-            Vec3::new(a.cos(), 0.0, -a.sin()) * walk
+/// The path `--video` drives, leg by leg: where to, how fast, and for no
+/// longer than so many seconds. Into the wall (it stops), round it, up the
+/// stairs, over the landing and down, then a run.
+const LEGS: &[([f32; 2], f32, f32)] = &[
+    ([0.0, 0.0], 0.0, 1.5),
+    ([0.0, 6.0], 1.4, 4.5),
+    ([3.5, 2.5], 1.4, 3.0),
+    ([6.0, 1.0], 1.4, 3.0),
+    ([6.0, 12.5], 1.2, 12.0),
+    ([6.0, 14.0], 1.4, 2.0),
+    ([14.0, 14.0], 3.8, 3.0),
+    ([14.0, 14.0], 0.0, 2.0),
+];
+
+/// The velocity the legs ask for at a place and time; `None` past the end.
+fn scripted(at: Vec3, t: f32) -> Option<Vec3> {
+    let mut start = 0.0;
+    for &([x, z], speed, seconds) in LEGS {
+        if t < start + seconds {
+            let to = Vec3::new(x, 0.0, z) - Vec3::new(at.x, 0.0, at.z);
+            return Some(if to.length() < 0.3 { Vec3::ZERO } else { to.normalize() * speed });
         }
-        t if t < 16.0 => -Vec3::Z * 3.8,
-        t if t < 18.0 => Vec3::X * 3.8,
-        _ => Vec3::ZERO,
+        start += seconds;
     }
+    None
 }
 
 fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
@@ -229,7 +291,7 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
         .spawn()?;
     let stdin = ffmpeg.stdin.as_mut().unwrap();
     let dt = 1.0 / 60.0;
-    let seconds = 20.0;
+    let seconds: f32 = LEGS.iter().map(|l| l.2).sum();
     let mut yaw: f32 = 0.6;
     let frames = (seconds * fps as f32) as usize;
     let mut stepping = std::time::Duration::ZERO;
@@ -237,7 +299,7 @@ fn video(mut walker: Walker, out: &str) -> anyhow::Result<()> {
         for sub in 0..2 {
             let t = (frame * 2 + sub) as f32 * dt;
             let clock = std::time::Instant::now();
-            walker.step(scripted(t), dt);
+            walker.step(scripted(walker.matcher.root.0, t).unwrap_or_default(), dt);
             stepping += clock.elapsed();
         }
         // The camera swings slowly round behind the direction of travel.

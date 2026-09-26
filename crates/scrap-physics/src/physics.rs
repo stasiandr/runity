@@ -24,7 +24,10 @@
 //! they slide — is a game's design, not an engine's, and the version that
 //! lived here was a guess at a game nobody has written yet. rapier's
 //! `KinematicCharacterController` is one `use` away for whoever needs it,
-//! and they will want their own numbers anyway.
+//! and they will want their own numbers anyway. What is here is the query
+//! such a controller is made of — [`PhysicsWorld::walk_capsule`], a person
+//! swept through the world with the caller's numbers — which motion
+//! matching walks with.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -2203,6 +2206,72 @@ impl PhysicsWorld {
         })
     }
 
+    /// A standing person — feet at `feet`, `radius` round and `height`
+    /// tall — moved by `by` among what is solid. The body is a capsule
+    /// floating a `step` above the feet: it slides along walls and never
+    /// catches on an edge low enough to step on. The feet are put on the
+    /// ground a ray finds under it, up or down no more than a `step` (or
+    /// how far `by` falls); ground steeper than `slope` radians is a wall.
+    /// Where the feet end up, and whether they stand on something. A
+    /// query, not a body: nothing in the world moves, and the numbers — how
+    /// a person walks — stay the caller's. Triggers and moving bodies are
+    /// looked through.
+    #[allow(clippy::too_many_arguments)]
+    pub fn walk_capsule(
+        &self,
+        feet: Vec3,
+        by: Vec3,
+        radius: f32,
+        height: f32,
+        step: f32,
+        slope: f32,
+        dt: f32,
+    ) -> (Vec3, bool) {
+        use rapier3d::control::{CharacterLength, KinematicCharacterController};
+        let radius = radius.max(0.01);
+        let step = step.clamp(0.0, (height - 2.0 * radius).max(0.0));
+        let half = ((height - step) * 0.5 - radius).max(0.0);
+        let capsule = Capsule::new_y(half, radius);
+        let lift = step + half + radius;
+        let controller = KinematicCharacterController {
+            offset: CharacterLength::Absolute(0.01),
+            snap_to_ground: None,
+            // The capsule meets walls only: the ground is the ray's.
+            max_slope_climb_angle: 0.0,
+            ..Default::default()
+        };
+        let queries = self.queries(QueryFilter::only_fixed().exclude_sensors());
+        let centre = feet + Vec3::Y * lift;
+        let along = Vec3::new(by.x, 0.0, by.z);
+        let moved = controller.move_shape(
+            dt.max(1e-4),
+            &queries,
+            &capsule,
+            &Pose::translation(centre.x, centre.y, centre.z),
+            rv(along),
+            |_| {},
+        );
+        let mut to = feet + Vec3::new(moved.translation.x, 0.0, moved.translation.z);
+        // The ground under the new place: no higher than a step up, no
+        // lower than a step down or the fall.
+        let below = step + (-by.y).max(0.0);
+        let ground = self.cast_ray_with_normal(to + Vec3::Y * step, -Vec3::Y, step + below, true);
+        match ground {
+            Some((hit, normal, _)) if normal.y >= slope.cos() - 1e-4 || hit.y <= feet.y + 1e-3 => {
+                to.y = hit.y;
+                (to, true)
+            }
+            Some(_) => {
+                // Too steep to walk up: a wall after all.
+                (Vec3::new(feet.x, feet.y, feet.z), true)
+            }
+            None => {
+                to.y = feet.y + by.y.min(0.0);
+                (to, false)
+            }
+        }
+    }
+
     /// Bring ray queries up to date with the bodies, without a step: after
     /// [`PhysicsWorld::sync_from_world`], before asking where things are.
     pub fn refresh_queries(&mut self) {
@@ -2718,6 +2787,47 @@ mod tests {
         .with(crate::scene::ModelRef("m".into()))
         .with(body)
         .with(collider)
+    }
+
+    #[test]
+    fn a_walking_capsule_climbs_steps_stops_at_walls_and_steps_off_edges() {
+        // A floor, three 17 cm steps up to a ledge along +z, a wall along +x,
+        // and a drop at the ledge's far end.
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "floor", body: Static, collider: Box(half: (20.0, 0.5, 20.0)),
+             transform: (position: (0.0, -0.5, 0.0))),
+            (id: "0000000000000002", name: "one", body: Static, collider: Box(half: (1.0, 0.085, 0.15)),
+             transform: (position: (0.0, 0.085, 2.15))),
+            (id: "0000000000000003", name: "two", body: Static, collider: Box(half: (1.0, 0.17, 0.15)),
+             transform: (position: (0.0, 0.17, 2.45))),
+            (id: "0000000000000004", name: "ledge", body: Static, collider: Box(half: (1.0, 0.255, 1.0)),
+             transform: (position: (0.0, 0.255, 3.6))),
+            (id: "0000000000000005", name: "wall", body: Static, collider: Box(half: (0.25, 1.0, 2.0)),
+             transform: (position: (4.25, 1.0, 0.0))),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let walk = |mut feet: Vec3, velocity: Vec3, seconds: f32| {
+            let dt = 1.0 / 60.0;
+            let mut fall = 0.0;
+            for _ in 0..(seconds / dt) as usize {
+                let (to, grounded) = physics.walk_capsule(feet, velocity * dt - Vec3::Y * fall * dt, 0.3, 1.75, 0.35, 0.87, dt);
+                fall = if grounded { 0.0 } else { fall + 9.81 * dt };
+                feet = to;
+            }
+            feet
+        };
+        let up = walk(Vec3::ZERO, Vec3::Z * 1.2, 3.0);
+        assert!((up.y - 0.51).abs() < 1e-3 && up.z > 3.0, "up the steps onto the ledge: {up}");
+        let off = walk(up, Vec3::Z * 1.2, 2.0);
+        assert!(off.y.abs() < 1e-3 && off.z > 4.8, "off its far edge, down to the floor: {off}");
+        let wall = walk(Vec3::ZERO, Vec3::X * 1.2, 5.0);
+        assert!((wall.x - (4.0 - 0.3)).abs() < 0.03, "stopped by the wall: {wall}");
     }
 
     /// A ball above a floor, and the clock to drop it with.
