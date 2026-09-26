@@ -23,6 +23,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 wgpu = "30"
 # The clock: `std::time` on the desktop, the page's in the browser.
 web-time = "1.1"
+texture2ddecoder = "0.1.2"
 
 # In the browser wgpu is WebGPU: its objects are made shareable across the
 # one thread there is (the render prepares draws with `jobs::map`, which

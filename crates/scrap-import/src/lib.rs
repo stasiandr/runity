@@ -27,6 +27,7 @@
 pub mod assets;
 pub mod blend;
 pub mod brush;
+pub mod cook;
 pub mod poly;
 pub mod scene;
 pub mod terrain;
@@ -888,6 +889,7 @@ fn gltf_look(
                 pixels,
                 mips,
                 srgb: true,
+                coding: Default::default(),
             });
         }
     }
@@ -941,6 +943,7 @@ fn gltf_look(
         pixels,
         mips: Vec::new(),
         srgb: true,
+        coding: Default::default(),
     })
 }
 
@@ -997,6 +1000,7 @@ pub fn texture_from_image(
         pixels,
         mips,
         srgb: settings.srgb,
+        coding: Default::default(),
     })
 }
 

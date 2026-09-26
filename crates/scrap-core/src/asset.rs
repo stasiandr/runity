@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"SCRAP\0\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 22;
+pub const FORMAT_VERSION: u32 = 23;
 
 /// What kind of asset a file holds: the byte in its header.
 ///
@@ -274,8 +274,15 @@ impl From<std::io::Error> for AssetError {
     }
 }
 
-/// The fixed part of the header: magic, version, kind and padding.
+/// The fixed part of the header: magic, version, kind, flags and padding.
 const HEADER: usize = 16;
+
+/// Where the flags are: the byte after the kind.
+const FLAGS: usize = 13;
+
+/// A flag: the body is a zstd frame of the rkyv bytes, as a build for the
+/// web or a phone ships it ([`compressed`]); [`read`] unpacks it.
+pub const FLAG_ZSTD: u8 = 1;
 
 /// An asset format, as a module defines one: what kind it is, and the ID
 /// and name it carries — which go in the file's header, so the core can
@@ -312,6 +319,7 @@ where
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.push(kind.byte);
+    // Flags (none: the body as it is), and padding.
     out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(&value.id().0.to_le_bytes());
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());
@@ -325,7 +333,7 @@ where
 /// needs to keep an asset, without knowing its format.
 pub fn head_of(bytes: &[u8]) -> Result<(AssetKind, AssetId, String), AssetError> {
     let kind = kind_of(bytes)?;
-    split_header(bytes)?;
+    split_header_prefix(bytes)?;
     let id = u128::from_le_bytes(
         bytes[HEADER..HEADER + 16]
             .try_into()
@@ -371,7 +379,7 @@ pub fn kind_of(bytes: &[u8]) -> Result<AssetKind, AssetError> {
 /// change is out of date even though no source changed.
 pub fn is_current(path: impl AsRef<Path>) -> bool {
     if cfg!(target_arch = "wasm32") {
-        return crate::files::read(path.as_ref()).is_ok_and(|b| split_header(&b).is_ok());
+        return crate::files::read(path.as_ref()).is_ok_and(|b| split_header_prefix(&b).is_ok());
     }
     use std::io::Read;
     let mut header = [0u8; HEADER];
@@ -389,6 +397,9 @@ pub fn is_current(path: impl AsRef<Path>) -> bool {
 pub fn split_header(bytes: &[u8]) -> Result<&[u8], AssetError> {
     if bytes.len() < HEADER || bytes[..8] != MAGIC {
         return Err(AssetError::BadMagic);
+    }
+    if bytes[FLAGS] & FLAG_ZSTD != 0 {
+        return Err(AssetError::Corrupt("its body is compressed: read it with asset::read".into()));
     }
     let version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     if version != FORMAT_VERSION {
@@ -415,9 +426,42 @@ pub fn split_header(bytes: &[u8]) -> Result<&[u8], AssetError> {
 /// is already in the layout the GPU wants, so the load path ends here and the
 /// next step is an upload.
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, AssetError> {
-    let bytes = crate::files::read(path.as_ref())?;
+    let bytes = uncompressed(crate::files::read(path.as_ref())?)?;
     split_header(&bytes)?;
     Ok(bytes)
+}
+
+/// The bytes of an asset whose body a build compressed ([`FLAG_ZSTD`]),
+/// unpacked: the same header, the flag off, the rkyv body. Bytes not
+/// compressed come back as they are.
+pub fn uncompressed(bytes: Vec<u8>) -> Result<Vec<u8>, AssetError> {
+    if bytes.len() < HEADER + 18 || bytes[..8] != MAGIC || bytes[FLAGS] & FLAG_ZSTD == 0 {
+        return Ok(bytes);
+    }
+    let n = u16::from_le_bytes([bytes[HEADER + 16], bytes[HEADER + 17]]) as usize;
+    let len = header_len(n);
+    if bytes.len() < len {
+        return Err(AssetError::BadMagic);
+    }
+    use std::io::Read;
+    let mut out = Vec::with_capacity(len + (bytes.len() - len) * 3);
+    let mut frame = &bytes[len..];
+    let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut frame).map_err(|e| AssetError::Corrupt(format!("its zstd body: {e}")))?;
+    out.extend_from_slice(&bytes[..len]);
+    out[FLAGS] &= !FLAG_ZSTD;
+    decoder.read_to_end(&mut out).map_err(|e| AssetError::Corrupt(format!("its zstd body: {e}")))?;
+    Ok(out)
+}
+
+/// The same asset, its body a zstd frame made by `compress` (a build's
+/// tool: the runtime only unpacks).
+pub fn compressed(bytes: &[u8], compress: impl FnOnce(&[u8]) -> Vec<u8>) -> Result<Vec<u8>, AssetError> {
+    let body = split_header(bytes)?;
+    let len = bytes.len() - body.len();
+    let mut out = bytes[..len].to_vec();
+    out[FLAGS] |= FLAG_ZSTD;
+    out.extend_from_slice(&compress(body));
+    Ok(out)
 }
 
 /// Only a `.scrasset`'s header off disk — its kind, ID and name — leaving

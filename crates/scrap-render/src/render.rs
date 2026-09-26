@@ -4340,12 +4340,16 @@ impl Renderer {
             ));
         }
         let id = crate::asset::AssetId::from(&texture.id);
-        let handle = self.upload_texture_levels(gpu, &levels, texture.srgb);
+        let coding = texture.coding.native();
+        let view = self.texture_view(gpu, &levels, texture.srgb, coding);
+        self.textures.push(GpuTexture { view });
+        let handle = TextureHandle(self.textures.len() as u32 - 1);
         self.by_asset.insert(id, handle);
         self.texture_names.insert(handle.0, texture.name.as_str().into());
         self.streams.insert(
             handle,
-            crate::streaming_textures::TextureStream::new(id, &levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>()),
+            crate::streaming_textures::TextureStream::new(id, &levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>())
+                .with_coding(coding),
         );
         handle
     }
@@ -4477,19 +4481,25 @@ impl Renderer {
         if levels.is_empty() {
             return TextureHandle::WHITE;
         }
-        let view = self.texture_view(gpu, levels, srgb);
+        let view = self.texture_view(gpu, levels, srgb, crate::asset::TextureCoding::Rgba8);
         self.textures.push(GpuTexture { view });
         TextureHandle(self.textures.len() as u32 - 1)
     }
 
-    /// A texture of these levels, uploaded, as a view.
-    fn texture_view(&self, gpu: &Gpu, levels: &[(u32, u32, &[u8])], srgb: bool) -> wgpu::TextureView {
+    /// A texture of these levels, uploaded, as a view: in `coding`'s
+    /// blocks where the device samples them, else unpacked to RGBA8 here
+    /// (a browser or a phone without the format: the same picture, four
+    /// times the memory).
+    fn texture_view(&self, gpu: &Gpu, levels: &[(u32, u32, &[u8])], srgb: bool, coding: crate::asset::TextureCoding) -> wgpu::TextureView {
+        use crate::asset::TextureCoding;
+        let format = texture_format(coding, srgb);
+        let sampled = format.required_features().is_empty() || gpu.device.features().contains(format.required_features());
+        if coding != TextureCoding::Rgba8 && !sampled {
+            let unpacked: Vec<(u32, u32, Vec<u8>)> = levels.iter().map(|&(w, h, blocks)| (w, h, unpack_blocks(coding, w, h, blocks))).collect();
+            let levels: Vec<(u32, u32, &[u8])> = unpacked.iter().map(|(w, h, p)| (*w, *h, p.as_slice())).collect();
+            return self.texture_view(gpu, &levels, srgb, TextureCoding::Rgba8);
+        }
         let (width, height) = levels.first().map_or((1, 1), |l| (l.0, l.1));
-        let format = if srgb {
-            wgpu::TextureFormat::Rgba8UnormSrgb
-        } else {
-            wgpu::TextureFormat::Rgba8Unorm
-        };
         let size = wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -4505,7 +4515,11 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        let block = coding.block();
         for (level, (w, h, pixels)) in levels.iter().enumerate() {
+            // In blocks: rows of them, and the level's whole blocks — past
+            // its edge where it is not a multiple of them (a small mip).
+            let (across, down) = coding.blocks(*w, *h);
             gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -4516,12 +4530,12 @@ impl Renderer {
                 pixels,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(w * 4),
-                    rows_per_image: Some(*h),
+                    bytes_per_row: Some(across * coding.block_bytes()),
+                    rows_per_image: Some(down),
                 },
                 wgpu::Extent3d {
-                    width: *w,
-                    height: *h,
+                    width: across * block,
+                    height: down * block,
                     depth_or_array_layers: 1,
                 },
             );
@@ -4559,7 +4573,7 @@ impl Renderer {
                 levels.push((mip.width.to_native(), mip.height.to_native(), mip.pixels.as_slice()));
             }
             let first = (want as usize).min(levels.len().saturating_sub(1));
-            let view = self.texture_view(gpu, &levels[first..], asset.srgb);
+            let view = self.texture_view(gpu, &levels[first..], asset.srgb, asset.coding.native());
             self.textures[handle.0 as usize] = GpuTexture { view };
             if let Some(s) = self.streams.get_mut(&handle) {
                 s.first = first as u32;
@@ -8223,6 +8237,42 @@ impl Renderer {
         }
         self.batch_pool = pool;
     }
+}
+
+/// The GPU format a texture of `coding` is sampled from.
+fn texture_format(coding: crate::asset::TextureCoding, srgb: bool) -> wgpu::TextureFormat {
+    use crate::asset::TextureCoding;
+    match (coding, srgb) {
+        (TextureCoding::Rgba8, true) => wgpu::TextureFormat::Rgba8UnormSrgb,
+        (TextureCoding::Rgba8, false) => wgpu::TextureFormat::Rgba8Unorm,
+        (TextureCoding::Bc7, true) => wgpu::TextureFormat::Bc7RgbaUnormSrgb,
+        (TextureCoding::Bc7, false) => wgpu::TextureFormat::Bc7RgbaUnorm,
+        (TextureCoding::Astc4x4, srgb) => wgpu::TextureFormat::Astc {
+            block: wgpu::AstcBlock::B4x4,
+            channel: if srgb { wgpu::AstcChannel::UnormSrgb } else { wgpu::AstcChannel::Unorm },
+        },
+    }
+}
+
+/// A level of `coding`'s blocks unpacked to RGBA8, for a device that does
+/// not sample them: black where they do not decode.
+fn unpack_blocks(coding: crate::asset::TextureCoding, width: u32, height: u32, blocks: &[u8]) -> Vec<u8> {
+    use crate::asset::TextureCoding;
+    let (w, h) = (width.max(1) as usize, height.max(1) as usize);
+    let mut texels = vec![0u32; w * h];
+    let decoded = match coding {
+        TextureCoding::Rgba8 => return blocks.to_vec(),
+        TextureCoding::Bc7 => texture2ddecoder::decode_bc7(blocks, w, h, &mut texels),
+        TextureCoding::Astc4x4 => texture2ddecoder::decode_astc(blocks, w, h, 4, 4, &mut texels),
+    };
+    if decoded.is_err() {
+        texels.fill(0);
+    }
+    // The decoder's texels are B, G, R, A in memory.
+    texels.iter().flat_map(|t| {
+        let [b, g, r, a] = t.to_le_bytes();
+        [r, g, b, a]
+    }).collect()
 }
 
 /// A mesh for the cluster worker: which, its vertex buffer (to know it is

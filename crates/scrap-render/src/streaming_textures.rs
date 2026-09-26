@@ -11,7 +11,7 @@
 //! and down to a picture of 64 texels when it has not been seen for two
 //! seconds. A texture never streamed stays whole, as uploaded.
 
-use crate::asset::AssetId;
+use crate::asset::{AssetId, TextureCoding};
 
 /// Levels a stream remembers the size of.
 const MOST_LEVELS: usize = 16;
@@ -33,6 +33,11 @@ pub struct TextureStream {
     /// The finest level this frame has asked for so far.
     asked: u32,
     unseen: u32,
+    /// How its levels are stored.
+    coding: TextureCoding,
+    /// The coarsest level a texture can start at: in blocks, one whose
+    /// sides are whole blocks (a GPU's block texture is).
+    last_base: u32,
 }
 
 impl TextureStream {
@@ -49,7 +54,23 @@ impl TextureStream {
             need: 0,
             asked: u32::MAX,
             unseen: 0,
+            coding: TextureCoding::Rgba8,
+            last_base: sizes.len().clamp(1, MOST_LEVELS) as u32 - 1,
         }
+    }
+
+    /// The same, its levels stored in `coding`'s blocks.
+    pub fn with_coding(mut self, coding: TextureCoding) -> Self {
+        self.coding = coding;
+        let b = coding.block();
+        self.last_base = (0..self.levels)
+            .rev()
+            .find(|&l| {
+                let (w, h) = self.sizes[l as usize];
+                w % b == 0 && h % b == 0
+            })
+            .unwrap_or(0);
+        self
     }
 
     /// A draw this frame shows `texels` of it across the screen.
@@ -73,6 +94,10 @@ impl TextureStream {
 
     /// The level to have on the GPU.
     pub fn wanted(&self) -> u32 {
+        self.wanted_level().min(self.last_base)
+    }
+
+    fn wanted_level(&self) -> u32 {
         let target = if self.unseen > COLD {
             // Long unseen: only what fits in a small picture.
             (0..self.levels)
@@ -97,7 +122,7 @@ impl TextureStream {
         (first..self.levels)
             .map(|l| {
                 let (w, h) = self.sizes[l as usize];
-                w as u64 * h as u64 * 4
+                self.coding.level_bytes(w, h) as u64
             })
             .sum()
     }
