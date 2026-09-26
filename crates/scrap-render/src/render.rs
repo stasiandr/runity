@@ -1378,6 +1378,11 @@ pub struct Renderer {
     /// ([`crate::lean`]), and the shader modules they are built from: the
     /// standard one's (`None`) and each material shader's.
     lean: crate::lean::Lean<LeanKey>,
+    /// Far clusters left out of the prepass (`SCRAP_FAR_PREPASS=1` keeps
+    /// them), and whether this frame's were: then the lit pass's depth is
+    /// the whole one, and what comes after it reads that.
+    far_off_prepass: bool,
+    split_prepass: bool,
     /// The error a clustered mesh is drawn with, in pixels
     /// ([`crate::cluster_lod`]).
     cluster_error: f32,
@@ -3522,6 +3527,8 @@ impl Renderer {
             lowres_drawn: false,
             cascade_cache: None,
             cluster_error: 1.0,
+            far_off_prepass: std::env::var("SCRAP_FAR_PREPASS").map_or(true, |v| v != "1"),
+            split_prepass: false,
             shadow_turn: false,
             shadow_stagger: std::env::var("SCRAP_SHADOW_STAGGER").map_or(true, |v| v != "0"),
             lean_modules: [(None, shader.clone())].into_iter().collect(),
@@ -4214,7 +4221,7 @@ impl Renderer {
                     if textured {
                         self.bind_maps(pass, *texture);
                     }
-                    self.clusters.draw(pass, k);
+                    self.clusters.draw(pass, k, prepass);
                     current = None;
                     first += count;
                     continue;
@@ -4910,6 +4917,13 @@ impl Renderer {
         self.cluster_error = pixels.max(0.0);
     }
 
+    /// Leave clusters past the ambient occlusion's reach out of the depth
+    /// prepass where nothing else reads it there (on by default;
+    /// `SCRAP_FAR_PREPASS=1` starts it off).
+    pub fn set_far_off_prepass(&mut self, on: bool) {
+        self.far_off_prepass = on;
+    }
+
     /// Draw the far shadow cascades every other frame, in turn (on by
     /// default; `SCRAP_SHADOW_STAGGER=0` starts it off), or every frame.
     pub fn set_shadow_stagger(&mut self, on: bool) {
@@ -4983,6 +4997,14 @@ impl Renderer {
     /// [`Self::gpu_times`]. `SCRAP_GPU_TIMES=1` starts it on.
     pub fn profile_gpu(&mut self, on: bool) {
         self.timing = on;
+    }
+
+    /// Forget the passes' times so far: a pass that no longer runs leaves
+    /// the list, and the averages start again (an A/B test's next side).
+    pub fn reset_gpu_times(&mut self) {
+        if let Some(timer) = self.timer.as_mut() {
+            timer.reset();
+        }
     }
 
     /// Whether the screen's frame is being timed: [`Self::profile_gpu`],
@@ -6825,6 +6847,22 @@ impl Renderer {
                         0.0,
                     ],
                 };
+                // Clusters past where the prepass's depth is read for
+                // anything (the ambient occlusion's reach) are left out of
+                // it and drawn by the lit pass alone, whose depth the
+                // passes after it read — where nothing in the lit pass
+                // reads the prepass's (a lean frame) and there is one
+                // sample (its depth can be read).
+                let split = if self.far_off_prepass && self.lean.on && screen && self.samples == 1 {
+                    if frame.ambient_occlusion.enabled {
+                        frame.ambient_occlusion.falloff_distance.max(1.0) * 1.2
+                    } else {
+                        30.0
+                    }
+                } else {
+                    1.0e30
+                };
+                self.split_prepass = split < 1.0e29;
                 self.clusters.cull(
                     gpu,
                     &mut encoder,
@@ -6834,10 +6872,12 @@ impl Renderer {
                     frame.camera.position,
                     hiz,
                     lod,
+                    split,
                 );
             } else {
                 self.occlusion.active = false;
                 self.clusters.this_frame.clear();
+                self.split_prepass = false;
             }
         }
         // The scene as rays see it: every solid draw, seen or not — what is
@@ -7407,7 +7447,9 @@ impl Renderer {
                         } else {
                             wgpu::LoadOp::Clear(1.0)
                         },
-                        store: wgpu::StoreOp::Discard,
+                        // Kept when far clusters were left out of the prepass:
+                        // what comes after reads this depth then.
+                        store: if self.split_prepass { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
                     }),
                     stencil_ops: None,
                 }),
@@ -7471,11 +7513,14 @@ impl Renderer {
             }
         }
         self.depth_prepassed = false;
+        // The whole depth for what comes after: the lit pass's when far
+        // clusters were left out of the prepass.
+        let after_depth = if self.split_prepass { &self.depth } else { &self.ssao.depth };
         if halved {
             self.lowres.prepare(gpu, (width, height));
             let low_mark = crate::frame_debugger::mark();
             {
-                let mut pass = self.lowres.begin(gpu, &mut encoder, &self.ssao.depth);
+                let mut pass = self.lowres.begin(gpu, &mut encoder, after_depth);
                 let mut instance = shadow_total + batched_total + singles.len() as u32;
                 let mut i = 0;
                 while i < transparent.len() {
@@ -7498,7 +7543,7 @@ impl Renderer {
                     self.debugger.snapshot(gpu, &mut encoder, low_mark, crate::frame_debugger::Source::Hdr(low));
                 }
             }
-            self.lowres.lay_over(gpu, &mut encoder, &self.scene.resolved, &self.ssao.depth);
+            self.lowres.lay_over(gpu, &mut encoder, &self.scene.resolved, after_depth);
         }
         if debugged {
             self.debugger.snapshot(gpu, &mut encoder, scene_mark, crate::frame_debugger::Source::Hdr(&self.scene.resolved));
@@ -7530,7 +7575,7 @@ impl Renderer {
                 gpu,
                 &mut encoder,
                 &self.scene.resolved,
-                &self.ssao.depth,
+                after_depth,
                 drawn,
                 previous,
             )
@@ -7545,7 +7590,7 @@ impl Renderer {
             gpu,
             &mut encoder,
             picture,
-            &self.ssao.depth,
+            after_depth,
             (width, height),
             &frame.post,
             &crate::lens::View {
@@ -7610,7 +7655,7 @@ impl Renderer {
                 &upscaling,
                 temporal,
                 picture,
-                &self.ssao.depth,
+                after_depth,
                 (width, height),
                 output,
                 [drawn, view_projection, previous],
@@ -8251,7 +8296,7 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
         format: DEPTH_FORMAT,
         // One sample a pixel: the prepass's depth is copied in to start from.
         usage: if samples == 1 {
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING
         } else {
             wgpu::TextureUsages::RENDER_ATTACHMENT
         },

@@ -30,6 +30,12 @@ const HIZ_SHADER: &str = r#"
 @group(0) @binding(0) var source_depth: texture_depth_2d;
 @group(0) @binding(1) var source_level: texture_2d<f32>;
 @group(0) @binding(2) var level_out: texture_storage_2d<r32float, write>;
+@group(0) @binding(3) var level_out_2: texture_storage_2d<r32float, write>;
+@group(0) @binding(4) var level_out_3: texture_storage_2d<r32float, write>;
+
+// How many levels a dispatch of cs_down writes: the one below its source,
+// and the next one or two.
+override WRITES: u32 = 1u;
 
 @compute @workgroup_size(8, 8)
 fn cs_first(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -52,27 +58,47 @@ fn cs_first(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(level_out, id.xy, vec4<f32>(far, 0.0, 0.0, 0.0));
 }
 
-// The farthest of what lies under: the 2x2, and the odd row or column
-// when the level above has one, so nothing is lost.
+// The farthest of what texel `t` of a level `2^k` times coarser than the
+// source covers there: its block, and at the level's last row or column
+// everything to the source's edge — the odd rows each halving leaves over,
+// so nothing is lost however many levels down.
+fn farthest(t: vec2<u32>, k: u32, size: vec2<u32>) -> f32 {
+    let source = vec2<i32>(textureDimensions(source_level));
+    let step = i32(1u << k);
+    let lo = vec2<i32>(t) * step;
+    let end = select(min(lo + vec2<i32>(step), source), source, t == size - vec2<u32>(1u));
+    var far = 0.0;
+    for (var y = lo.y; y < end.y; y = y + 1) {
+        for (var x = lo.x; x < end.x; x = x + 1) {
+            far = max(far, textureLoad(source_level, vec2<i32>(x, y), 0).r);
+        }
+    }
+    return far;
+}
+
+// Up to three levels a dispatch, each straight from the source: fewer
+// dispatches — each a wait for the one before — for a few more loads.
 @compute @workgroup_size(8, 8)
 fn cs_down(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(level_out);
     if id.x >= size.x || id.y >= size.y {
         return;
     }
-    let above = vec2<i32>(textureDimensions(source_level));
-    let base = vec2<i32>(id.xy) * 2;
-    var far = 0.0;
-    for (var y = 0; y < 3; y = y + 1) {
-        for (var x = 0; x < 3; x = x + 1) {
-            if (x == 2 && above.x - base.x != 3) || (y == 2 && above.y - base.y != 3) {
-                continue;
-            }
-            let at = min(base + vec2<i32>(x, y), above - 1);
-            far = max(far, textureLoad(source_level, at, 0).r);
+    textureStore(level_out, id.xy, vec4<f32>(farthest(id.xy, 1u, size), 0.0, 0.0, 0.0));
+    if WRITES >= 2u && all(id.xy % vec2<u32>(2u) == vec2<u32>(0u)) {
+        let t = id.xy / 2u;
+        let size_2 = textureDimensions(level_out_2);
+        if t.x < size_2.x && t.y < size_2.y {
+            textureStore(level_out_2, t, vec4<f32>(farthest(t, 2u, size_2), 0.0, 0.0, 0.0));
         }
     }
-    textureStore(level_out, id.xy, vec4<f32>(far, 0.0, 0.0, 0.0));
+    if WRITES >= 3u && all(id.xy % vec2<u32>(4u) == vec2<u32>(0u)) {
+        let t = id.xy / 4u;
+        let size_3 = textureDimensions(level_out_3);
+        if t.x < size_3.x && t.y < size_3.y {
+            textureStore(level_out_3, t, vec4<f32>(farthest(t, 3u, size_3), 0.0, 0.0, 0.0));
+        }
+    }
 }
 "#;
 
@@ -178,7 +204,10 @@ type Pyramid = (wgpu::Texture, (u32, u32), Vec<wgpu::TextureView>, wgpu::Texture
 
 pub(crate) struct Occlusion {
     hiz_first: wgpu::ComputePipeline,
-    hiz_down: wgpu::ComputePipeline,
+    /// Writing one, two or three levels a dispatch.
+    hiz_down: [wgpu::ComputePipeline; 3],
+    /// Stand-ins for the levels a dispatch does not write.
+    spare: [wgpu::TextureView; 2],
     hiz_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     cull_layout: wgpu::BindGroupLayout,
@@ -282,6 +311,26 @@ impl Occlusion {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: HIZ_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: HIZ_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
             ],
         });
         let hiz_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -368,7 +417,33 @@ impl Occlusion {
         let storage_usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         Self {
             hiz_first: compute(&hiz_module, &hiz_pipeline_layout, "cs_first"),
-            hiz_down: compute(&hiz_module, &hiz_pipeline_layout, "cs_down"),
+            hiz_down: [1.0, 2.0, 3.0].map(|writes| {
+                gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("scrap::hi-z"),
+                    layout: Some(&hiz_pipeline_layout),
+                    module: &hiz_module,
+                    entry_point: Some("cs_down"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("WRITES", writes)],
+                        ..Default::default()
+                    },
+                    cache: None,
+                })
+            }),
+            spare: [0, 1].map(|_| {
+                gpu.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("hi-z spare"),
+                        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: HIZ_FORMAT,
+                        usage: wgpu::TextureUsages::STORAGE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            }),
             hiz_layout,
             cull: compute(&cull_module, &cull_pipeline_layout, "cs_cull"),
             cull_layout,
@@ -597,31 +672,29 @@ impl Occlusion {
             label: Some("scrap::hi-z"),
             timestamp_writes: crate::gpu_timer::compute("hi-z"),
         });
-        for (level, target) in views.iter().enumerate() {
+        // Level 0 from the depth; then up to three levels a dispatch.
+        let mut level = 0usize;
+        while level < views.len() {
+            let writes = if level == 0 { 1 } else { (views.len() - level).min(3) };
             let source_level = if level == 0 { &self.blank } else { &views[level - 1] };
+            let out = |i: usize| if i < writes { &views[level + i] } else { &self.spare[i - 1] };
             let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("hi-z"),
                 layout: &self.hiz_layout,
                 entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(depth),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(source_level),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(target),
-                    },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(depth) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source_level) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(out(0)) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(out(1)) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(out(2)) },
                 ],
             });
             let w = (size.0 >> level).max(1);
             let h = (size.1 >> level).max(1);
-            pass.set_pipeline(if level == 0 { &self.hiz_first } else { &self.hiz_down });
+            pass.set_pipeline(if level == 0 { &self.hiz_first } else { &self.hiz_down[writes - 1] });
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+            level += writes;
         }
         drop(pass);
         self.made_with = Some(view_projection);

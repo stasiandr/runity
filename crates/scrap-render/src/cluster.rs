@@ -270,6 +270,9 @@ struct Job {
     // with w = 1, at any distance: orthographic), the near plane, the
     // error allowed in pixels
     lod: vec4<f32>,
+    // x: what is farther than this (metres, to its sphere) goes on the
+    // far list — drawn by the lit pass, left out of the prepass
+    split: vec4<f32>,
 };
 
 struct Cluster {
@@ -399,8 +402,10 @@ fn cs_clusters(@builtin(global_invocation_id) id: vec3<u32>) {
     if !not_hidden(c, r) {
         return;
     }
-    let at = atomicAdd(&args[job.slot.x * 4u + 1u], 1u);
-    drawn[job.counts.w + at] = Drawn(instance, cluster.first, cluster.count, 0u);
+    let far = distance(c, job.eye.xyz) - r > job.split.x;
+    let lane = select(0u, 1u, far);
+    let at = atomicAdd(&args[(job.slot.x * 2u + lane) * 4u + 1u], 1u);
+    drawn[job.counts.w + lane * job.counts.y * per + at] = Drawn(instance, cluster.first, cluster.count, 0u);
 }
 "#;
 
@@ -483,8 +488,9 @@ struct JobUniform {
     counts: [u32; 4],
     slot: [u32; 4],
     lod: [f32; 4],
+    split: [f32; 4],
     // To a uniform buffer offset's alignment.
-    pad: [u32; 12],
+    pad: [u32; 8],
 }
 
 /// Last frame's depth, for the occlusion test: the pyramid, the view it
@@ -714,6 +720,7 @@ impl Clusters {
         eye: Vec3,
         hiz: Option<Hiz>,
         lod: [f32; 4],
+        far: f32,
     ) {
         self.this_frame.clear();
         self.slots = 0;
@@ -730,8 +737,9 @@ impl Clusters {
                 mapped_at_creation: false,
             });
         }
-        if count > self.args_capacity {
-            self.args_capacity = count.next_power_of_two();
+        // Two slots a job: its near clusters and its far ones.
+        if count * 2 > self.args_capacity {
+            self.args_capacity = (count * 2).next_power_of_two();
             self.args = storage(
                 gpu,
                 "cluster args",
@@ -739,7 +747,7 @@ impl Clusters {
                 wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
             );
         }
-        let pairs: u64 = jobs.iter().map(|j| j.instances as u64 * j.clusters.count as u64).sum();
+        let pairs: u64 = jobs.iter().map(|j| j.instances as u64 * j.clusters.count as u64).sum::<u64>() * 2;
         if pairs > self.drawn_capacity {
             self.drawn_capacity = pairs.next_power_of_two();
             self.drawn = storage(gpu, "clusters kept", self.drawn_capacity * 16, wgpu::BufferUsages::empty());
@@ -769,12 +777,14 @@ impl Clusters {
                     0,
                 ],
                 lod,
-                pad: [0; 12],
+                split: [far, 0.0, 0.0, 0.0],
+                pad: [0; 8],
             });
             // Each kept cluster an instance of 372 vertices, starting at
-            // this batch's part of the list.
-            args.extend_from_slice(&[TRIANGLES * 3, 0, 0, out]);
-            out += job.instances * job.clusters.count;
+            // this batch's part of the list: its near half, then its far.
+            let n = job.instances * job.clusters.count;
+            args.extend_from_slice(&[TRIANGLES * 3, 0, 0, out, TRIANGLES * 3, 0, 0, out + n]);
+            out += 2 * n;
         }
         gpu.queue.write_buffer(&self.jobs, 0, bytemuck::cast_slice(&uniforms));
         gpu.queue.write_buffer(&self.args, 0, bytemuck::cast_slice(&args));
@@ -854,16 +864,20 @@ impl Clusters {
             });
             self.this_frame.insert(job.batch, (slot as u32, group));
         }
-        self.slots = jobs.len() as u32;
+        self.slots = jobs.len() as u32 * 2;
     }
 
-    /// Draw batch `batch` by its clusters, when it was culled so.
-    pub(crate) fn draw<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>, batch: usize) -> bool {
+    /// Draw batch `batch` by its clusters, when it was culled so: its near
+    /// ones, and unless for the prepass its far ones too.
+    pub(crate) fn draw<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>, batch: usize, prepass: bool) -> bool {
         let Some((slot, group)) = self.this_frame.get(&batch) else {
             return false;
         };
         pass.set_bind_group(3, group, &[]);
-        pass.draw_indirect(&self.args, *slot as u64 * 16);
+        pass.draw_indirect(&self.args, *slot as u64 * 2 * 16);
+        if !prepass {
+            pass.draw_indirect(&self.args, (*slot as u64 * 2 + 1) * 16);
+        }
         true
     }
 
