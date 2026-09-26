@@ -353,6 +353,16 @@ pub struct Entry {
 /// each is used.
 pub fn list(project: &Project) -> Result<Vec<Entry>> {
     let documents = Documents::read(project)?;
+    // Every name every scene and prefab uses, counted in one walk of them:
+    // asked per asset, it was a walk of them all for each of thousands.
+    let mut counts = std::collections::HashMap::new();
+    for (_, scene) in &documents.scenes {
+        refs::count_uses(&scene.entities, &mut counts);
+    }
+    for (_, prefab) in &documents.prefabs {
+        refs::count_uses(std::slice::from_ref(prefab), &mut counts);
+    }
+    let used = |what: &AssetRef| counts.get(what).copied().unwrap_or(0);
     // Which images the terrains paint with, found once: asked per image,
     // it was a walk of the project for each of hundreds.
     let mut painted: std::collections::HashMap<PathBuf, usize> = Default::default();
@@ -378,13 +388,9 @@ pub fn list(project: &Project) -> Result<Vec<Entry>> {
         let kind = kind(project, &path)?;
         let sidecar = ImportSettings::load(sidecar_for(&path)).ok();
         let uses = match kind {
-            Kind::Model => documents.uses(project, &AssetRef::Model(stem(&path))).len(),
-            Kind::Material => documents
-                .uses(project, &AssetRef::Material(stem(&path)))
-                .len(),
-            Kind::Prefab => documents
-                .uses(project, &AssetRef::Prefab(stem(&path)))
-                .len(),
+            Kind::Model => used(&AssetRef::Model(stem(&path))),
+            Kind::Material => used(&AssetRef::Material(stem(&path))),
+            Kind::Prefab => used(&AssetRef::Prefab(stem(&path))),
             Kind::Other => painted.get(&normalize(&path)).copied().unwrap_or(0),
         };
         out.push(Entry {

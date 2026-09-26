@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let t = Instant::now();
-    let session = scrap_studio::open(&scene)?;
+    let session = scrap_studio::open_live(&scene)?;
     println!("open         {:7.1} ms", ms(t));
     let t = Instant::now();
     let mut studio = scrap_studio::Studio::new(session, width, height, scale);

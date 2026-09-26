@@ -2889,6 +2889,15 @@ impl Session {
 
     /// Every asset source in the project, with its kind, ID, whether it is
     /// built, and how many lines use it: the Project window's list.
+    /// Draw what is ready while the rest is built — pipelines, a dense
+    /// mesh's clusters — rather than wait for all of it, as a game's window
+    /// does: an editor's window, where a scene opens at once and fills in.
+    /// (A session drawing pictures, a test's or a tool's, waits: every
+    /// picture is the whole scene.)
+    pub fn draw_while_building(&mut self) {
+        self.renderer.set_wait_for_pipelines(false);
+    }
+
     /// A number that moves whenever a file of the open project may have
     /// changed: the operating system's word of it, and the writes this
     /// session was told of ([`Session::wrote`]). `None` without a project,

@@ -10,7 +10,7 @@ fn main() {
     let Some(scene) = scene_to_open(bundled) else {
         return;
     };
-    let session = match scrap_studio::open(&scene) {
+    let session = match scrap_studio::open_live(&scene) {
         Ok(session) => session,
         Err(message) => {
             eprintln!("{message}");
