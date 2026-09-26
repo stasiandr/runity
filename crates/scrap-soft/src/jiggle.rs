@@ -113,7 +113,7 @@ pub fn run_jiggle(world: &mut hecs::World, seconds: f32) {
         return;
     }
     // How deep each entity with a parent is: roots first.
-    let parents: std::collections::HashMap<hecs::Entity, hecs::Entity> =
+    let parents: scrap_core::hash::FastMap<hecs::Entity, hecs::Entity> =
         world.query::<(hecs::Entity, &Parent)>().iter().map(|(e, p)| (e, p.0)).collect();
     let depth = |mut e: hecs::Entity| {
         let mut d = 0;
@@ -130,7 +130,7 @@ pub fn run_jiggle(world: &mut hecs::World, seconds: f32) {
     order.sort_by_key(|(d, e)| (*d, e.to_bits()));
     // What each entity is to its parent: its own transform, or, for one
     // without, as the hierarchy placed it.
-    let mut local: std::collections::HashMap<hecs::Entity, Mat4> = Default::default();
+    let mut local: scrap_core::hash::FastMap<hecs::Entity, Mat4> = Default::default();
     for (_, e) in &order {
         if let Ok(own) = world.get::<&scrap_core::scene::Transform>(*e) {
             local.insert(*e, own.matrix());
@@ -141,7 +141,7 @@ pub fn run_jiggle(world: &mut hecs::World, seconds: f32) {
         };
         local.insert(*e, parent.0.inverse() * me.0);
     }
-    let mut moved: std::collections::HashSet<hecs::Entity> = Default::default();
+    let mut moved: scrap_core::hash::FastSet<hecs::Entity> = Default::default();
     for (_, e) in order {
         let Some(offset) = local.get(&e).copied() else { continue };
         let parent = parents[&e];
@@ -199,7 +199,7 @@ impl scrap_core::world::Dress for JiggleDress {
                 let _ = world.insert_one(entity, JiggleState::new(jiggle));
             }
             None => {
-                let _ = world.remove_one::<JiggleState>(entity);
+                scrap_core::world::take_off::<JiggleState>(world, entity);
             }
         }
     }

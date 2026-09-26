@@ -1319,7 +1319,7 @@ fn a_guest_sees_what_its_cook_holds_in_its_hands_at_once() {
 fn the_camera_tour_loads() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
     assert!(tour.shots.len() >= 2 && tour.travel > 0.0);
 }
 
@@ -1334,7 +1334,7 @@ fn close_ups() {
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     let leg = tour.hold + tour.travel;
@@ -1368,7 +1368,7 @@ fn tour_frames() {
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
     let _ = std::fs::remove_dir_all(root.join("target/shots/tour"));
     std::fs::create_dir_all(root.join("target/shots/tour")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
@@ -1412,7 +1412,7 @@ fn lenses() {
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let tour: scrap::Tuned<scrap::tour::Tour> =
-        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+        scrap::Tuned::load(root.join("configs/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     for (name, lens) in [

@@ -65,6 +65,15 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         "folder-open",
         include_bytes!("../assets/icons/folder-open.svg"),
     ),
+    (
+        "git-branch",
+        include_bytes!("../assets/icons/git-branch.svg"),
+    ),
+    (
+        "git-commit-horizontal",
+        include_bytes!("../assets/icons/git-commit-horizontal.svg"),
+    ),
+    ("git-merge", include_bytes!("../assets/icons/git-merge.svg")),
     ("globe", include_bytes!("../assets/icons/globe.svg")),
     ("grid-3x3", include_bytes!("../assets/icons/grid-3x3.svg")),
     ("hand", include_bytes!("../assets/icons/hand.svg")),

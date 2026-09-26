@@ -60,7 +60,7 @@ impl crate::world::Dress for StreamDress {
                 let _ = world.insert_one(entity, StreamPart(stream));
             }
             None => {
-                let _ = world.remove_one::<StreamPart>(entity);
+                scrap_core::world::take_off::<StreamPart>(world, entity);
             }
         }
     }

@@ -144,11 +144,50 @@ struct Built {
     props: crate::scene::BodyProps,
     layer: String,
     /// What its parts were built from ([`parts_of`]): any change rebuilds it.
-    parts: u64,
+    parts: Vec<PartKey>,
     /// Where its parts sit on it ([`parts_placement`]): a change moves
     /// their colliders on the body, which keeps its speed — a collider
     /// under an animated child, as Unity's compound follows it.
     parts_at: u64,
+}
+
+/// What one part was built from: compared field by field with what is
+/// found each step, which formats and allocates nothing.
+#[derive(Debug, Clone, PartialEq)]
+struct PartKey {
+    entity: hecs::Entity,
+    shape: ColliderShape,
+    props: crate::scene::BodyProps,
+    layer: String,
+    trigger: bool,
+    mesh: usize,
+}
+
+impl PartKey {
+    fn of(part: &PartFound) -> Self {
+        PartKey {
+            entity: part.entity,
+            shape: part.shape,
+            props: part.props,
+            layer: part.layer.clone(),
+            trigger: part.trigger,
+            mesh: part.mesh.as_ref().map_or(0, CollisionMesh::key),
+        }
+    }
+
+    fn is(&self, part: &PartFound) -> bool {
+        self.entity == part.entity
+            && self.shape == part.shape
+            && self.props == part.props
+            && self.layer == part.layer
+            && self.trigger == part.trigger
+            && self.mesh == part.mesh.as_ref().map_or(0, CollisionMesh::key)
+    }
+}
+
+/// Whether a body's parts are still the ones it was built with.
+fn same_parts(built: &[PartKey], found: &[PartFound]) -> bool {
+    built.len() == found.len() && built.iter().zip(found).all(|(k, p)| k.is(p))
 }
 
 /// The collider a part was built as, on its ancestor's body: what its
@@ -173,8 +212,8 @@ struct PartFound {
 /// Every part (`Body::Part`, `Body::TriggerPart`) by the entity whose body
 /// it belongs to: the nearest ancestor with a body of its own. A part with
 /// none is left out, and built as a body of its own — standing still.
-fn parts_of(world: &World, off: &std::collections::HashSet<hecs::Entity>) -> std::collections::HashMap<hecs::Entity, Vec<PartFound>> {
-    let mut out: std::collections::HashMap<hecs::Entity, Vec<PartFound>> = Default::default();
+fn parts_of(world: &World, off: &scrap_core::hash::FastSet<hecs::Entity>) -> scrap_core::hash::FastMap<hecs::Entity, Vec<PartFound>> {
+    let mut out: scrap_core::hash::FastMap<hecs::Entity, Vec<PartFound>> = Default::default();
     for (entity, physics, shape, placed, mesh, props, layer) in world
         .query::<(
             hecs::Entity,
@@ -259,23 +298,6 @@ fn body_volume(
         .filter(|c| !c.is_sensor())
         .map(|c| c.shape().mass_properties(1.0).mass())
         .sum()
-}
-
-/// What a body's parts were built from, as one number: where each sits on
-/// the body, its shape, grip and layer.
-fn parts_signature(_owner: glam::Mat4, parts: &[PartFound]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    // No parts is nothing to compare: most bodies.
-    if parts.is_empty() {
-        return 0;
-    }
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    for part in parts {
-        part.entity.to_bits().hash(&mut hash);
-        format!("{:?}{:?}{}{}", part.shape, part.props, part.layer, part.trigger).hash(&mut hash);
-        part.mesh.as_ref().map_or(0, CollisionMesh::key).hash(&mut hash);
-    }
-    hash.finish()
 }
 
 /// Where a body's parts sit on it, to the millimetre.
@@ -426,7 +448,7 @@ pub fn attach_collision_meshes<'a>(
                 let _ = world.insert_one(entity, mesh);
             }
             None => {
-                let _ = world.remove_one::<CollisionMesh>(entity);
+                scrap_core::world::take_off::<CollisionMesh>(world, entity);
             }
         }
     }
@@ -664,11 +686,13 @@ impl PhysicsWorld {
         let mut stale: Vec<hecs::Entity> = Vec::new();
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
-        let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
+        let mut live: scrap_core::hash::FastSet<RigidBodyHandle> = Default::default();
         let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
-        let mut reseat: Vec<(hecs::Entity, glam::Mat4, bool)> = Vec::new();
+        let mut reseat: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
         // What is switched off has no body.
-        let off = crate::world::inactive_in_hierarchy(world);
+        // Asked only about what has physics: the rest of the level's
+        // entities are nothing to the solver.
+        let off = crate::world::inactive_among(world, world.query::<(hecs::Entity, &Physics)>().iter().map(|(e, _)| e));
         let parts = parts_of(world, &off);
         for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
             world
@@ -695,14 +719,13 @@ impl PhysicsWorld {
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.as_str()).unwrap_or("");
-            let signature = parts.get(&entity).map_or(0, |p| parts_signature(placed.0, p));
-            if signature != built.parts {
+            if !same_parts(&built.parts, parts.get(&entity).map(Vec::as_slice).unwrap_or(&[])) {
                 stale.push(entity);
                 continue;
             }
             if let Some(mine) = parts.get(&entity) {
                 if parts_placement(mine) != built.parts_at {
-                    reseat.push((entity, placed.0, built.body == Body::Dynamic));
+                    reseat.push((entity, placed.0));
                 }
             }
             // Dynamic ↔ kinematic keeps the body and its speed: switched in
@@ -743,14 +766,14 @@ impl PhysicsWorld {
             }
         }
         // Parts that moved on their body: their colliders moved with them.
-        for (owner, placed, dynamic) in reseat {
+        for (owner, placed) in reseat {
             let Some(mine) = parts.get(&owner) else { continue };
             for part in mine {
                 let Ok(handle) = world.get::<&PartCollider>(part.entity).map(|h| h.0) else { continue };
-                let Some(built) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else { continue };
+                let own = shape_offset(part.shape, part.placed);
                 let offset = isometry(placed).inverse() * isometry(part.placed);
                 if let Some(c) = self.colliders.get_mut(handle) {
-                    c.set_position_wrt_parent(offset * *built.position());
+                    c.set_position_wrt_parent(offset * own);
                 }
             }
             if let Ok(mut built) = world.get::<&mut Built>(owner) {
@@ -842,12 +865,14 @@ impl PhysicsWorld {
             )>()
             .iter()
         {
-            let kind = solved(physics.0, replica.is_some());
-            let props = props.map(|p| p.0).unwrap_or_default();
-            let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
+            // Almost every body is already built: out before anything is
+            // copied for it.
             if existing.is_some() || physics.0 == Body::None || off.contains(&entity) {
                 continue;
             }
+            let kind = solved(physics.0, replica.is_some());
+            let props = props.map(|p| p.0).unwrap_or_default();
+            let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
             // A part is built with the body it belongs to; one with no body
             // above it stands still on its own.
             if kind.is_part() && owner_of(world, entity).is_some() {
@@ -1014,7 +1039,7 @@ impl PhysicsWorld {
                     mesh: mesh.map_or(0, CollisionMesh::key),
                     props,
                     layer,
-                    parts: parts_signature(placed.0, mine),
+                    parts: mine.iter().map(PartKey::of).collect(),
                     parts_at: parts_placement(mine),
                 },
             ));
@@ -1046,7 +1071,7 @@ impl PhysicsWorld {
                 body.set_linvel(Vector::new(v.x, v.y, v.z), true);
                 body.set_angvel(Vector::new(w.x, w.y, w.z), true);
             }
-            let _ = world.remove_one::<crate::world::Takeover>(entity);
+            scrap_core::world::take_off::<crate::world::Takeover>(world, entity);
         }
         self.sync_joints(world);
     }
@@ -1056,6 +1081,12 @@ impl PhysicsWorld {
     /// entity no longer asks for one. A joint whose partner is not there —
     /// not built yet, or a typo'd id — waits rather than guessing.
     fn sync_joints(&mut self, world: &mut World) {
+        // No joint asked for and none built: most worlds, most steps.
+        if world.query::<&Jointed>().iter().next().is_none()
+            && world.query::<&JointBuilt>().iter().next().is_none()
+        {
+            return;
+        }
         // By the scene's ids, and by a run-time prefab's own: a mouse spawned
         // mid-level has a tail whose links name each other.
         let mut bodies_by_id: std::collections::HashMap<crate::id::EntityId, RigidBodyHandle> = world
@@ -1616,14 +1647,33 @@ impl PhysicsWorld {
                     (local, matrix)
                 }
             };
-            let _ = world.insert_one(entity, WorldTransform(matrix));
             // Where the step took it from and to: a frame between steps
-            // draws it between them (`world::interpolate`).
-            let _ = world.insert_one(entity, stepped(was, matrix, drawn));
-            let _ = world.insert_one(entity, local);
-            if let Ok(mut built) = world.get::<&mut Built>(entity) {
+            // draws it between them (`world::interpolate`). Written in place:
+            // after the first step a body has all of these, and an insert
+            // would look up the archetype to move it to on every one.
+            let stepped = stepped(was, matrix, drawn);
+            let Ok((placed, own, step, built)) = world.query_one_mut::<(
+                &mut WorldTransform,
+                Option<&mut Transform>,
+                Option<&mut crate::world::Stepped>,
+                Option<&mut Built>,
+            )>(entity) else {
+                continue;
+            };
+            placed.0 = matrix;
+            if let Some(built) = built {
                 built.local = local;
                 built.placed = matrix;
+            }
+            let own = own.map(|own| *own = local).is_some();
+            match step {
+                Some(step) => *step = stepped,
+                None => {
+                    let _ = world.insert_one(entity, stepped);
+                }
+            }
+            if !own {
+                let _ = world.insert_one(entity, local);
             }
         }
     }
@@ -2322,6 +2372,26 @@ fn hull(points: &[Vector]) -> Option<Collider> {
 fn unsweep(collider: &mut Collider) {
     let shape = collider.shared_shape().clone();
     collider.set_shape(SharedShape::new(crate::shapes::Unswept(shape)));
+}
+
+/// Where [`build_collider`] puts a shape on its body, without building it:
+/// what a part that moved on its body is moved by, which for a hull or a
+/// mesh would otherwise be worked out anew every step.
+fn shape_offset(shape: ColliderShape, transform: glam::Mat4) -> Pose {
+    let (scale, _, _) = transform.to_scale_rotation_translation();
+    match shape {
+        ColliderShape::Box { center, .. }
+        | ColliderShape::Sphere { center, .. }
+        | ColliderShape::Capsule { center, .. } => {
+            let c = center * scale;
+            Pose::translation(c.x, c.y, c.z)
+        }
+        ColliderShape::None
+        | ColliderShape::Model
+        | ColliderShape::Cylinder { .. }
+        | ColliderShape::Ramp { .. }
+        | ColliderShape::Stairs { .. } => Pose::IDENTITY,
+    }
 }
 
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
@@ -3047,6 +3117,34 @@ mod tests {
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
         assert_eq!(physics.body_count(), 0);
+    }
+
+    #[test]
+    fn a_shape_sits_on_its_body_where_its_collider_is_built() {
+        let placed = glam::Mat4::from_scale_rotation_translation(
+            Vec3::new(1.5, 0.5, 2.0),
+            glam::Quat::from_rotation_y(0.7),
+            Vec3::new(3.0, 1.0, -2.0),
+        );
+        let center = Vec3::new(0.1, -0.2, 0.3);
+        for shape in [
+            ColliderShape::Box { half: Vec3::splat(0.5), center },
+            ColliderShape::Sphere { radius: 0.4, center },
+            ColliderShape::Capsule { half_height: 0.5, radius: 0.2, center, axis: 0 },
+            ColliderShape::Capsule { half_height: 0.5, radius: 0.2, center, axis: 1 },
+            ColliderShape::Capsule { half_height: 0.5, radius: 0.2, center, axis: 2 },
+            ColliderShape::Cylinder { half_height: 0.5, radius: 0.2 },
+            ColliderShape::Ramp { half: Vec3::splat(0.5) },
+            ColliderShape::Stairs { half: Vec3::splat(0.5), steps: 3 },
+        ] {
+            let built = *build_collider(shape, placed, None, true).unwrap().position();
+            let offset = shape_offset(shape, placed);
+            assert!(
+                (built.translation - offset.translation).length() < 1e-6
+                    && built.rotation.angle_between(offset.rotation) < 1e-6,
+                "{shape:?}: built at {built:?}, offset says {offset:?}"
+            );
+        }
     }
 
     #[test]
@@ -4592,7 +4690,7 @@ impl crate::world::Dress for PhysicsDress {
         if changed.has("physics") {
             let props = line.physics();
             if props.is_default() {
-                let _ = world.remove_one::<Props>(entity);
+                scrap_core::world::take_off::<Props>(world, entity);
             } else {
                 let _ = world.insert_one(entity, Props(props));
             }
@@ -4600,12 +4698,12 @@ impl crate::world::Dress for PhysicsDress {
         if changed.has("joint") {
             let joint = line.joint();
             if joint.is_none() {
-                let _ = world.remove_one::<Jointed>(entity);
+                scrap_core::world::take_off::<Jointed>(world, entity);
             } else {
                 let _ = world.insert_one(entity, Jointed(joint));
             }
             // A joint set anew is whole again.
-            let _ = world.remove_one::<JointBroken>(entity);
+            scrap_core::world::take_off::<JointBroken>(world, entity);
         }
         if changed.has("joint_break") {
             match line.joint_break() {
@@ -4613,9 +4711,10 @@ impl crate::world::Dress for PhysicsDress {
                     let _ = world.insert_one(entity, JointBreak(force));
                 }
                 None => {
-                    let _ = world.remove_one::<JointBreak>(entity);
+                    scrap_core::world::take_off::<JointBreak>(world, entity);
                 }
             }
         }
     }
 }
+

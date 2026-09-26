@@ -126,6 +126,9 @@ struct SsaoUniform {
     kernel: [[f32; 4]; 16],
     previous_view_projection: [[f32; 4]; 4],
     bounce: [f32; 4],
+    /// The camera's near and far, and 1 when it is orthographic: what the
+    /// blur reads a depth as distance by.
+    depth_range: [f32; 4],
 }
 
 /// Sixteen points in the unit hemisphere over +z, more of them near the
@@ -183,6 +186,8 @@ pub(crate) struct SsaoRenderer {
     pub(crate) depth: wgpu::TextureView,
     pub(crate) normals: wgpu::TextureView,
     raw: wgpu::TextureView,
+    /// The occlusion blurred at its own size, on a big screen.
+    mid: wgpu::TextureView,
     /// What the lit shader reads: the blurred occlusion. (When there is
     /// none, the frame says so and the shader does not look.)
     pub(crate) result: wgpu::TextureView,
@@ -192,6 +197,8 @@ pub(crate) struct SsaoRenderer {
     uniform: wgpu::Buffer,
     occlusion: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
+    blur_half: wgpu::RenderPipeline,
+    upsample: wgpu::RenderPipeline,
 }
 
 impl SsaoRenderer {
@@ -275,6 +282,7 @@ impl SsaoRenderer {
             depth: view(gpu, "prepass depth", (1, 1), PREPASS_DEPTH),
             normals: view(gpu, "prepass normals", (1, 1), NORMAL_FORMAT),
             raw: view(gpu, "occlusion", (1, 1), AO_FORMAT),
+            mid: view(gpu, "occlusion (blurred, half size)", (1, 1), AO_FORMAT),
             result: view(gpu, "occlusion (blurred)", (1, 1), AO_FORMAT),
             white,
             size: (1, 1),
@@ -282,6 +290,8 @@ impl SsaoRenderer {
             uniform,
             occlusion: pipeline("fs_occlusion"),
             blur: pipeline("fs_blur"),
+            blur_half: pipeline("fs_blur_half"),
+            upsample: pipeline("fs_upsample"),
         }
     }
 
@@ -298,6 +308,7 @@ impl SsaoRenderer {
         // two by two; the blur brings it back to the whole.
         let scale = scale_for(size);
         self.raw = view(gpu, "occlusion", (size.0.div_ceil(scale), size.1.div_ceil(scale)), AO_FORMAT);
+        self.mid = view(gpu, "occlusion (blurred, half size)", (size.0.div_ceil(scale), size.1.div_ceil(scale)), AO_FORMAT);
         self.result = view(gpu, "occlusion (blurred)", size, AO_FORMAT);
         true
     }
@@ -315,8 +326,14 @@ impl SsaoRenderer {
         settings: &AmbientOcclusion,
         last_frame: Option<&wgpu::TextureView>,
         turn: Option<f32>,
+        depth_range: [f32; 4],
     ) {
         let (w, h) = self.size;
+        // No light bouncing: the pictures' red free for each pixel's view
+        // distance (ssao.wgsl's `packed`).
+        let mut depth_range = depth_range;
+        let bounces = last_frame.is_some() && settings.bounce > 0.0;
+        depth_range[3] = if bounces { 0.0 } else { 1.0 };
         let uniform = SsaoUniform {
             view_projection: view_projection.to_cols_array_2d(),
             inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
@@ -343,6 +360,7 @@ impl SsaoRenderer {
                 // The occlusion's pixel is this many of the screen's across.
                 scale_for(self.size) as f32,
             ],
+            depth_range,
         };
         let last_frame = last_frame.unwrap_or(&self.white);
         gpu.queue
@@ -377,10 +395,19 @@ impl SsaoRenderer {
         };
         // The occlusion reads `white` as its unused source; the blur reads
         // the occlusion.
-        for (pipeline, source, target) in [
-            (&self.occlusion, &self.white, &self.raw),
-            (&self.blur, &self.raw, &self.result),
-        ] {
+        // On a big screen, blurred at half size and brought up; else
+        // blurred straight to the screen's size.
+        let half = scale_for(self.size) > 1;
+        let passes: Vec<(&wgpu::RenderPipeline, &wgpu::TextureView, &wgpu::TextureView)> = if half {
+            vec![
+                (&self.occlusion, &self.white, &self.raw),
+                (&self.blur_half, &self.raw, &self.mid),
+                (&self.upsample, &self.mid, &self.result),
+            ]
+        } else {
+            vec![(&self.occlusion, &self.white, &self.raw), (&self.blur, &self.raw, &self.result)]
+        };
+        for (k, (pipeline, source, target)) in passes.into_iter().enumerate() {
             let bind = group(source);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scrap::ssao"),
@@ -394,7 +421,7 @@ impl SsaoRenderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: crate::gpu_timer::render("ssao"),
+                timestamp_writes: crate::gpu_timer::render(["ssao", "ssao blur", "ssao up"][k]),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });

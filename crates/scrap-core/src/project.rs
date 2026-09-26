@@ -14,7 +14,7 @@
 //!   prefabs/        *.prefab
 //!   materials/      *.scrmat
 //!   assets/         sources: models, textures, sounds
-//!   tuning/         the game's numbers, RON, reloaded while it runs
+//!   configs/        the game's data, RON, reloaded while it runs
 //!   ui/             the game's screens, RON, reloaded while it runs
 //!   library/        built .scrasset — derived, never committed
 //!   Cargo.toml      the game crate, its own workspace
@@ -86,7 +86,7 @@ pub const SHADERS: &str = "shaders";
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
 /// [`crate::Tuned`].
-pub const TUNING: &str = "tuning";
+pub const CONFIGS: &str = "configs";
 
 /// What the game's components look like, written by the game from its own
 /// types: what the editor's Inspector and `scrap check` know them by
@@ -99,6 +99,10 @@ pub const SHAPES: &str = "library/components.ron";
 pub const TUNING_SHAPES: &str = "library/tuning.ron";
 /// [`TUNING_SHAPES`]'s file name, beside [`SHAPES`].
 pub const TUNING_SHAPES_FILE: &str = "tuning.ron";
+/// What the game's tables hold, written by the game from its own types:
+/// what the Configs window and `scrap check` know them by
+/// (`scrap_core::table::TableShape`).
+pub const TABLE_SHAPES: &str = "library/tables.ron";
 
 /// Where a built game keeps its project data, beside the executable.
 pub const DATA: &str = "data";
@@ -395,8 +399,8 @@ impl Project {
         )?;
         std::fs::create_dir_all(root.join(crate::strings::DIR))?;
         std::fs::write(root.join(crate::strings::DIR).join("en.ron"), STRINGS_EN)?;
-        std::fs::create_dir_all(root.join(TUNING))?;
-        std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
+        std::fs::create_dir_all(root.join(CONFIGS))?;
+        std::fs::write(root.join(CONFIGS).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(COMPONENTS))?;
         std::fs::create_dir_all(root.join(SYSTEMS))?;
         let bare = modules.is_some_and(|(listed, _)| listed.is_empty());
@@ -531,13 +535,15 @@ const GITIGNORE: &str = "\
 .env
 ";
 
-/// The `.gitattributes` lines that send scenes and prefabs to `scrap
-/// merge`, for a project made before they were in the template.
+/// The `.gitattributes` lines that send scenes, prefabs and configs to
+/// `scrap merge`, for a project made before they were in the template.
 pub const MERGE_ATTRIBUTES: &str = "\
-# Scenes and prefabs merge by entity and field, not by line. The driver is
-# `scrap merge`; `scrap git-setup` turns it on in a clone.
+# Scenes and prefabs merge by entity and field, configs by record and field,
+# not by line. The driver is `scrap merge`; `scrap git-setup` turns it on in
+# a clone.
 scenes/**/*.ron merge=scrap
 prefabs/**/*.prefab merge=scrap
+configs/**/*.ron merge=scrap
 ";
 
 /// The name Cargo will accept for a project called `name`.
@@ -760,7 +766,7 @@ use scrap::shell::{self, run, Context, StepContext, WindowConfig};
 use scrap::screen::Screen;
 use scrap::ui::{TextRun, Ui};
 use scrap::widgets::Widgets;
-use scrap::{Actions, Components, LiveScene, Tuned};
+use scrap::{Actions, Components, LiveScene, Tables, Tuned};
 use serde::Deserialize;
 
 /// Every file in src/components/, registered by its file name.
@@ -773,7 +779,7 @@ mod systems {
     include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 }
 
-/// Numbers from `tuning/world.ron`, reloaded while the game runs.
+/// Numbers from `configs/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
@@ -877,15 +883,28 @@ fn cheats() -> scrap::console::Commands {
     commands
 }
 
-/// In the project, write what the components look like, for the editor's
-/// Inspector and `scrap check` (library/components.ron). Nothing in a build.
+/// In the project, write what the components and the tables look like,
+/// for the editor's Inspector and Configs window and `scrap check`
+/// (library/components.ron, library/tables.ron). Nothing in a build.
 fn write_shapes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     if root.join("scrap.ron").is_file() {
         if let Err(e) = game_components().write_shapes(root.join(scrap::project::SHAPES)) {
             eprintln!("{e}");
         }
+        if let Err(e) = game_tables().write_shapes(root.join(scrap::project::TABLE_SHAPES)) {
+            eprintln!("{e}");
+        }
     }
+}
+
+/// Every table the game reads from configs/, and what its records are: a
+/// `Wolf` that is a `scrap::Record`, read with
+/// `scrap::Table::<Wolf>::load(...)`, is registered here as
+/// `tables.register::<Wolf>("configs/wolves.ron")` — and then the editor
+/// knows its fields and `scrap check` its links.
+fn game_tables() -> Tables {
+    Tables::new()
 }
 
 /// Every component the game has, by name.
@@ -1133,7 +1152,7 @@ fn main() -> anyhow::Result<()> {
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
-    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning/world.ron"))
+    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "configs/world.ron"))
         .map_err(anyhow::Error::msg)?;
     let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
         .map_err(anyhow::Error::msg)?;
@@ -1206,6 +1225,14 @@ mod tests {
         for (_, transform) in world.query::<(scrap::hecs::Entity, &scrap::Transform)>().iter() {
             assert!(transform.position.is_finite(), "something flew off: {transform:?}");
         }
+    }
+
+    /// Every table loads into its type, keeps its records' rules, and links
+    /// only to records that are there.
+    #[test]
+    fn the_tables_hold() {
+        let problems = game_tables().problems(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 }
 "#;
@@ -1535,10 +1562,12 @@ const GITATTRIBUTES: &str = "\
 # Text as LF on every machine: .scrimport stores a hash of the source's bytes.
 * text=auto eol=lf
 
-# Scenes and prefabs merge by entity and field, not by line. The driver is
-# `scrap merge`; `scrap git-setup` turns it on in a clone.
+# Scenes and prefabs merge by entity and field, configs by record and field,
+# not by line. The driver is `scrap merge`; `scrap git-setup` turns it on in
+# a clone.
 scenes/**/*.ron merge=scrap
 prefabs/**/*.prefab merge=scrap
+configs/**/*.ron merge=scrap
 
 # Binary sources: stored in LFS, lockable. Text sources (.ron, .prefab,
 # .scrmat, .scrimport, .obj, .gltf) stay in git, where a diff means something.
@@ -1567,7 +1596,7 @@ things in the same place:
 ```
 scrap.ron   the project file
 input.ron    actions by name (\"jump\"), and the keys for each
-tuning/      the game's numbers, RON, typed in code with scrap::Tuned
+configs/     the game's data, RON: one struct is scrap::Tuned, records by name scrap::Table
 ui/          the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
 strings/     the game's words, one file per language; a screen says `@key`
 dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue); <name>.cases.ron played by check

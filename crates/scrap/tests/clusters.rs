@@ -27,6 +27,9 @@ fn dense_meshes_culled_by_clusters_draw_the_same_and_keep_what_is_seen() {
     let run = |clusters: bool| {
         let mut renderer = Renderer::new(&gpu, &target);
         renderer.set_cluster_culling(clusters);
+        // Every ball at its finest: culling alone (levels of detail have
+        // their test in cluster_lod.rs).
+        renderer.set_cluster_error(0.0);
         // A sphere of nine thousand triangles: some in view, some behind
         // the eye, some behind a wall.
         let ball = renderer.upload_mesh_owned(&gpu, &builtin::sphere(1.0, 96, 48));

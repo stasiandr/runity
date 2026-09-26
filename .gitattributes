@@ -2,8 +2,10 @@
 # bytes, and a CRLF checkout would change every one of them.
 * text=auto eol=lf
 
-# The example project's scenes and prefabs merge by entity and field.
+# The example project's scenes and prefabs merge by entity and field, its
+# configs by record and field.
 # `cargo run -p scrap-cli -- git-setup examples/valley` turns the driver on.
 examples/valley/scenes/**/*.ron merge=scrap
 examples/valley/prefabs/**/*.prefab merge=scrap
+examples/valley/configs/**/*.ron merge=scrap
 examples/kitchen/** !text !filter !merge !diff

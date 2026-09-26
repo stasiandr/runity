@@ -129,7 +129,7 @@ impl scrap_core::world::Dress for DistanceFieldDress {
                 let _ = world.insert_one(entity, DistanceFieldState::new(f));
             }
             None => {
-                let _ = world.remove_one::<DistanceFieldState>(entity);
+                scrap_core::world::take_off::<DistanceFieldState>(world, entity);
             }
         }
     }

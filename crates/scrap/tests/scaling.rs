@@ -231,3 +231,85 @@ fn a_cloth_step_grows_linearly() {
         best(1, || scrap::soft::step(&mut world, 1.0 / 60.0))
     });
 }
+
+/// A table of `n` records, a tenth of them on a base and each linking to
+/// the one before it — what a catalog of items grows into.
+fn table(n: usize) -> String {
+    let mut text = String::from("{\n");
+    for i in 0..n {
+        let base = if i % 10 == 5 {
+            format!("base: \"record {}\", ", i - 1)
+        } else {
+            String::new()
+        };
+        let before = i.saturating_sub(1);
+        text.push_str(&format!(
+            "    \"record {i}\": (id: \"{:x}\", {base}weight: {i}.5, tags: [Hard, Warm], after: \"record {before}\"),\n",
+            i + 1
+        ));
+    }
+    text.push('}');
+    text
+}
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+enum Tag {
+    Hard,
+    Warm,
+}
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct Item {
+    weight: f32,
+    tags: Vec<Tag>,
+    after: scrap::Link<Item>,
+}
+
+impl scrap::Record for Item {}
+
+#[test]
+fn reading_and_checking_a_table_grows_linearly() {
+    let texts: Vec<String> = SIZES.iter().map(|&n| table(n)).collect();
+    let shapes = vec![scrap::table::TableShape {
+        path: "configs/items.ron".into(),
+        record: "Item".into(),
+        shape: scrap::shape::of::<Item>(),
+    }];
+    for (what, work) in [
+        (
+            "read a table",
+            &(|text: &str| {
+                let table = scrap::Table::<Item>::from_text(text).unwrap();
+                assert!(!table.is_empty());
+            }) as &dyn Fn(&str),
+        ),
+        ("check its links", &|text: &str| {
+            let read = |_: &str| vec![("configs/items.ron".to_string(), text.to_string())];
+            assert!(scrap::table::link_problems(&shapes, &read).is_empty());
+        }),
+    ] {
+        let times: Vec<Duration> = texts.iter().map(|t| best(3, || work(t))).collect();
+        let line: Vec<String> = SIZES
+            .iter()
+            .zip(&times)
+            .map(|(n, t)| format!("{n}: {t:.2?}"))
+            .collect();
+        eprintln!("{what}: {}", line.join(", "));
+        for (i, pair) in times.windows(2).enumerate() {
+            if pair[1] < Duration::from_micros(500) {
+                continue;
+            }
+            let ratio = pair[1].as_secs_f64() / pair[0].as_secs_f64().max(1e-6);
+            assert!(
+                ratio <= MOST,
+                "{what}: {} to {} records took {ratio:.0}× longer ({:.2?} → {:.2?})",
+                SIZES[i],
+                SIZES[i + 1],
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+}

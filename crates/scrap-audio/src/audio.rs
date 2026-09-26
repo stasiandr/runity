@@ -808,7 +808,7 @@ impl crate::world::Dress for SoundDress {
                 let _ = world.insert_one(entity, crate::world::Sounding(sound));
             }
             None => {
-                let _ = world.remove_one::<crate::world::Sounding>(entity);
+                scrap_core::world::take_off::<crate::world::Sounding>(world, entity);
             }
         }
     }

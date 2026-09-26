@@ -47,6 +47,7 @@ use scrap_core::web_time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod embedded;
+mod frame_debugger;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -253,7 +254,40 @@ fn hot<R>(f: impl FnMut() -> R) -> R {
 ///
 /// Started by the editor's Play (`SCRAP_EMBED` set) there is no window:
 /// the game draws into the editor's view instead ([`scrap_core::embed`]).
+/// `SCRAP_STARTUP=1`: when each step of starting happened, in seconds of
+/// the wall clock — to set against when the process was launched — and
+/// every slow frame of the first few hundred; `quit` also ends the game at
+/// its 300th frame.
+static STARTUP: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| std::env::var("SCRAP_STARTUP").ok());
+
+fn startup(what: &str) {
+    if STARTUP.is_some() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        eprintln!("startup {:.3} {what}", now.as_secs_f64());
+    }
+}
+
+/// A frame drawn, for [`startup`]: the first, and those slow of the first
+/// three hundred; whether the game is to end now.
+fn startup_frame() -> bool {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static FRAMES: AtomicU32 = AtomicU32::new(0);
+    static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    if STARTUP.is_none() {
+        return false;
+    }
+    let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut last = LAST.lock().unwrap();
+    let took = last.map(|t| t.elapsed());
+    *last = Some(Instant::now());
+    if n == 1 || (n <= 300 && took.is_some_and(|t| t > Duration::from_millis(50))) {
+        startup(&format!("frame {n} ({:.0} ms since the last)", took.unwrap_or_default().as_secs_f32() * 1e3));
+    }
+    n >= 300 && STARTUP.as_deref() == Some("quit")
+}
+
 pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<()> {
+    startup("the shell runs");
     #[cfg(not(target_arch = "wasm32"))]
     if let Ok(address) = std::env::var(scrap_core::embed::EMBED_VAR) {
         return embedded::run(&address, config, game);
@@ -304,6 +338,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         touch_pad: None,
         #[cfg(target_os = "android")]
         suspended: false,
+        debugger: Default::default(),
+        frozen: None,
     };
     shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
     #[cfg(target_os = "ios")]
@@ -432,6 +468,9 @@ struct Shell<G: Game> {
     /// coming back: its window is gone, and nothing is drawn.
     #[cfg(target_os = "android")]
     suspended: bool,
+    /// The Frame Debugger's window (F9), and the frame it takes apart.
+    debugger: frame_debugger::Panel,
+    frozen: Option<Frame>,
 }
 
 impl<G: Game> Shell<G> {
@@ -566,6 +605,11 @@ impl<G: Game> Shell<G> {
         if self.suspended {
             return;
         }
+        // F9: the Frame Debugger opens on this frame, or lets the game go
+        // on (shell/frame_debugger.rs).
+        if self.input.pressed(frame_debugger::KEY) {
+            self.toggle_debugger();
+        }
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -588,6 +632,11 @@ impl<G: Game> Shell<G> {
             drawing.surface.resize(&state.gpu, width, height);
             (drawing.surface.width(), drawing.surface.height())
         };
+
+        if self.debugger.open {
+            self.draw_debugged(size);
+            return;
+        }
 
         let mut quit = false;
         // The pointer the game asked for, captured or free, applied once the
@@ -692,7 +741,7 @@ impl<G: Game> Shell<G> {
             self.loop_times.record(name, took);
         }
         match drawn {
-            Drawn::Shown => {}
+            Drawn::Shown => quit |= startup_frame(),
             // Routine: the window is being dragged or is minimised. Rebuild
             // the swapchain and let the next frame have it.
             Drawn::Outdated => {
@@ -733,10 +782,69 @@ impl<G: Game> Shell<G> {
 }
 
 impl<G: Game> Shell<G> {
+    /// The Frame Debugger opened — the game stopped where it is, the
+    /// pointer let go, the passes timed — or closed, and all of it undone.
+    fn toggle_debugger(&mut self) {
+        let Some(state) = self.state.as_mut() else { return };
+        let open = !self.debugger.open;
+        self.debugger.open = open;
+        self.frozen = None;
+        if let Some(d) = state.drawing.as_deref_mut() {
+            if open {
+                d.renderer.profile_gpu(true);
+            } else {
+                d.renderer.stop_debugging();
+                d.renderer.profile_gpu(std::env::var_os("SCRAP_GPU_TIMES").is_some());
+            }
+        }
+        if open {
+            self.debugger.was_captured = self.captured;
+            if self.captured {
+                set_captured(&state.window, false);
+                self.captured = false;
+            }
+        } else if self.debugger.was_captured {
+            set_captured(&state.window, true);
+            self.captured = true;
+        }
+    }
+
+    /// A turn with the Frame Debugger open: no steps, the game's last
+    /// frame drawn again stopped at the event picked, its picture and the
+    /// window over it.
+    fn draw_debugged(&mut self, size: (u32, u32)) {
+        let Some(state) = self.state.as_mut() else { return };
+        if self.frozen.is_none() {
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+            let game = &mut self.game;
+            self.frozen = Some(hot(|| game.frame(&mut ctx)));
+        }
+        let Some(frame) = self.frozen.as_ref() else { return };
+        let gpu = &state.gpu;
+        let d = state.drawing.as_deref_mut().expect("back from the render thread");
+        self.debugger.update(&self.input, d.renderer.frame_capture(), size);
+        d.renderer.debug_frame(self.debugger.stop());
+        match d.surface.begin_frame() {
+            Ok(acquired) => {
+                d.renderer.draw_ui_pictures(gpu, &mut d.overlay, frame);
+                d.renderer.render_to_frame(gpu, &acquired, frame);
+                d.renderer.show_debug_picture(gpu, &acquired.view, frame_debugger::Panel::picture_area(size));
+                let times = d.renderer.gpu_times();
+                self.debugger.draw(d.renderer.frame_capture(), &self.input, size, &times);
+                d.overlay.render_to_frame(gpu, &acquired, &self.debugger.ui);
+                acquired.present(gpu);
+            }
+            Err(SurfaceError::Outdated) => d.surface.reconfigure(gpu),
+            Err(e) => eprintln!("{e}"),
+        }
+        self.input.begin_frame();
+    }
+
     /// The device and the window are there: the game starts.
     fn begin(&mut self, mut state: Running) {
         let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured, &self.loop_times);
         self.game.start(&mut ctx);
+        startup("the game started");
         if let Some(on) = ctx.capture {
             set_captured(&state.window, on);
             self.captured = on;
@@ -849,7 +957,10 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                 .with_focusable(true);
         }
         let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
+            Ok(window) => {
+                startup("window");
+                Arc::new(window)
+            }
             Err(e) => {
                 eprintln!("could not open a window: {e}");
                 event_loop.exit();
@@ -894,8 +1005,12 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                     return;
                 }
             };
+            startup("device");
             match running(gpu, window) {
-                Ok(state) => self.begin(state),
+                Ok(state) => {
+                    startup("renderer");
+                    self.begin(state)
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     event_loop.exit();

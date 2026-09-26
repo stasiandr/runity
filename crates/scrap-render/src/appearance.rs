@@ -30,7 +30,7 @@ fn put<T: hecs::Component>(world: &mut World, entity: hecs::Entity, value: Optio
             let _ = world.insert_one(entity, value);
         }
         None => {
-            let _ = world.remove_one::<T>(entity);
+            scrap_core::world::take_off::<T>(world, entity);
         }
     }
 }
@@ -112,7 +112,7 @@ fn particles(
     palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
 ) {
     let Some(emitter) = line.particles() else {
-        let _ = world.remove_one::<crate::particles::Emitting>(entity);
+        scrap_core::world::take_off::<crate::particles::Emitting>(world, entity);
         return;
     };
     let fresh = emitting(&emitter, resolve, palette);
@@ -198,7 +198,7 @@ pub fn dress_look(
             let _ = world.insert_one(entity, Pressing(decal, desc.material_from(palette)));
         }
         None => {
-            let _ = world.remove_one::<Pressing>(entity);
+            scrap_core::world::take_off::<Pressing>(world, entity);
         }
     }
     // Ground made from its numbers: its mesh comes when it is first drawn
@@ -208,19 +208,19 @@ pub fn dress_look(
             .get::<&crate::terrain::Relief>(entity)
             .is_ok_and(|r| r.terrain == terrain);
         if !same {
-            let _ = world.remove_one::<Model>(entity);
+            scrap_core::world::take_off::<Model>(world, entity);
             let _ = world.insert_one(entity, crate::terrain::Relief::new(terrain));
         }
         let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
         return;
     }
-    let _ = world.remove_one::<crate::terrain::Relief>(entity);
+    scrap_core::world::take_off::<crate::terrain::Relief>(world, entity);
     // No model is nothing to draw — a probe, a decal, a light, an empty to
     // hang children on — not a model that could not be found.
     let model = desc.model();
     if model.is_empty() {
-        let _ = world.remove_one::<Model>(entity);
-        let _ = world.remove_one::<Surface>(entity);
+        scrap_core::world::take_off::<Model>(world, entity);
+        scrap_core::world::take_off::<Surface>(world, entity);
         return;
     }
     match resolve(&model) {

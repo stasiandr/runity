@@ -203,7 +203,7 @@ impl Dress for CharacterLookDress<'_> {
         }
         let Some(mesh) = self.capsule else { return };
         if ragdoll.is_some() {
-            let _ = world.remove_one::<crate::world::Model>(entity);
+            scrap_core::world::take_off::<crate::world::Model>(world, entity);
             let _ = world.insert_one(entity, Surface(line.material_from(self.palette)));
             let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
         } else {

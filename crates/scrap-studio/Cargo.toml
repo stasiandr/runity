@@ -15,6 +15,8 @@ repository.workspace = true
 # the tests and the `shot` example drive it with no screen.
 [dependencies]
 arboard = { version = "3", default-features = false }
+# The window icon, a PNG (`assets/icon`).
+image = { version = "0.25.9", default-features = false, features = ["png"] }
 serde = { version = "1.0.229", features = ["derive"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
 scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap", features = ["desktop-shell", "audio"] }
@@ -26,14 +28,13 @@ wgpu = "30"
 winit = "0.30.13"
 
 # The menus in the system's menu bar (`crate::native_menu`): only macOS
-# has one; elsewhere the menus stay in the toolbar.
+# has one; elsewhere the menus stay in the toolbar. And the Dock's icon,
+# which a window icon doesn't set there (`crate::window`).
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.20", default-features = false }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSResponder"] }
-
-[dev-dependencies]
-image = { version = "0.25.9", default-features = false, features = ["png"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
 
 [[example]]
 name = "shot"

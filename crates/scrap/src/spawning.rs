@@ -13,7 +13,7 @@ use crate::world::{patch_scene_dressed, spawn_owned_dressed, spawn_scene_dressed
 /// Which lines a spawn dresses: the builtin meshes the simulation modules
 /// draw with are uploaded only when some line has a field that needs one,
 /// so a scene — or a streamed region — without ropes uploads no link.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Needs {
     /// Ropes, cloth, hair and the rest of the soft module: links, spheres.
     pub soft: bool,
@@ -29,17 +29,27 @@ impl Needs {
         const SOFT: &[&str] = &["rope", "cloth", "hair", "soft_body", "jiggle", "fluid", "grains", "distance_field"];
         const FLUID: &[&str] = &["mpm", "shallow_water", "ripples", "ocean", "floats", "smoke", "snow_cover"];
         const CHARACTER: &[&str] = &["ragdoll", "crawler"];
+        // Each line's own few fields looked up in the lists, not every
+        // name of the lists looked for among its fields: a reload walks
+        // every line of the level.
         fn walk(desc: &EntityDesc, out: &mut Needs) {
-            let has = |names: &[&str]| names.iter().any(|n| desc.parts.raw(n).is_some());
-            out.soft |= has(SOFT);
-            out.fluid |= has(FLUID);
-            out.character |= has(CHARACTER);
+            for name in desc.parts.names() {
+                out.soft |= SOFT.contains(&name);
+                out.fluid |= FLUID.contains(&name);
+                out.character |= CHARACTER.contains(&name);
+            }
             for child in &desc.children {
+                if *out == Needs::ALL {
+                    return;
+                }
                 walk(child, out);
             }
         }
         let mut out = Needs::default();
         for desc in lines {
+            if out == Needs::ALL {
+                break;
+            }
             walk(desc, &mut out);
         }
         out

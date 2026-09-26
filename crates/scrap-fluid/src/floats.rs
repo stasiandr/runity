@@ -108,7 +108,7 @@ impl scrap_core::world::Dress for FloatsDress {
                 let _ = world.insert_one(entity, Floating(f));
             }
             None => {
-                let _ = world.remove_one::<Floating>(entity);
+                scrap_core::world::take_off::<Floating>(world, entity);
             }
         }
     }

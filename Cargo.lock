@@ -3405,6 +3405,7 @@ name = "scrap-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "ron",
  "scrap-engine",
  "scrap-import",
@@ -3713,6 +3714,7 @@ dependencies = [
  "anyhow",
  "gilrs",
  "glam 0.32.1",
+ "image",
  "js-sys",
  "libc",
  "log",
@@ -3720,6 +3722,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
  "scrap-core",
+ "scrap-geometry",
  "scrap-gpu",
  "scrap-overlay",
  "scrap-render",
@@ -3772,6 +3775,7 @@ dependencies = [
  "muda",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rfd",
  "scrap-cli",
  "scrap-editor",

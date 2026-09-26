@@ -170,6 +170,10 @@ struct Merger<'a> {
     conflicts: Vec<Conflict>,
     entity: Option<EntityId>,
     name: &'a str,
+    /// Not merging but comparing: `base` is before, `ours` after, and every
+    /// field that differs is reported — `ours` the after, `theirs` the
+    /// before — and ours kept.
+    diff: bool,
 }
 
 impl Merger<'_> {
@@ -182,6 +186,12 @@ impl Merger<'_> {
         ours: Option<&str>,
         theirs: Option<&str>,
     ) -> Option<String> {
+        if self.diff {
+            if ours != base {
+                self.report(field, ours.unwrap_or("nothing"), base.unwrap_or("nothing"));
+            }
+            return ours.map(str::to_string);
+        }
         if ours == theirs || theirs == base {
             return ours.map(str::to_string);
         }
@@ -206,6 +216,12 @@ impl Merger<'_> {
         ours: &T,
         theirs: &T,
     ) -> T {
+        if self.diff {
+            if ours != base {
+                self.report(field, &show(ours), &show(base));
+            }
+            return ours.clone();
+        }
         if ours == theirs || theirs == base {
             return ours.clone();
         }
@@ -223,6 +239,18 @@ impl Merger<'_> {
     }
 }
 
+impl Merger<'_> {
+    fn report(&mut self, field: &str, ours: &str, theirs: &str) {
+        self.conflicts.push(Conflict {
+            entity: self.entity,
+            entity_name: self.name.to_string(),
+            field: field.to_string(),
+            ours: ours.to_string(),
+            theirs: theirs.to_string(),
+        });
+    }
+}
+
 /// Merge `ours` and `theirs`, both descended from `base`.
 pub fn merge_scenes(base: &Scene, ours: &Scene, theirs: &Scene) -> Merged {
     let mut conflicts = Vec::new();
@@ -232,6 +260,7 @@ pub fn merge_scenes(base: &Scene, ours: &Scene, theirs: &Scene) -> Merged {
             conflicts: Vec::new(),
             entity: None,
             name: "",
+            diff: false,
         };
         scene.parts = merge_parts(
             &mut top,
@@ -272,7 +301,7 @@ pub fn merge_scenes(base: &Scene, ours: &Scene, theirs: &Scene) -> Merged {
                 // one id, the base is "nothing", so every difference is a
                 // conflict.
                 let base = base_e.copied().unwrap_or(o);
-                Some(merge_entity(base, o, t, &mut conflicts))
+                Some(merge_entity(base, o, t, &mut conflicts, false))
             }
             // Added on one side only.
             (None, Some(only), None) | (None, None, Some(only)) => Some((*only).clone()),
@@ -373,6 +402,186 @@ pub fn merge_prefabs(base: &EntityDesc, ours: &EntityDesc, theirs: &EntityDesc) 
     merge_scenes(&wrap(base), &wrap(ours), &wrap(theirs))
 }
 
+/// What one scene changed of another: a thing added or removed, or one
+/// field of one thing — named as a merge conflict names it, "its
+/// position", so the history and the merge speak the same words.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
+    Added { id: EntityId, name: String },
+    Removed { id: EntityId, name: String },
+    Field {
+        /// `None` for the scene's own fields: view, sun, fog.
+        entity: Option<EntityId>,
+        entity_name: String,
+        field: String,
+        before: String,
+        after: String,
+    },
+}
+
+impl Change {
+    pub fn entity(&self) -> Option<EntityId> {
+        match self {
+            Change::Added { id, .. } | Change::Removed { id, .. } => Some(*id),
+            Change::Field { entity, .. } => *entity,
+        }
+    }
+
+    /// Whether this is the change of `field` of `entity`.
+    pub fn is_field(&self, entity: Option<EntityId>, field: &str) -> bool {
+        matches!(self, Change::Field { entity: e, field: f, .. } if *e == entity && f == field)
+    }
+}
+
+impl fmt::Display for Change {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Change::Added { id, name } => write!(f, "added `{name}` ({id})"),
+            Change::Removed { id, name } => write!(f, "removed `{name}` ({id})"),
+            Change::Field {
+                entity: Some(_),
+                entity_name,
+                field,
+                before,
+                after,
+            } => write!(f, "`{entity_name}`: {field} {before} → {after}"),
+            Change::Field {
+                entity: None,
+                field,
+                before,
+                after,
+                ..
+            } => write!(f, "the scene's {field}: {before} → {after}"),
+        }
+    }
+}
+
+/// What `after` changed of `before`, thing by thing and field by field, in
+/// the order `after` has its things, then what it removed: a revision of a
+/// scene as the editor's Git tab shows it.
+pub fn diff_scenes(before: &Scene, after: &Scene) -> Vec<Change> {
+    let mut changes = Vec::new();
+    let mut top = Merger {
+        conflicts: Vec::new(),
+        entity: None,
+        name: "",
+        diff: true,
+    };
+    merge_parts(
+        &mut top,
+        |name| name.to_string(),
+        &before.parts,
+        &after.parts,
+        &before.parts,
+    );
+    let mut fields = top.conflicts;
+
+    let (mut b, mut a) = (Vec::new(), Vec::new());
+    flatten(&before.entities, None, &mut b);
+    flatten(&after.entities, None, &mut a);
+    let before_map: HashMap<EntityId, &Flat> = b.iter().map(|(id, f)| (*id, f)).collect();
+    let after_ids: HashSet<EntityId> = a.iter().map(|(id, _)| *id).collect();
+    for (id, now) in &a {
+        match before_map.get(id) {
+            None => changes.push(Change::Added {
+                id: *id,
+                name: now.desc.name.clone(),
+            }),
+            Some(then) => {
+                merge_entity(then, now, then, &mut fields, true);
+            }
+        }
+    }
+    changes.extend(fields.into_iter().map(|c| Change::Field {
+        entity: c.entity,
+        entity_name: c.entity_name,
+        field: c.field,
+        before: c.theirs,
+        after: c.ours,
+    }));
+    changes.extend(
+        b.iter()
+            .filter(|(id, _)| !after_ids.contains(id))
+            .map(|(id, then)| Change::Removed {
+                id: *id,
+                name: then.desc.name.clone(),
+            }),
+    );
+    changes
+}
+
+/// A side of a merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Ours,
+    Theirs,
+}
+
+impl Conflict {
+    /// Which side `scene` — the merge being settled — has for this
+    /// conflict: `None` when neither, as after a hand edit, or when there
+    /// is nothing to choose. `ours_changes` and `theirs_changes` are what
+    /// `scene` changed of each side ([`diff_scenes`]), worked out once for
+    /// every conflict.
+    pub fn side(
+        &self,
+        scene: &Scene,
+        ours_changes: &[Change],
+        theirs_changes: &[Change],
+    ) -> Option<Side> {
+        match self.field.as_str() {
+            PARENT_LOST => None,
+            EXISTS => {
+                let id = self.entity?;
+                let deleted_by = if self.ours == "deleted it" {
+                    Side::Ours
+                } else {
+                    Side::Theirs
+                };
+                let kept_by = match deleted_by {
+                    Side::Ours => Side::Theirs,
+                    Side::Theirs => Side::Ours,
+                };
+                Some(if scene.get(id).is_some() {
+                    kept_by
+                } else {
+                    deleted_by
+                })
+            }
+            field => {
+                let same = |changes: &[Change]| !changes.iter().any(|c| c.is_field(self.entity, field));
+                if same(ours_changes) {
+                    Some(Side::Ours)
+                } else if same(theirs_changes) {
+                    Some(Side::Theirs)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Settle this conflict ours' way again — after taking theirs, say —
+    /// from `ours`, our side as it was before the merge. `false` when
+    /// there is nothing to take, or it cannot be put back: a thing taking
+    /// theirs deleted comes back with undo, not from here.
+    pub fn take_ours(&self, scene: &mut Scene, ours: &Scene) -> bool {
+        let flipped = Conflict {
+            ours: self.theirs.clone(),
+            theirs: self.ours.clone(),
+            ..self.clone()
+        };
+        if self.field == EXISTS {
+            if let Some(id) = self.entity {
+                if self.theirs == "deleted it" && scene.get(id).is_none() {
+                    return false;
+                }
+            }
+        }
+        flipped.take_theirs(scene, ours)
+    }
+}
+
 fn flat_eq(a: &Flat, b: &Flat) -> bool {
     a.desc == b.desc && a.parent == b.parent
 }
@@ -405,12 +614,19 @@ fn build(
         .collect()
 }
 
-fn merge_entity(base: &Flat, ours: &Flat, theirs: &Flat, conflicts: &mut Vec<Conflict>) -> Flat {
+fn merge_entity(
+    base: &Flat,
+    ours: &Flat,
+    theirs: &Flat,
+    conflicts: &mut Vec<Conflict>,
+    diff: bool,
+) -> Flat {
     let (b, o, t) = (&base.desc, &ours.desc, &theirs.desc);
     let mut m = Merger {
         conflicts: Vec::new(),
         entity: Some(o.id),
         name: &o.name,
+        diff,
     };
     let mut desc = o.clone();
     desc.name = m.pick("its name", &b.name, &o.name, &t.name);

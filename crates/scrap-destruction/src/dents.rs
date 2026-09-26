@@ -195,7 +195,7 @@ impl scrap_core::world::Dress for DentsDress {
                 let _ = world.insert_one(entity, Dented::new(dents, vertices, indices));
             }
             None => {
-                let _ = world.remove_one::<Dented>(entity);
+                scrap_core::world::take_off::<Dented>(world, entity);
             }
         }
     }

@@ -182,6 +182,8 @@ pub enum Change {
     Replace(usize, String),
     Remove(usize),
     Append(String),
+    /// Before the first item: an `id` goes first, where a reader looks.
+    Prepend(String),
 }
 
 /// Where the file's outermost `( … )` opens: a `.scrmat`, a screen, a
@@ -305,7 +307,8 @@ pub fn apply(text: &str, open: usize, changes: &[Change]) -> Option<String> {
                 while end < b.len() && matches!(b[end], b' ' | b'\t') {
                     end += 1;
                 }
-                if b.get(end) == Some(&b',') {
+                let had_comma = b.get(end) == Some(&b',');
+                if had_comma {
                     end += 1;
                 }
                 while end < b.len() && matches!(b[end], b' ' | b'\t') {
@@ -315,6 +318,17 @@ pub fn apply(text: &str, open: usize, changes: &[Change]) -> Option<String> {
                 if b.get(end) == Some(&b'\n') && indent_of(item.start).is_some() {
                     end += 1;
                     start = line_start(item.start);
+                } else if !had_comma {
+                    // The last item on its line: the comma before it goes
+                    // with it, `(a: 1, b: 2)` to `(a: 1)`.
+                    let mut back = item.start;
+                    while back > open + 1 && matches!(b[back - 1], b' ' | b'\t') {
+                        back -= 1;
+                    }
+                    if back > open + 1 && b[back - 1] == b',' {
+                        start = back - 1;
+                        end = item.end;
+                    }
                 }
                 edits.push((start..end, String::new()));
             }
@@ -347,6 +361,18 @@ pub fn apply(text: &str, open: usize, changes: &[Change]) -> Option<String> {
                     None => edits.push((close..close, new.clone())),
                 }
             }
+            Change::Prepend(new) => match found.items.first() {
+                // On the line after the bracket, above whatever comment is
+                // over the first item: that comment is the first item's.
+                Some(first) => match (indent_of(first.start), text[open + 1..first.start].find('\n')) {
+                    (Some(indent), Some(newline)) => {
+                        let at = open + 1 + newline + 1;
+                        edits.push((at..at, format!("{indent}{new},\n")));
+                    }
+                    _ => edits.push((first.start..first.start, format!("{new}, "))),
+                },
+                None => edits.push((found.close..found.close, new.clone())),
+            },
         }
     }
     edits.sort_by_key(|(span, _)| std::cmp::Reverse(span.start));
@@ -431,6 +457,8 @@ mod tests {
             added,
             "// Stone after rain.\n(parent: \"stone\", smoothness: 0.9, metallic: 0.5)\n"
         );
+        let last = set_field(&added, "metallic", None).unwrap();
+        assert_eq!(last, set);
         let gone = set_field(&added, "smoothness", None).unwrap();
         assert_eq!(
             gone,
@@ -469,6 +497,22 @@ mod tests {
             set_at(text, &["run", "height"], "1").is_none(),
             "no struct on the way"
         );
+    }
+
+    #[test]
+    fn an_item_put_first_takes_the_first_one_s_line_or_its_place() {
+        let text = "(\n    // the name\n    name: \"a\",\n)";
+        let open = outer_open(text).unwrap();
+        assert_eq!(
+            apply(text, open, &[Change::Prepend("id: \"7\"".into())]).unwrap(),
+            "(\n    id: \"7\",\n    // the name\n    name: \"a\",\n)"
+        );
+        let text = "(name: \"a\")";
+        assert_eq!(
+            apply(text, 0, &[Change::Prepend("id: \"7\"".into())]).unwrap(),
+            "(id: \"7\", name: \"a\")"
+        );
+        assert_eq!(apply("()", 0, &[Change::Prepend("id: \"7\"".into())]).unwrap(), "(id: \"7\")");
     }
 
     #[test]

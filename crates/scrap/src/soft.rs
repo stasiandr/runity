@@ -201,7 +201,9 @@ pub fn step(world: &mut World, seconds: f32) {
     // Where everything is before it moves: what went through what.
     let starts = frame_starts(world);
     let (solid, tags) = tagged_obstacles_but(world, |_| false);
-    let obstacles = Obstacles::tagged(solid.clone(), tags.clone());
+    // Kept for the second grid only when there are cloths to add to it.
+    let for_sheets = cloth.then(|| (solid.clone(), tags.clone()));
+    let obstacles = Obstacles::tagged(solid, tags);
     if cloth {
         run_cloth(world, seconds, &obstacles);
     }
@@ -209,24 +211,27 @@ pub fn step(world: &mut World, seconds: f32) {
         run_hair(world, seconds, &obstacles);
     }
     // The rest meet the cloths as they now are, within their own steps.
-    let with_sheets = if cloth {
-        let mut all = solid;
-        all.extend(sheet_obstacles(world));
-        Obstacles::tagged(all, tags)
-    } else {
-        obstacles.clone()
+    // Without cloths it is the same grid, lent rather than copied.
+    let sheets;
+    let with_sheets = match for_sheets {
+        Some((mut all, tags)) => {
+            all.extend(sheet_obstacles(world));
+            sheets = Obstacles::tagged(all, tags);
+            &sheets
+        }
+        None => &obstacles,
     };
     if ropes {
-        run_ropes(world, seconds, &with_sheets);
+        run_ropes(world, seconds, with_sheets);
     }
     if bodies {
-        run_soft_bodies(world, seconds, &with_sheets);
+        run_soft_bodies(world, seconds, with_sheets);
     }
     if fluids {
-        run_fluids(world, seconds, &with_sheets);
+        run_fluids(world, seconds, with_sheets);
     }
     if grains {
-        run_grains(world, seconds, &with_sheets);
+        run_grains(world, seconds, with_sheets);
     }
     // Then each kind against the others: one solver's contacts.
     run_contacts(world, &starts, &obstacles);
@@ -257,17 +262,20 @@ pub fn show(world: &mut World, _seconds: f32) {
         live.set(vertices, indices);
     }
     for (state, placed, live, copies) in
-        world.query_mut::<(&FluidState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
+        world.query_mut::<(&mut FluidState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
     {
         match (live, copies) {
             // Asleep, it looks as it did: nothing to make again.
             (_, Some(copies)) if state.asleep() && !copies.placed.is_empty() => {}
             (Some(live), None) if state.asleep() && !live.is_empty() => {}
             (_, Some(copies)) => copies.placed = state.drops(),
+            // Unmoved since its surface was last made (and that made is
+            // still what is shown): not made — nor uploaded — again.
             (Some(live), None) => {
-                let (vertices, indices) = state.surface(placed.0);
-                if !vertices.is_empty() {
-                    live.set(vertices, indices);
+                if let Some((vertices, indices)) = state.surface_if_moved(placed.0, live.is_empty()) {
+                    if !vertices.is_empty() {
+                        live.set(vertices, indices);
+                    }
                 }
             }
             _ => {}
@@ -327,15 +335,15 @@ impl Dress for SoftLookDress<'_> {
         }
         if let Some(fluid) = fluid {
             // Water is its surface or its drops, not the model it names.
-            let _ = world.remove_one::<crate::world::Model>(entity);
+            scrap_core::world::take_off::<crate::world::Model>(world, entity);
             let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
             if fluid.look == FluidLook::Drops {
-                let _ = world.remove_one::<LiveMesh>(entity);
+                scrap_core::world::take_off::<LiveMesh>(world, entity);
                 if let Some(mesh) = self.sphere {
                     let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
                 }
             } else {
-                let _ = world.remove_one::<Copies>(entity);
+                scrap_core::world::take_off::<Copies>(world, entity);
                 if world.get::<&LiveMesh>(entity).is_err() {
                     let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
                 }
@@ -344,7 +352,7 @@ impl Dress for SoftLookDress<'_> {
         }
         if body.is_some() {
             // The model itself is soft: drawn deformed, not as it is.
-            let _ = world.remove_one::<crate::world::Model>(entity);
+            scrap_core::world::take_off::<crate::world::Model>(world, entity);
         }
         if rope.is_none() && cloth.is_none() && hair.is_none() && body.is_none() {
             if world.remove_one::<RopeLook>(entity).is_ok() {
@@ -357,7 +365,7 @@ impl Dress for SoftLookDress<'_> {
         // the head are each their own colour.
         let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
         if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() && hair.is_none() && body.is_none() {
-            let _ = world.remove_one::<LiveMesh>(entity);
+            scrap_core::world::take_off::<LiveMesh>(world, entity);
             // The line's model is its link, drawn at each link and not
             // once at the entity.
             let own = world.remove_one::<crate::world::Model>(entity).ok().map(|m| m.0);
@@ -367,11 +375,11 @@ impl Dress for SoftLookDress<'_> {
                     let _ = world.insert_one(entity, Copies { mesh, placed });
                 }
                 None => {
-                    let _ = world.remove_one::<Copies>(entity);
+                    scrap_core::world::take_off::<Copies>(world, entity);
                 }
             }
         } else {
-            let _ = world.remove_one::<Copies>(entity);
+            scrap_core::world::take_off::<Copies>(world, entity);
             if world.get::<&LiveMesh>(entity).is_err() {
                 let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
             }

@@ -488,6 +488,9 @@ pub struct FrameStats {
     pub shadow_casters: u32,
     /// Triangles the colour pass draws, at the levels of detail picked.
     pub triangles: u64,
+    /// The sun's shadow cascades drawn this frame: fewer than the frame
+    /// has when the far ones are drawn in turn.
+    pub cascades_drawn: u32,
     /// Batches of the colour pass: draws that share mesh, look (and,
     /// without bindless, maps) go in one.
     pub batches: u32,
@@ -791,6 +794,91 @@ pub struct Frame {
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
     pub poses: Vec<Pose>,
+}
+
+impl Frame {
+    /// A copy to draw from, without what the renderer has already taken
+    /// out of it: the live meshes (whose vertices, a head of hair or a
+    /// sheet of water, are the largest thing in a frame) and the cameras'
+    /// frames (drawn into their textures before this one). Every field is
+    /// named, so a new one is a compile error here rather than a copy that
+    /// quietly leaves it out. `clone` on every field, `Copy` or not, so a
+    /// field that stops being `Copy` does not break it.
+    #[allow(clippy::clone_on_copy)]
+    fn shallow(&self) -> Frame {
+        let Frame {
+            camera,
+            lighting,
+            fog,
+            shadows,
+            sky,
+            clear_color,
+            post,
+            ambient_occlusion,
+            ray_tracing,
+            draws,
+            overlay_draws,
+            outline_draws,
+            outline_width,
+            lights,
+            flares,
+            ui_pictures,
+            reflection_probes,
+            irradiance_volumes,
+            decals,
+            volumetric_fog,
+            puffs,
+            smoke,
+            distance_field,
+            gpu_particles,
+            plumes,
+            terrain,
+            wind,
+            benders,
+            time,
+            weather,
+            screen_space_reflections,
+            poses,
+            live_meshes: _,
+            texture_views: _,
+        } = self;
+        Frame {
+            camera: camera.clone(),
+            lighting: lighting.clone(),
+            fog: fog.clone(),
+            shadows: shadows.clone(),
+            sky: sky.clone(),
+            clear_color: clear_color.clone(),
+            post: post.clone(),
+            ambient_occlusion: ambient_occlusion.clone(),
+            ray_tracing: ray_tracing.clone(),
+            draws: draws.clone(),
+            overlay_draws: overlay_draws.clone(),
+            outline_draws: outline_draws.clone(),
+            outline_width: outline_width.clone(),
+            lights: lights.clone(),
+            flares: flares.clone(),
+            ui_pictures: ui_pictures.clone(),
+            reflection_probes: reflection_probes.clone(),
+            irradiance_volumes: irradiance_volumes.clone(),
+            decals: decals.clone(),
+            volumetric_fog: volumetric_fog.clone(),
+            puffs: puffs.clone(),
+            smoke: smoke.clone(),
+            distance_field: distance_field.clone(),
+            gpu_particles: gpu_particles.clone(),
+            plumes: plumes.clone(),
+            terrain: terrain.clone(),
+            wind: wind.clone(),
+            benders: benders.clone(),
+            time: time.clone(),
+            weather: weather.clone(),
+            screen_space_reflections: screen_space_reflections.clone(),
+            poses: poses.clone(),
+            live_meshes: Vec::new(),
+            texture_views: Vec::new(),
+        }
+    }
 }
 
 impl Default for Frame {
@@ -1254,7 +1342,7 @@ pub struct Renderer {
     material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
     /// What each of those reads through `texture_at`, by its
     /// `// scrap:textures` line: the names of its slots.
-    shader_textures: std::collections::HashMap<crate::asset::AssetId, Vec<String>>,
+    shader_textures: scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -1364,7 +1452,18 @@ pub struct Renderer {
     free_meshes: Vec<u32>,
     /// Texture assets' resident levels and what the frames need
     /// ([`crate::streaming_textures`]).
-    streams: std::collections::HashMap<TextureHandle, crate::streaming_textures::TextureStream>,
+    streams: scrap_core::hash::FastMap<TextureHandle, crate::streaming_textures::TextureStream>,
+    /// The last view's batch lists, by which list and which batch: their
+    /// instance buffers taken up again — cleared, not freed — rather than
+    /// grown from nothing by doubling every frame (a batch of thousands is
+    /// megabytes copied over and over). Only the batches the last view
+    /// had are kept.
+    batch_pool: BatchPool,
+    /// The physical sky's light for a sun of strength one, and the air,
+    /// height and sun it was found for.
+    sky_light: Option<(crate::atmosphere::Atmosphere, f32, Vec3, (Vec3, Vec3))>,
+    /// Every instance of a view, one after another, as uploaded: kept.
+    flat: Vec<InstanceRaw>,
     /// Live meshes by their key: the mesh each is drawn with, and the
     /// version last uploaded.
     live: std::collections::HashMap<u64, (MeshHandle, u64)>,
@@ -1373,13 +1472,13 @@ pub struct Renderer {
     textures: Vec<GpuTexture>,
     /// Which handle each texture asset was uploaded as, so a material's
     /// maps — asset ids — find theirs.
-    by_asset: std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
+    by_asset: scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
     /// Each mesh's own look, from its file's materials: drawn with when
     /// the material has no base map and the entity no texture of its own.
-    looks: std::collections::HashMap<MeshHandle, TextureHandle>,
+    looks: scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
     /// A bind group per set of four maps in use, made before the frame's
     /// passes and kept.
-    map_groups: std::collections::HashMap<Maps, wgpu::BindGroup>,
+    map_groups: scrap_core::hash::FastMap<Maps, wgpu::BindGroup>,
     /// Every texture in one array the shader indexes, where the device can
     /// ([`crate::bindless`]).
     bindless: Option<crate::bindless::Bindless>,
@@ -1421,13 +1520,44 @@ pub struct Renderer {
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
-    lods: std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
+    lods: scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
     lod_meshes: Vec<GpuMesh>,
     /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
     timer: Option<crate::gpu_timer::GpuTimer>,
+    /// The Frame Debugger's recording and picture ([`crate::frame_debugger`]).
+    debugger: crate::frame_debugger::Debugger,
+    /// The lit pipelines built lean, for frames that may be drawn so
+    /// ([`crate::lean`]), and the shader modules they are built from: the
+    /// standard one's (`None`) and each material shader's.
+    lean: crate::lean::Lean<LeanKey>,
+    /// Far clusters left out of the prepass (`SCRAP_FAR_PREPASS=1` keeps
+    /// them), and whether this frame's were: then the lit pass's depth is
+    /// the whole one, and what comes after it reads that.
+    far_off_prepass: bool,
+    split_prepass: bool,
+    /// The error a clustered mesh is drawn with, in pixels
+    /// ([`crate::cluster_lod`]).
+    cluster_error: f32,
+    /// The screen's shadow cascades as last drawn, and whose turn it is of
+    /// the far ones; off by `SCRAP_SHADOW_STAGGER=0`.
+    cascade_cache: Option<CascadeCache>,
+    shadow_turn: bool,
+    shadow_stagger: bool,
+    /// Unlit see-through things at half size ([`crate::lowres`]).
+    lowres: crate::lowres::LowRes,
+    /// Whether the last screen frame used it.
+    lowres_drawn: bool,
+    lean_modules: std::collections::HashMap<Option<crate::asset::AssetId>, wgpu::ShaderModule>,
+    /// Meshes' and textures' names from their assets, for the debugger to
+    /// call a draw by.
+    mesh_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
+    texture_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
     timing: bool,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
+    /// What Unity's procedural sky was last baked into the sky-view table
+    /// for: the way to the sun and the sky's numbers.
+    unity_sky_baked: Option<[f32; 11]>,
     /// One texel of depth, bound in place of the prepass's while it draws.
     blank_depth: wgpu::TextureView,
     /// The clouds' picture.
@@ -1435,6 +1565,11 @@ pub struct Renderer {
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
+    /// The two frame groups again with the occlusion culling's kept
+    /// instances for `instance_data` (binding 33): what it draws numbers
+    /// its instances in that list, not in the frame's. With the buffer
+    /// they were made for, to make them again when it is.
+    kept_groups: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup),
 }
 
 /// Where the scene is drawn before post-processing turns it into a picture.
@@ -1602,7 +1737,9 @@ impl MaterialShaders {
         let Ok(entries) = scrap_core::files::read_dir(&self.dir) else {
             return Vec::new();
         };
+        // What is new or changed, read; then built all together.
         let mut out = Vec::new();
+        let mut read = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "wgsl") {
@@ -1617,13 +1754,16 @@ impl MaterialShaders {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let result = scrap_core::files::read_to_string(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|source| {
-                    renderer.set_material_shader(gpu, crate::asset::shader_id(&name), &source)
-                })
-                .map_err(|e| format!("{}:\n{e}", path.display()));
-            out.push((name, result));
+            match scrap_core::files::read_to_string(&path) {
+                Ok(source) => read.push((name, path, source)),
+                Err(e) => out.push((name, Err(format!("{}:\n{e}", path.display())))),
+            }
+        }
+        let shaders: Vec<(crate::asset::AssetId, String)> =
+            read.iter().map(|(name, _, source)| (crate::asset::shader_id(name), source.clone())).collect();
+        let built = renderer.set_material_shaders(gpu, &shaders);
+        for ((name, path, _), result) in read.into_iter().zip(built) {
+            out.push((name, result.map_err(|e| format!("{}:\n{e}", path.display()))));
         }
         out
     }
@@ -1692,6 +1832,21 @@ struct Look {
 }
 
 impl Look {
+    /// What its scene pipeline is built from.
+    fn describe(self, prepassed: bool, samples: u32) -> crate::lean::Describe {
+        crate::lean::Describe {
+            skinned: self.skinned,
+            terrain: self.terrain,
+            water: self.water,
+            unlit: self.unlit,
+            prepassed,
+            on_top: self.on_top,
+            face: self.face,
+            blend: self.blend.map(blend_state),
+            samples,
+        }
+    }
+
     fn all() -> Vec<Look> {
         let mut out = Vec::new();
         for skinned in [false, true] {
@@ -1857,7 +2012,7 @@ fn white_buffer(gpu: &Gpu, count: u64) -> wgpu::Buffer {
     })
 }
 
-fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
+pub(crate) fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
     let mut out = vec![
         Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
@@ -1942,96 +2097,130 @@ fn scene_pipelines(
 ) -> (
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    Option<wgpu::Error>,
 ) {
-    let format = crate::post::HDR_FORMAT;
-    let multisample = wgpu::MultisampleState {
-        count: samples,
-        ..Default::default()
-    };
     let scene_pipeline = |look: Look, prepassed: bool| {
-        let buffers = vertex_buffers(look.skinned);
-        gpu.device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(if look.skinned {
-                    "scrap::skinned"
-                } else {
-                    "scrap::render"
-                }),
-                layout: Some(if look.skinned {
-                    layouts.skinned
-                } else {
-                    layouts.main
-                }),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some(if look.terrain {
-                        "vs_terrain"
-                    } else if look.skinned {
-                        "vs_skinned"
-                    } else {
-                        "vs"
-                    }),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some(if look.water {
-                        "fs_water"
-                    } else if look.unlit {
-                        "fs_unlit"
-                    } else if prepassed {
-                        "fs_prepassed"
-                    } else {
-                        "fs"
-                    }),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: look.blend.map(blend_state),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    // Back faces are dropped unless a material asks for
-                    // them, which is why the importer cares about winding:
-                    // a model wound inside out disappears.
-                    cull_mode: match look.face {
-                        RenderFace::Front => Some(wgpu::Face::Back),
-                        RenderFace::Back => Some(wgpu::Face::Front),
-                        RenderFace::Both | RenderFace::BothAsFront => None,
-                    },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    // What is see-through does not hide what is drawn
-                    // after it; it is tested against the solid world only.
-                    depth_write_enabled: Some(look.blend.is_none()),
-                    // Equal passes: the prepass's own depth may be there
-                    // already.
-                    depth_compare: Some(if look.on_top {
-                        wgpu::CompareFunction::Always
-                    } else if prepassed {
-                        wgpu::CompareFunction::Equal
-                    } else {
-                        wgpu::CompareFunction::LessEqual
-                    }),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample,
-                multiview_mask: None,
-                cache: None,
-            })
+        crate::lean::scene_pipeline(
+            &gpu.device,
+            shader,
+            if look.skinned { layouts.skinned } else { layouts.main },
+            look.describe(prepassed, samples),
+            false,
+        )
     };
-    let scene = looks.iter().map(|&look| (look, scene_pipeline(look, false))).collect();
-    let prepassed = looks
-        .iter()
-        .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
-        .map(|&look| (look, scene_pipeline(look, true)))
+    // Each pipeline is the driver compiling the whole shader once more:
+    // dozens of them, the most of a renderer's start. They do not depend
+    // on each other and the device takes them from any thread, so they are
+    // compiled across the cores (one after another on the web).
+    let mut wanted: Vec<(Look, bool)> = looks.iter().map(|&look| (look, false)).collect();
+    wanted.extend(
+        looks
+            .iter()
+            .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
+            .map(|&look| (look, true)),
+    );
+    let (built, error) = compiled(gpu, &wanted, |&(look, prepassed)| scene_pipeline(look, prepassed));
+    let (mut scene, mut prepassed) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+    for ((look, pre), pipeline) in wanted.into_iter().zip(built) {
+        if pre {
+            prepassed.insert(look, pipeline);
+        } else {
+            scene.insert(look, pipeline);
+        }
+    }
+    (scene, prepassed, error)
+}
+
+/// What a material shader is built on: the standard shader and how the
+/// renderer's pipelines are laid out.
+struct MaterialBase<'a> {
+    shader: &'a str,
+    traced: bool,
+    bindless: bool,
+    samples: u32,
+    layouts: &'a Layouts<'a>,
+}
+
+/// A material shader's module and its pipelines: the standard shader with
+/// `surface` put in, checked, and built for every lit look.
+#[allow(clippy::type_complexity)]
+fn material_pipelines(
+    gpu: &Gpu,
+    base: &MaterialBase,
+    id: crate::asset::AssetId,
+    surface: &str,
+) -> Result<
+    (
+        wgpu::ShaderModule,
+        std::collections::HashMap<Look, wgpu::RenderPipeline>,
+        std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    ),
+    String,
+> {
+    let composed = with_surface(base.shader, surface)?;
+    let source = crate::bindless::prepared(
+        &if base.traced {
+            crate::ray::traced(&composed)
+        } else {
+            composed
+        },
+        base.bindless,
+    );
+    use wgpu::naga;
+    let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&source))?;
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("scrap::material shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        return Err(format!("the shader does not fit the renderer: {error}"));
+    }
+    // Not the `fs_unlit` looks: each is another pipeline to compile for
+    // every material shader, for the few see-through unlit ones.
+    let looks: Vec<Look> = Look::all()
+        .into_iter()
+        .filter(|look| !look.unlit)
+        .map(|look| Look { shader: Some(id), ..look })
         .collect();
-    (scene, prepassed)
+    let (scene, prepassed, error) = scene_pipelines(gpu, &shader, base.samples, base.layouts, looks);
+    if let Some(error) = error {
+        return Err(format!("the shader does not fit the renderer: {error}"));
+    }
+    Ok((shader, scene, prepassed))
+}
+
+/// `make` over `items` on the workers, each under an error scope of its
+/// own — wgpu's scopes are the thread's, so one the caller pushed would not
+/// see what went wrong on another — and the first error back with the
+/// results, for the caller to report as its own scope would have.
+fn compiled<T: Sync, R: Send>(
+    gpu: &Gpu,
+    items: &[T],
+    make: impl Fn(&T) -> R + Sync,
+) -> (Vec<R>, Option<wgpu::Error>) {
+    let made = scrap_core::jobs::map(items, 1, |item| scoped(gpu, || make(item)));
+    let mut first = None;
+    let out = made
+        .into_iter()
+        .map(|(result, error)| {
+            if first.is_none() {
+                first = error;
+            }
+            result
+        })
+        .collect();
+    (out, first)
+}
+
+/// `make` under a validation error scope of its own, on this thread.
+fn scoped<R>(gpu: &Gpu, make: impl FnOnce() -> R) -> (R, Option<wgpu::Error>) {
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let result = make();
+    (result, pollster::block_on(scope.pop()))
 }
 
 /// Every pipeline the renderer draws with, from one shader module: at
@@ -2173,13 +2362,13 @@ fn build_pipelines(
     output: wgpu::TextureFormat,
     samples: u32,
     layouts: &Layouts,
-) -> Pipelines {
+) -> (Pipelines, Option<wgpu::Error>) {
     let format = crate::post::HDR_FORMAT;
     let multisample = wgpu::MultisampleState {
         count: samples,
         ..Default::default()
     };
-    let (scene, prepassed) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
+    let (scene, prepassed, error) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
     let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
@@ -2478,7 +2667,7 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    Pipelines {
+    let pipelines = Pipelines {
         scene,
         prepassed,
         shadow,
@@ -2494,7 +2683,8 @@ fn build_pipelines(
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
         fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
         terrain_mesh: terrain_mesh_pipelines(gpu, source, samples, layouts),
-    }
+    };
+    (pipelines, error)
 }
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -2548,7 +2738,7 @@ impl Renderer {
                 label: Some("scrap::render (reloaded)"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-        let pipelines = build_pipelines(
+        let (pipelines, built_error) = build_pipelines(
             gpu,
             &shader,
             source,
@@ -2568,10 +2758,12 @@ impl Renderer {
         let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
         let ddgi_pipelines = self.ddgi.make_pipelines(gpu, &shader, self.ray.is_some());
         let restir_pipelines = self.restir.make_pipelines(gpu, &shader, self.ray.is_some());
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = built_error.or(pollster::block_on(scope.pop())) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
+        self.lean_modules.insert(None, shader.clone());
+        self.lean.forget();
         self.clusters.pipelines = cluster_pipelines;
         (self.ddgi.trace, self.ddgi.update) = ddgi_pipelines;
         (self.restir.initial, self.restir.spatial) = restir_pipelines;
@@ -2583,10 +2775,8 @@ impl Renderer {
             .iter()
             .map(|(id, s)| (*id, s.clone()))
             .collect();
-        for (id, surface) in own {
-            if let Err(e) = self.set_material_shader(gpu, id, &surface) {
-                eprintln!("a material's shader no longer builds on the reloaded one: {e}");
-            }
+        for e in self.set_material_shaders(gpu, &own).into_iter().filter_map(Result::err) {
+            eprintln!("a material's shader no longer builds on the reloaded one: {e}");
         }
         Ok(())
     }
@@ -2633,6 +2823,7 @@ impl Renderer {
         };
         self.other_samples = Some(kept);
         self.depth_size = (0, 0);
+        self.lean.forget();
     }
 
     /// The pipeline for a look: a material's own shader's, or the standard
@@ -2640,22 +2831,70 @@ impl Renderer {
     /// Over the prepass's depth ([`Renderer::depth_prepassed`]), a solid
     /// look takes its equal-depth pipeline.
     fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
-        let map = if self.depth_prepassed && look.blend.is_none() && !self.cuts(look) {
-            &self.pipelines.prepassed
-        } else {
-            &self.pipelines.scene
+        let (key, prepassed) = self.scene_key(look)?;
+        if self.lean.on {
+            if let Some(lean) = self.lean.ready.get(&LeanKey::Scene(key, prepassed)) {
+                return Some(lean);
+            }
+        }
+        let map = if prepassed { &self.pipelines.prepassed } else { &self.pipelines.scene };
+        map.get(&key)
+    }
+
+    /// Which pipeline draws a look: the look it is filed under (a
+    /// material's own shader has no `fs_unlit` looks — its shade()
+    /// returns early for unlit anyway — so its standard one, then the
+    /// standard shader's), and whether over the prepass's depth.
+    fn scene_key(&self, look: Look) -> Option<(Look, bool)> {
+        let prepassed = self.depth_prepassed && look.blend.is_none() && !self.cuts(look);
+        let map = if prepassed { &self.pipelines.prepassed } else { &self.pipelines.scene };
+        [look, Look { unlit: false, ..look }, Look { shader: None, ..look }]
+            .into_iter()
+            .find(|l| map.contains_key(l))
+            .map(|l| (l, prepassed))
+    }
+
+    /// Ask for the lean pipelines of the looks this frame draws, both over
+    /// the prepass's depth and not, where they would be drawn so.
+    fn ask_lean(&mut self, gpu: &Gpu, looks: impl Iterator<Item = Look>) {
+        let was = self.depth_prepassed;
+        let mut wanted = Vec::new();
+        for look in looks {
+            for prepassed in [false, true] {
+                self.depth_prepassed = prepassed;
+                if let Some(key) = self.scene_key(look) {
+                    if !self.lean.asked(&LeanKey::Scene(key.0, key.1)) && !wanted.contains(&key) {
+                        wanted.push(key);
+                    }
+                }
+            }
+        }
+        self.depth_prepassed = was;
+        for (look, prepassed) in wanted {
+            let Some(module) = self.lean_modules.get(&look.shader).cloned() else {
+                continue;
+            };
+            let layout = if look.skinned { self.skinned_layout.clone() } else { self.pipeline_layout.clone() };
+            let describe = look.describe(prepassed, self.samples);
+            let build: crate::lean::Build = Box::new(move |device: &wgpu::Device| {
+                crate::lean::scene_pipeline(device, &module, &layout, describe, true)
+            });
+            self.lean.ask(&gpu.device, LeanKey::Scene(look, prepassed), build);
+        }
+    }
+
+    /// Ask for the lean pipelines drawing culled clusters of these faces.
+    fn ask_lean_clusters(&mut self, gpu: &Gpu, wanted: impl Iterator<Item = (RenderFace, bool)>) {
+        let Some(module) = self.lean_modules.get(&None).cloned() else {
+            return;
         };
-        // A material's own shader has no `fs_unlit` looks (their shade()
-        // returns early for unlit anyway): its standard one, then the
-        // standard shader's.
-        map.get(&look)
-            .or_else(|| map.get(&Look { unlit: false, ..look }))
-            .or_else(|| {
-                map.get(&Look {
-                    shader: None,
-                    ..look
-                })
-            })
+        for (face, water) in wanted {
+            let key = LeanKey::Cluster(face, water);
+            if !self.lean.asked(&key) {
+                let build = self.clusters.lean_build(&module, face, water, self.samples);
+                self.lean.ask(&gpu.device, key, build);
+            }
+        }
     }
 
     /// Whether a look's own shader cuts its surface out (`discard`): the
@@ -2678,66 +2917,50 @@ impl Renderer {
         id: crate::asset::AssetId,
         surface: &str,
     ) -> Result<(), String> {
+        self.set_material_shaders(gpu, &[(id, surface.to_string())]).remove(0)
+    }
+
+    /// [`Renderer::set_material_shader`] for several at once, built side
+    /// by side on every core: a game's shaders at its start. Each one's
+    /// result, in their order.
+    pub fn set_material_shaders(
+        &mut self,
+        gpu: &Gpu,
+        shaders: &[(crate::asset::AssetId, String)],
+    ) -> Vec<Result<(), String>> {
         self.other_samples = None;
-        let composed = with_surface(&self.base_shader, surface)?;
-        let source = crate::bindless::prepared(
-            &if self.ray.is_some() {
-                crate::ray::traced(&composed)
-            } else {
-                composed
-            },
-            self.bindless.is_some(),
-        );
-        use wgpu::naga;
-        let module =
-            naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(&source))?;
-        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("scrap::material shader"),
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            });
-        // Not the `fs_unlit` looks: each is another pipeline to compile
-        // for every material shader, for the few see-through unlit ones.
-        let looks: Vec<Look> = Look::all()
-            .into_iter()
-            .filter(|look| !look.unlit)
-            .map(|look| Look {
-                shader: Some(id),
-                ..look
-            })
-            .collect();
-        let built = scene_pipelines(
-            gpu,
-            &shader,
-            self.samples,
-            &Layouts {
-                main: &self.pipeline_layout,
-                shadow: &self.shadow_pipeline_layout,
-                shadow_clip: &self.shadow_clip_layout,
-                skinned: &self.skinned_layout,
-                sky: &self.sky_layout,
-                fog_inject: &self.fog_inject_layout,
-                fog_integrate: &self.fog_integrate_layout,
-                terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
-            },
-            looks,
-        );
-        if let Some(error) = pollster::block_on(scope.pop()) {
-            return Err(format!("the shader does not fit the renderer: {error}"));
+        let layouts = Layouts {
+            main: &self.pipeline_layout,
+            shadow: &self.shadow_pipeline_layout,
+            shadow_clip: &self.shadow_clip_layout,
+            skinned: &self.skinned_layout,
+            sky: &self.sky_layout,
+            fog_inject: &self.fog_inject_layout,
+            fog_integrate: &self.fog_integrate_layout,
+            terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
+        };
+        let base = MaterialBase {
+            shader: &self.base_shader,
+            traced: self.ray.is_some(),
+            bindless: self.bindless.is_some(),
+            samples: self.samples,
+            layouts: &layouts,
+        };
+        let built = scrap_core::jobs::map(shaders, 1, |(id, surface)| material_pipelines(gpu, &base, *id, surface));
+        let mut out = Vec::with_capacity(shaders.len());
+        for ((id, surface), built) in shaders.iter().zip(built) {
+            out.push(built.map(|(shader, scene, prepassed)| {
+                self.pipelines.scene.extend(scene);
+                self.pipelines.prepassed.extend(prepassed);
+                self.lean_modules.insert(Some(*id), shader);
+                self.material_shaders.insert(*id, surface.clone());
+                self.shader_textures.insert(*id, declared_textures(surface));
+            }));
         }
-        self.pipelines.scene.extend(built.0);
-        self.pipelines.prepassed.extend(built.1);
-        self.material_shaders.insert(id, surface.to_string());
-        self.shader_textures.insert(id, declared_textures(surface));
-        Ok(())
+        if out.iter().any(|r| r.is_ok()) {
+            self.lean.forget();
+        }
+        out
     }
 
     /// Build a renderer for a window's surface.
@@ -2948,6 +3171,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // The frame's instances, read by the fragment stage (`expand`).
+            wgpu::BindGroupLayoutEntry {
+                binding: 33,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
             // The scene's distance field, for occlusion and soft shadows.
             wgpu::BindGroupLayoutEntry {
                 binding: 31,
@@ -3145,6 +3379,13 @@ impl Renderer {
         });
         let trample_view = trample_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let distance = crate::distance::DistanceTexture::new(gpu);
+        let instance_capacity = 256;
+        let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instances"),
+            size: instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let bind_group = frame_bind_group(
             gpu,
             &layout,
@@ -3155,6 +3396,7 @@ impl Renderer {
                 terrain_heights: &terrain_heights,
                 trample: &trample_view,
                 distance: &distance.view,
+                instances: &instances,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
                 history: clouds.view(),
@@ -3412,7 +3654,7 @@ impl Renderer {
             },
             bindless_on,
         );
-        let pipelines = build_pipelines(
+        let (pipelines, built_error) = build_pipelines(
             gpu,
             &shader,
             &shader_source,
@@ -3430,24 +3672,35 @@ impl Renderer {
             },
         );
 
-        let instance_capacity = 256;
-        let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instances"),
-            size: instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
 
         let white_capacity = 4096;
         let white_colors = white_buffer(gpu, white_capacity);
 
         let vsm = crate::vsm::VirtualShadows::new(gpu, &shadow_layout, caster_stride, DEPTH_FORMAT, shadow_resolution, vsm_table);
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
-        clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
-        (ddgi.trace, ddgi.update) = ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing);
-        (restir.initial, restir.spatial) = restir.make_pipelines(gpu, &shader, gpu.ray_tracing);
+        // Each of these compiles the renderer's shader again: side by side,
+        // each under its own error scope (see `compiled`).
+        let ((made_clusters, e1), ((made_ddgi, e2), (made_restir, e3))) = scrap_core::jobs::join(
+            || scoped(gpu, || clusters.make_pipelines(gpu, &shader, samples)),
+            || {
+                scrap_core::jobs::join(
+                    || scoped(gpu, || ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing)),
+                    || scoped(gpu, || restir.make_pipelines(gpu, &shader, gpu.ray_tracing)),
+                )
+            },
+        );
+        // The renderer's own shader not building for its own pipelines is
+        // a bug in the engine, not in a game: said as loudly as wgpu says
+        // an error nobody scoped.
+        if let Some(error) = built_error.or(e1).or(e2).or(e3) {
+            panic!("the renderer's own pipelines do not build: {error}");
+        }
+        clusters.pipelines = made_clusters;
+        (ddgi.trace, ddgi.update) = made_ddgi;
+        (restir.initial, restir.spatial) = made_restir;
 
         let fog_bind_group = bind_group.clone();
+        let kept_groups = (instances.clone(), bind_group.clone(), bind_group.clone());
         let mut renderer = Self {
             pipelines,
             clusters,
@@ -3457,7 +3710,7 @@ impl Renderer {
             graph: crate::graph::FrameGraph::new(),
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
-            shader_textures: std::collections::HashMap::new(),
+            shader_textures: scrap_core::hash::FastMap::default(),
             layout,
             bind_group,
             shadow_bind_group,
@@ -3514,13 +3767,16 @@ impl Renderer {
             stats: FrameStats::default(),
             meshes: Vec::new(),
             free_meshes: Vec::new(),
-            streams: std::collections::HashMap::new(),
+            streams: scrap_core::hash::FastMap::default(),
+            batch_pool: BatchPool::default(),
+            sky_light: None,
+            flat: Vec::new(),
             live: std::collections::HashMap::new(),
             targets: std::collections::HashMap::new(),
             textures: Vec::new(),
-            by_asset: std::collections::HashMap::new(),
-            looks: std::collections::HashMap::new(),
-            map_groups: std::collections::HashMap::new(),
+            by_asset: scrap_core::hash::FastMap::default(),
+            looks: scrap_core::hash::FastMap::default(),
+            map_groups: scrap_core::hash::FastMap::default(),
             bindless: bindless_on.then(crate::bindless::Bindless::new),
             texture_layout,
             texture_sampler,
@@ -3536,6 +3792,7 @@ impl Renderer {
             fog_integrate_layout,
             volumes,
             fog_bind_group,
+            kept_groups,
             started: web_time::Instant::now(),
             bolt: None,
             occlusion: crate::occlusion::Occlusion::new(gpu),
@@ -3545,11 +3802,25 @@ impl Renderer {
                 DEPTH_FORMAT,
                 samples,
             ),
-            lods: std::collections::HashMap::new(),
+            lods: scrap_core::hash::FastMap::default(),
             lod_meshes: Vec::new(),
             timer: None,
+            debugger: Default::default(),
+            lean: Default::default(),
+            lowres: crate::lowres::LowRes::new(gpu),
+            lowres_drawn: false,
+            cascade_cache: None,
+            cluster_error: 1.0,
+            far_off_prepass: std::env::var("SCRAP_FAR_PREPASS").map_or(true, |v| v != "1"),
+            split_prepass: false,
+            shadow_turn: false,
+            shadow_stagger: std::env::var("SCRAP_SHADOW_STAGGER").map_or(true, |v| v != "0"),
+            lean_modules: [(None, shader.clone())].into_iter().collect(),
+            mesh_names: Default::default(),
+            texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
             atmosphere,
+            unity_sky_baked: None,
             clouds,
             terrain_heights,
             trample: crate::foliage::TrampleMap::default(),
@@ -3588,13 +3859,22 @@ impl Renderer {
     /// While probes are being baked their pictures are left out of it:
     /// they are being drawn.
     fn rebind(&mut self, gpu: &Gpu) {
-        self.bind_group = self.frame_group(gpu, false);
-        self.fog_bind_group = self.frame_group(gpu, true);
+        self.bind_group = self.frame_group(gpu, false, &self.instances);
+        self.fog_bind_group = self.frame_group(gpu, true, &self.instances);
+        self.rebind_kept(gpu);
+    }
+
+    /// [`Renderer::kept_groups`] made again, on the kept buffer as it is.
+    fn rebind_kept(&mut self, gpu: &Gpu) {
+        let kept = self.occlusion.kept.buffer.clone();
+        let group = self.frame_group(gpu, false, &kept);
+        let fog = self.frame_group(gpu, true, &kept);
+        self.kept_groups = (kept, group, fog);
     }
 
     /// The frame's bind group; with `making_fog`, the fog's grid and the
     /// prepass's depth left out, for the passes that fill them.
-    fn frame_group(&self, gpu: &Gpu, making_fog: bool) -> wgpu::BindGroup {
+    fn frame_group(&self, gpu: &Gpu, making_fog: bool, instances: &wgpu::Buffer) -> wgpu::BindGroup {
         let baking = self.reflections.baking;
         frame_bind_group(
             gpu,
@@ -3606,6 +3886,7 @@ impl Renderer {
                 terrain_heights: &self.terrain_heights,
                 trample: &self.trample_view,
                 distance: &self.distance.view,
+                instances,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
@@ -3654,6 +3935,7 @@ impl Renderer {
     pub fn upload_mesh(&mut self, gpu: &Gpu, mesh: &ArchivedMeshAsset) -> MeshHandle {
         let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
         let handle = self.upload(gpu, vertex_slice(mesh), mesh.colors.as_slice(), &indices);
+        self.mesh_names.insert(handle.0, mesh.name.as_str().into());
         if let Some(skin) = mesh.skin.as_ref() {
             let bindings: Vec<SkinVertex> = skin
                 .joints
@@ -3762,6 +4044,19 @@ impl Renderer {
         self.free_meshes.push(handle.0);
     }
 
+    /// A mesh's triangles as uploaded (its finest level), and its bounds'
+    /// size: what a profile names a heavy draw by.
+    pub fn mesh_size(&self, mesh: MeshHandle) -> Option<(u32, Vec3)> {
+        let m = self.meshes.get(mesh.0 as usize)?;
+        Some((m.index_count / 3, Vec3::from(m.bounds.max) - Vec3::from(m.bounds.min)))
+    }
+
+    /// A mesh's vertices as uploaded.
+    pub fn mesh_vertices(&self, mesh: MeshHandle) -> Option<u32> {
+        let m = self.meshes.get(mesh.0 as usize)?;
+        Some((m.vertices.size() / std::mem::size_of::<crate::asset::Vertex>() as u64) as u32)
+    }
+
     /// Meshes uploaded and not released.
     pub fn mesh_count(&self) -> usize {
         self.meshes.len() - self.free_meshes.len()
@@ -3839,6 +4134,9 @@ impl Renderer {
         if clustered.is_some() {
             usage |= wgpu::BufferUsages::STORAGE;
         }
+        // The mesh itself is the first part of a clustered one's indices;
+        // its coarser levels come after, for its clusters alone.
+        let own = indices.len();
         let indices = clustered.as_ref().map_or(indices, |(sorted, _)| sorted.as_slice());
         let vertex_buffer = gpu
             .device
@@ -3860,7 +4158,7 @@ impl Renderer {
                 &vertex_buffer,
                 vertices.len() as u32,
                 &index_buffer,
-                indices.len() as u32,
+                own as u32,
                 live,
             )
         });
@@ -3869,7 +4167,7 @@ impl Renderer {
             colors,
             skin: None,
             indices: index_buffer,
-            index_count: indices.len() as u32,
+            index_count: own as u32,
             bounds,
             blas,
             clusters: clustered.map(|(_, c)| crate::cluster::MeshClusters::new(gpu, &c)),
@@ -3907,6 +4205,7 @@ impl Renderer {
         let id = crate::asset::AssetId::from(&texture.id);
         let handle = self.upload_texture_levels(gpu, &levels, texture.srgb);
         self.by_asset.insert(id, handle);
+        self.texture_names.insert(handle.0, texture.name.as_str().into());
         self.streams.insert(
             handle,
             crate::streaming_textures::TextureStream::new(id, &levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>()),
@@ -4153,7 +4452,11 @@ impl Renderer {
     /// entry point: an import is a decision, and making it as easy to skip
     /// as to do is how a codebase ends up parsing OBJ at startup again.
     pub fn upload_mesh_owned(&mut self, gpu: &Gpu, mesh: &crate::asset::MeshAsset) -> MeshHandle {
-        self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices)
+        let handle = self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices);
+        if !mesh.name.is_empty() {
+            self.mesh_names.insert(handle.0, mesh.name.as_str().into());
+        }
+        handle
     }
 
     /// Issue the grouped draws. Shared by both passes so that what casts a
@@ -4196,21 +4499,33 @@ impl Renderer {
                 let pipeline = if prepass {
                     pipelines.prepass.get(&look.face)
                 } else {
-                    pipelines.scene.get(&(look.face, look.water))
+                    self.lean
+                        .ready
+                        .get(&LeanKey::Cluster(look.face, look.water))
+                        .filter(|_| self.lean.on)
+                        .or_else(|| pipelines.scene.get(&(look.face, look.water)))
                 };
                 if let (Some(pipeline), true) = (pipeline, self.clusters.this_frame.contains_key(&k)) {
+                    if !crate::frame_debugger::draw(|| self.describe(*handle, Some(look), texture, count, true, prepass, textured)) {
+                        first += count;
+                        continue;
+                    }
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
                     if textured {
                         self.bind_maps(pass, *texture);
                     }
-                    self.clusters.draw(pass, k);
+                    self.clusters.draw(pass, k, prepass);
                     current = None;
                     first += count;
                     continue;
                 }
             }
             if prepass && look.is_some_and(|l| self.cuts(l)) {
+                first += count;
+                continue;
+            }
+            if !crate::frame_debugger::draw(|| self.describe(*handle, look.as_ref(), texture, count, occluded, prepass, textured)) {
                 first += count;
                 continue;
             }
@@ -4225,7 +4540,11 @@ impl Renderer {
                     };
                     if let Some(pipeline) = pipeline {
                         pass.set_pipeline(pipeline);
-                        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
+                        pass.set_bind_group(
+                            0,
+                            if occluded { self.kept_group_for(prepass) } else { self.frame_group_for(prepass) },
+                            &[],
+                        );
                     }
                     current = Some(*look);
                 }
@@ -4245,6 +4564,154 @@ impl Renderer {
             }
             first += count;
         }
+    }
+
+    /// Shadow casters into one cascade: of each batch, the runs of its
+    /// instances whose bit is set in `masks` (indexed as the instances
+    /// are, from 0 at the first caster), each run one call.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_casters<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        batches: &[(BatchKey, Vec<InstanceRaw>)],
+        base: u32,
+        textured: bool,
+        masks: &[u8],
+        bit: u8,
+        cascade: Option<(Mat4, f32)>,
+    ) {
+        let mut first = base;
+        for ((look, handle, texture), list) in batches {
+            let count = list.len() as u32;
+            let Some(mesh) = self.mesh(*handle) else {
+                first += count;
+                continue;
+            };
+            let mut bound = false;
+            let mut at = first;
+            let end = first + count;
+            while at < end {
+                if masks.get(at as usize).is_some_and(|m| m & bit == 0) {
+                    at += 1;
+                    continue;
+                }
+                let start = at;
+                while at < end && masks.get(at as usize).is_none_or(|m| m & bit != 0) {
+                    at += 1;
+                }
+                // A dense mesh a cluster at a time: of a mountain range a
+                // kilometre round, what is over this cascade's square.
+                if let (Some(clusters), Some((cascade, texel))) = (mesh.clusters.as_ref(), cascade) {
+                    for instance in start..at {
+                        let Some(model) = list.get((instance - first) as usize).map(|r| Mat4::from_cols_array_2d(&r.model)) else {
+                            continue;
+                        };
+                        let mut runs = Vec::new();
+                        clusters.runs_in(model, cascade, texel, &mut runs);
+                        if runs.is_empty() {
+                            continue;
+                        }
+                        let triangles: u32 = runs.iter().map(|r| (r.1 - r.0) / 3).sum();
+                        if !crate::frame_debugger::draw(|| {
+                            let mut d = self.describe(*handle, look.as_ref(), texture, 1, false, false, textured);
+                            d.what += &format!(" ({} of {} clusters' runs)", runs.len(), clusters.count);
+                            d.triangles = triangles as u64;
+                            d
+                        }) {
+                            continue;
+                        }
+                        if textured {
+                            self.bind_maps(pass, *texture);
+                        }
+                        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                        pass.set_vertex_buffer(1, self.instances.slice(..));
+                        pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
+                        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                        for (a, b) in runs {
+                            pass.draw_indexed(a..b, 0, instance..instance + 1);
+                        }
+                    }
+                    continue;
+                }
+                if !crate::frame_debugger::draw(|| self.describe(*handle, look.as_ref(), texture, at - start, false, false, textured)) {
+                    continue;
+                }
+                if !bound {
+                    if textured {
+                        self.bind_maps(pass, *texture);
+                    }
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_vertex_buffer(1, self.instances.slice(..));
+                    pass.set_vertex_buffer(2, self.colors_of(mesh).slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    bound = true;
+                }
+                pass.draw_indexed(0..mesh.index_count, 0, start..at);
+            }
+            first = end;
+        }
+    }
+
+    /// A draw as the Frame Debugger lists it: the mesh by name, what it
+    /// is drawn with. Made only while a frame is recorded.
+    #[allow(clippy::too_many_arguments)]
+    fn describe(
+        &self,
+        handle: MeshHandle,
+        look: Option<&Look>,
+        maps: &Maps,
+        instances: u32,
+        culled_on_gpu: bool,
+        prepass: bool,
+        textured: bool,
+    ) -> crate::frame_debugger::DrawCall {
+        let triangles = self.mesh(handle).map_or(0, |m| m.index_count as u64 / 3);
+        // A level of detail is called by the mesh it is a level of.
+        let (source, level) = if handle.0 & LOD_HANDLE != 0 {
+            self.lods
+                .iter()
+                .find_map(|(m, levels)| levels.iter().position(|(l, _)| *l == handle).map(|i| (*m, Some(i + 1))))
+                .unwrap_or((handle.0, None))
+        } else {
+            (handle.0, None)
+        };
+        let mut what = self
+            .mesh_names
+            .get(&source)
+            .map_or_else(|| format!("mesh {source}"), |n| n.to_string());
+        if let Some(level) = level {
+            what += &format!(" (LOD{level})");
+        }
+        let pipeline = match (look, prepass, textured) {
+            (_, false, false) => "shadow caster".to_string(),
+            (Some(l), true, _) => format!("prepass, {:?} faces{}", l.face, if l.skinned { ", skinned" } else { "" }),
+            (Some(l), false, _) => {
+                let mut p = match l.blend {
+                    None => "opaque".to_string(),
+                    Some(b) => format!("{b:?} blend"),
+                };
+                p += &format!(", {:?} faces", l.face);
+                if let Some(shader) = l.shader {
+                    p += &format!(", shader {shader:?}");
+                }
+                for (on, name) in [(l.skinned, "skinned"), (l.water, "water"), (l.terrain, "terrain"), (l.unlit, "unlit"), (l.on_top, "on top")] {
+                    if on {
+                        p += &format!(", {name}");
+                    }
+                }
+                p
+            }
+            (None, _, _) => "default".to_string(),
+        };
+        let textures = if textured {
+            maps.iter()
+                .filter(|t| **t != TextureHandle::WHITE)
+                .map(|t| self.texture_names.get(&t.0).map_or_else(|| format!("texture {}", t.0), |n| n.to_string()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        crate::frame_debugger::DrawCall { what, triangles, instances, culled_on_gpu, pipeline, textures }
     }
 
     /// Handles and outlines over the finished picture ([`crate::tools`]):
@@ -4434,6 +4901,15 @@ impl Renderer {
         ) else {
             return;
         };
+        if !crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall {
+            what: "terrain (mesh shader)".into(),
+            instances: 1,
+            culled_on_gpu: true,
+            pipeline: if prepass { "terrain prepass" } else { "terrain" }.into(),
+            ..Default::default()
+        }) {
+            return;
+        }
         pass.set_pipeline(if prepass { depth } else { drawn });
         pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
         self.bind_maps(pass, maps);
@@ -4451,6 +4927,16 @@ impl Renderer {
             &self.fog_bind_group
         } else {
             &self.bind_group
+        }
+    }
+
+    /// [`Renderer::frame_group_for`] for draws of the occlusion culling's
+    /// kept instances.
+    fn kept_group_for(&self, prepass: bool) -> &wgpu::BindGroup {
+        if prepass {
+            &self.kept_groups.2
+        } else {
+            &self.kept_groups.1
         }
     }
 
@@ -4474,6 +4960,24 @@ impl Renderer {
         instance: u32,
         prepass: bool,
     ) {
+        self.draw_run(pass, look, mesh, texture, pose, instance, 1, prepass);
+    }
+
+    /// [`Self::draw_single`] of `count` instances from `instance` on, one
+    /// call: a run of the same see-through thing.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_run<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        look: Look,
+        mesh: MeshHandle,
+        texture: Maps,
+        pose: u32,
+        instance: u32,
+        count: u32,
+        prepass: bool,
+    ) {
+        let handle = mesh;
         let Some(mesh) = self.mesh(mesh) else {
             return;
         };
@@ -4490,6 +4994,9 @@ impl Renderer {
         let Some(pipeline) = pipeline else {
             return;
         };
+        if !crate::frame_debugger::draw(|| self.describe(handle, Some(&look), &texture, count, false, prepass, true)) {
+            return;
+        }
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
         self.bind_maps(pass, texture);
@@ -4504,7 +5011,7 @@ impl Renderer {
             pass.set_vertex_buffer(3, skin.slice(..));
         }
         pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
+        pass.draw_indexed(0..mesh.index_count, 0, instance..instance + count);
     }
 
     /// The world-space box around everything being drawn.
@@ -4703,10 +5210,109 @@ impl Renderer {
         self.gpu_particles.slots()
     }
 
+    /// Draw frames that may be by the lean lit shaders ([`crate::lean`]),
+    /// or always by the standard ones: on by default (`SCRAP_LEAN=0` starts
+    /// it off).
+    pub fn set_lean_shaders(&mut self, on: bool) {
+        self.lean.enabled = on;
+    }
+
+    /// How far, in pixels, a dense mesh's surface may stand from the mesh's
+    /// as it is drawn: its clusters are drawn at the coarsest level
+    /// ([`crate::cluster_lod`]) whose error is under it. One (the default)
+    /// is no difference an eye can see; 0 draws every mesh whole.
+    pub fn set_cluster_error(&mut self, pixels: f32) {
+        self.cluster_error = pixels.max(0.0);
+    }
+
+    /// Leave clusters past the ambient occlusion's reach out of the depth
+    /// prepass where nothing else reads it there (on by default;
+    /// `SCRAP_FAR_PREPASS=1` starts it off).
+    pub fn set_far_off_prepass(&mut self, on: bool) {
+        self.far_off_prepass = on;
+    }
+
+    /// Draw the far shadow cascades every other frame, in turn (on by
+    /// default; `SCRAP_SHADOW_STAGGER=0` starts it off), or every frame.
+    pub fn set_shadow_stagger(&mut self, on: bool) {
+        self.shadow_stagger = on;
+        self.cascade_cache = None;
+    }
+
+    /// Draw unlit see-through things — smoke, dust, glows — at half size
+    /// and lay them over the picture ([`crate::lowres`]) where the frame
+    /// allows, or always at full size: on by default
+    /// (`SCRAP_HALF_PARTICLES=0` starts it off).
+    pub fn set_half_size_particles(&mut self, on: bool) {
+        self.lowres.enabled = on;
+    }
+
+    /// Whether the last screen frame drew its unlit see-through things at
+    /// half size. For tests and tools.
+    pub fn halved_particles(&self) -> bool {
+        self.lowres_drawn
+    }
+
+    /// How many of the last frame's lit pipelines were lean ones in: 0 when
+    /// it was not drawn lean, or none was built yet. For tests and tools.
+    pub fn lean_pipelines(&self) -> usize {
+        if self.lean.on {
+            self.lean.ready.len()
+        } else {
+            0
+        }
+    }
+
+    /// Record the screen's frames for the Frame Debugger
+    /// ([`crate::frame_debugger`]) — every frame from now until
+    /// [`Self::stop_debugging`], each stopped at event `stop` (none: drawn
+    /// whole). [`Self::frame_capture`] is the last one recorded.
+    pub fn debug_frame(&mut self, stop: Option<usize>) {
+        self.debugger.wanted = Some(stop);
+    }
+
+    /// No more frames recorded, and the last one forgotten.
+    pub fn stop_debugging(&mut self) {
+        self.debugger.wanted = None;
+        self.debugger.captured = None;
+    }
+
+    /// The last frame recorded for the Frame Debugger.
+    pub fn frame_capture(&self) -> Option<&crate::frame_debugger::FrameCapture> {
+        self.debugger.captured.as_ref()
+    }
+
+    /// Whether the last frame recorded was stopped where there is a
+    /// picture to show — else the frame itself is the one to look at.
+    pub fn has_debug_picture(&self) -> bool {
+        self.debugger.has_picture()
+    }
+
+    /// The Frame Debugger's picture drawn over `view` (a target of this
+    /// renderer's format), fitted inside `area`: x, y, width, height in
+    /// pixels. Nothing when there is no picture.
+    pub fn show_debug_picture(&mut self, gpu: &Gpu, view: &wgpu::TextureView, area: (f32, f32, f32, f32)) {
+        self.debugger.show(gpu, view, self.format, area);
+    }
+
+    /// The Frame Debugger's picture as RGBA pixels (sRGB) and its size —
+    /// waits on the GPU: for tests and tools.
+    pub fn read_debug_picture(&self, gpu: &Gpu) -> Option<(Vec<u8>, (u32, u32))> {
+        self.debugger.read_picture(gpu)
+    }
+
     /// Time each pass of the screen's frame on the GPU, or stop: see
     /// [`Self::gpu_times`]. `SCRAP_GPU_TIMES=1` starts it on.
     pub fn profile_gpu(&mut self, on: bool) {
         self.timing = on;
+    }
+
+    /// Forget the passes' times so far: a pass that no longer runs leaves
+    /// the list, and the averages start again (an A/B test's next side).
+    pub fn reset_gpu_times(&mut self) {
+        if let Some(timer) = self.timer.as_mut() {
+            timer.reset();
+        }
     }
 
     /// Whether the screen's frame is being timed: [`Self::profile_gpu`],
@@ -4766,7 +5372,7 @@ impl Renderer {
             .time
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         let bolt = frame.weather.bolt(time)?;
-        let mut lit = frame.clone();
+        let mut lit = frame.shallow();
         let l = &mut lit.lighting;
         let strength = bolt.flash * 7.0;
         if strength > l.sun_intensity {
@@ -4802,45 +5408,37 @@ impl Renderer {
         // A stroke of lightning coming down: for its moment the light of
         // the scene is its light — from where it struck, bright and blue,
         // with hard shadows — and the whole sky flares.
-        let flashed;
-        let frame = match self.lightning(frame) {
-            Some(lit) => {
-                flashed = lit;
-                &flashed
-            }
-            None => frame,
-        };
-        if frame.live_meshes.is_empty() {
-            self.bake_probes(gpu, frame);
-            self.render_view(gpu, Some(view), width, height, frame, None);
-            return;
-        }
-        let mut frame = frame.clone();
-        for live in std::mem::take(&mut frame.live_meshes) {
-            // Nothing to draw yet — water not poured, a mesh not made:
-            // an empty buffer is no buffer to the device.
-            if live.vertices.is_empty() || live.indices.is_empty() {
-                continue;
-            }
-            let mesh = match self.live.get(&live.key) {
-                Some(&(mesh, version)) if version == live.version => mesh,
-                Some(&(mesh, _)) => {
-                    self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
-                    mesh
+        let mut owned = self.lightning(frame);
+        if !frame.live_meshes.is_empty() {
+            let drawn = owned.get_or_insert_with(|| frame.shallow());
+            for live in &frame.live_meshes {
+                // Nothing to draw yet — water not poured, a mesh not made:
+                // an empty buffer is no buffer to the device.
+                if live.vertices.is_empty() || live.indices.is_empty() {
+                    continue;
                 }
-                None => self.upload_live(gpu, &live.vertices, &live.indices),
-            };
-            self.live.insert(live.key, (mesh, live.version));
-            frame.draws.push(Draw {
-                mesh,
-                transform: live.transform,
-                texture: TextureHandle::WHITE,
-                material: live.material,
-                pose: None,
-            });
+                let mesh = match self.live.get(&live.key) {
+                    Some(&(mesh, version)) if version == live.version => mesh,
+                    Some(&(mesh, _)) => {
+                        self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
+                        mesh
+                    }
+                    None => self.upload_live(gpu, &live.vertices, &live.indices),
+                };
+                self.live.insert(live.key, (mesh, live.version));
+                drawn.draws.push(Draw {
+                    mesh,
+                    transform: live.transform,
+                    texture: TextureHandle::WHITE,
+                    material: live.material,
+                    pose: None,
+                });
+            }
         }
-        self.bake_probes(gpu, &frame);
-        self.render_view(gpu, Some(view), width, height, &frame, None);
+        let frame = owned.as_ref().unwrap_or(frame);
+        self.bake_unity_sky(gpu, frame);
+        self.bake_probes(gpu, frame);
+        self.render_view(gpu, Some(view), width, height, frame, None);
     }
 
     /// Which passes run: the game's graphics settings. [`Passes::MAX`]
@@ -4965,10 +5563,9 @@ impl Renderer {
     /// texture cannot be drawn into and read in one pass.
     fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
         self.picture_target(gpu, picture.id, size);
-        let mut frame = (*picture.frame).clone();
+        let mut frame = picture.frame.shallow();
         let shows = |m: &Material| m.maps().any(|id| id == picture.id);
         frame.draws.retain(|d| !shows(&d.material));
-        frame.texture_views.clear();
         let view = self.targets[&picture.id]
             .0
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -5014,6 +5611,70 @@ impl Renderer {
         }
         let replaced = self.gpu_mesh(gpu, vertices, &[], indices, true, true);
         self.meshes[mesh.0 as usize] = replaced;
+    }
+
+    /// Unity's procedural sky into the sky-view table, when the frame's sky
+    /// is it: what reflections read, a texel for what the shader would work
+    /// out twice a pixel. Only when the sun or the sky's numbers moved —
+    /// the table is a few thousand texels, worked out on every core.
+    fn bake_unity_sky(&mut self, gpu: &Gpu, frame: &Frame) {
+        if frame.sky.mode != SkyMode::Procedural {
+            self.unity_sky_baked = None;
+            return;
+        }
+        let to_sun = -frame.lighting.sun_direction.normalize_or(Vec3::NEG_Y);
+        let sky = crate::procedural_sky::UnitySky::new(&frame.sky);
+        let key = [
+            to_sun.x,
+            to_sun.y,
+            to_sun.z,
+            sky.inv_wavelength.x,
+            sky.inv_wavelength.y,
+            sky.inv_wavelength.z,
+            sky.rayleigh,
+            sky.ground.x,
+            sky.ground.y,
+            sky.ground.z,
+            sky.exposure,
+        ];
+        // A tenth of a degree of sun is no change a reflection shows.
+        let close = self.unity_sky_baked.is_some_and(|old| {
+            Vec3::new(old[0], old[1], old[2]).dot(to_sun) > 0.999_998 && old[3..] == key[3..]
+        });
+        if close {
+            return;
+        }
+        self.unity_sky_baked = Some(key);
+        let (w, h) = crate::atmosphere::SKY_VIEW;
+        let rows = scrap_core::jobs::map_range(h as usize, 4, |y| {
+            let mut row = Vec::with_capacity(w as usize * 4);
+            for x in 0..w {
+                // The table's own mapping (physical_sky in render.wgsl):
+                // azimuth across, the square root of latitude up.
+                let u = (x as f32 + 0.5) / w as f32;
+                let v = (y as f32 + 0.5) / h as f32;
+                let azimuth = (u - 0.5) * std::f32::consts::TAU;
+                let t = v * 2.0 - 1.0;
+                let latitude = t.signum() * t * t * std::f32::consts::FRAC_PI_2;
+                let d = Vec3::new(latitude.cos() * azimuth.cos(), latitude.sin(), latitude.cos() * azimuth.sin());
+                let c = sky.radiance(d, to_sun);
+                for channel in [c.x, c.y, c.z, 1.0] {
+                    row.push(half_bits(channel));
+                }
+            }
+            row
+        });
+        let texels: Vec<u16> = rows.into_iter().flatten().collect();
+        gpu.queue.write_texture(
+            self.atmosphere.sky_view.texture().as_image_copy(),
+            bytemuck::cast_slice(&texels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 8),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
     }
 
     /// The probes' pictures, when the probes are not the ones they are of:
@@ -5098,11 +5759,14 @@ impl Renderer {
         let frame = if self.passes == crate::passes::Passes::MAX && self.quality.is_none() {
             frame
         } else {
-            let preset = match self.quality {
-                Some(quality) => quality.apply(frame),
-                None => frame.clone(),
-            };
-            masked = self.passes.apply(&preset);
+            // One copy for both, and without the live meshes and the
+            // cameras' frames, which the view does not read.
+            let mut copy = frame.shallow();
+            if let Some(quality) = self.quality {
+                quality.apply_to(&mut copy);
+            }
+            self.passes.apply_to(&mut copy);
+            masked = copy;
             &masked
         };
         let aspect = width as f32 / height.max(1) as f32;
@@ -5123,6 +5787,11 @@ impl Renderer {
         // The screen's frame timed, when asked — or when dynamic resolution
         // needs the GPU's time: not a probe's face or a picture's.
         let timed = (self.timing || (scaling && upscaling.dynamic.enabled)) && screen;
+        // The Frame Debugger's frame: the screen's, recorded pass by pass.
+        let debugged = screen && self.debugger.wanted.is_some();
+        if debugged {
+            crate::frame_debugger::begin(self.debugger.wanted.flatten());
+        }
         // The irradiance volume, for the screen's frame: its probes made
         // again when its grid changes, and the frame's group with them.
         if screen && self.ddgi.prepare(gpu, frame.irradiance_volumes.first().copied()) {
@@ -5367,11 +6036,46 @@ impl Renderer {
         if restir_on && self.restir.resize(gpu, (width, height)) {
             self.rebind(gpu);
         }
-        let cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
+        let mut cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
             self.cascades(frame, sun, aspect)
         } else {
             Vec::new()
         };
+        // The far cascades drawn every other frame, each on its turn: the
+        // one not drawn keeps its map and the view it was drawn from, so
+        // the lit pass reads it as it was made. Something far that moves
+        // is a frame late in its shadow; the near cascades, where a
+        // shadow is looked at, are drawn every frame. Only the screen's
+        // own maps are kept: a probe's face or a picture draws into the
+        // same layers, and then everything is drawn again.
+        let mut kept_cascades = [false; MAX_CASCADES];
+        if !cascades.is_empty() {
+            // Not while the Frame Debugger takes the frame apart: the
+            // same frame drawn again must list the same passes.
+            let own = screen && self.shadow_stagger && self.debugger.wanted.is_none();
+            let fits = self.cascade_cache.as_ref().is_some_and(|c| {
+                c.settings == frame.shadows
+                    && c.resolution == self.shadow_resolution
+                    && c.views.len() == cascades.len()
+                    && c.sun.dot(sun) > 0.9999
+            });
+            if own && fits && cascades.len() >= 3 {
+                self.shadow_turn = !self.shadow_turn;
+                let cache = self.cascade_cache.as_ref().expect("fits");
+                for i in 2..cascades.len() {
+                    if (i % 2 == 0) == self.shadow_turn {
+                        cascades[i] = cache.views[i];
+                        kept_cascades[i] = true;
+                    }
+                }
+            }
+            self.cascade_cache = own.then(|| CascadeCache {
+                settings: frame.shadows,
+                resolution: self.shadow_resolution,
+                sun,
+                views: cascades.clone(),
+            });
+        }
         let mut light_view_projection = [Mat4::IDENTITY.to_cols_array_2d(); MAX_CASCADES];
         let mut cascade_spheres = [[0.0f32; 4]; MAX_CASCADES];
         let mut cascade_bias = [0.0f32; 4];
@@ -5474,11 +6178,19 @@ impl Renderer {
         };
         let night = frame.lighting.night.clamp(0.0, 1.0);
         let (sun_light, sky_light, ground_light) = if physical {
-            let (sun, sky, _) =
-                frame
-                    .sky
-                    .atmosphere
-                    .lighting(altitude, sky_to_sun, sky_sun_intensity);
+            // The same air, height and sun as the last frame (the camera
+            // standing, the sun barely moving): the same light, not found
+            // again through thirty thousand steps of air.
+            let air = frame.sky.atmosphere;
+            let (sun, sky) = match self.sky_light {
+                Some((was, at, towards, light)) if was == air && at == altitude && towards == sky_to_sun => light,
+                _ => {
+                    let light = air.light_of_one(altitude, sky_to_sun);
+                    self.sky_light = Some((air, altitude, sky_to_sun, light));
+                    light
+                }
+            };
+            let (sun, sky) = (sun * sky_sun_intensity, sky * sky_sun_intensity);
             // At night the moon, as the scene's lighting has it, and the
             // night sky's own faint light on top of what the air still
             // glows with.
@@ -5547,7 +6259,10 @@ impl Renderer {
                 let Some(mesh) = self.meshes.get(draw.mesh.0 as usize) else { continue };
                 let (lo, hi) = world_box(mesh.bounds, draw.transform);
                 use std::hash::{Hash, Hasher};
-                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                // Only compared with the last frame's key, in this process:
+                // no attacker picks it, and SipHash here cost a word's worth
+                // of rounds per float of every caster, every frame.
+                let mut hash = scrap_core::hash::FastHasher::default();
                 draw.mesh.0.hash(&mut hash);
                 for v in draw.transform.to_cols_array() {
                     v.to_bits().hash(&mut hash);
@@ -5933,6 +6648,10 @@ impl Renderer {
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+        // Lean, when nothing the lean shader leaves out is asked for.
+        self.lean.collect();
+        self.lean.on = self.lean.enabled && lean_allowed(&uniform, frame, decals.is_empty());
+
         if fine_terrain.is_some() && self.terrain_mesh_group.is_some() {
             let t = TerrainFrameUniform {
                 view_projection: uniform.view_projection,
@@ -6019,18 +6738,20 @@ impl Renderer {
             }
         });
         let streaming_textures = !self.streams.is_empty() && probe.is_none() && view.is_some() && !self.picturing;
-        let mut shadow_index = BatchIndex::default();
-        let mut clip_index = BatchIndex::default();
+        let mut pool = std::mem::take(&mut self.batch_pool);
+        let mut shadow_index = BatchIndex::tagged(0);
+        let mut clip_index = BatchIndex::tagged(1);
         // What is drawn on both sides casts from both into the sun's
         // cascades; the rest from its front faces only, as URP's shadow
         // caster pass culls as the material does — which is what lets the
         // normal bias shrink a caster without its back faces, turned
-        // inside out past its middle, swelling it again.
+        // inside out past its middle, swelling it again. (Their lists join
+        // the one-sided ones after, and the pool with them.)
         let mut shadow_both: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut clip_both: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
-        let mut shadow_both_index = BatchIndex::default();
-        let mut clip_both_index = BatchIndex::default();
-        let mut colour_index = BatchIndex::default();
+        let mut shadow_both_index = BatchIndex::tagged(0);
+        let mut clip_both_index = BatchIndex::tagged(1);
+        let mut colour_index = BatchIndex::tagged(2);
         for (draw, prepared) in frame.draws.iter().zip(prepared) {
             let Prepared {
                 raw,
@@ -6062,10 +6783,10 @@ impl Renderer {
                 let one_sided = draw.material.render_face == RenderFace::Front
                     && draw.transform.determinant() > 0.0;
                 match (draw.material.alpha_clip > 0.0, one_sided) {
-                    (true, true) => clip_index.push(&mut clip_batches, key, raw),
-                    (true, false) => clip_both_index.push(&mut clip_both, key, raw),
-                    (false, true) => shadow_index.push(&mut shadow_batches, key, raw),
-                    (false, false) => shadow_both_index.push(&mut shadow_both, key, raw),
+                    (true, true) => clip_index.push(&mut pool, &mut clip_batches, key, raw),
+                    (true, false) => clip_both_index.push(&mut pool, &mut clip_both, key, raw),
+                    (false, true) => shadow_index.push(&mut pool, &mut shadow_batches, key, raw),
+                    (false, false) => shadow_both_index.push(&mut pool, &mut shadow_both, key, raw),
                 }
                 stats.shadow_casters += 1;
             }
@@ -6104,7 +6825,7 @@ impl Renderer {
                         face: RenderFace::Front,
                         ..look
                     };
-                    colour_index.push(&mut batches, (Some(look), grid, maps), raw);
+                    colour_index.push(&mut pool, &mut batches, (Some(look), grid, maps), raw);
                     continue;
                 }
             }
@@ -6117,7 +6838,7 @@ impl Renderer {
                 // so two of them cannot share an instanced call anyway.
                 singles.push((look, mesh, maps, pose, raw));
             } else {
-                colour_index.push(&mut batches, (Some(look), mesh, maps), raw);
+                colour_index.push(&mut pool, &mut batches, (Some(look), mesh, maps), raw);
             }
         }
         if streaming_textures {
@@ -6134,6 +6855,24 @@ impl Renderer {
             .map(|(count, mesh)| self.mesh(mesh).map_or(0, |m| m.index_count as u64 / 3) * count as u64)
             .sum();
         self.stats = stats;
+        if self.lean.on {
+            let looks: Vec<Look> = batches
+                .iter()
+                .filter_map(|((look, _, _), _)| *look)
+                .chain(singles.iter().map(|s| s.0))
+                .chain(transparent.iter().map(|t| t.1))
+                .collect();
+            self.ask_lean(gpu, looks.into_iter());
+            let faces: Vec<(RenderFace, bool)> = batches
+                .iter()
+                .filter_map(|((look, handle, _), _)| {
+                    let look = (*look)?;
+                    self.mesh(*handle)?.clusters.as_ref()?;
+                    Some((look.face, look.water))
+                })
+                .collect();
+            self.ask_lean_clusters(gpu, faces.into_iter());
+        }
         // One-sided first, then both: each range with its own culling.
         let shadow_one_sided = shadow_batches.len();
         shadow_batches.extend(shadow_both);
@@ -6141,9 +6880,11 @@ impl Renderer {
         clip_batches.extend(clip_both);
         // Each lamp shadow map's casters: what its own view sees.
         let mut lamp_batches: Vec<(Batches, Batches)> = Vec::new();
-        for view in &clustered.shadow_views {
+        for (lamp, view) in clustered.shadow_views.iter().enumerate() {
             let planes = frustum_planes(*view);
             let (mut solid, mut clipped) = (Vec::new(), Vec::new());
+            let lamp = 3 + 2 * lamp as u32;
+            let (mut solid_index, mut clipped_index) = (BatchIndex::tagged(lamp), BatchIndex::tagged(lamp + 1));
             // What is unlit is a light itself: a lamp's bulb would
             // otherwise put everything around it in its shadow.
             for draw in frame
@@ -6157,15 +6898,15 @@ impl Renderer {
                 if !aabb_in_frustum(&planes, mesh.bounds, draw.transform) {
                     continue;
                 }
-                let list = if draw.material.alpha_clip > 0.0 {
-                    &mut clipped
+                let (list, index) = if draw.material.alpha_clip > 0.0 {
+                    (&mut clipped, &mut clipped_index)
                 } else {
-                    &mut solid
+                    (&mut solid, &mut solid_index)
                 };
                 let maps = self.maps_of(draw);
                 let mut raw = instance_of(draw.transform, &draw.material);
                 raw.maps = packed(maps);
-                push(list, (None, draw.mesh, self.batch_maps(maps)), raw);
+                index.push(&mut pool, list, (None, draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
         }
@@ -6247,24 +6988,34 @@ impl Renderer {
                 .map(|(_, l)| l.len() as u32)
                 .sum::<u32>();
         let batched_total: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
-        let flat: Vec<InstanceRaw> = shadow_batches
+        // Every instance goes up in this order, written straight into the
+        // queue's staging memory from where it already is: not gathered
+        // into one list first, which was a copy of every instance (208
+        // bytes each) a frame. Only the singles and the see-through ones,
+        // which are not in lists of their own, are gathered.
+        let mut loose = std::mem::take(&mut self.flat);
+        loose.clear();
+        loose.extend(singles.iter().map(|single| single.4));
+        loose.extend(transparent.iter().map(|t| t.5));
+        let parts: Vec<&[InstanceRaw]> = shadow_batches
             .iter()
             .chain(clip_batches.iter())
             .chain(batches.iter())
-            .flat_map(|(_, l)| l.iter().copied())
-            .chain(singles.iter().map(|single| single.4))
-            .chain(transparent.iter().map(|t| t.5))
-            .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
-            .chain(outline_batches.iter().flat_map(|(_, l)| l.iter().copied()))
+            .map(|(_, l)| l.as_slice())
+            .chain(std::iter::once(loose.as_slice()))
+            .chain(overlay_batches.iter().map(|(_, l)| l.as_slice()))
+            .chain(outline_batches.iter().map(|(_, l)| l.as_slice()))
             .chain(
                 lamp_batches
                     .iter()
                     .flat_map(|(a, b)| a.iter().chain(b.iter()))
-                    .flat_map(|(_, l)| l.iter().copied()),
+                    .map(|(_, l)| l.as_slice()),
             )
+            .filter(|part| !part.is_empty())
             .collect();
-        if flat.len() as u64 > self.instance_capacity {
-            self.instance_capacity = (flat.len() as u64).next_power_of_two();
+        let total: usize = parts.iter().map(|part| part.len()).sum();
+        if total as u64 > self.instance_capacity {
+            self.instance_capacity = (total as u64).next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
                 size: self.instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
@@ -6272,11 +7023,23 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
+            // The fragment stage reads them from the frame's group.
+            self.rebind(gpu);
         }
-        if !flat.is_empty() {
-            gpu.queue
-                .write_buffer(&self.instances, 0, bytemuck::cast_slice(&flat));
+        if let Some(size) = wgpu::BufferSize::new((total * std::mem::size_of::<InstanceRaw>()) as u64) {
+            let mut view = gpu
+                .queue
+                .write_buffer_with(&self.instances, 0, size)
+                .expect("the instance buffer holds them all");
+            let mut at = 0;
+            for part in &parts {
+                let bytes: &[u8] = bytemuck::cast_slice(part);
+                view.slice(at..at + bytes.len()).copy_from_slice(bytes);
+                at += bytes.len();
+            }
         }
+        drop(parts);
+        self.flat = loose;
 
         // Poses go in before the pass: one slot each, padded to the device's
         // dynamic-offset alignment, and a pose longer than MAX_JOINTS is
@@ -6375,6 +7138,9 @@ impl Renderer {
                     frame.camera.position,
                     forward,
                 );
+                if self.occlusion.kept.buffer != self.kept_groups.0 {
+                    self.rebind_kept(gpu);
+                }
                 // Dense meshes a cluster at a time: what can be drawn so —
                 // opaque, the standard shader, neither skinned nor terrain.
                 let mut jobs = Vec::new();
@@ -6410,6 +7176,34 @@ impl Renderer {
                     first += count;
                 }
                 let hiz = self.occlusion.hiz();
+                // Clusters at the level whose error is under a pixel
+                // (crate::cluster_lod): how many pixels a metre covers a
+                // metre off, or with an orthographic camera anywhere.
+                let lod = match frame.camera.ortho {
+                    Some(half) => [height as f32 / (2.0 * half.max(1e-3)), frame.camera.near, self.cluster_error, 1.0],
+                    None => [
+                        height as f32 / (2.0 * (frame.camera.fov_y_degrees.to_radians() * 0.5).tan()),
+                        frame.camera.near,
+                        self.cluster_error,
+                        0.0,
+                    ],
+                };
+                // Clusters past where the prepass's depth is read for
+                // anything (the ambient occlusion's reach) are left out of
+                // it and drawn by the lit pass alone, whose depth the
+                // passes after it read — where nothing in the lit pass
+                // reads the prepass's (a lean frame) and there is one
+                // sample (its depth can be read).
+                let split = if self.far_off_prepass && self.lean.on && screen && self.samples == 1 {
+                    if frame.ambient_occlusion.enabled {
+                        frame.ambient_occlusion.falloff_distance.max(1.0) * 1.2
+                    } else {
+                        30.0
+                    }
+                } else {
+                    1.0e30
+                };
+                self.split_prepass = split < 1.0e29;
                 self.clusters.cull(
                     gpu,
                     &mut encoder,
@@ -6418,10 +7212,13 @@ impl Renderer {
                     drawn,
                     frame.camera.position,
                     hiz,
+                    lod,
+                    split,
                 );
             } else {
                 self.occlusion.active = false;
                 self.clusters.this_frame.clear();
+                self.split_prepass = false;
             }
         }
         // The scene as rays see it: every solid draw, seen or not — what is
@@ -6466,7 +7263,31 @@ impl Renderer {
                 self.rebind(gpu);
             }
         }
+        // Which cascades each caster lands in: its box, seen from the sun,
+        // over the cascade's square. Most of a level's casters are in one
+        // or two of them — and a mountain range a kilometre off, past where
+        // shadows end, in none.
+        let caster_masks: Vec<u8> = shadow_batches
+            .iter()
+            .chain(clip_batches.iter())
+            .flat_map(|((_, handle, _), list)| {
+                let bounds = self.mesh(*handle).map(|m| m.bounds);
+                list.iter().map(move |raw| (bounds, raw.model))
+            })
+            .map(|(bounds, model)| match bounds {
+                Some(bounds) => caster_cascades(bounds, Mat4::from_cols_array_2d(&model), &cascades),
+                None => 0,
+            })
+            .collect();
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
+            if kept_cascades[cascade] {
+                continue;
+            }
+            if screen {
+                self.stats.cascades_drawn += 1;
+            }
+            let mark = crate::frame_debugger::mark();
+            {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scrap::shadow"),
                 color_attachments: &[],
@@ -6485,21 +7306,26 @@ impl Renderer {
             });
             let offset = [(cascade as u64 * self.caster_stride) as u32];
             let count = |b: &[(BatchKey, Vec<InstanceRaw>)]| b.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
+            let bit = 1u8 << cascade;
             let (one, both) = shadow_batches.split_at(shadow_one_sided);
             pass.set_pipeline(&self.pipelines.shadow_front);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_batches(&mut pass, one, 0, false);
+            self.draw_casters(&mut pass, one, 0, false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_batches(&mut pass, both, count(one), false);
+            self.draw_casters(&mut pass, both, count(one), false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
             if !clip_batches.is_empty() {
                 let (one, both) = clip_batches.split_at(clip_one_sided);
                 pass.set_pipeline(&self.pipelines.shadow_clip_front);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_batches(&mut pass, one, solid_casters, true);
+                self.draw_casters(&mut pass, one, solid_casters, true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_batches(&mut pass, both, solid_casters + count(one), true);
+                self.draw_casters(&mut pass, both, solid_casters + count(one), true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
+            }
+            }
+            if debugged {
+                self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::LinearDepth(layer));
             }
         }
 
@@ -6739,6 +7565,7 @@ impl Renderer {
             self.graph = graph;
         }
         if prepass_drawn {
+            let mark = crate::frame_debugger::mark();
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("scrap::prepass"),
@@ -6770,6 +7597,9 @@ impl Renderer {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
                 }
             }
+            if debugged {
+                self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::Normals(&self.ssao.normals));
+            }
             // This frame's depth into the pyramid, for the next frame's
             // culling.
             if probe.is_none() && view.is_some() && !self.picturing {
@@ -6781,6 +7611,7 @@ impl Renderer {
                 }
             }
             if ssao_on {
+                let mark = crate::frame_debugger::mark();
                 let now = drawn;
                 self.ssao.run(
                     gpu,
@@ -6793,7 +7624,16 @@ impl Renderer {
                     // Under TAA the bounce's rays turn each frame, and half
                     // as many do: the history adds them up.
                     (taa_run && self.taa.frames() > 0).then(|| (self.taa.frames() as f32 * 0.618_034).fract()),
+                    [
+                        frame.camera.near,
+                        frame.camera.far,
+                        if frame.camera.ortho.is_some() { 1.0 } else { 0.0 },
+                        0.0,
+                    ],
                 );
+                if debugged {
+                    self.debugger.snapshot(gpu, &mut encoder, mark, crate::frame_debugger::Source::Alpha(&self.ssao.result));
+                }
             }
         }
 
@@ -6906,6 +7746,20 @@ impl Renderer {
             );
         }
         self.depth_prepassed = reuse_depth;
+        // Unlit see-through things at half size, where it is the same
+        // picture (crate::lowres).
+        let halved = self.lowres.enabled
+            && screen
+            && self.samples == 1
+            && prepass_drawn
+            && !volumetric.enabled
+            && !dust_on
+            && !local_dust
+            && transparent.iter().any(|t| halved_look(t.1));
+        if screen {
+            self.lowres_drawn = halved;
+        }
+        let scene_mark = crate::frame_debugger::mark();
         {
             // A probe's face is drawn straight into its layer.
             let face = probe.map(|layer| self.reflections.layer(layer, 0));
@@ -6934,7 +7788,9 @@ impl Renderer {
                         } else {
                             wgpu::LoadOp::Clear(1.0)
                         },
-                        store: wgpu::StoreOp::Discard,
+                        // Kept when far clusters were left out of the prepass:
+                        // what comes after reads this depth then.
+                        store: if self.split_prepass { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
                     }),
                     stencil_ops: None,
                 }),
@@ -6952,27 +7808,87 @@ impl Renderer {
             // The sky last among what is solid: only where nothing was
             // drawn is it shaded at all. A plain colour needs no pass —
             // unless there is fog in the air in front of it.
-            if frame.sky.mode != SkyMode::Color || volumetric.enabled {
+            if (frame.sky.mode != SkyMode::Color || volumetric.enabled)
+                && crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall::fullscreen("sky"))
+            {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
-            for (_, look, mesh, texture, pose, _) in &transparent {
-                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
-                instance += 1;
+            // Farthest first, one at a time — but a run of the same thing
+            // (an emitter's sprites, nearest their neighbours) in one call:
+            // a call draws its instances in order, so the blend is the same.
+            let mut i = 0;
+            while i < transparent.len() {
+                let (_, look, mesh, texture, pose, _) = &transparent[i];
+                let mut run = 1;
+                while !look.skinned
+                    && transparent.get(i + run).is_some_and(|(_, l, m, t, _, _)| l == look && m == mesh && t == texture)
+                {
+                    run += 1;
+                }
+                if !(halved && halved_look(*look)) {
+                    self.draw_run(&mut pass, *look, *mesh, *texture, *pose, instance, run as u32, false);
+                }
+                instance += run as u32;
+                i += run;
             }
             // Particles on the GPU, among what is see-through.
-            if probe.is_none() {
+            if probe.is_none()
+                && self.gpu_particles.slots() > 0
+                && crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall {
+                    what: "gpu particles".into(),
+                    instances: self.gpu_particles.slots(),
+                    culled_on_gpu: true,
+                    pipeline: "particles".into(),
+                    ..Default::default()
+                })
+            {
                 self.gpu_particles.draw(&mut pass);
             }
             // What falls, in front of it all.
-            if weather.falling() {
+            if weather.falling() && crate::frame_debugger::draw(|| crate::frame_debugger::DrawCall::fullscreen("rain or snow")) {
                 pass.set_pipeline(&self.pipelines.precipitation);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
         self.depth_prepassed = false;
+        // The whole depth for what comes after: the lit pass's when far
+        // clusters were left out of the prepass.
+        let after_depth = if self.split_prepass { &self.depth } else { &self.ssao.depth };
+        if halved {
+            self.lowres.prepare(gpu, (width, height));
+            let low_mark = crate::frame_debugger::mark();
+            {
+                let mut pass = self.lowres.begin(gpu, &mut encoder, after_depth);
+                let mut instance = shadow_total + batched_total + singles.len() as u32;
+                let mut i = 0;
+                while i < transparent.len() {
+                    let (_, look, mesh, texture, pose, _) = &transparent[i];
+                    let mut run = 1;
+                    while !look.skinned
+                        && transparent.get(i + run).is_some_and(|(_, l, m, t, _, _)| l == look && m == mesh && t == texture)
+                    {
+                        run += 1;
+                    }
+                    if halved_look(*look) {
+                        self.draw_run(&mut pass, *look, *mesh, *texture, *pose, instance, run as u32, false);
+                    }
+                    instance += run as u32;
+                    i += run;
+                }
+            }
+            if debugged {
+                if let Some(low) = self.lowres.picture() {
+                    self.debugger.snapshot(gpu, &mut encoder, low_mark, crate::frame_debugger::Source::Hdr(low));
+                }
+            }
+            self.lowres.lay_over(gpu, &mut encoder, &self.scene.resolved, after_depth);
+        }
+        if debugged {
+            self.debugger.snapshot(gpu, &mut encoder, scene_mark, crate::frame_debugger::Source::Hdr(&self.scene.resolved));
+        }
 
         // This frame, kept for the next one's screen-space reflections and
         // bounced light.
@@ -6987,6 +7903,7 @@ impl Renderer {
         let Some(view) = view else {
             // A probe's face: lit, and that is all.
             gpu.queue.submit(Some(encoder.finish()));
+            self.keep_batches(pool, [shadow_batches, clip_batches, batches], lamp_batches);
             return;
         };
         let view_projection = frame.camera.view_projection(aspect);
@@ -6994,23 +7911,28 @@ impl Renderer {
             .previous_view_projection
             .replace(view_projection)
             .unwrap_or(view_projection);
+        let taa_mark = crate::frame_debugger::mark();
         let picture = if taa_run {
             self.taa.run(
                 gpu,
                 &mut encoder,
                 &self.scene.resolved,
-                &self.ssao.depth,
+                after_depth,
                 drawn,
                 previous,
             )
         } else {
             &self.scene.resolved
         };
+        if debugged {
+            self.debugger.snapshot(gpu, &mut encoder, taa_mark, crate::frame_debugger::Source::Hdr(picture));
+        }
+        let lens_mark = crate::frame_debugger::mark();
         let lensed = self.lens.run(
             gpu,
             &mut encoder,
             picture,
-            &self.ssao.depth,
+            after_depth,
             (width, height),
             &frame.post,
             &crate::lens::View {
@@ -7064,6 +7986,9 @@ impl Renderer {
         post.auto_exposure.compensation -= 1.6 * night;
         let most = post.auto_exposure.max_ev;
         post.auto_exposure.max_ev = most + (most.min(1.0) - most) * night;
+        if let (true, Some(lensed)) = (debugged, lensed) {
+            self.debugger.snapshot(gpu, &mut encoder, lens_mark, crate::frame_debugger::Source::Hdr(lensed));
+        }
         let picture = lensed.unwrap_or(picture);
         let picture = if upscale_on {
             self.upscaler.run(
@@ -7072,7 +7997,7 @@ impl Renderer {
                 &upscaling,
                 temporal,
                 picture,
-                &self.ssao.depth,
+                after_depth,
                 (width, height),
                 output,
                 [drawn, view_projection, previous],
@@ -7106,6 +8031,9 @@ impl Renderer {
             let ms = self.timer.as_ref().and_then(|t| t.frame_ms());
             self.upscaler.adjust(&upscaling, ms);
         }
+        if debugged {
+            self.debugger.captured = crate::frame_debugger::finish(output);
+        }
         let timer = self.timer.as_mut().filter(|_| timed);
         match timer {
             Some(timer) => {
@@ -7117,6 +8045,25 @@ impl Renderer {
                 gpu.queue.submit(Some(encoder.finish()));
             }
         }
+        self.keep_batches(pool, [shadow_batches, clip_batches, batches], lamp_batches);
+    }
+
+    /// This view's batch lists into the pool for the next (see
+    /// `batch_pool`): what was not used again is let go.
+    fn keep_batches(&mut self, old: BatchPool, lists: [Batches; 3], lamps: Vec<(Batches, Batches)>) {
+        drop(old);
+        let mut pool = BatchPool::default();
+        let lamps = lamps.into_iter().enumerate().flat_map(|(i, (solid, clipped))| {
+            let tag = 3 + 2 * i as u32;
+            [(tag, solid), (tag + 1, clipped)]
+        });
+        for (tag, list) in (0u32..).zip(lists).chain(lamps) {
+            for (key, mut instances) in list {
+                instances.clear();
+                pool.insert((tag, key), instances);
+            }
+        }
+        self.batch_pool = pool;
     }
 }
 
@@ -7128,10 +8075,10 @@ type Batches = Vec<(BatchKey, Vec<InstanceRaw>)>;
 #[derive(Clone, Copy)]
 struct DrawLookup<'a> {
     meshes: &'a [GpuMesh],
-    lods: &'a std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
-    looks: &'a std::collections::HashMap<MeshHandle, TextureHandle>,
-    by_asset: &'a std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
-    shader_textures: &'a std::collections::HashMap<crate::asset::AssetId, Vec<String>>,
+    lods: &'a scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
+    looks: &'a scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
+    by_asset: &'a scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
+    shader_textures: &'a scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
 }
 
 impl DrawLookup<'_> {
@@ -7237,12 +8184,21 @@ struct Prepared {
 /// together, and then no key is hashed at all.
 #[derive(Default)]
 struct BatchIndex {
-    at: std::collections::HashMap<BatchKey, usize>,
+    at: scrap_core::hash::FastMap<BatchKey, usize>,
     last: Option<(BatchKey, usize)>,
+    /// Which list it indexes, for the pool.
+    tag: u32,
 }
 
+/// Instance buffers of the last view's batches, by list and key.
+type BatchPool = scrap_core::hash::FastMap<(u32, BatchKey), Vec<InstanceRaw>>;
+
 impl BatchIndex {
-    fn push(&mut self, batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
+    fn tagged(tag: u32) -> Self {
+        BatchIndex { tag, ..Default::default() }
+    }
+
+    fn push(&mut self, pool: &mut BatchPool, batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
         if let Some((last, at)) = self.last {
             if last == key {
                 batches[at].1.push(raw);
@@ -7253,7 +8209,7 @@ impl BatchIndex {
             Some(&at) => at,
             None => {
                 self.at.insert(key, batches.len());
-                batches.push((key, Vec::new()));
+                batches.push((key, pool.remove(&(self.tag, key)).unwrap_or_default()));
                 batches.len() - 1
             }
         };
@@ -7318,20 +8274,113 @@ fn frustum_planes(view_projection: Mat4) -> [glam::Vec4; 6] {
 /// seen costs a draw; dropping one that can costs a hole.
 /// A mesh's box, placed: the world box round its eight corners.
 fn world_box(bounds: crate::asset::Bounds, transform: Mat4) -> (Vec3, Vec3) {
+    // The box round all eight corners, without the eight (Arvo): the
+    // centre carried over, and each axis of the box reaching as far along
+    // the world's axes as its turned and scaled column says. Run for every
+    // draw several times a frame; the same box as the corners give, to the
+    // last bits of rounding.
     let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for i in 0..8 {
-        let corner = Vec3::new(
+    let centre = transform.transform_point3((lo + hi) * 0.5);
+    let half = (hi - lo) * 0.5;
+    let reach = transform.x_axis.truncate().abs() * half.x
+        + transform.y_axis.truncate().abs() * half.y
+        + transform.z_axis.truncate().abs() * half.z;
+    (centre - reach, centre + reach)
+}
+
+/// The cascades (a bit each) a caster's box lands in, seen from the sun:
+/// its corners in the cascade's clip space overlapping the square, and not
+/// all past its far end. What is between the sun and the square is kept —
+/// it casts onto it.
+fn caster_cascades(bounds: crate::asset::Bounds, transform: Mat4, cascades: &[(Mat4, Vec3, f32, f32, f32)]) -> u8 {
+    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+    let corners: [Vec3; 8] = std::array::from_fn(|i| {
+        transform.transform_point3(Vec3::new(
             if i & 1 == 0 { lo.x } else { hi.x },
             if i & 2 == 0 { lo.y } else { hi.y },
             if i & 4 == 0 { lo.z } else { hi.z },
-        );
-        let p = transform.transform_point3(corner);
-        min = min.min(p);
-        max = max.max(p);
+        ))
+    });
+    let mut mask = 0u8;
+    for (i, (matrix, ..)) in cascades.iter().enumerate().take(8) {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for c in &corners {
+            let p = matrix.project_point3(*c);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        if max.x >= -1.0 && min.x <= 1.0 && max.y >= -1.0 && min.y <= 1.0 && min.z <= 1.0 {
+            mask |= 1 << i;
+        }
     }
-    (min, max)
+    mask
+}
+
+/// The screen's cascades as their maps were last drawn: what a frame that
+/// does not draw a far one again reads it by.
+struct CascadeCache {
+    settings: ShadowSettings,
+    resolution: u32,
+    sun: Vec3,
+    views: Vec<(Mat4, Vec3, f32, f32, f32)>,
+}
+
+/// A lean pipeline ([`crate::lean`]): a look's, over the prepass's depth
+/// or not; or one drawing culled clusters of a face, water or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LeanKey {
+    Scene(Look, bool),
+    Cluster(RenderFace, bool),
+}
+
+/// Whether a see-through look is drawn at half size when the frame allows
+/// (crate::lowres): unlit, not multiplying what is behind it, not drawn
+/// over everything, not skinned.
+fn halved_look(look: Look) -> bool {
+    look.unlit && look.blend.is_some_and(|b| b != Blend::Multiply) && !look.on_top && !look.skinned
+}
+
+/// Whether a frame may be drawn by the lean shaders (`LEAN`, render.wgsl):
+/// every switch of what they leave out is off in its uniform, and no draw
+/// is of sand, clay or a surface lit from under its skin — what the lit
+/// shader does whatever the weather.
+fn lean_allowed(u: &FrameUniform, frame: &Frame, no_decals: bool) -> bool {
+    let off = |v: f32| v <= 0.5;
+    let calm = u.weather[0] == [0.0; 4]
+        && u.weather[1][1] <= 0.0
+        && u.weather[1][2] <= 0.0
+        // Drift, drying and mud; the mud's height (w) means nothing
+        // without mud.
+        && u.weather[2][..3] == [0.0; 3]
+        && off(u.dust[0]);
+    let clear = u.clouds[0][0] <= 0.0 || u.clouds[1][3] <= 0.0;
+    let dry = (0..4).all(|i| off(u.waters[i * 2][1]));
+    let plain = u.ambient_occlusion[2] <= 0.0
+        && off(u.vsm[3][0])
+        && off(u.ddgi[1][3])
+        && off(u.ssr[0])
+        && off(u.air[0])
+        && off(u.volume[0])
+        && u.probe_params[0] == 0.0
+        && off(u.probe_params[2])
+        && off(u.distance[0][3])
+        && off(u.ray[0])
+        && off(u.ray[1])
+        && off(u.ray[2])
+        && off(u.restir[0])
+        && off(u.glass[0]);
+    let materials = frame.draws.iter().all(|d| {
+        let m = &d.material;
+        m.shading != Shading::Sand && !m.clay && m.subsurface == [0.0; 3]
+    });
+    if std::env::var_os("SCRAP_LEAN_WHY").is_some() {
+        eprintln!(
+            "lean: calm {calm} clear {clear} dry {dry} plain {plain} decals {no_decals} materials {materials}; weather {:?} dust {:?} ao {:?} vsm {:?} ddgi {:?} ssr {:?} air {:?} volume {:?} probes {:?} distance {:?} ray {:?} restir {:?} glass {:?}",
+            u.weather, u.dust, u.ambient_occlusion, u.vsm[3], u.ddgi[1], u.ssr, u.air, u.volume, u.probe_params, u.distance[0], u.ray, u.restir, u.glass
+        );
+    }
+    calm && clear && dry && plain && no_decals && materials
 }
 
 fn aabb_in_frustum(
@@ -7339,19 +8388,7 @@ fn aabb_in_frustum(
     bounds: crate::asset::Bounds,
     transform: Mat4,
 ) -> bool {
-    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for i in 0..8 {
-        let corner = Vec3::new(
-            if i & 1 == 0 { lo.x } else { hi.x },
-            if i & 2 == 0 { lo.y } else { hi.y },
-            if i & 4 == 0 { lo.z } else { hi.z },
-        );
-        let world = transform.transform_point3(corner);
-        min = min.min(world);
-        max = max.max(world);
-    }
+    let (min, max) = world_box(bounds, transform);
     planes.iter().all(|plane| {
         // The corner furthest along the plane's normal. If even that one is
         // behind, the whole box is.
@@ -7427,6 +8464,8 @@ struct FrameInputs<'a> {
     trample: &'a wgpu::TextureView,
     /// The scene's distance field.
     distance: &'a wgpu::TextureView,
+    /// The frame's instances.
+    instances: &'a wgpu::Buffer,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -7517,6 +8556,7 @@ fn frame_bind_group(
         view(23, inputs.terrain_heights),
         view(30, inputs.trample),
         view(31, inputs.distance),
+        buffer(33, inputs.instances),
     ];
     if let Some((rays, materials)) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
@@ -7615,7 +8655,7 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
         format: DEPTH_FORMAT,
         // One sample a pixel: the prepass's depth is copied in to start from.
         usage: if samples == 1 {
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING
         } else {
             wgpu::TextureUsages::RENDER_ATTACHMENT
         },
@@ -7646,6 +8686,36 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_world_box_is_the_box_round_its_eight_corners() {
+        let bounds = crate::asset::Bounds { min: [-0.3, -1.0, 0.2], max: [0.7, 2.0, 0.9] };
+        for transform in [
+            Mat4::IDENTITY,
+            Mat4::from_translation(Vec3::new(3.0, -2.0, 10.0)),
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0, 0.5, 3.0),
+                glam::Quat::from_euler(glam::EulerRot::YXZ, 0.7, -1.2, 0.3),
+                Vec3::new(-40.0, 5.0, 12.5),
+            ),
+            Mat4::from_cols_array(&[1.0, 0.2, 0.0, 0.0, -0.4, 1.5, 0.3, 0.0, 0.0, 0.1, -2.0, 0.0, 7.0, 8.0, 9.0, 1.0]),
+        ] {
+            let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+            let (mut min, mut max) = (Vec3::INFINITY, Vec3::NEG_INFINITY);
+            for i in 0..8 {
+                let corner = Vec3::new(
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                );
+                let p = transform.transform_point3(corner);
+                min = min.min(p);
+                max = max.max(p);
+            }
+            let (a, b) = world_box(bounds, transform);
+            assert!(a.abs_diff_eq(min, 1e-4) && b.abs_diff_eq(max, 1e-4), "{a} {b} vs {min} {max}");
+        }
+    }
 
     #[test]
     fn a_shader_names_its_texture_slots_on_a_line_of_its_own() {
@@ -7718,6 +8788,48 @@ mod tests {
         let planes = looking_down_minus_z();
         let ground = Mat4::from_scale(Vec3::new(200.0, 1.0, 200.0));
         assert!(aabb_in_frustum(&planes, unit_box(), ground));
+    }
+}
+
+
+/// An `f32` as a half float's bits, rounded to nearest: what an
+/// `Rgba16Float` texture written from the CPU wants.
+fn half_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        // Infinity or NaN.
+        return sign | 0x7c00 | if mantissa != 0 { 0x200 } else { 0 };
+    }
+    let e = exponent - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = (mantissa | 0x0080_0000) >> (1 - e);
+        return sign | ((m + 0x1000) >> 13) as u16;
+    }
+    let rounded = ((e as u32) << 10 | (mantissa >> 13)) + ((mantissa >> 12) & 1);
+    sign | rounded as u16
+}
+
+#[cfg(test)]
+mod half_float_tests {
+    #[test]
+    fn half_floats_are_what_a_sky_table_holds() {
+        assert_eq!(super::half_bits(0.0), 0);
+        assert_eq!(super::half_bits(1.0), 0x3c00);
+        assert_eq!(super::half_bits(-2.0), 0xc000);
+        assert_eq!(super::half_bits(0.5), 0x3800);
+        assert_eq!(super::half_bits(65504.0), 0x7bff);
+        assert_eq!(super::half_bits(1e6), 0x7c00);
+        assert_eq!(super::half_bits(6.103_515_6e-5), 0x0400);
+        assert_eq!(super::half_bits(5.960_464_5e-8), 0x0001);
     }
 }
 

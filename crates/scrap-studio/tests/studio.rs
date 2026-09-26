@@ -909,11 +909,77 @@ fn the_git_tab_lists_the_scenes_revisions_and_brings_one_back() {
         })
         .collect();
     let older = format!("revision {}", rows.last().unwrap());
-    click(&mut s, &older);
-    click(&mut s, &older);
+    double_click(&mut s, &older);
     assert!(s.session.find("crate").is_some(), "brought back");
     click(&mut s, "undo");
     assert!(s.session.find("crate").is_none());
+}
+
+#[test]
+fn the_git_tab_commits_what_is_ticked_and_shows_what_a_commit_changed() {
+    let Some((mut s, dir)) = studio() else { return };
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    if git(&["init", "-q", "-b", "main"]).is_none() {
+        eprintln!("no git here; skipped");
+        return;
+    }
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "Tess"]);
+    // What the studio keeps of itself stays out, as a new project's
+    // `.gitignore` keeps it.
+    std::fs::write(dir.join(".gitignore"), ".scrap/\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first light"]);
+
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    std::fs::write(dir.join("notes.txt"), "not for this commit").unwrap();
+    click(&mut s, "tab git");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("#git file scenes/first-light.ron"), "{dump}");
+    assert!(dump.contains("\"unsaved\""), "the unsaved scene is a change: {dump}");
+    assert!(dump.contains("#git file notes.txt"), "{dump}");
+    assert!(dump.contains("\"main\""), "the branch: {dump}");
+
+    // The note left out; a message; Commit saves the scene and commits it.
+    click(&mut s, "git file notes.txt");
+    click(&mut s, "git message");
+    type_text(&mut s, "no crate");
+    click(&mut s, "git commit");
+    assert!(!s.session.is_modified(), "saved on the way");
+    assert_eq!(
+        git(&["log", "-1", "--format=%s"]).unwrap().trim(),
+        "no crate"
+    );
+    let left = git(&["status", "--porcelain"]).unwrap();
+    assert_eq!(left.trim(), "?? notes.txt", "only the ticked file went");
+
+    s.frame();
+    let dump = s.ui.dump();
+    let newest = dump
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("#revision "))
+        .map(|r| format!("revision {}", r.split(' ').next().unwrap()))
+        .expect("a revision line");
+    click(&mut s, &newest);
+    let dump = s.ui.dump();
+    assert!(dump.contains("removed `crate`"), "what the commit changed: {dump}");
+    assert!(dump.contains("#git restore"), "{dump}");
+
+    // The whole project's history has both commits.
+    click(&mut s, "git scope Project");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"2 commits\""), "{dump}");
 }
 
 #[test]
@@ -1563,6 +1629,117 @@ fn project_settings_open_and_save_only_what_reads() {
             .map(|l| &l.text)
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn configs_show_as_tables_and_follow_a_save() {
+    let Some((mut s, dir)) = studio() else { return };
+    let configs = dir.join("configs");
+    std::fs::create_dir_all(configs.join("items")).unwrap();
+    std::fs::write(
+        configs.join("flyby.ron"),
+        "(\n    travel: 3.5,\n    shots: [\n        (at: (0.5, 5.4, 6.7), look: (1.9, 0.4, 0.2)),\n        (at: (1.0, 2.0, 3.0), look: (0.0, 0.0, 0.0)),\n    ],\n)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        configs.join("items/materials.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\", hard: (1, 2)),\n    \"Доска\": (id: \"9a02\", base: \"Палка\"),\n}\n",
+    )
+    .unwrap();
+    click(&mut s, "tab configs");
+    s.frame();
+    // The first file opens by itself: an empty page says nothing.
+    assert!(s.ui.find("configs flyby.ron").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("configs field travel").is_some());
+    assert!(s.ui.find("configs table shots").is_some());
+    assert!(s.ui.find("configs row shots 1").is_some());
+
+    click(&mut s, "configs items/materials.ron");
+    assert!(s.ui.find("configs row  Доска").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("configs table shots").is_none());
+
+    // A save that is not RON says so, with where.
+    std::fs::write(
+        configs.join("items/materials.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\"\n",
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    let problem = s.ui.find("configs problem").expect("the error shown");
+    assert!(s.ui.text(problem).unwrap_or_default().contains(':'));
+}
+
+#[test]
+fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
+    use scrap_studio::menu::Action;
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    enum Kind {
+        Wood,
+        Stone,
+    }
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Material {
+        hard: u8,
+        kind: Kind,
+        #[serde(default)]
+        tool: Option<scrap::Link<Material>>,
+    }
+    impl scrap::Record for Material {}
+
+    let Some((mut s, dir)) = studio() else { return };
+    let file = dir.join("configs/materials.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "{\n    \"Палка\": (id: \"4c1e\", hard: 1, kind: Wood),\n    \"Доска\": (id: \"9a02\", base: \"Палка\", hard: 2),\n}\n",
+    )
+    .unwrap();
+    let mut tables = scrap::Tables::new();
+    tables.register::<Material>("configs/materials.ron");
+    tables
+        .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
+        .unwrap();
+    let read = || std::fs::read_to_string(&file).unwrap();
+    click(&mut s, "tab configs");
+    click(&mut s, "configs materials.ron");
+
+    // Typed: the cell's text, all of it, then a number and Enter.
+    click(&mut s, "configs cell  Палка hard");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "3");
+    key(&mut s, Key::Enter);
+    assert!(read().contains("\"Палка\": (id: \"4c1e\", hard: 3, kind: Wood)"), "{}", read());
+
+    // What does not fit the type is not written.
+    click(&mut s, "configs cell  Палка hard");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "\"very\"");
+    key(&mut s, Key::Enter);
+    assert!(read().contains("hard: 3,"), "{}", read());
+    assert!(
+        s.session.console().iter().any(|l| l.text.contains("`hard` is a whole number")),
+        "said why"
+    );
+
+    // Picked: an enum's variants; a link's records.
+    click(&mut s, "configs cell  Доска kind");
+    click(&mut s, "menu Stone");
+    assert!(read().contains("base: \"Палка\", hard: 2, kind: Stone)"), "{}", read());
+    click(&mut s, "configs cell  Доска tool");
+    click(&mut s, "menu Палка");
+    assert!(read().contains("tool: Some(\"Палка\")"), "{}", read());
+
+    // Undo is the window's: the link goes, then the kind.
+    s.run(Action::Editor("undo"));
+    assert!(!read().contains("tool:"), "{}", read());
+    assert!(read().contains("kind: Stone"));
+    s.run(Action::Editor("undo"));
+    assert!(!read().contains("kind: Stone"), "{}", read());
+    s.run(Action::Editor("redo"));
+    assert!(read().contains("kind: Stone"), "{}", read());
 }
 
 #[test]
@@ -2804,6 +2981,73 @@ fn a_prefab_field_is_picked_from_the_project_and_a_wrong_one_is_named() {
             .iter()
             .any(|p| p.message.contains("links to prefab `campfir`")
                 && p.message.contains("`campfire`")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_component_s_link_to_a_record_is_picked_from_its_table_and_a_wrong_one_named() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Material {
+        hard: u8,
+    }
+    impl scrap::Record for Material {}
+
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    std::fs::create_dir_all(dir.join("configs")).unwrap();
+    std::fs::write(
+        dir.join("configs/materials.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\", hard: 1),\n    \"Доска\": (id: \"9a02\", hard: 2),\n}\n",
+    )
+    .unwrap();
+    let mut tables = scrap::Tables::new();
+    tables.register::<Material>("configs/materials.ron");
+    tables
+        .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
+        .unwrap();
+    let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> = [(
+        "crafter".to_string(),
+        scrap::shape::Shape::Struct(vec![(
+            "from".into(),
+            scrap::shape::Shape::Record("Material".into()),
+        )]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::write(
+        dir.join(scrap::project::SHAPES),
+        scrap::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    s.session.add_component(boulder, "crafter").unwrap();
+    click(&mut s, "line boulder");
+    click(&mut s, "crafter from");
+    click(&mut s, "object Доска");
+    let value = s
+        .session
+        .inspect(boulder)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.crafter")
+        .unwrap()
+        .value;
+    assert!(
+        value.contains(r#"("Доска","0000000000009a02")"#),
+        "by name and ID: {value}"
+    );
+
+    // Written by hand, wrong: named, with the nearest.
+    s.session
+        .set_component(boulder, "crafter", Some(r#"(from: "Доскa")"#))
+        .unwrap();
+    let problems = s.session.problems();
+    assert!(
+        problems.iter().any(|p| p.message.contains("`crafter.from`: no `Material` called `Доскa`")
+            && p.message.contains("did you mean `Доска`?")),
         "{problems:?}"
     );
 }
@@ -4494,12 +4738,12 @@ fn the_table_sets_a_cell_of_a_tuning_record_and_sorts_by_a_column() {
     let Some((mut s, dir)) = studio() else {
         return;
     };
-    let file = dir.join("tuning/enemies.ron");
+    let file = dir.join("configs/enemies.ron");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     let text = "{\n    \"goblin\": (hp: 10, speed: 2.5),\n    \"orc\": (hp: 30), // slow\n}\n";
     std::fs::write(&file, text).unwrap();
     click(&mut s, "tab table");
-    click(&mut s, "table source tuning/enemies.ron");
+    click(&mut s, "table source configs/enemies.ron");
     let cell = s.ui.find("table cell orc hp").unwrap();
     assert_eq!(s.ui.text(cell), Some("30"));
 

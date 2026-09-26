@@ -138,10 +138,15 @@ pub fn list() -> Vec<Value> {
             "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
             "spacing": { "type": "number", "description": "metres between copies; 1 by default" },
         }), &["what", "points"]),
-        tool("history", "The commits that touched the open scene's file, newest first: commit, author, date, summary.", json!({}), &[]),
+        tool("history", "The commits that touched the open scene's file — or with project: true, anything in the project — newest first: commit, author, date, summary.", json!({ "project": { "type": "boolean" } }), &[]),
+        tool("changes", "What one commit changed: the project's files it touched and, when it touched the open scene, each thing added or removed and each field changed, before → after.", json!({ "commit": { "type": "string" } }), &["commit"]),
+        tool("git_status", "Where the project's repository stands: branch, commits ahead of and behind the branch it follows, whether a merge is under way, and each file not as committed, with a letter: M changed, A new, D deleted, R renamed, U in conflict.", json!({}), &[]),
+        tool("commit", "Commit files of the project — all that `git_status` lists when paths is left out — with a message. Save the scene first: unsaved edits are refused, not left out silently.", json!({ "message": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" }, "description": "relative to the project, or absolute" } }), &["message"]),
         tool("restore", "Put the open scene back as it was at a commit, as one undo step (render afterwards to look; undo to go back).", json!({ "commit": { "type": "string" } }), &["commit"]),
-        tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered. The file holds ours for each.", json!({}), &[]),
-        tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered, and which side the document holds for it now. The merge holds ours for each.", json!({}), &[]),
+        tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Then save and `resolved`.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("take_ours", "Settle one conflict ours' way again after taking theirs or editing it, as one undo step.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("resolved", "Tell git the open scene's conflicts are settled (`git add`), so the merge can be committed. Save first.", json!({}), &[]),
         tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
         tool("sculpt", "Shape a terrain with one brush stroke at a world point: raise (by > 0) or lower it, or with flatten: true pull it toward the height `by`. Written as one line in the terrain's .scrterrain and rebuilt at once.", json!({
@@ -162,6 +167,9 @@ pub fn list() -> Vec<Value> {
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
+        tool("configs", "The project's configs/ (docs/data.md): without `file`, the files, each table with the type of its records; with `file` (project-relative, like configs/materials.ron), its fields and grids as text — a table's records by name, what a record takes from its base marked ^; with `find`, the records and rows whose name has it, in every file. Changes nothing.", json!({ "file": { "type": "string" }, "find": { "type": "string" } }), &[]),
+        tool("config_set", "Set one value in a config as RON text — the Configs window's cell: `record` and `field` in a table of records (field `name` renames it, `base` names its base), or `field` alone for a top-level field, or `grid`, `row` and `field` for a list's item under a field. An empty value takes the field away (a record then takes it from its base). Checked before it is written — it has to read, and fit the type the game said the table holds — and every record's id is written; the rest of the file is kept as it was. One step of config_undo.", json!({ "file": { "type": "string" }, "record": { "type": "string" }, "grid": { "type": "string" }, "row": { "type": "integer" }, "field": { "type": "string" }, "value": { "type": "string" } }), &["file", "field", "value"]),
+        tool("config_undo", "Put back the config this agent last changed with config_set, as it was — refused when the file was changed since by anything else.", json!({}), &[]),
         tool("add_component", "Put one of the game's components on an entity with a value of its shape to start from — Add Component. Needs library/components.ron, which the game writes when it or `scrap test` runs; without `name`, lists the components and what each holds.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &[]),
         tool("import_settings", "An asset source's import settings (its .scrimport), or with `field` and `value` one of them changed — scale, recompute_normals, srgb, origin_to_base — and the asset built again, every scene showing it at once.", json!({ "source": { "type": "string", "description": "project-relative, like assets/rock.obj" }, "field": { "type": "string" }, "value": { "type": "string" } }), &["source"]),
         tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.scrpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" }, "standing": { "type": "boolean", "description": "stand it up: points are [x, y], a wall seen from the front, and height is its thickness along z — a U of points is a wall with a doorway" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
@@ -761,10 +769,13 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!("{count} {verb}"))])
         }
         "history" => {
-            let revisions = server
-                .session()?
-                .scene_history()
-                .map_err(|e| e.to_string())?;
+            let session = server.session()?;
+            let revisions = if args.get("project").and_then(Value::as_bool) == Some(true) {
+                session.project_history(200)
+            } else {
+                session.scene_history()
+            }
+            .map_err(|e| e.to_string())?;
             if revisions.is_empty() {
                 return Ok(vec![text("not in any commit yet")]);
             }
@@ -782,6 +793,70 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .collect();
             Ok(vec![text(lines.join("\n"))])
         }
+        "changes" => {
+            let commit = string(args, "commit")?;
+            let changes = server
+                .session()?
+                .commit_changes(&commit)
+                .map_err(|e| e.to_string())?;
+            let mut lines: Vec<String> = changes
+                .files
+                .iter()
+                .map(|(letter, name)| format!("{letter} {name}"))
+                .collect();
+            if !changes.scene.is_empty() {
+                lines.push(String::new());
+                lines.push("in the open scene:".into());
+                lines.extend(changes.scene.iter().map(|c| format!("  {c}")));
+            }
+            if lines.is_empty() {
+                return Ok(vec![text("it changed nothing in the project")]);
+            }
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "git_status" => {
+            let session = server.session()?;
+            let status = session.git_status().map_err(|e| e.to_string())?;
+            let mut lines = vec![git_branch_line(&status)];
+            if session.is_modified() {
+                lines.push("the open scene has unsaved edits".into());
+            }
+            if status.files.is_empty() {
+                lines.push("nothing to commit".into());
+            }
+            lines.extend(
+                status
+                    .files
+                    .iter()
+                    .map(|f| format!("{} {}", f.letter(), f.name)),
+            );
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "commit" => {
+            let message = string(args, "message")?;
+            let session = server.session()?;
+            let paths: Vec<std::path::PathBuf> = match args.get("paths") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| v.as_str().map(Into::into).ok_or("paths are strings"))
+                    .collect::<Result<_, _>>()?,
+                _ => session
+                    .git_status()
+                    .map_err(|e| e.to_string())?
+                    .files
+                    .into_iter()
+                    .map(|f| f.path)
+                    .collect(),
+            };
+            let commit = session
+                .commit(&paths, &message)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "committed {commit}: {} file{}",
+                paths.len(),
+                if paths.len() == 1 { "" } else { "s" }
+            ))])
+        }
         "restore" => {
             let commit = string(args, "commit")?;
             server
@@ -793,29 +868,48 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             ))])
         }
         "conflicts" => {
-            let conflicts = server
-                .session()?
-                .merge_conflicts()
-                .map_err(|e| e.to_string())?;
+            let session = server.session()?;
+            let conflicts = session.merge_conflicts().map_err(|e| e.to_string())?;
             if conflicts.is_empty() {
                 return Ok(vec![text("no merge conflicts in the open scene")]);
             }
+            let sides = session.conflict_sides();
             let lines: Vec<String> = conflicts
                 .iter()
                 .enumerate()
-                .map(|(i, c)| format!("{i}: {c}"))
+                .map(|(i, c)| {
+                    let holds = match sides.get(i).copied().flatten() {
+                        Some(scrap::merge::Side::Ours) => " [holds ours]",
+                        Some(scrap::merge::Side::Theirs) => " [holds theirs]",
+                        None => "",
+                    };
+                    format!("{i}: {c}{holds}")
+                })
                 .collect();
             Ok(vec![text(lines.join("\n"))])
         }
-        "take_theirs" => {
+        "take_theirs" | "take_ours" => {
             let index = integer(args, "conflict")? as usize;
+            let session = server.session()?;
+            let side = if name == "take_ours" {
+                session.take_ours(index)
+            } else {
+                session.take_theirs(index)
+            };
+            side.map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "conflict {index} settled {} way; not saved",
+                if name == "take_ours" { "ours'" } else { "theirs'" }
+            ))])
+        }
+        "resolved" => {
             server
                 .session()?
-                .take_theirs(index)
+                .mark_resolved()
                 .map_err(|e| e.to_string())?;
-            Ok(vec![text(format!(
-                "conflict {index} settled theirs' way; not saved"
-            ))])
+            Ok(vec![text(
+                "the scene's conflicts are settled for git; commit to finish the merge",
+            )])
         }
         "copy" => {
             let ids = match args.get("ids") {
@@ -1112,6 +1206,100 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(id.to_string())])
         }
+        "configs" => {
+            let root = project_root(server)?;
+            if let Some(find) = optional_string(args, "find")? {
+                let needle = find.to_lowercase();
+                let mut out = String::new();
+                for file in scrap_editor::configs::files(&root) {
+                    let Ok(text) = std::fs::read_to_string(&file) else { continue };
+                    let Ok(config) = scrap_editor::configs::read(&text) else { continue };
+                    let rel = file.strip_prefix(&root).unwrap_or(&file).display().to_string();
+                    for table in &config.tables {
+                        for row in &table.rows {
+                            if row[0].to_lowercase().contains(&needle) {
+                                let under = table.name.as_deref().map(|n| format!(" {n}")).unwrap_or_default();
+                                let _ = writeln!(out, "{rel}{under}: {}", row[0]);
+                            }
+                        }
+                    }
+                }
+                return Ok(vec![text(if out.is_empty() { format!("nothing called like {find:?}") } else { out })]);
+            }
+            let Some(file) = optional_string(args, "file")? else {
+                let mut out = String::new();
+                for file in scrap_editor::configs::files(&root) {
+                    let rel = file.strip_prefix(&root).unwrap_or(&file).display().to_string();
+                    match scrap_editor::configs::shape_of(&root, &file) {
+                        Some(shape) => {
+                            let _ = writeln!(out, "{rel}: a table of {}: {}", shape.record, shape.shape);
+                        }
+                        None => {
+                            let _ = writeln!(out, "{rel}");
+                        }
+                    }
+                }
+                return Ok(vec![text(if out.is_empty() { "no configs/ files".into() } else { out })]);
+            };
+            let path = root.join(&file);
+            let body = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
+            let shape = scrap_editor::configs::shape_of(&root, &path);
+            let config = scrap_editor::configs::read_with(&body, shape.as_ref())?;
+            let mut out = String::new();
+            if let Some(shape) = &shape {
+                let _ = writeln!(out, "records of {}", shape.record);
+            }
+            for (key, value) in &config.fields {
+                let _ = writeln!(out, "{key}: {value}");
+            }
+            for table in &config.tables {
+                if let Some(name) = &table.name {
+                    let _ = writeln!(out, "\n{name}:");
+                }
+                let _ = writeln!(out, "{}", table.columns.join(" | "));
+                for (row, taken) in table.rows.iter().zip(&table.inherited) {
+                    let cells: Vec<String> = row
+                        .iter()
+                        .zip(taken)
+                        .map(|(cell, taken)| if *taken { format!("^{cell}") } else { cell.clone() })
+                        .collect();
+                    let _ = writeln!(out, "{}", cells.join(" | "));
+                }
+            }
+            Ok(vec![text(out)])
+        }
+        "config_set" => {
+            let root = project_root(server)?;
+            let file = string(args, "file")?;
+            let path = root.join(&file);
+            let field = string(args, "field")?;
+            let value = string(args, "value")?;
+            let place = match (optional_string(args, "record")?, optional_string(args, "grid")?) {
+                (Some(record), _) => {
+                    let body = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
+                    let config = scrap_editor::configs::read(&body)?;
+                    let row = config
+                        .tables
+                        .iter()
+                        .find(|t| t.records)
+                        .and_then(|t| t.rows.iter().position(|r| r[0] == record))
+                        .ok_or_else(|| format!("{file}: no record `{record}`"))?;
+                    scrap_editor::configs::Place::Cell { grid: None, row, column: field }
+                }
+                (None, Some(grid)) => scrap_editor::configs::Place::Cell {
+                    grid: Some(grid),
+                    row: integer(args, "row")? as usize,
+                    column: field,
+                },
+                (None, None) => scrap_editor::configs::Place::Field(field),
+            };
+            let label = server.configs.set(&root, &path, &place, &value)?;
+            Ok(vec![text(if label.is_empty() { "already so".into() } else { format!("set {label}") })])
+        }
+        "config_undo" => Ok(vec![text(match server.configs.undo()? {
+            Some(label) => format!("undone: {label}"),
+            None => "nothing to undo".into(),
+        })]),
         "add_component" => {
             let session = server.session()?;
             let Some(name) = args.get("name").and_then(Value::as_str) else {
@@ -2580,6 +2768,33 @@ fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Va
             Ok(vec![text(out)])
         }
     }
+}
+
+/// `main → origin/main, 2 ahead, 1 behind`, and the merge under way.
+fn git_branch_line(status: &scrap_editor::Status) -> String {
+    let mut line = status
+        .branch
+        .clone()
+        .unwrap_or_else(|| "no branch (detached HEAD)".into());
+    if let Some(upstream) = &status.upstream {
+        line += &format!(
+            " → {upstream}, {} ahead, {} behind",
+            status.ahead, status.behind
+        );
+    }
+    if status.merging {
+        line += "; merging — committing finishes it";
+    }
+    line
+}
+
+/// The open project's folder: where configs/ is.
+fn project_root(server: &mut Server) -> Result<PathBuf, String> {
+    server
+        .session()?
+        .project()
+        .map(|p| p.root().to_path_buf())
+        .ok_or_else(|| "no project open: open_scene first".to_string())
 }
 
 fn string(args: &Value, key: &str) -> Result<String, String> {
