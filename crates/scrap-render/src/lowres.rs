@@ -236,7 +236,7 @@ impl LowRes {
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("particles depth"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -288,7 +288,7 @@ impl LowRes {
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: crate::gpu_timer::render("particles"),
+            timestamp_writes: crate::gpu_timer::render("particles over"),
             occlusion_query_set: None,
             multiview_mask: None,
         });

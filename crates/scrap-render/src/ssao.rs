@@ -329,6 +329,11 @@ impl SsaoRenderer {
         depth_range: [f32; 4],
     ) {
         let (w, h) = self.size;
+        // No light bouncing: the pictures' red free for each pixel's view
+        // distance (ssao.wgsl's `packed`).
+        let mut depth_range = depth_range;
+        let bounces = last_frame.is_some() && settings.bounce > 0.0;
+        depth_range[3] = if bounces { 0.0 } else { 1.0 };
         let uniform = SsaoUniform {
             view_projection: view_projection.to_cols_array_2d(),
             inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
@@ -402,7 +407,7 @@ impl SsaoRenderer {
         } else {
             vec![(&self.occlusion, &self.white, &self.raw), (&self.blur, &self.raw, &self.result)]
         };
-        for (pipeline, source, target) in passes {
+        for (k, (pipeline, source, target)) in passes.into_iter().enumerate() {
             let bind = group(source);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scrap::ssao"),
@@ -416,7 +421,7 @@ impl SsaoRenderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: crate::gpu_timer::render("ssao"),
+                timestamp_writes: crate::gpu_timer::render(["ssao", "ssao blur", "ssao up"][k]),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
