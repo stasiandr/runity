@@ -3721,8 +3721,6 @@ impl Studio {
 
     /// Do what a menu entry, a button or a context menu asks.
     pub fn run(&mut self, action: Action) {
-        // Whatever it writes is read again, not waited for.
-        self.session.wrote();
         if let Err(message) = self.run_inner(action) {
             self.session.say(Level::Error, message);
         }
@@ -4677,7 +4675,6 @@ impl Studio {
     /// The dialog's answer, done.
     fn answer(&mut self) {
         let Some(p) = &self.prompt else { return };
-        self.session.wrote();
         let text = self.ui.text(p.field).unwrap_or_default().trim().to_string();
         let ask = p.ask.clone();
         self.close_prompt();

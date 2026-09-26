@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use scrap::gpu::OffscreenTarget;
-use scrap::input::{InputEvent, MouseButton};
+use scrap::input::{InputEvent, Key, MouseButton};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scene = std::env::args()
@@ -101,6 +101,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     report("select", &clicks);
+
+    // The scene view turned round: a right drag across it, a frame a step.
+    if let Some(view) = studio.ui.find("scene view") {
+        let (x, y) = studio.ui.rect(view).center();
+        studio.handle(&InputEvent::MouseMoved { x, y });
+        studio.handle(&InputEvent::MouseDown(MouseButton::Right));
+        let mut orbit = Vec::new();
+        for i in 0..60 {
+            studio.handle(&InputEvent::MouseMoved { x: x + i as f32 * 4.0, y: y + (i % 7) as f32 });
+            orbit.push(frame(&mut studio));
+        }
+        studio.handle(&InputEvent::MouseUp(MouseButton::Right));
+        report("orbit", &orbit);
+    }
+
+    // An edit and its undo: the selection duplicated (⌘D), then taken back
+    // (⌘Z), each timed with its frame.
+    let chord = |studio: &mut scrap_studio::Studio, key: Key| {
+        studio.handle(&InputEvent::KeyDown(Key::LeftSuper));
+        studio.handle(&InputEvent::KeyDown(key));
+        studio.handle(&InputEvent::KeyUp(key));
+        studio.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    };
+    let (mut edits, mut undos) = (Vec::new(), Vec::new());
+    for _ in 0..8 {
+        let t = Instant::now();
+        chord(&mut studio, Key::D);
+        frame(&mut studio);
+        edits.push(ms(t));
+        frame(&mut studio);
+        let t = Instant::now();
+        chord(&mut studio, Key::Z);
+        frame(&mut studio);
+        undos.push(ms(t));
+        frame(&mut studio);
+    }
+    report("duplicate", &edits);
+    report("undo", &undos);
 
     drop(studio);
     for (path, bytes) in kept {
