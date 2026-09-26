@@ -157,6 +157,20 @@ pub struct Moving {
     /// Per clip, in the animator's order: the tracks that are not a place.
     #[allow(clippy::type_complexity)]
     others: Vec<Vec<(hecs::Entity, Property, Vec<(f32, f32)>, crate::ease::Ease)>>,
+    /// What any clip switches on or off, as it was when the line was
+    /// dressed: put back while a clip that does not switch it plays —
+    /// Unity's Write Defaults. A saw's sparks one state turns off are on
+    /// again in the next, which does not mention them.
+    defaults: Vec<(hecs::Entity, Property, f32)>,
+}
+
+impl Moving {
+    /// The clip playing now, by name: what Unity's
+    /// `GetCurrentAnimatorClipInfo` says of an animator.
+    pub fn playing_clip(&self) -> Option<&str> {
+        let playing = self.animator.playing()?;
+        self.animator.clips.get(playing.clip).map(|c| c.name.as_str())
+    }
 }
 
 impl std::fmt::Debug for Moving {
@@ -380,6 +394,13 @@ pub fn attach(
                 problems.push(problem);
             }
         }
+        let mut defaults: Vec<(hecs::Entity, Property, f32)> = Vec::new();
+        for (target, what, _, _) in others.iter().flatten() {
+            if *what == Property::Active && !defaults.iter().any(|(t, w, _)| t == target && w == what) {
+                let on = world.get::<&crate::world::Inactive>(*target).is_err();
+                defaults.push((*target, *what, if on { 1.0 } else { 0.0 }));
+            }
+        }
         let animator = Animator::new(Arc::new(skeleton), Arc::new(clips));
         let _ = world.insert_one(
             entity,
@@ -388,6 +409,7 @@ pub fn attach(
                 animator,
                 joints,
                 others,
+                defaults,
             },
         );
     }
@@ -437,6 +459,29 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
             .collect();
         times.sort_by(f32::total_cmp);
         times.dedup();
+        // Angles are keyed as Unity keys them, in degrees, and a turn
+        // may be more than half a circle between two keys — a saw's blade
+        // from -360 to 0 each second. Rotations blend the short way, so
+        // such a gap is cut into pieces of a quarter turn at most: else
+        // -360 and 0, the same rotation, would not turn at all.
+        if path == Part::Rotation {
+            let mut finer = Vec::with_capacity(times.len());
+            for pair in times.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                finer.push(a);
+                let swing = keyed
+                    .iter()
+                    .flatten()
+                    .filter_map(|k| Some((sample_eased(&k.keys, b, k.ease)? - sample_eased(&k.keys, a, k.ease)?).abs()))
+                    .fold(0.0f32, f32::max);
+                let pieces = (swing / 90.0).ceil().max(1.0) as usize;
+                for n in 1..pieces {
+                    finer.push(a + (b - a) * n as f32 / pieces as f32);
+                }
+            }
+            finer.extend(times.last());
+            times = finer;
+        }
         let base = match path {
             Part::Translation => rest.position,
             Part::Rotation => rest.rotation_deg,
@@ -500,8 +545,17 @@ pub fn run_with(
             } else {
                 playing.time.min(length)
             };
-            for (target, what, keys, ease) in moving.others.get(playing.clip).into_iter().flatten()
-            {
+            let keyed = moving.others.get(playing.clip);
+            for (target, what, value) in &moving.defaults {
+                let said = keyed
+                    .into_iter()
+                    .flatten()
+                    .any(|(t, w, _, _)| t == target && w == what);
+                if !said {
+                    others.push((*target, *what, *value));
+                }
+            }
+            for (target, what, keys, ease) in keyed.into_iter().flatten() {
                 let value = if *what == Property::Active {
                     step(keys, time)
                 } else {
@@ -622,6 +676,57 @@ mod tests {
             world.get::<&Controller>(mouse).unwrap().state(),
             Some("wave")
         );
+    }
+
+    #[test]
+    fn a_full_turn_spins_and_what_one_state_switched_off_the_next_puts_back() {
+        // A saw: starting, its sparks off; running, its blade from -360
+        // to 0 each second — a whole turn — and nothing said of sparks.
+        let scene: crate::scene::Scene = ron::from_str(
+            r#"(entities: [
+                (id: "0000000000000001", name: "saw", model: "builtin:cube", animator: "saw", children: [
+                    (id: "0000000000000002", name: "Blade", model: "builtin:cube"),
+                    (id: "0000000000000003", name: "Sparks", model: "builtin:cube"),
+                ]),
+            ])"#,
+        )
+        .unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut motions = Motions::default();
+        motions.graphs.insert(
+            "saw".into(),
+            ron::from_str(
+                r#"(start: "start", states: {
+                    "start": (clip: "start", transitions: [(to: "on", when: [Trigger("on")])]),
+                    "on": (clip: "on"),
+                })"#,
+            )
+            .unwrap(),
+        );
+        motions.clips.insert(
+            "start".into(),
+            ron::from_str(r#"(length: 1.0, tracks: [(path: "Sparks", what: Active, keys: [(0.0, 0.0)])])"#).unwrap(),
+        );
+        motions.clips.insert(
+            "on".into(),
+            ron::from_str(r#"(length: 1.0, tracks: [(path: "Blade", what: TurnX, keys: [(0.0, -360.0), (1.0, 0.0)])])"#)
+                .unwrap(),
+        );
+        assert!(attach(&mut world, &motions, |_| None).is_empty());
+        let ids = crate::world::addressable(&world);
+        let (saw, blade, sparks) = (ids[&EntityId::from_raw(1)], ids[&EntityId::from_raw(2)], ids[&EntityId::from_raw(3)]);
+        run(&mut world, 0.1);
+        assert!(!crate::world::is_active(&world, sparks), "starting: off");
+        world.get::<&mut Moving>(saw).unwrap().controller.trigger("on");
+        let mut turns = Vec::new();
+        for _ in 0..12 {
+            run(&mut world, 0.1);
+            turns.push(world.get::<&crate::Transform>(blade).unwrap().rotation());
+        }
+        let most = turns.windows(2).map(|w| w[0].angle_between(w[1])).fold(0.0f32, f32::max);
+        assert!(most > 0.5, "a tenth of a second is a tenth of a turn, {most} rad");
+        assert!(crate::world::is_active(&world, sparks), "running: back on, as the scene had them");
     }
 
     #[test]

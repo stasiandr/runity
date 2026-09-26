@@ -388,3 +388,72 @@ fn what_an_own_shader_cuts_away_shows_what_is_behind() {
     let middle = OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2);
     assert!(middle[0] > 200 && middle[1] < 40, "the red behind the cut: {middle:?}");
 }
+
+#[test]
+fn a_meshs_painted_vertex_colours_reach_its_shader_and_an_unpainted_one_reads_white() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let mut painted = builtin::cube(2.0);
+    // Red a quarter: a number the shader reads as it is, not a colour
+    // bent through sRGB.
+    painted.colors = vec![[64, 255, 0, 255]; painted.vertices.len()];
+    let painted = renderer.upload_mesh_owned(&gpu, &painted);
+    // More vertices than the white stand-in first covers.
+    let big = builtin::sphere(1.5, 128, 64);
+    assert!(big.vertices.len() > 4096);
+    let big = renderer.upload_mesh_owned(&gpu, &big);
+    let id = scrap::asset::shader_id("painted");
+    renderer
+        .set_material_shader(
+            &gpu,
+            id,
+            "fn surface(in: SurfaceIn, out: Surface) -> Surface {
+    var o = out;
+    o.albedo = in.vertex_color.rgb;
+    return o;
+}",
+        )
+        .unwrap();
+    let mut middle = |mesh| {
+        let frame = Frame {
+            camera: Camera {
+                position: Vec3::new(0.0, 0.0, 4.0),
+                target: Vec3::ZERO,
+                ..Camera::default()
+            },
+            sky: scrap::render::Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            clear_color: Vec3::ZERO,
+            post: scrap::post::PostProcess::OFF,
+            ambient_occlusion: scrap::ssao::AmbientOcclusion::OFF,
+            draws: vec![Draw {
+                mesh,
+                transform: Mat4::IDENTITY,
+                texture: TextureHandle::WHITE,
+                material: Material {
+                    shading: Shading::Unlit,
+                    shader: Some(id),
+                    ..Material::new(1.0, 1.0, 1.0)
+                },
+                pose: None,
+            }],
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2)
+    };
+    let seen = middle(painted);
+    // 64/255 linear is about 137 once the picture is sRGB.
+    assert!(
+        (120..155).contains(&seen[0]) && seen[1] > 240 && seen[2] < 20,
+        "the painted colour, as numbers: {seen:?}"
+    );
+    let seen = middle(big);
+    assert!(seen.iter().take(3).all(|c| *c > 240), "no colours read white: {seen:?}");
+}

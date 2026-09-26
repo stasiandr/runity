@@ -236,3 +236,113 @@ fn contact_shadows_hold_the_dark_behind_a_pebble_the_map_misses() {
         "contact shadows lay a shadow the map misses: {with} dark pixels against {without}"
     );
 }
+
+/// URP's normal bias shrinks the caster into itself as it is drawn into
+/// the map, by texels of the cascade grown with the soft filter's reach: a
+/// round pole (smooth normals, as a modelled one has) two texels thick under a
+/// coarse map throws a faint shadow, as its thin poles do in Unity — while
+/// the open floor stays lit (no acne) and a pole with no normal bias
+/// throws its whole shadow.
+#[test]
+fn normal_bias_thins_a_thin_casters_shadow_in_texels_as_urp_does() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let shot = |normal_bias: f32| {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let plane = renderer.upload_mesh_owned(&gpu, &builtin::plane(1.0, 1));
+        let pole = renderer.upload_mesh_owned(&gpu, &builtin::cylinder(0.15, 4.0, 16));
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            post: scrap::post::PostProcess::OFF,
+            ambient_occlusion: scrap::ssao::AmbientOcclusion::OFF,
+            // Straight down on the floor the pole's shadow falls across.
+            camera: Camera {
+                position: Vec3::new(2.0, 5.0, 0.01),
+                target: Vec3::new(2.0, 0.0, 0.0),
+                ..Camera::default()
+            },
+            lighting: Lighting {
+                sun_direction: Vec3::new(0.6, -0.8, 0.0).normalize(),
+                sky_color: Vec3::splat(0.05),
+                ground_color: Vec3::splat(0.05),
+                ..Lighting::default()
+            },
+            // One cascade of coarse texels, about as wide as the pole.
+            shadows: ShadowSettings {
+                resolution: 256,
+                cascades: 1,
+                max_distance: 20.0,
+                depth_bias: 0.1,
+                normal_bias,
+                soft: scrap::render::SoftShadows::High,
+                contact: 0.0,
+                ..ShadowSettings::default()
+            },
+            clear_color: Vec3::ZERO,
+            draws: vec![
+                Draw {
+                    mesh: plane,
+                    transform: Mat4::from_scale(Vec3::splat(40.0)),
+                    texture: TextureHandle::WHITE,
+                    material: Material::new(0.8, 0.8, 0.8),
+                    pose: None,
+                },
+                Draw {
+                    mesh: pole,
+                    transform: Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0)),
+                    texture: TextureHandle::WHITE,
+                    material: Material::new(0.8, 0.8, 0.8),
+                    pose: None,
+                },
+            ],
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        renderer.render(&gpu, &target, &frame);
+        let pixels = target.read_rgba(&gpu);
+        if let Ok(dir) = std::env::var("DUMP") {
+            image::save_buffer(format!("{dir}/pole_{normal_bias}.png"), &pixels, SIZE, SIZE, image::ColorType::Rgba8).unwrap();
+        }
+        // The open floor, off the shadow's line, and how much darker than
+        // it the picture is in all.
+        let band = |rows: std::ops::Range<u32>| {
+            let mut sum = 0;
+            for y in rows.clone() {
+                for x in 0..SIZE {
+                    sum += OffscreenTarget::pixel(&pixels, SIZE, x, y)[1] as i32;
+                }
+            }
+            sum / (rows.len() as i32 * SIZE as i32)
+        };
+        let open = band(2..SIZE / 5);
+        let corner = band(SIZE * 4 / 5..SIZE - 2);
+        // Along the shadow's line only: from the pole's foot towards +x.
+        let mut mass = 0;
+        for y in SIZE * 2 / 5..SIZE * 3 / 5 {
+            for x in SIZE / 5..SIZE * 2 / 3 {
+                mass += (open - OffscreenTarget::pixel(&pixels, SIZE, x, y)[1] as i32).max(0);
+            }
+        }
+        (mass, open, corner)
+    };
+    let (whole, open, corner) = shot(0.0);
+    // Its texel is an eighth of a metre and the soft filter's reach 3.5
+    // of them: 0.3 shrinks it by up to 13 cm, most of its 15.
+    let (thinned, open_b, corner_b) = shot(0.3);
+    eprintln!("shadow mass: no normal bias {whole}, 0.3 {thinned}; floor {open}/{corner}, {open_b}/{corner_b}");
+    assert!(whole > 0, "the pole throws a shadow");
+    assert!(
+        thinned * 2 < whole,
+        "a thin pole's shadow thins under the normal bias: {thinned} against {whole}"
+    );
+    assert!(
+        (open - corner).abs() <= 3 && (open_b - corner_b).abs() <= 3,
+        "the open floor is evenly lit, no acne: {open}/{corner}, {open_b}/{corner_b}"
+    );
+}

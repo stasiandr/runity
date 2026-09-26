@@ -139,8 +139,8 @@ pub fn claim_approaching(world: &mut World, physics: &crate::physics::PhysicsWor
         let scale = world.get::<&WorldTransform>(e).map(|p| p.0.to_scale_rotation_translation().0.abs().max_element()).unwrap_or(1.0);
         let r = match world.get::<&Shape>(e).map(|s| s.0) {
             Ok(crate::body::Collider::Box { half, center }) => half.length() + center.length(),
-            Ok(crate::body::Collider::Sphere { radius }) => radius,
-            Ok(crate::body::Collider::Capsule { half_height, radius }) | Ok(crate::body::Collider::Cylinder { half_height, radius }) => half_height + radius,
+            Ok(crate::body::Collider::Sphere { radius, .. }) => radius,
+            Ok(crate::body::Collider::Capsule { half_height, radius, .. }) | Ok(crate::body::Collider::Cylinder { half_height, radius }) => half_height + radius,
             _ => 0.5,
         };
         r * scale

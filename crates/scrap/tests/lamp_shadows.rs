@@ -85,6 +85,8 @@ fn a_wall_shadows_a_point_lamp_and_a_spot_behind_it() {
         return;
     };
     let point = PointLight {
+        falloff: Default::default(),
+        inner_cone: None,
         position: Vec3::new(-1.0, 0.6, 0.0),
         color: Vec3::splat(3.0),
         range: 8.0,
@@ -139,6 +141,8 @@ fn many_lamps_all_light_the_floor() {
     // pool: sixty-four, far past the eight the renderer once had.
     let lights: Vec<PointLight> = (0..64)
         .map(|i| PointLight {
+            falloff: Default::default(),
+            inner_cone: None,
             position: Vec3::new(
                 (i % 8) as f32 * 1.5 - 5.25,
                 0.4,

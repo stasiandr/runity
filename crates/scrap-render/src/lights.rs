@@ -48,6 +48,9 @@ pub(crate) struct GpuLight {
     /// For a spot, which way it shines and the cosine of half its cone;
     /// −2 for every way.
     pub spot: [f32; 4],
+    /// `x` the cosine of half a spot's inner cone; 2 to fade over the
+    /// cone's last tenth.
+    pub cone: [f32; 4],
 }
 
 /// What a frame's lights come to: the ones shaded, each cell's share of
@@ -112,6 +115,29 @@ fn slice_of(depth: f32, near: f32, far: f32) -> i64 {
     }
     let t = (depth / near).ln() / (far / near).ln();
     (t * SLICES as f32).floor() as i64
+}
+
+/// The smallest ball round all a light lights: a lamp's, its range; a
+/// spot's, the ball round its cone out to the range — the apex, the rim
+/// and the cap all on or in it — which for a narrow spot is about half as
+/// wide, and an eighth the cells.
+fn reach_of(light: &PointLight) -> (Vec3, f32) {
+    let Some((direction, cone)) = light.spot else {
+        return (light.position, light.range);
+    };
+    let direction = direction.normalize_or_zero();
+    let half = (cone.clamp(1.0, 179.0) * 0.5).to_radians();
+    if direction == Vec3::ZERO || half >= std::f32::consts::FRAC_PI_2 {
+        return (light.position, light.range);
+    }
+    let range = light.range;
+    if half <= std::f32::consts::FRAC_PI_4 {
+        // As far from the apex as from the rim: then the tip is inside too.
+        let radius = range / (2.0 * half.cos());
+        (light.position + direction * radius, radius)
+    } else {
+        (light.position + direction * (range * half.cos()), range * half.sin())
+    }
 }
 
 /// A run of cells across, down and deep, each first to last.
@@ -207,7 +233,8 @@ pub(crate) fn cluster(
         .iter()
         .filter(|l| l.range > 0.0)
         .filter_map(|l| {
-            cells_of(l.position, l.range, view, projection, near, far).map(|cells| (l, cells))
+            let (centre, radius) = reach_of(l);
+            cells_of(centre, radius, view, projection, near, far).map(|cells| (l, cells))
         })
         .collect();
     let eye = camera.position;
@@ -240,7 +267,11 @@ pub(crate) fn cluster(
                     light.position.x,
                     light.position.y,
                     light.position.z,
-                    light.range.max(0.01),
+                    // Negative: inverse square (render.wgsl's lamp_falloff).
+                    match light.falloff {
+                        crate::render::Falloff::Smooth => light.range.max(0.01),
+                        crate::render::Falloff::InverseSquare => -light.range.max(0.01),
+                    },
                 ],
                 color_shadow: [light.color.x, light.color.y, light.color.z, first],
                 spot: match light.spot {
@@ -255,6 +286,17 @@ pub(crate) fn cluster(
                     }
                     None => [0.0, 0.0, 0.0, -2.0],
                 },
+                cone: [
+                    match (light.spot, light.inner_cone) {
+                        (Some((_, cone)), Some(inner)) => {
+                            (inner.clamp(0.0, cone.clamp(1.0, 179.0)).to_radians() * 0.5).cos()
+                        }
+                        _ => 2.0,
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             }
         })
         .collect();
@@ -328,9 +370,12 @@ pub(crate) fn cluster(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Quat;
 
     fn lamp(position: Vec3, range: f32) -> PointLight {
         PointLight {
+            falloff: Default::default(),
+            inner_cone: None,
             position,
             color: Vec3::ONE,
             range,
@@ -394,6 +439,34 @@ mod tests {
         assert!(lists(&c, corner).is_empty());
         let far_behind_it = cell_at(glam::Vec2::ZERO, 100.0, 0.1, 500.0);
         assert!(lists(&c, far_behind_it).is_empty());
+    }
+
+    #[test]
+    fn a_spots_ball_holds_its_cone_and_is_smaller_than_its_range() {
+        for cone in [10.0f32, 42.0, 90.0, 120.0, 170.0] {
+            let direction = Vec3::new(0.3, -0.8, 0.5).normalize();
+            let spot = PointLight {
+                spot: Some((direction, cone)),
+                ..lamp(Vec3::new(1.0, 2.0, 3.0), 20.0)
+            };
+            let (centre, radius) = reach_of(&spot);
+            assert!(radius <= 20.0 + 1e-3, "{cone}°: {radius}");
+            // Points of the lit cone out to the range, rim and cap.
+            let half = (cone * 0.5).to_radians();
+            let side = direction.any_orthonormal_vector();
+            for i in 0..=16 {
+                let angle = half * i as f32 / 16.0;
+                for turn in 0..8 {
+                    let around = Quat::from_axis_angle(direction, turn as f32 * 0.785);
+                    let way = Quat::from_axis_angle(around * side, angle) * direction;
+                    for along in [0.0, 0.5, 1.0] {
+                        let p = spot.position + way * 20.0 * along;
+                        assert!((p - centre).length() <= radius + 1e-3, "{cone}°: {p} outside");
+                    }
+                }
+            }
+        }
+        assert!(reach_of(&PointLight { spot: Some((Vec3::NEG_Y, 42.0)), ..lamp(Vec3::ZERO, 21.0) }).1 < 12.0);
     }
 
     #[test]

@@ -149,6 +149,11 @@ pub enum Condition {
     Above(String, f32),
     /// A parameter is below a value.
     Below(String, f32),
+    /// A parameter is a whole number, this one: Unity's `Equals` on an
+    /// int — a state number that picks one of several states.
+    Equals(String, f32),
+    /// A parameter is anything but this whole number: Unity's `NotEqual`.
+    NotEquals(String, f32),
     /// A parameter is set to true (anything above one half).
     Is(String),
     /// A parameter is false.
@@ -546,6 +551,8 @@ impl Graph {
                 match c {
                     Condition::Above(p, _)
                     | Condition::Below(p, _)
+                    | Condition::Equals(p, _)
+                    | Condition::NotEquals(p, _)
                     | Condition::Is(p)
                     | Condition::Not(p)
                     | Condition::Trigger(p) => {
@@ -741,6 +748,8 @@ pub fn describe(when: &[Condition]) -> String {
         .map(|c| match c {
             Condition::Above(p, v) => format!("{p} > {v}"),
             Condition::Below(p, v) => format!("{p} < {v}"),
+            Condition::Equals(p, v) => format!("{p} = {v}"),
+            Condition::NotEquals(p, v) => format!("{p} ≠ {v}"),
             Condition::Is(p) => p.clone(),
             Condition::Not(p) => format!("not {p}"),
             Condition::Trigger(p) => format!("{p} pulled"),
@@ -972,6 +981,8 @@ impl Controller {
                         t.when.iter().all(|c| match c {
                             Condition::Above(p, v) => self.param(p) > *v,
                             Condition::Below(p, v) => self.param(p) < *v,
+                            Condition::Equals(p, v) => (self.param(p) - *v).abs() < 0.5,
+                            Condition::NotEquals(p, v) => (self.param(p) - *v).abs() >= 0.5,
                             Condition::Is(p) => self.param(p) > 0.5,
                             Condition::Not(p) => self.param(p) <= 0.5,
                             Condition::Trigger(name) => self.triggers.contains(name),
@@ -1494,6 +1505,31 @@ mod tests {
         let text = ron::to_string(&report).unwrap();
         let back: scrap_core::save::SaveGame = ron::from_str(&text).unwrap();
         assert_eq!(back, report);
+    }
+
+    #[test]
+    fn a_state_number_picks_its_own_state_whatever_the_order() {
+        // A mouse's view: MouseState 0 born, 1 walking, 2 jumping — each
+        // from any state when it equals its number, listed so that a
+        // "greater than" reading would take the first for every one.
+        let graph: Graph = ron::from_str(
+            r#"(start: "idle", states: {
+                "idle": (clip: "idle"), "walk": (clip: "walk"), "jump": (clip: "jump"),
+            }, any: [
+                (to: "walk", when: [Equals("state", 1.0)], fade: 0.0),
+                (to: "jump", when: [Equals("state", 2.0)], fade: 0.0),
+                (to: "idle", when: [Equals("state", 0.0)], fade: 0.0),
+            ])"#,
+        )
+        .unwrap();
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.update(&mut animator);
+        for (value, clip) in [(2.0, "jump"), (1.0, "walk"), (0.0, "idle"), (2.0, "jump")] {
+            controller.set("state", value);
+            controller.update(&mut animator);
+            assert_eq!(playing(&animator), clip, "state {value}");
+        }
     }
 
     #[test]

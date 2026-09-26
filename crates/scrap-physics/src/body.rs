@@ -28,14 +28,24 @@ pub enum Collider {
         #[serde(default, skip_serializing_if = "is_zero_vec3")]
         center: Vec3,
     },
+    /// A ball around `center` in the entity's own space: Unity's
+    /// SphereCollider center.
     Sphere {
         radius: f32,
+        #[serde(default, skip_serializing_if = "is_zero_vec3")]
+        center: Vec3,
     },
     /// A cylinder with hemispherical caps: what a person is, because a box
-    /// catches on corners and a sphere rolls.
+    /// catches on corners and a sphere rolls. Around `center`, along `axis`
+    /// (0 x, 1 y — standing, the default — 2 z): Unity's CapsuleCollider
+    /// center and direction.
     Capsule {
         half_height: f32,
         radius: f32,
+        #[serde(default, skip_serializing_if = "is_zero_vec3")]
+        center: Vec3,
+        #[serde(default = "y_axis", skip_serializing_if = "is_y_axis")]
+        axis: u8,
     },
     /// An upright cylinder, centred: what fits `builtin:cylinder` with
     /// `half_height: 0.5, radius: 0.5`.
@@ -97,6 +107,12 @@ pub enum Joint {
         /// angle like a spring — a door that swings shut.
         #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
         motor: Option<Motor>,
+        /// Where the joint meets the other body, in its own space (scaled
+        /// with it): Unity's connected anchor, when not configured from
+        /// where the two stand. Unset, it is wherever `anchor` is when the
+        /// joint is made.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        connected: Option<Vec3>,
     },
     /// Turns any way about the anchor: a chain, a ball-and-socket.
     Ball {
@@ -104,6 +120,17 @@ pub enum Joint {
         to: EntityId,
         #[serde(default)]
         anchor: Vec3,
+        /// Where the joint meets the other body, in its own space (scaled
+        /// with it): Unity's connected anchor, when not configured from
+        /// where the two stand. Unset, it is wherever `anchor` is when the
+        /// joint is made.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        connected: Option<Vec3>,
+        /// How far it may turn about each of its axes (its x along the
+        /// joint's frame), degrees low to high: Unity's ConfigurableJoint
+        /// angular limits — a rope's segment that bends only so far.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        limits_deg: Option<[(f32, f32); 3]>,
     },
     /// Pulls its anchor toward the other body's, like a rubber band:
     /// Unity's SpringJoint. `stiffness` is how hard, `damping` how fast the
@@ -117,6 +144,12 @@ pub enum Joint {
         stiffness: f32,
         #[serde(default = "spring_damping")]
         damping: f32,
+        /// Where the joint meets the other body, in its own space (scaled
+        /// with it): Unity's connected anchor, when not configured from
+        /// where the two stand. Unset, it is wherever `anchor` is when the
+        /// joint is made.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        connected: Option<Vec3>,
     },
     /// Slides along one axis, within limits in metres if given.
     Slider {
@@ -246,10 +279,17 @@ pub struct BodyProps {
     pub blown: f32,
     /// Checked between steps as well as at them, so something fast and
     /// small — a thrown stone, a bullet — cannot pass through a wall between
-    /// one step and the next. Costs more; Unity's continuous collision
-    /// detection.
+    /// one step and the next: Unity's continuous collision detection. Every
+    /// dynamic body is swept so now (a thin stick falling on mesh ground
+    /// went through it); this stays for the lines that say it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fast: bool,
+    /// Not swept, though dynamic: Unity's `CollisionDetectionMode.Discrete`,
+    /// for a body a sweep does more harm to than tunnelling could — a link
+    /// of a rope, which a sweep stops at the ground mid-step while the link
+    /// above it goes on, for their joint to fling both back up.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unswept: bool,
     /// Axes it may not move along, as letters: `"y"` keeps it at its height.
     /// Unity's Freeze Position.
     #[serde(default, skip_serializing_if = "Axes::is_none")]
@@ -318,6 +358,7 @@ impl Default for BodyProps {
             gravity: 1.0,
             blown: 0.0,
             fast: false,
+            unswept: false,
             freeze_move: Axes::default(),
             freeze_turn: Axes::default(),
         }
@@ -511,15 +552,17 @@ impl Collider {
                 segments.extend(box_edges(half * scale));
             }
             Collider::Ramp { half } => segments.extend(ramp_edges(half * scale)),
-            Collider::Sphere { radius } => {
+            Collider::Sphere { radius, center } => {
                 let r = radius * scale.max_element();
-                circle(&mut segments, Vec3::ZERO, Vec3::X, Vec3::Y, r);
-                circle(&mut segments, Vec3::ZERO, Vec3::Y, Vec3::Z, r);
-                circle(&mut segments, Vec3::ZERO, Vec3::Z, Vec3::X, r);
+                let c = center * scale;
+                circle(&mut segments, c, Vec3::X, Vec3::Y, r);
+                circle(&mut segments, c, Vec3::Y, Vec3::Z, r);
+                circle(&mut segments, c, Vec3::Z, Vec3::X, r);
             }
             Collider::Capsule {
                 half_height,
                 radius,
+                ..
             }
             | Collider::Cylinder {
                 half_height,
@@ -540,4 +583,13 @@ impl Collider {
         }
         (segments, frame)
     }
+}
+
+/// A capsule stands along y unless it says otherwise.
+fn y_axis() -> u8 {
+    1
+}
+
+fn is_y_axis(axis: &u8) -> bool {
+    *axis == 1
 }

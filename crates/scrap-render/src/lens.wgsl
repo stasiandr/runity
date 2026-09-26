@@ -93,18 +93,34 @@ fn circle_of_confusion(d: f32) -> f32 {
 // behind the pixel spreads no wider than twice the pixel's own blur, so a
 // sharp object does not bleed the background's blur over itself.
 // (Gustafsson's single-pass scatter-as-gather.)
+/// A colour that is a number, and one half floats hold: a NaN or an
+/// infinity in one pixel (a glint past the format's top) is black, not a
+/// disc of it through the blur — URP's Stop NaN.
+fn finite(c: vec3<f32>) -> vec3<f32> {
+    let bad = (c != c) | (abs(c) > vec3<f32>(65000.0));
+    return select(c, vec3<f32>(0.0), bad);
+}
+
 @fragment
 fn fs_depth_of_field(in: Varyings) -> @location(0) vec4<f32> {
     let centre_depth = distance_at(in.uv);
     let centre_size = circle_of_confusion(centre_depth);
-    var color = textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb;
+    var color = finite(textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb);
     var total = 1.0;
-    let largest = lens.blur.z;
+    var largest = lens.blur.z;
+    // Gaussian (URP's): the far field alone is blurred, each pixel by its
+    // own circle, and what is sharp — most of a frame — is sharp without a
+    // tap. Twenty-odd taps are soft enough for a blur this small.
+    var taps = 120.0;
+    if lens.focus.x < 1.5 {
+        largest = centre_size;
+        taps = 40.0;
+    }
     if largest < 0.5 {
         return vec4<f32>(color, 1.0);
     }
-    // The step grows the spiral so about sixty taps cover the disc.
-    let scale = max(largest * largest / 120.0, 0.25);
+    // The step grows the spiral so about taps / 2 cover the disc.
+    let scale = max(largest * largest / taps, 0.25);
     var radius = scale;
     var angle = 0.0;
     for (var i = 0; i < 256; i = i + 1) {
@@ -112,7 +128,7 @@ fn fs_depth_of_field(in: Varyings) -> @location(0) vec4<f32> {
             break;
         }
         let tap = in.uv + vec2<f32>(cos(angle), sin(angle)) * lens.size.zw * radius;
-        let tap_color = textureSampleLevel(source, linear_sampler, tap, 0.0).rgb;
+        let tap_color = finite(textureSampleLevel(source, linear_sampler, tap, 0.0).rgb);
         let tap_depth = distance_at(tap);
         var tap_size = circle_of_confusion(tap_depth);
         if tap_depth > centre_depth {
@@ -146,6 +162,10 @@ fn fs_motion_blur(in: Varyings) -> @location(0) vec4<f32> {
     let speed = length(velocity);
     if speed > most {
         velocity = velocity * (most / speed);
+    }
+    // Swept less than half a pixel: nothing to average.
+    if length(velocity * lens.size.xy) < 0.5 {
+        return vec4<f32>(textureSampleLevel(source, linear_sampler, in.uv, 0.0).rgb, 1.0);
     }
     let count = max(u32(lens.motion.z), 2u);
     var color = vec3<f32>(0.0);

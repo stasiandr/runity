@@ -24,13 +24,13 @@ fn property<'a>(material: &'a Yaml, list: &str, name: &str) -> Option<&'a Yaml> 
         })
 }
 
-fn float(m: &Yaml, name: &str) -> Option<f32> {
+pub(super) fn float(m: &Yaml, name: &str) -> Option<f32> {
     property(m, "m_Floats", name)
         .and_then(yaml::number)
         .map(|n| n as f32)
 }
 
-fn color(m: &Yaml, name: &str) -> Option<[f32; 4]> {
+pub(super) fn color(m: &Yaml, name: &str) -> Option<[f32; 4]> {
     let c = property(m, "m_Colors", name)?;
     Some([
         yaml::number(&c["r"])? as f32,
@@ -297,9 +297,10 @@ pub fn shader_look(path: &Path) -> ShaderLook {
             || text.contains("UniversalSpriteLitSubTarget");
         ShaderLook {
             transparent: sprite || number("m_SurfaceType").as_deref() == Some("1"),
-            // URP: 0 both, 1 back, 2 front.
+            // URP: 0 both, 1 back, 2 front. Its back faces keep their
+            // normal (no double-sided normal mode): both as front.
             face: match number("m_RenderFace").as_deref() {
-                Some("0") => Some("Both"),
+                Some("0") => Some("BothAsFront"),
                 Some("1") => Some("Back"),
                 _ => None,
             },
@@ -313,7 +314,7 @@ pub fn shader_look(path: &Path) -> ShaderLook {
         ShaderLook {
             transparent: lower.contains("\"queue\"=\"transparent")
                 || lower.contains("blend srcalpha"),
-            face: lower.contains("cull off").then_some("Both"),
+            face: lower.contains("cull off").then_some("BothAsFront"),
             clip: false,
             unlit: !lower.contains("lightmode\"=\"universalforward"),
             on_top: lower.contains("ztest always"),
@@ -530,7 +531,7 @@ pub fn convert_with(
     if let Some(r) = m.reference("m_Shader") {
         let builtin = r.guid.as_deref() == Some("0000000000000000f000000000000000");
         if builtin && (200..=211).contains(&r.file_id) && r.file_id != 210 {
-            fields.push("shading: Unlit".into());
+            fields.push("unlit: true".into());
         }
     }
     if float(m, "_AlphaClip") == Some(1.0) {
@@ -540,7 +541,8 @@ pub fn convert_with(
         ));
     }
     match float(m, "_Cull") {
-        Some(0.0) => fields.push("render_face: Both".into()),
+        // URP never turns a back face's normal: Both as front.
+        Some(0.0) => fields.push("render_face: BothAsFront".into()),
         Some(1.0) => fields.push("render_face: Back".into()),
         _ => {}
     }
@@ -656,7 +658,7 @@ pub fn convert_with(
             ));
         }
         if look.unlit {
-            fields.push("shading: Unlit".into());
+            fields.push("unlit: true".into());
         }
         if look.on_top && look.transparent {
             fields.push("on_top: true".into());
@@ -734,7 +736,7 @@ Material:
             shader_look(&graph),
             ShaderLook {
                 transparent: true,
-                face: Some("Both"),
+                face: Some("BothAsFront"),
                 clip: true,
                 unlit: true,
                 on_top: false,
@@ -748,7 +750,7 @@ Material:
         .unwrap();
         let look = shader_look(&hlsl);
         assert!(
-            look.transparent && look.face == Some("Both") && !look.unlit,
+            look.transparent && look.face == Some("BothAsFront") && !look.unlit,
             "{look:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -853,6 +855,43 @@ Material:
     }
 
     #[test]
+    fn a_builtin_particle_material_is_read_back_unlit() {
+        let dir = std::env::temp_dir().join(format!("scrap-unity-unlit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let smoke = dir.join("Smoke.mat");
+        std::fs::write(
+            &smoke,
+            "%YAML 1.1
+--- !u!21 &2100000
+Material:
+  m_Name: Smoke
+  m_Shader: {fileID: 211, guid: 0000000000000000f000000000000000, type: 0}
+  m_SavedProperties:
+    m_TexEnvs: []
+    m_Floats:
+    - _Surface: 1
+    m_Colors: []
+",
+        )
+        .unwrap();
+        let unity = Unity {
+            pieces: Default::default(),
+            layers: Default::default(),
+            declared_params: Default::default(),
+            root: dir.clone(),
+            guids: Default::default(),
+            names: Default::default(),
+        };
+        let text = convert(&unity, &smoke).unwrap();
+        let written = dir.join("Smoke.scrmat");
+        std::fs::write(&written, &text).unwrap();
+        // What the importer writes is what the material reads: a field it
+        // does not know would be dropped without a word, and the smoke lit.
+        assert!(crate::material_source(&written).unwrap().unlit, "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_material_variant_keeps_what_its_parent_sets() {
         let dir = std::env::temp_dir().join(format!("scrap-unity-variant-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -920,7 +959,7 @@ Material:
         assert!(text.contains("smoothness: 0.8"), "{text}");
         assert!(text.contains(r#"base_map: "stone_albedo""#), "{text}");
         assert!(text.contains("tiling: (2, 2)"), "{text}");
-        assert!(text.contains("render_face: Both"), "{text}");
+        assert!(text.contains("render_face: BothAsFront"), "{text}");
         assert!(text.contains("emission_intensity: 2"), "{text}");
         let source: crate::MaterialSource = ron::from_str(
             text.lines()

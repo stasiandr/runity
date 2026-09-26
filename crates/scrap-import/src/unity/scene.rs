@@ -82,8 +82,16 @@ pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
         // near it.
         toward: Some(travel),
         tint: tint.filter(|c| *c != [1.0, 1.0, 1.0]),
+        shadow_strength: light.body["m_Shadows"].f32("m_Strength").unwrap_or(1.0),
+        temperature: temperature(&light.body),
         ..scrap::scene::Sun::default()
     })
+}
+
+/// A light's colour temperature, when it uses one: URP always honours it
+/// (it sets `GraphicsSettings.lightsUseColorTemperature`).
+fn temperature(light: &yaml_rust2::Yaml) -> Option<f32> {
+    (light.i64("m_UseColorTemperature") == Some(1)).then(|| light.f32("m_ColorTemperature").unwrap_or(6570.0))
 }
 
 /// The roots of a Unity file as entities, children under them.
@@ -194,12 +202,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
                 }
-                // A switched-off renderer draws nothing: its mesh is not
-                // brought over to be drawn.
-                let hidden = components.get(&d.file_id).into_iter().flatten().any(|c| {
-                    matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
-                        && c.body.i64("m_Enabled") == Some(0)
-                });
+                // A switched-off renderer draws nothing, and a mesh with no
+                // renderer at all (a trigger's shape, a collider's) is not
+                // drawn either: its mesh is not brought over to be drawn.
+                let own = || components.get(&d.file_id).into_iter().flatten();
+                let renderer = |c: &&Doc| matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer");
+                let hidden = own().any(|c| renderer(&c) && c.body.i64("m_Enabled") == Some(0))
+                    || (own().any(|c| c.kind == "MeshFilter") && !own().any(|c| renderer(&c)));
                 // A mesh collider keeps its mesh as its collision model.
                 if hidden {
                     if desc.part::<Collider>() == Some(Collider::Model)
@@ -515,6 +524,8 @@ fn instance(
     let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
     // A component's fields changed: the prefab's component, changed.
     let mut behaviours: BTreeMap<i64, Behaviour> = BTreeMap::new();
+    // A built-in component's fields changed: it, changed, and which fields.
+    let mut builtins: BTreeMap<i64, (Builtin, Vec<String>)> = BTreeMap::new();
     // Whether an anchored position is said: then it, not the local
     // position's x and y, is where a RectTransform stands.
     let anchored_too = modification
@@ -530,6 +541,15 @@ fn instance(
         if let Some((t, b)) = behaviour.filter(|_| kind == "prefab" && !path.starts_with("m_")) {
             let b = behaviours.entry(t).or_insert_with(|| b.clone());
             modify(&mut b.body, path, m);
+            continue;
+        }
+        let builtin = target.and_then(|t| Some((t, of.as_ref()?.builtins.get(&t)?)));
+        if let Some((t, b)) = builtin.filter(|_| {
+            kind == "prefab" && path != "m_Enabled" && !path.starts_with("m_Materials")
+        }) {
+            let (b, fields) = builtins.entry(t).or_insert_with(|| (b.clone(), Vec::new()));
+            modify(&mut b.doc.body, path, m);
+            fields.push(field_of(path).to_string());
             continue;
         }
         let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
@@ -594,6 +614,19 @@ fn instance(
         } else if path == "m_Name" {
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
+            }
+        } else if path == "m_Controller" && kind == "model" {
+            // A placed model given an animator graph for its own Animator —
+            // a variant of a hand model that plays its grab and point: the
+            // model is one entity, so the graph is the line's.
+            let graph = m
+                .reference("objectReference")
+                .and_then(|r| r.guid)
+                .and_then(|g| unity.named(&g))
+                .filter(|(k, _)| *k == "animator");
+            match graph {
+                Some((_, name)) => desc.set_part(&scrap::scene::AnimatorRef(name.to_string())),
+                None => report.skip("a placed model's Animator given no graph (or an override controller)"),
             }
         } else if path == "m_Enabled" && value == 0.0 && kind == "model" {
             // A placed model's renderer or collider switched off: drawn
@@ -683,7 +716,13 @@ fn instance(
             unity,
             entity_of: HashMap::new(),
             body_object: HashMap::new(),
-            scoped: b.links.iter().map(|(k, e)| (*k, desc.id.within(*e))).collect(),
+            // A link to the prefab's root is to the instance itself, as
+            // the engine has it (its root takes the instance's id).
+            scoped: b
+                .links
+                .iter()
+                .map(|(k, e)| (*k, if Some(*e) == root_key { desc.id } else { desc.id.within(*e) }))
+                .collect(),
         };
         let value = mono_behaviour(&b.body, &refs);
         let Ok(raw) = scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) else {
@@ -697,6 +736,87 @@ fn instance(
             .or_default()
             .components
             .insert(b.name, raw);
+    }
+    // Each built-in component changed: made again from its changed fields,
+    // and what it makes of the line set on its part — its body only when
+    // what makes the body (a trigger, kinematic) is what changed, since
+    // the part's other components have their say in it too.
+    for (b, fields) in builtins.into_values() {
+        let refs = Refs {
+            unity,
+            entity_of: HashMap::new(),
+            body_object: HashMap::new(),
+            scoped: HashMap::new(),
+        };
+        // The part made again from all it has — its colliders first, then
+        // its body, as a whole object is — the changed one as changed, so
+        // a trigger turned solid on a Rigidbody stays that Rigidbody's.
+        let mut made = EntityDesc::default();
+        made.name = desc.name.clone();
+        let siblings: Vec<&Builtin> = of
+            .as_ref()
+            .map(|o| o.builtins.iter().filter(|(_, x)| x.part == b.part).map(|(_, x)| x).collect())
+            .unwrap_or_default();
+        let order = |kind: &str| match kind {
+            k if k.ends_with("Collider") => 0,
+            "Rigidbody" => 1,
+            _ => 2,
+        };
+        let mut docs: Vec<&Doc> = siblings
+            .iter()
+            .filter(|x| x.doc.file_id != b.doc.file_id && x.doc.kind != b.doc.kind)
+            .map(|x| &x.doc)
+            .chain(std::iter::once(&b.doc))
+            .collect();
+        docs.sort_by_key(|d| order(&d.kind));
+        let mut quiet = Report::default();
+        for d in docs {
+            let say = if d.file_id == b.doc.file_id { &mut *report } else { &mut quiet };
+            let mut own = EntityDesc::default();
+            if d.file_id == b.doc.file_id {
+                component(&mut made, d, &refs, say);
+            } else {
+                // A sibling only for the body it makes.
+                own.name = made.name.clone();
+                if let Some(body) = made.parts.raw("body") {
+                    let _ = own.parts.set_raw("body", body);
+                }
+                component(&mut own, d, &refs, say);
+                if let Some(body) = own.parts.raw("body") {
+                    let _ = made.parts.set_raw("body", body);
+                }
+            }
+        }
+        let body_changed = fields.iter().any(|f| f == "m_IsTrigger" || f == "m_IsKinematic");
+        let joint = b.doc.kind.ends_with("Joint");
+        let change = desc.overrides.entry(b.part).or_default();
+        for (name, text) in made.parts.iter() {
+            if name == "body" && !body_changed {
+                continue;
+            }
+            if name == "joint" {
+                continue;
+            }
+            let _ = change.parts.set_raw(name, text);
+        }
+        if joint {
+            // What it is joined to, as a part of this instance; the world
+            // when it names nothing.
+            let to = b
+                .doc
+                .body
+                .reference("m_ConnectedBody")
+                .filter(|r| r.file_id != 0)
+                .and_then(|r| b.links.get(&r.file_id).copied());
+            let to = match to {
+                Some(part) if Some(part) == root_key => desc.id,
+                Some(part) => desc.id.within(part),
+                None => EntityId::UNASSIGNED,
+            };
+            if let Some(j) = made.parts.try_get::<Joint>().ok().flatten() {
+                change.set_part(&j.with_to(to));
+            }
+        }
     }
     // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
@@ -739,6 +859,29 @@ struct PrefabParts {
     /// Its MonoBehaviours by the id a modification's `target` names them:
     /// what an instance changes a field of.
     behaviours: HashMap<i64, Behaviour>,
+    /// Its colliders, bodies, joints and lamps by the id a modification's
+    /// `target` names them: what an instance changes a size or an axis of.
+    builtins: HashMap<i64, Builtin>,
+}
+
+/// A prefab's built-in component as it stands in the prefab: the part it
+/// is on, its document, and what the objects it names are as parts.
+#[derive(Clone)]
+struct Builtin {
+    part: EntityId,
+    doc: Doc,
+    links: std::rc::Rc<HashMap<i64, EntityId>>,
+}
+
+/// The built-in components an instance's change of a field is carried
+/// for: what `component` makes of them, again, with the change.
+fn changeable(kind: &str) -> bool {
+    matches!(
+        kind,
+        "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider" | "Rigidbody"
+            | "HingeJoint" | "SpringJoint" | "ConfigurableJoint" | "CharacterJoint" | "FixedJoint"
+            | "Light"
+    )
 }
 
 /// A prefab's MonoBehaviour as it stands in the prefab: the part it is on,
@@ -932,6 +1075,28 @@ impl Parts {
                             modify(&mut b.body, path, m);
                         }
                     }
+                    let mut builtins: HashMap<i64, Builtin> = inner.builtins.clone();
+                    for m in d.body["m_Modification"].list("m_Modifications") {
+                        let (Some(path), Some(target)) =
+                            (m.str("propertyPath"), m.reference("target"))
+                        else {
+                            continue;
+                        };
+                        if let Some(b) = builtins.get_mut(&target.file_id) {
+                            modify(&mut b.doc.body, path, m);
+                        }
+                    }
+                    for (x, b) in builtins {
+                        let links = b.links.iter().map(|(k, e)| (*k, key_of(*e))).collect();
+                        out.builtins.insert(
+                            (d.file_id ^ x) & i64::MAX,
+                            Builtin {
+                                part: key_of(b.part),
+                                links: std::rc::Rc::new(links),
+                                ..b
+                            },
+                        );
+                    }
                     for (x, b) in changed {
                         let links = b.links.iter().map(|(k, e)| (*k, key_of(*e))).collect();
                         out.behaviours.insert(
@@ -946,6 +1111,16 @@ impl Parts {
                 }
                 _ if !d.stripped => {
                     let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
+                    if let Some(go) = go.as_ref().filter(|_| changeable(&d.kind)) {
+                        out.builtins.insert(
+                            d.file_id,
+                            Builtin {
+                                part: entity_id(go.file_id),
+                                doc: d.clone(),
+                                links: links.clone(),
+                            },
+                        );
+                    }
                     if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
                         if d.kind == "MonoBehaviour" {
                             out.behaviours.insert(
@@ -1080,6 +1255,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "SphereCollider" => {
             desc.set_part(&Collider::Sphere {
                 radius: b.f32("m_Radius").unwrap_or(0.5),
+                center: b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO),
             });
             solid(desc, b);
         }
@@ -1089,10 +1265,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             desc.set_part(&Collider::Capsule {
                 half_height: (height * 0.5 - radius).max(0.0),
                 radius,
+                center: b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO),
+                // Unity's direction: 0 along x, 1 along y, 2 along z.
+                axis: b.i64("m_Direction").map_or(1, |d| d.clamp(0, 2) as u8),
             });
-            if b.i64("m_Direction").is_some_and(|d| d != 1) {
-                report.skip("a capsule lying along x or z (brought over standing)");
-            }
             solid(desc, b);
         }
         "MeshCollider" => {
@@ -1105,11 +1281,13 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             solid(desc, b);
         }
         "Rigidbody" => {
-            desc.set_part(&if b.i64("m_IsKinematic") == Some(1) {
-                Body::Kinematic
-            } else {
-                Body::Dynamic
-            });
+            // A kinematic Rigidbody beside a trigger collider is still a
+            // trigger — one that follows its transform, which a `Trigger`
+            // does: a shop counter's volume, not a solid box over it.
+            let kinematic = b.i64("m_IsKinematic") == Some(1);
+            if !(kinematic && desc.body() == Body::Trigger) {
+                desc.set_part(&if kinematic { Body::Kinematic } else { Body::Dynamic });
+            }
             desc.set_part(&BodyProps {
                 drag: b.f32("m_Drag").or(b.f32("m_LinearDamping")).unwrap_or(0.0),
                 spin_drag: b
@@ -1140,8 +1318,12 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 intensity: b.f32("m_Intensity").unwrap_or(1.0),
                 range: b.f32("m_Range").unwrap_or(10.0),
                 cone_deg: (kind == 0).then(|| b.f32("m_SpotAngle").unwrap_or(30.0)),
+                inner_cone_deg: (kind == 0).then(|| b.f32("m_InnerSpotAngle")).flatten(),
                 shadows: b["m_Shadows"].i64("m_Type").unwrap_or(0) != 0,
                 flare: 0.0,
+                // URP's lamps fall off as the square of the distance.
+                falloff: scrap::render::Falloff::InverseSquare,
+                temperature: temperature(b),
             });
         }
         "Camera" => {
@@ -1160,6 +1342,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 .map(|go| entity_id(*go))
                 .unwrap_or(EntityId::UNASSIGNED);
             let anchor = b.vec3("m_Anchor").map(position).unwrap_or(Vec3::ZERO);
+            // Set by hand, the other body's end is where Unity says, not
+            // where the two happen to stand: a rope's links held apart.
+            let connected = (b.i64("m_AutoConfigureConnectedAnchor") == Some(0))
+                .then(|| b.vec3("m_ConnectedAnchor").map(position))
+                .flatten();
             desc.set_part(&match c.kind.as_str() {
                 "FixedJoint" => Joint::Fixed { to },
                 "HingeJoint" => Joint::Hinge {
@@ -1174,16 +1361,69 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                         (l.f32("min").unwrap_or(0.0), l.f32("max").unwrap_or(0.0))
                     }),
                     motor: hinge_drive(b),
+                    connected,
                 },
                 "SpringJoint" => Joint::Spring {
                     to,
                     anchor,
                     stiffness: b.f32("m_Spring").unwrap_or(10.0),
                     damping: b.f32("m_Damper").unwrap_or(0.2),
+                    connected,
                 },
+                "ConfigurableJoint" => {
+                    // Its turns, each locked (0), limited (1) or free (2):
+                    // x between its low and high limits, y and z within
+                    // their one limit either way.
+                    let motion = |k: &str| b.i64(k).unwrap_or(2);
+                    let limit = |k: &str| b[k].f32("limit").unwrap_or(0.0);
+                    let about = |m: i64, low: f32, high: f32| match m {
+                        0 => (0.0, 0.0),
+                        1 => (low, high),
+                        _ => (-180.0, 180.0),
+                    };
+                    let (mx, my, mz) = (motion("m_AngularXMotion"), motion("m_AngularYMotion"), motion("m_AngularZMotion"));
+                    let limits_deg = (mx != 2 || my != 2 || mz != 2).then(|| {
+                        [
+                            about(mx, limit("m_LowAngularXLimit"), limit("m_HighAngularXLimit")),
+                            about(my, -limit("m_AngularYLimit"), limit("m_AngularYLimit")),
+                            about(mz, -limit("m_AngularZLimit"), limit("m_AngularZLimit")),
+                        ]
+                    });
+                    let slides = [motion("m_XMotion"), motion("m_YMotion"), motion("m_ZMotion")];
+                    let free: Vec<usize> = (0..3).filter(|i| slides[*i] != 0).collect();
+                    if free.len() == 1 && [mx, my, mz] == [0, 0, 0] {
+                        // Slides along one of its axes and turns not at
+                        // all: a slider. Its axes as Unity has them: x the
+                        // joint's axis, y its secondary, z the two crossed;
+                        // a direction, so mirrored as a place is.
+                        let i = free[0];
+                        let primary = Vec3::from_array(b.vec3("m_Axis").unwrap_or([1.0, 0.0, 0.0])).normalize_or(Vec3::X);
+                        let secondary = Vec3::from_array(b.vec3("m_SecondaryAxis").unwrap_or([0.0, 1.0, 0.0])).normalize_or(Vec3::Y);
+                        let along = [primary, secondary, primary.cross(secondary)][i].normalize_or(Vec3::X);
+                        let reach = limit("m_LinearLimit");
+                        let limits = (slides[i] == 1).then_some((-reach, reach));
+                        // Its drive along that axis, held at the target —
+                        // which Unity drives the joint toward negated.
+                        let drive = &b[["m_XDrive", "m_YDrive", "m_ZDrive"][i]];
+                        let spring = drive.f32("positionSpring").unwrap_or(0.0);
+                        let target = b.vec3("m_TargetPosition").map_or(0.0, |t| -t[i]);
+                        let motor = (spring > 0.0).then(|| scrap::scene::Motor {
+                            speed: 0.0,
+                            hold: Some(target),
+                            strength: spring,
+                            damping: Some(drive.f32("positionDamper").unwrap_or(0.0)),
+                        });
+                        Joint::Slider { to, axis: Vec3::new(along.x, along.y, -along.z), limits, motor }
+                    } else {
+                        if slides != [0, 0, 0] {
+                            report.skip("a ConfigurableJoint that slides and turns (brought over as a ball joint)");
+                        }
+                        Joint::Ball { to, anchor, connected, limits_deg }
+                    }
+                }
                 _ => {
                     report.skip(format!("{} (brought over as a ball joint)", c.kind));
-                    Joint::Ball { to, anchor }
+                    Joint::Ball { to, anchor, connected, limits_deg: None }
                 }
             });
             // Unity writes an unbreakable joint's force as infinity.
@@ -1701,8 +1941,9 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
                 10202 => "builtin:cube",
                 10206 => "builtin:cylinder",
                 10207 => "builtin:sphere",
-                10208 => "builtin:cylinder",
-                10209 | 10210 => "builtin:plane",
+                10208 => "builtin:capsule",
+                10209 => "builtin:unity_plane",
+                10210 => "builtin:unity_quad",
                 _ => return None,
             }
             .to_string(),
@@ -2243,6 +2484,99 @@ ParticleSystemRenderer:
     }
 
     #[test]
+    fn an_instance_changes_a_parts_collider_and_hinge() {
+        let dir = std::env::temp_dir().join(format!("scrap-builtins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lever = dir.join("Lever.prefab");
+        std::fs::write(
+            &lever,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Lever
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!1 &200
+GameObject:
+  m_Name: Handle
+--- !u!4 &201
+Transform:
+  m_GameObject: {fileID: 200}
+  m_Father: {fileID: 101}
+--- !u!65 &202
+BoxCollider:
+  m_GameObject: {fileID: 200}
+  m_IsTrigger: 1
+  m_Enabled: 1
+  m_Size: {x: 1, y: 1, z: 1}
+  m_Center: {x: 0, y: 0, z: 0}
+--- !u!54 &203
+Rigidbody:
+  m_GameObject: {fileID: 200}
+  m_Mass: 1
+--- !u!59 &204
+HingeJoint:
+  m_GameObject: {fileID: 200}
+  m_ConnectedBody: {fileID: 0}
+  m_Anchor: {x: 0, y: 0, z: 0}
+  m_Axis: {x: 1, y: 0, z: 0}
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("lll".into(), lever);
+        unity.names.insert("lll".into(), "Lever".into());
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 101, guid: lll, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 5
+    - target: {fileID: 202, guid: lll, type: 3}
+      propertyPath: m_Size.y
+      value: 3
+    - target: {fileID: 202, guid: lll, type: 3}
+      propertyPath: m_IsTrigger
+      value: 0
+    - target: {fileID: 204, guid: lll, type: 3}
+      propertyPath: m_Axis.x
+      value: 0
+    - target: {fileID: 204, guid: lll, type: 3}
+      propertyPath: m_Axis.z
+      value: 1
+  m_SourcePrefab: {fileID: 100100000, guid: lll, type: 3}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: lll, type: 3}
+  m_PrefabInstance: {fileID: 900}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let handle = &roots[0].overrides[&entity_id(200)];
+        let collider: Collider = handle.parts.try_get().unwrap().expect("the collider changed");
+        assert!(matches!(collider, Collider::Box { half, .. } if half == Vec3::new(0.5, 1.5, 0.5)), "{collider:?}");
+        assert_eq!(
+            handle.parts.raw("body"),
+            Some("Dynamic"),
+            "a trigger made solid is its Rigidbody's body, not a static one"
+        );
+        let joint: Joint = handle.parts.try_get().unwrap().expect("the hinge changed");
+        match joint {
+            Joint::Hinge { to, axis, .. } => {
+                assert!(to.is_unassigned(), "still to the world");
+                assert!((axis - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-6 || (axis - Vec3::Z).length() < 1e-6, "{axis}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn an_instance_moves_a_part_and_takes_its_light_away() {
         let dir = std::env::temp_dir().join(format!("scrap-parts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2401,6 +2735,38 @@ AudioSource:
         let text = ron::to_string(&e).unwrap();
         let back: scrap::scene::Emitter = ron::from_str(&text).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn a_trigger_with_a_kinematic_rigidbody_stays_a_trigger() {
+        let volume = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Counter
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+--- !u!65 &12
+BoxCollider:
+  m_GameObject: {fileID: 10}
+  m_IsTrigger: 1
+  m_Size: {x: 1, y: 1, z: 1}
+--- !u!54 &13
+Rigidbody:
+  m_GameObject: {fileID: 10}
+  m_IsKinematic: 1
+  m_UseGravity: 0
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), volume, &mut report);
+        assert_eq!(roots[0].body(), Body::Trigger);
+        let solid = volume.replace("m_IsTrigger: 1", "m_IsTrigger: 0");
+        let roots = convert_file(&unity(), &solid, &mut report);
+        assert_eq!(roots[0].body(), Body::Kinematic);
     }
 
     #[test]

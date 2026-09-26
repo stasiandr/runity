@@ -90,6 +90,8 @@ pub enum Action {
     /// One place in a field's value, picked from a form's list: the RON
     /// written there.
     SetLeaf(crate::inspector::Place, String),
+    /// A cell of the open config, picked from its list: the RON written.
+    SetConfig(scrap_editor::configs::Place, String),
     /// A prefab or model placed in front of the view.
     Place(String),
     ClearConsole,
@@ -399,6 +401,7 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                     "Project Settings",
                     Action::ShowPanel(crate::dock::Panel::Settings),
                 ),
+                item("Configs", Action::ShowPanel(crate::dock::Panel::Configs)),
                 item("Profiler", Action::ShowPanel(crate::dock::Panel::Profiler)),
             ],
         ),

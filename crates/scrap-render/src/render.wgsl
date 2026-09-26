@@ -1,3 +1,11 @@
+// A lean build of the lit shaders, for a frame that asks for none of the
+// rarer things they can do — weather, clouds, water, rays, probes, fog in
+// the air, decals, sand, clay, light under the skin: each of them returns
+// at once, as its switch in the frame's uniform would have it, and the
+// compiler, knowing it, leaves their code out. Code a frame never runs
+// still costs it: the GPU keeps as few pixels in flight as the largest
+// path needs registers for (Renderer::lean_pipelines).
+override LEAN: bool = false;
 // The scene's lighting: one sun, hemisphere ambient, point and spot lights,
 // distance fog, and the sky behind everything. Drawn in linear light into a
 // high-dynamic-range buffer; post.wgsl turns that into a picture.
@@ -40,9 +48,11 @@ struct Frame {
     // one texel of a lamp's shadow map, in UV
     light_shadow: vec4<f32>,
     inverse_view_projection: mat4x4<f32>,
-    // Zenith colour; w is 1 for a procedural sky.
+    // Zenith colour; w the sky: 0 a colour, 1 a gradient, 2 physical, 3
+    // Unity's procedural (its xyz then 1/λ⁴).
     sky_zenith: vec4<f32>,
-    // Horizon colour; w is the cosine of the sun disc's radius.
+    // Horizon colour (Unity's procedural: Rayleigh's constant, the sun's
+    // radius in radians); w is the cosine of the sun disc's radius.
     sky_horizon: vec4<f32>,
     // Below the horizon; w is the sky's exposure.
     sky_ground: vec4<f32>,
@@ -145,13 +155,53 @@ struct Frame {
 // and for each cell of a grid over the view — across, down and deep — the
 // run of `light_indices` naming those that reach into it.
 struct Light {
-    // position, range
+    // position, range (negative: it falls off as the inverse square)
     position_range: vec4<f32>,
     // colour times intensity; w its first shadow map, or -1
     color_shadow: vec4<f32>,
     // for a spot, which way and the cosine of half its cone; -2 every way
     spot: vec4<f32>,
+    // x the cosine of half the spot's inner cone, where it starts to fade;
+    // above 1, over the last tenth of the cone
+    cone: vec4<f32>,
 };
+
+/// How much of a spot's light goes `along` (the cosine off its axis): all
+/// inside its inner cone, fading to none at its edge — URP's, the square
+/// of a straight ramp; or over the cone's last tenth. 1 for a lamp that
+/// shines every way.
+fn spot_cone(light: Light, along: f32) -> f32 {
+    let outer = light.spot.w;
+    if outer < -1.5 {
+        return 1.0;
+    }
+    let inner = light.cone.x;
+    if inner > 1.0 {
+        return smoothstep(outer, outer + (1.0 - outer) * 0.1, along);
+    }
+    let ramp = clamp((along - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+    return ramp * ramp;
+}
+
+/// How far a lamp reaches.
+fn lamp_range(light: Light) -> f32 {
+    return abs(light.position_range.w);
+}
+
+/// How much of a lamp's light is left `distance` from it: a soft pool to
+/// its range, `(1 − d/range)²` — or URP's, the inverse square eased to
+/// nothing at its range.
+fn lamp_falloff(light: Light, distance: f32) -> f32 {
+    let range = abs(light.position_range.w);
+    if light.position_range.w < 0.0 {
+        let d2 = max(distance * distance, 1e-4);
+        let f = d2 / (range * range);
+        let ease = clamp(1.0 - f * f, 0.0, 1.0);
+        return ease * ease / d2;
+    }
+    let reach = clamp(1.0 - distance / range, 0.0, 1.0);
+    return reach * reach;
+}
 @group(0) @binding(6) var<storage, read> lights: array<Light>;
 // Per cell: its lights' run in light_indices (start, count), then its
 // decals' (start, count).
@@ -273,6 +323,7 @@ fn scene_distance(p: vec3<f32>) -> f32 {
 /// much nearer something is than the step went (Evans, "Fast Approximations
 /// for Global Illumination on Dynamic Scenes").
 fn field_occlusion(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    if LEAN { return 1.0; }
     var occluded = 0.0;
     var weight = 1.0;
     for (var i = 1; i <= 5; i++) {
@@ -287,6 +338,7 @@ fn field_occlusion(p: vec3<f32>, n: vec3<f32>) -> f32 {
 /// toward it, the nearest the ray passes to anything over how far it has
 /// gone is how much of the disc shows (Quilez, soft shadows).
 fn field_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>) -> f32 {
+    if LEAN { return 1.0; }
     var seen = 1.0;
     var t = 0.08;
     let start = p + n * 0.06;
@@ -311,6 +363,7 @@ fn field_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>) -> f32 {
 /// point is past where the ray enters the wall's side of its front (its
 /// bulges included).
 fn dust_can_reach(p: vec3<f32>) -> bool {
+    if LEAN { return false; }
     let w = select(vec2<f32>(1.0, 0.0), normalize(frame.foliage.wind.xy), length(frame.foliage.wind.xy) > 1e-4);
     let eye = frame.camera_position.xyz;
     let front = -frame.weather[1].w + 260.0;
@@ -327,6 +380,7 @@ fn dust_can_reach(p: vec3<f32>) -> bool {
 /// — a shadow hundreds of metres across wants none — at a few points
 /// along the way to the sun.
 fn dust_wall_shadow(p: vec3<f32>, to_sun: vec3<f32>) -> f32 {
+    if LEAN { return 1.0; }
     let strength = frame.weather[1].z;
     let height = frame.dust.y;
     if strength <= 0.0 || height <= 0.0 || to_sun.y <= 0.0 {
@@ -381,6 +435,7 @@ fn ssr_behind(q: vec3<f32>) -> vec2<f32> {
 /// Its alpha is how much to trust it — none off the screen, less near its
 /// edges, for rougher surfaces and far along the ray.
 fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
+    if LEAN { return vec4<f32>(0.0); }
     if frame.ssr.x < 0.5 || roughness > 0.6 {
         return vec4<f32>(0.0);
     }
@@ -448,6 +503,7 @@ fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
 /// its way — within a hand's thickness behind what the screen shows there —
 /// fading back to 1 the further along it was met.
 fn contact_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    if LEAN { return 1.0; }
     let reach = frame.ambient_occlusion.z;
     let steps = 12u;
     let turn = frame.ambient_occlusion.w;
@@ -489,6 +545,7 @@ fn cloud_noise(p: vec3<f32>) -> f32 {
 /// the cloud pass marches, looked up once where the way to the sun crosses
 /// the middle of the layer.
 fn cloud_shadow(p: vec3<f32>) -> f32 {
+    if LEAN { return 1.0; }
     let shape = frame.clouds[0];
     let drift = frame.clouds[1];
     if shape.x <= 0.0 || drift.w <= 0.0 {
@@ -524,6 +581,18 @@ fn physical_sky(direction: vec3<f32>) -> vec3<f32> {
     let t = sign(latitude) * sqrt(abs(latitude) / 1.5707963);
     let uv = vec2<f32>(azimuth / 6.2831853 + 0.5, t * 0.5 + 0.5);
     return textureSampleLevel(sky_view, fog_sampler, uv, 0.0).rgb * below;
+}
+
+/// Unity's procedural sky the way `direction` looks, from the sky-view
+/// table it is baked into: the table's mapping, none of the physical
+/// sky's dimming below the horizon.
+fn unity_sky_seen(direction: vec3<f32>) -> vec3<f32> {
+    let d = normalize(direction);
+    let azimuth = atan2(d.z, d.x);
+    let latitude = asin(clamp(d.y, -1.0, 1.0));
+    let t = sign(latitude) * sqrt(abs(latitude) / 1.5707963);
+    let uv = vec2<f32>(azimuth / 6.2831853 + 0.5, t * 0.5 + 0.5);
+    return textureSampleLevel(sky_view, fog_sampler, uv, 0.0).rgb;
 }
 
 /// The sky's light on a face turned `n`, from the physical sky itself: its
@@ -586,6 +655,7 @@ fn cloud_sharp(uv: vec2<f32>) -> vec4<f32> {
 /// A colour seen through the air between it and the eye: the physical
 /// sky's aerial perspective.
 fn through_air(color: vec3<f32>, pixel: vec2<f32>, distance: f32) -> vec3<f32> {
+    if LEAN { return color; }
     if frame.air.x < 0.5 {
         return color;
     }
@@ -603,7 +673,40 @@ fn through_air(color: vec3<f32>, pixel: vec2<f32>, distance: f32) -> vec3<f32> {
 struct Caster {
     view_projection: mat4x4<f32>,
     foliage: Foliage,
+    // URP's shadow bias, for the sun's cascades: the way to the sun (xyz)
+    // and how far the caster is pushed from it (w, metres) ...
+    toward: vec4<f32>,
+    // ... and how far it is shrunk along its normal where edge-on (x,
+    // metres). Zero for a lamp's map, whose bias is the receiver's.
+    inset: vec4<f32>,
 };
+
+/// A caster's point as URP's `ApplyShadowBias` draws it into the sun's
+/// map: away from the sun by the depth bias, and into itself along its
+/// normal by the normal bias, as much as it is edge-on to the sun.
+fn shadow_biased(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let l = caster.toward.xyz;
+    let n = normalize(normal + vec3<f32>(1e-7));
+    let edge_on = 1.0 - clamp(dot(l, n), 0.0, 1.0);
+    return world - l * caster.toward.w - n * (edge_on * caster.inset.x);
+}
+
+/// A normal out of a model's space into the world's: by the inverse
+/// transpose — its cofactors, the scale left for the normalisation — so a
+/// thing squashed flat has its faces turned up, not along.
+fn world_normal(model: mat4x4<f32>, n: vec3<f32>) -> vec3<f32> {
+    let a = model[0].xyz;
+    let b = model[1].xyz;
+    let c = model[2].xyz;
+    let cofactors = mat3x3<f32>(cross(b, c), cross(c, a), cross(a, b));
+    // A mirrored model turns its cofactors inside out. One flattened to
+    // nothing across (a decal's box) keeps its faces' way.
+    let turned = cofactors * n * select(1.0, -1.0, dot(a, cross(b, c)) < 0.0);
+    if dot(turned, turned) < 1e-24 {
+        return (model * vec4<f32>(n, 0.0)).xyz;
+    }
+    return turned;
+}
 @group(0) @binding(3) var<uniform> caster: Caster;
 
 // maps: begin
@@ -685,6 +788,8 @@ struct VertexInput {
     // mask, emission in the low halves, the material's own four
     // textures in the high
     @location(17) maps: vec4<u32>,
+    // the colour painted on the vertex (white where the mesh has none)
+    @location(18) vertex_color: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -704,7 +809,83 @@ struct VertexOutput {
     @location(9) params_1: vec4<f32>,
     @location(10) subsurface: vec4<f32>,
     @location(11) @interpolate(flat) maps: vec4<u32>,
+    @location(12) vertex_color: vec4<f32>,
 };
+
+// What a vertex stage hands the rasteriser: what changes across a
+// triangle, and which instance it is of. The instance's own numbers — its
+// colour, its material's, its maps — are the same at every corner, and a
+// tiling GPU writes every output of every vertex out to memory and back:
+// the fragment stage reads them from the instances instead (`expand`).
+struct VertexSlim {
+    @invariant @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    // Terrain's vertices say how far outside its grid they are (w).
+    @location(3) surface: vec4<f32>,
+    // Terrain's vertices carry their ripples' blend (zw).
+    @location(4) params_1: vec4<f32>,
+    @location(5) vertex_color: vec4<f32>,
+    // Which instance: its index; with the top bit, the terrain's grid by
+    // the vertex stage; all ones, the terrain by mesh shaders.
+    @location(6) @interpolate(flat) instance: u32,
+};
+
+// The frame's instances, 13 vec4s each (InstanceRaw), for `expand`.
+@group(0) @binding(33) var<storage, read> instance_data: array<vec4<f32>>;
+
+const TERRAIN_GRID: u32 = 0x80000000u;
+const TERRAIN_MESH: u32 = 0xffffffffu;
+
+fn slim(o: VertexOutput, instance: u32) -> VertexSlim {
+    var v: VertexSlim;
+    v.clip_position = o.clip_position;
+    v.world_position = o.world_position;
+    v.normal = o.normal;
+    v.uv = o.uv;
+    v.surface = o.surface;
+    v.params_1 = o.params_1;
+    v.vertex_color = o.vertex_color;
+    v.instance = instance;
+    return v;
+}
+
+// A fragment's whole input: what was interpolated, and its instance's
+// numbers as the vertex stage would have handed them on.
+fn expand(v: VertexSlim) -> VertexOutput {
+    var o: VertexOutput;
+    o.clip_position = v.clip_position;
+    o.world_position = v.world_position;
+    o.normal = v.normal;
+    o.uv = v.uv;
+    o.surface = v.surface;
+    o.params_1 = v.params_1;
+    o.vertex_color = v.vertex_color;
+    if v.instance == TERRAIN_MESH {
+        o.base_color = frame.terrain_look[0].rgb;
+        o.shading = frame.terrain_look[0].w;
+        o.emission = frame.terrain_look[2];
+        o.detail = frame.terrain_look[4];
+        o.params_0 = frame.terrain_look[5];
+        o.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+        o.maps = vec4<u32>(0u);
+        return o;
+    }
+    let s = (v.instance & ~TERRAIN_GRID) * 13u;
+    let colour = instance_data[s + 4u];
+    o.base_color = colour.rgb;
+    o.shading = colour.w;
+    o.emission = instance_data[s + 6u];
+    o.detail = instance_data[s + 8u];
+    o.params_0 = instance_data[s + 9u];
+    o.subsurface = instance_data[s + 11u];
+    o.maps = bitcast<vec4<u32>>(instance_data[s + 12u]);
+    if (v.instance & TERRAIN_GRID) != 0u {
+        o.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+    }
+    return o;
+}
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
 // two characters in different poses cost two offsets rather than two
@@ -726,7 +907,11 @@ struct SkinInput {
 /// agree for rigid motion and differ under scale, and the first is both
 /// cheaper and what every exporter assumes.
 @vertex
-fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
+fn vs_skinned(in: VertexInput, skin: SkinInput, @builtin(instance_index) instance: u32) -> VertexSlim {
+    return slim(skinned_vertex(in, skin), instance);
+}
+
+fn skinned_vertex(in: VertexInput, skin: SkinInput) -> VertexOutput {
     var skinning =
         pose.joints[skin.joints.x] * skin.weights.x +
         pose.joints[skin.joints.y] * skin.weights.y +
@@ -752,7 +937,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = frame.view_projection * world;
     out.world_position = world.xyz;
-    out.normal = (model * (skinning * vec4<f32>(in.normal, 0.0))).xyz;
+    out.normal = world_normal(model, (skinning * vec4<f32>(in.normal, 0.0)).xyz);
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -763,6 +948,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
     out.maps = in.maps;
+    out.vertex_color = in.vertex_color;
     return out;
 }
 
@@ -857,7 +1043,8 @@ fn trampled(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    return caster.view_projection * vec4<f32>(world, 1.0);
+    let biased = shadow_biased(world, world_normal(model, in.normal));
+    return caster.view_projection * vec4<f32>(biased, 1.0);
 }
 
 struct ClipOut {
@@ -874,7 +1061,8 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     var out: ClipOut;
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    out.position = caster.view_projection * vec4<f32>(world, 1.0);
+    let biased = shadow_biased(world, world_normal(model, in.normal));
+    out.position = caster.view_projection * vec4<f32>(biased, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
     out.maps = in.maps;
@@ -948,6 +1136,7 @@ fn basis_of(n: vec3<f32>) -> Basis {
 /// The sun by rays: a few towards points across its disc, so the shadow
 /// sharpens where it touches its caster and softens away from it.
 fn traced_sun(position: vec3<f32>, normal: vec3<f32>, to_sun: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    if LEAN { return 1.0; }
     let count = max(u32(frame.ray_params.x), 1u);
     let spread = frame.ray.w;
     let frame_of = basis_of(to_sun);
@@ -969,6 +1158,7 @@ fn traced_sun(position: vec3<f32>, normal: vec3<f32>, to_sun: vec3<f32>, pixel: 
 /// Occlusion by rays: short ones over the hemisphere, cosine-weighted; the
 /// share that reach `reach` without hitting anything.
 fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    if LEAN { return 1.0; }
     let count = max(u32(frame.ray_params.y), 1u);
     let reach = frame.ray_params.z;
     let frame_of = basis_of(normal);
@@ -1082,8 +1272,11 @@ fn vsm_sunlight(p: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0, sum / 9.0, fade);
 }
 
-fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
-    if frame.vsm[3].x > 0.5 {
+/// The sun's light at a point: its cascade's map, filtered; `plane`, the
+/// surface's own (geometric) normal there or zero, tilts the filter's taps
+/// along it (see `receiver_slope`).
+fn sunlight(world_position: vec3<f32>, normal: vec3<f32>, plane: vec3<f32>) -> f32 {
+    if frame.vsm[3].x > 0.5 && !LEAN {
         return vsm_sunlight(world_position, normal);
     }
     let count = u32(frame.shadow_params.w + 0.5);
@@ -1104,11 +1297,9 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
         return 1.0;
     }
 
-    // Offsetting along the normal before the lookup is what handles grazing
-    // angles: there the depth error grows with the slope, and no constant
-    // bias large enough to cover it is small enough to keep contact.
-    let offset = world_position + normal * frame.cascade_bias[cascade];
-    let light_clip = frame.light_view_projection[cascade] * vec4<f32>(offset, 1.0);
+    // The biases were the caster's, as URP's are: the point is looked up
+    // where it is.
+    let light_clip = frame.light_view_projection[cascade] * vec4<f32>(world_position, 1.0);
     let ndc = light_clip.xyz / light_clip.w;
 
     // Clip space is -1..1 across and 0..1 deep; the map is indexed 0..1 with
@@ -1117,32 +1308,179 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
         return 1.0;
     }
+    let lit = shadow_filtered(uv, ndc.z, i32(cascade), receiver_slope(frame.light_view_projection[cascade], plane));
 
-    let reference = ndc.z - frame.cascade_depth_bias[cascade];
+    // Fading out towards the shadow distance, as URP's
+    // GetMainLightShadowFade: linear in the squared distance from the eye,
+    // over the last border's share.
+    let to_eye = world_position - frame.camera_position.xyz;
+    let fade = clamp(dot(to_eye, to_eye) * frame.cascade_depth_bias.x + frame.cascade_depth_bias.y, 0.0, 1.0);
+    return mix(lit, 1.0, fade);
+}
+
+/// The sun's map at `uv` of a cascade, compared with `reference`: URP's
+/// soft shadows (Core RP's ShadowSamplingTent) — one bilinear comparison
+/// hard, four half a texel out Low, a 5x5 tent in nine Medium, a 7x7 in
+/// sixteen High.
+fn shadow_filtered(uv: vec2<f32>, reference: f32, layer: i32, slope: vec2<f32>) -> f32 {
+    let size = 1.0 / frame.shadow_params.z;
     let texel = frame.shadow_params.z;
-    // Nine taps, each of them already a hardware 2x2, so the edge is soft
-    // enough that the map's resolution stops being visible as stairs.
+    let quality = u32(frame.shadow_params.x + 0.5);
+    if quality == 0u {
+        return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, layer, reference);
+    }
+    if quality == 1u {
+        var sum = 0.0;
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let o = vec2<f32>(f32(i & 1u), f32(i >> 1u)) - 0.5;
+            sum += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o * texel, layer, reference);
+        }
+        return sum * 0.25;
+    }
+    let centre_in_texels = uv * size;
+    let origin = floor(centre_in_texels + 0.5);
+    let offset = centre_in_texels - origin;
     var sum = 0.0;
-    for (var y = -1; y <= 1; y = y + 1) {
-        for (var x = -1; x <= 1; x = x + 1) {
-            let tap = uv + vec2<f32>(f32(x), f32(y)) * texel;
-            sum = sum + textureSampleCompareLevel(shadow_map, shadow_sampler, tap, i32(cascade), reference);
+    if quality == 2u {
+        let u = tent_5x5(offset.x);
+        let v = tent_5x5(offset.y);
+        for (var j = 0u; j < 3u; j = j + 1u) {
+            for (var i = 0u; i < 3u; i = i + 1u) {
+                let at = (origin + vec2<f32>(u.offsets[i], v.offsets[j])) * texel;
+                sum += u.weights[i] * v.weights[j]
+                    * textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference);
+            }
+        }
+        return sum;
+    }
+    let u = tent_7x7(offset.x);
+    let v = tent_7x7(offset.y);
+    // The kernel's four corners and its middle first: where all five are
+    // lit, or all in shadow — most of a frame, away from shadows' edges —
+    // the other eleven taps could only agree. The middle keeps a shadow
+    // thinner than the kernel (a pole's) from slipping between corners.
+    let corner = array<vec2<f32>, 4>(
+        vec2<f32>(u.offsets[0], v.offsets[0]),
+        vec2<f32>(u.offsets[3], v.offsets[0]),
+        vec2<f32>(u.offsets[0], v.offsets[3]),
+        vec2<f32>(u.offsets[3], v.offsets[3]),
+    );
+    // Each tap compared with the surface's own depth where the tap is,
+    // not the depth where the pixel is: under a low sun a flat receiver
+    // falls away across the kernel's eight texels by more than the
+    // caster's bias, and its far taps would find it shadowing itself —
+    // dimming it a little, and sending nearly every pixel of it down the
+    // sixteen taps below for what is no edge at all.
+    var corners = vec4<f32>(0.0);
+    for (var c = 0u; c < 4u; c = c + 1u) {
+        let at = (origin + corner[c]) * texel;
+        corners[c] = textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference + dot(slope, at - uv));
+    }
+    let middle = textureSampleCompareLevel(shadow_map, shadow_sampler, uv, layer, reference);
+    let seen = corners.x + corners.y + corners.z + corners.w + middle;
+    if seen <= 0.0 {
+        return 0.0;
+    }
+    if seen >= 5.0 {
+        return 1.0;
+    }
+    for (var j = 0u; j < 4u; j = j + 1u) {
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let w = u.weights[i] * v.weights[j];
+            let edge_i = i == 0u || i == 3u;
+            let edge_j = j == 0u || j == 3u;
+            if edge_i && edge_j {
+                sum += w * corners[select(0u, 1u, i == 3u) + select(0u, 2u, j == 3u)];
+                continue;
+            }
+            let at = (origin + vec2<f32>(u.offsets[i], v.offsets[j])) * texel;
+            sum += w * textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference + dot(slope, at - uv));
         }
     }
-    let lit = sum / 9.0;
+    return sum;
+}
 
-    // The last cascade fades to lit over its outer tenth.
-    let last = frame.cascade_spheres[count - 1u];
-    let from_centre = length(world_position - last.xyz);
-    let radius = sqrt(last.w);
-    let fade = clamp((radius - from_centre) / (radius * 0.1), 0.0, 1.0);
-    return mix(1.0, lit, fade);
+/// How a surface's depth in a cascade changes across its map, per unit of
+/// uv: the plane of `normal` (world) through the cascade's view, whose
+/// rows are the light's axes each times its scale. Zero for no normal, or
+/// a surface nearly edge-on to the sun — which the sun barely lights.
+fn receiver_slope(light: mat4x4<f32>, normal: vec3<f32>) -> vec2<f32> {
+    let x = vec3<f32>(light[0].x, light[1].x, light[2].x);
+    let y = vec3<f32>(light[0].y, light[1].y, light[2].y);
+    let z = vec3<f32>(light[0].z, light[1].z, light[2].z);
+    // The normal in the map's space: a normal goes by the inverse
+    // transpose, which for axes times scales is each axis over its scale².
+    let n = vec3<f32>(dot(x, normal) / dot(x, x), dot(y, normal) / dot(y, y), dot(z, normal) / dot(z, z));
+    if abs(n.z) < 0.1 * length(n) {
+        return vec2<f32>(0.0);
+    }
+    // u is half of x; v is half of y the other way.
+    return vec2<f32>(-2.0 * n.x / n.z, 2.0 * n.y / n.z);
+}
+
+/// Core RP's SampleShadow_GetTexelAreas_Tent_3x3: the area of a tent 1.5
+/// texels high and 3 wide over each of the 4 texels it lies on, the tent
+/// `offset` from their middle — as cut by the texels (xyzw), and the middle
+/// two uncut (the second result's yz).
+struct TentAreas {
+    cut: vec4<f32>,
+    uncut: vec4<f32>,
+};
+
+fn tent_areas_3x3(offset: f32) -> TentAreas {
+    var out: TentAreas;
+    let halved = (offset + 0.5) * (offset + 0.5) * 0.5;
+    out.cut.x = halved - offset;
+    out.uncut.x = out.cut.x;
+    out.cut.w = halved;
+    out.uncut.w = halved;
+    out.uncut.y = 1.5 - offset - 0.5;
+    let left = min(offset, 0.0);
+    out.cut.y = out.uncut.y - left * left;
+    out.uncut.z = 1.5 + offset - 0.5;
+    let right = max(offset, 0.0);
+    out.cut.z = out.uncut.z - right * right;
+    return out;
+}
+
+/// Bilinear fetches along one axis: where each goes, in texels from the
+/// fetches' middle, and what it weighs.
+struct Fetches3 {
+    offsets: vec3<f32>,
+    weights: vec3<f32>,
+};
+
+struct Fetches4 {
+    offsets: vec4<f32>,
+    weights: vec4<f32>,
+};
+
+/// SampleShadow_ComputeSamples_Tent_5x5 along one axis.
+fn tent_5x5(offset: f32) -> Fetches3 {
+    let t = tent_areas_3x3(offset);
+    let a = vec3<f32>(t.cut.x, t.uncut.y, t.cut.y + 1.0) * 0.16;
+    let b = vec3<f32>(t.cut.z + 1.0, t.uncut.z, t.cut.w) * 0.16;
+    let weights = vec3<f32>(a.x + a.y, a.z + b.x, b.y + b.z);
+    let offsets = vec3<f32>(a.y, b.x, b.z) / weights + vec3<f32>(-2.5, -0.5, 1.5);
+    return Fetches3(offsets, weights);
+}
+
+/// SampleShadow_ComputeSamples_Tent_7x7 along one axis.
+fn tent_7x7(offset: f32) -> Fetches4 {
+    let t = tent_areas_3x3(offset);
+    let k = 0.081632;
+    let a = vec4<f32>(t.cut.x, t.uncut.y, t.uncut.y + 1.0, t.cut.y + 2.0) * k;
+    let b = vec4<f32>(t.cut.z + 2.0, t.uncut.z + 1.0, t.uncut.z, t.cut.w) * k;
+    let weights = vec4<f32>(a.x + a.y, a.z + a.w, b.x + b.y, b.z + b.w);
+    let offsets = vec4<f32>(a.y, a.w, b.y, b.w) / weights + vec4<f32>(-3.5, -1.5, 0.5, 2.5);
+    return Fetches4(offsets, weights);
 }
 
 /// How much stands between a point and the sun, metres: from the shadow
 /// map, how far past the first surface toward the sun the point lies — the
 /// thickness of what it is under. −1 when there is no map there.
 fn sun_thickness(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if LEAN { return -1.0; }
     if frame.vsm[3].x > 0.5 {
         let at = vsm_find(world_position, normal, -1.5);
         if !at.found || at.depth > 1.0 {
@@ -1234,7 +1572,7 @@ fn lamp_shadow(light: Light, position: vec3<f32>, normal: vec3<f32>, distance_to
     // Compared a little nearer the lamp, in metres: its depth is a
     // perspective one, so the bias is put back through the same curve.
     let near = 0.05;
-    let far = light.position_range.w;
+    let far = lamp_range(light);
     let z = max(clip.w - texel - 0.02, near);
     let reference = far / (far - near) * (1.0 - near / z);
     var sum = 0.0;
@@ -1359,7 +1697,7 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         sun_seen = sun_seen / 3.0;
     } else {
-        sun_seen = sunlight(p, vec3<f32>(0.0));
+        sun_seen = sunlight(p, vec3<f32>(0.0), vec3<f32>(0.0));
     }
     // The dust wall's mass between the air and the sun.
     sun_seen *= dust_wall_shadow(p, to_sun);
@@ -1374,10 +1712,8 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         let to_lamp = lamp.position_range.xyz - p;
         let distance_to = length(to_lamp);
         let toward = to_lamp / max(distance_to, 1e-4);
-        let reach = clamp(1.0 - distance_to / lamp.position_range.w, 0.0, 1.0);
-        let spot = lamp.spot;
-        let edge = spot.w + (1.0 - spot.w) * 0.1;
-        let cone = select(smoothstep(spot.w, edge, dot(-toward, spot.xyz)), 1.0, spot.w < -1.5);
+        let reach = lamp_falloff(lamp, distance_to);
+        let cone = spot_cone(lamp, dot(-toward, lamp.spot.xyz));
         if reach * cone <= 0.0 {
             continue;
         }
@@ -1389,8 +1725,9 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         // Closer to a square law than the surfaces' soft pool: a lamp in
         // mist is a glow round the lamp, not an even wash to its range.
-        let near_lamp = 1.0 / (1.0 + distance_to * distance_to);
-        light += lamp.color_shadow.rgb * reach * reach * near_lamp * cone * shadow
+        // (An inverse-square lamp is that already.)
+        let near_lamp = select(1.0 / (1.0 + distance_to * distance_to), 1.0, lamp.position_range.w < 0.0);
+        light += lamp.color_shadow.rgb * reach * near_lamp * cone * shadow
             * phase(dot(-toward, to_eye), g) * frame.fog_lamps.x;
     }
     // Kicked-up dust is thick enough to light as a soft solid would — the
@@ -1430,6 +1767,7 @@ fn cs_fog_integrate(@builtin(global_invocation_id) id: vec3<u32>) {
 /// A colour seen through the fog between it and the eye: dimmed by what
 /// the air takes, and the air's own light added.
 fn through_fog(color: vec3<f32>, pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+    if LEAN { return color; }
     if frame.volume.x < 0.5 {
         return color;
     }
@@ -1496,6 +1834,7 @@ struct Weathered {
 /// A surface as the weather leaves it: darker and shinier wet, still water
 /// in the level patches, snow on what faces up.
 fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>, pixel: vec2<f32>, is_sand: bool, clay: bool) -> Weathered {
+    if LEAN { return Weathered(albedo, smoothness, normal, 1.0); }
     var out = Weathered(albedo, smoothness, normal, 1.0);
     let w = frame.weather[0];
     // Sand the wind has laid: on what faces up, thick in corners and
@@ -1745,6 +2084,7 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
     out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
     out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
     out.maps = vec4<u32>(0u);
+    out.vertex_color = vec4<f32>(1.0);
     return out;
 }
 
@@ -1759,7 +2099,11 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
 /// the sand's ripples — real relief, catching the light and standing out
 /// against the sky. Its normal is the slope of what it was raised to.
 @vertex
-fn vs_terrain(in: VertexInput) -> VertexOutput {
+fn vs_terrain(in: VertexInput, @builtin(instance_index) instance: u32) -> VertexSlim {
+    return slim(terrain_grid_vertex(in), instance | TERRAIN_GRID);
+}
+
+fn terrain_grid_vertex(in: VertexInput) -> VertexOutput {
     var out = terrain_vertex(
         in.position.xz,
         in.position.y,
@@ -1770,8 +2114,8 @@ fn vs_terrain(in: VertexInput) -> VertexOutput {
 }
 
 @vertex
-fn vs(in: VertexInput) -> VertexOutput {
-    return standard_vertex(in);
+fn vs(in: VertexInput, @builtin(instance_index) instance: u32) -> VertexSlim {
+    return slim(standard_vertex(in), instance);
 }
 
 // Tools over the finished picture (tools.rs): handles and the outline
@@ -1852,12 +2196,12 @@ struct ClusterDrawn {
 @group(3) @binding(6) var<storage, read> cluster_drawn: array<ClusterDrawn>;
 
 @vertex
-fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept: u32) -> VertexOutput {
+fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept: u32) -> VertexSlim {
     let d = cluster_drawn[kept];
     if corner >= d.count * 3u {
         // Past the cluster's last triangle: all three corners the same
         // point, behind the eye — nothing drawn.
-        var none: VertexOutput;
+        var none: VertexSlim;
         none.clip_position = vec4<f32>(0.0, 0.0, -1.0, 1.0);
         return none;
     }
@@ -1880,7 +2224,10 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
     in.params_1 = cluster_instances[s + 10u];
     in.subsurface = cluster_instances[s + 11u];
     in.maps = bitcast<vec4<u32>>(cluster_instances[s + 12u]);
-    return standard_vertex(in);
+    // What has its own shader, the only reader of vertex colours, is not
+    // drawn by clusters.
+    in.vertex_color = vec4<f32>(1.0);
+    return slim(standard_vertex(in), d.instance);
 }
 
 fn standard_vertex(in: VertexInput) -> VertexOutput {
@@ -1898,10 +2245,7 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = frame.view_projection * world;
     out.world_position = world.xyz;
-    // Assumes uniform scale. A non-uniform one would need the inverse
-    // transpose; scenes that want it can scale at import instead, which is
-    // where scale is settled anyway.
-    out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
+    out.normal = world_normal(model, in.normal);
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -1912,6 +2256,7 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
     out.maps = in.maps;
+    out.vertex_color = in.vertex_color;
     return out;
 }
 
@@ -1956,6 +2301,88 @@ fn direct(b: Brdf, normal: vec3<f32>, to_light: vec3<f32>, to_eye: vec3<f32>, hi
     return color;
 }
 
+// Unity's Procedural skybox (Skybox/Procedural): O'Neil's scattering, two
+// samples through a thin shell of air, as its vertex shader does it — here
+// per pixel. procedural_sky.rs has the same for the light all round.
+const SKY_OUTER: f32 = 1.025;
+const SKY_CAMERA_HEIGHT: f32 = 0.0001;
+const SKY_MIE: f32 = 0.0010;
+const SKY_SUN_BRIGHTNESS: f32 = 20.0;
+const SKY_SCALE: f32 = 40.0;
+const SKY_SCALE_DEPTH: f32 = 0.25;
+const SKY_SCALE_OVER_DEPTH: f32 = 160.0;
+
+fn sky_scale(c: f32) -> f32 {
+    let x = 1.0 - c;
+    return 0.25 * exp(-0.00287 + x * (0.459 + x * (3.83 + x * (-6.80 + x * 5.25))));
+}
+
+struct UnitySky {
+    // The sky that way, exposed.
+    color: vec3<f32>,
+    // The sun's disc's colour there, before its shape.
+    sun: vec3<f32>,
+};
+
+fn unity_sky(eye_ray: vec3<f32>) -> UnitySky {
+    let ray = normalize(eye_ray);
+    let inv_wavelength = frame.sky_zenith.xyz;
+    let rayleigh = frame.sky_horizon.x;
+    let pi4 = 4.0 * 3.14159265;
+    let extinction = inv_wavelength * rayleigh * pi4 + vec3<f32>(SKY_MIE * pi4);
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    let camera = vec3<f32>(0.0, 1.0 + SKY_CAMERA_HEIGHT, 0.0);
+    var c_in: vec3<f32>;
+    var c_out: vec3<f32>;
+    if ray.y >= 0.0 {
+        let far = sqrt(SKY_OUTER * SKY_OUTER + ray.y * ray.y - 1.0) - ray.y;
+        let height = 1.0 + SKY_CAMERA_HEIGHT;
+        let depth = exp(SKY_SCALE_OVER_DEPTH * -SKY_CAMERA_HEIGHT);
+        let start_offset = depth * sky_scale(dot(ray, camera) / height);
+        let length_ = far / 2.0;
+        let hop = ray * length_;
+        var p = camera + hop * 0.5;
+        var front = vec3<f32>(0.0);
+        for (var i = 0; i < 2; i = i + 1) {
+            let h = length(p);
+            let d = exp(SKY_SCALE_OVER_DEPTH * (1.0 - h));
+            let scatter = start_offset + d * (sky_scale(dot(to_sun, p) / h) - sky_scale(dot(ray, p) / h));
+            let attenuate = exp(-clamp(scatter, 0.0, 50.0) * extinction);
+            front += attenuate * (d * length_ * SKY_SCALE);
+            p += hop;
+        }
+        c_in = front * inv_wavelength * rayleigh * SKY_SUN_BRIGHTNESS;
+        c_out = front * SKY_MIE * SKY_SUN_BRIGHTNESS;
+    } else {
+        let far = -SKY_CAMERA_HEIGHT / min(-0.001, ray.y);
+        let at = camera + ray * far;
+        let depth = exp(-SKY_CAMERA_HEIGHT / SKY_SCALE_DEPTH);
+        let camera_scale = sky_scale(dot(-ray, at));
+        let light_scale = sky_scale(dot(to_sun, at));
+        let length_ = far / 2.0;
+        let p = camera + ray * length_ * 0.5;
+        let d = exp(SKY_SCALE_OVER_DEPTH * (1.0 - length(p)));
+        let scatter = d * (light_scale + camera_scale) - depth * camera_scale;
+        let attenuate = exp(-clamp(scatter, 0.0, 50.0) * extinction);
+        let front = attenuate * (d * length_ * SKY_SCALE);
+        c_in = front * (inv_wavelength * rayleigh * SKY_SUN_BRIGHTNESS + vec3<f32>(SKY_MIE * SKY_SUN_BRIGHTNESS));
+        c_out = clamp(attenuate, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    let exposure = frame.sky_ground.w;
+    let ground = (c_in + frame.sky_ground.rgb * c_out) * exposure;
+    let cos = dot(to_sun, -ray);
+    let sky = c_in * (0.75 + 0.75 * cos * cos) * exposure;
+    var out: UnitySky;
+    out.color = mix(sky, ground, clamp(-ray.y / 0.02, 0.0, 1.0));
+    // Unity's simple disc: bright even in LDR, whatever the light's
+    // intensity, and only above the horizon.
+    let light = frame.sun_color.rgb;
+    let brightness = clamp(length(light), 0.25, 1.0);
+    out.sun = 27.0 * clamp(c_out * 400.0 * SKY_SUN_BRIGHTNESS, vec3<f32>(0.0), vec3<f32>(1.0)) * light / brightness
+        * step(0.0, ray.y);
+    return out;
+}
+
 /// What the surroundings look like in a direction, blurred by roughness:
 /// the sky's gradient for a smooth surface, the hemisphere's average for a
 /// rough one. No sun in it: the sun is a direct light, counted once.
@@ -1963,6 +2390,28 @@ fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let hemisphere = mix(frame.ground_color.rgb, frame.sky_color.rgb, direction.y * 0.5 + 0.5);
     if frame.sky_zenith.w < 0.5 {
         return hemisphere;
+    }
+    if frame.sky_zenith.w > 2.5 {
+        // Unity reflects its sky out of a cube map blurred by the lobe, so
+        // the hard line between the sky and its ground is a ramp as wide
+        // as the lobe on a rough face: the sky just above and the ground
+        // just below, blended across it. Taken as it is, the line ran
+        // round every wall at the horizon's height.
+        // Read from the sky-view table the renderer bakes it into
+        // (bake_unity_sky): the scattering worked out twice a pixel was
+        // most of what a lit pixel cost. The table's texels near the
+        // horizon hold both sides of it, so each side is read a little
+        // clear of it.
+        let width = 0.02 + perceptual_roughness * perceptual_roughness;
+        var sky = vec3<f32>(0.0);
+        if direction.y > -width {
+            sky = unity_sky_seen(vec3<f32>(direction.x, max(direction.y, 0.03), direction.z));
+        }
+        if direction.y < width {
+            let ground = unity_sky_seen(vec3<f32>(direction.x, min(direction.y, -0.05), direction.z));
+            sky = mix(ground, sky, smoothstep(-width, width, direction.y));
+        }
+        return mix(sky, hemisphere, perceptual_roughness);
     }
     if frame.sky_zenith.w > 1.5 {
         return mix(physical_sky(direction) * frame.sky_ground.w, hemisphere, perceptual_roughness);
@@ -2002,7 +2451,7 @@ fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f3
     // By a ray, where asked: what is off the screen or behind the camera
     // too. A rough surface's ray is turned a little every frame and pixel
     // within its lobe, and TAA gathers them into its blur.
-    if frame.probe_params.z > 0.5 && perceptual_roughness <= frame.probe_params.w {
+    if frame.probe_params.z > 0.5 && perceptual_roughness <= frame.probe_params.w && !LEAN {
         var d = direction;
         let spread = perceptual_roughness * perceptual_roughness;
         if spread > 0.0005 {
@@ -2028,6 +2477,7 @@ fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f3
 /// its coloured walls tinting what faces them, even off the screen — and
 /// outside, the sky and the ground's `hemisphere`.
 fn around(position: vec3<f32>, normal: vec3<f32>, hemisphere: vec3<f32>) -> vec3<f32> {
+    if LEAN { return hemisphere; }
     let count = u32(frame.probe_params.x);
     if count == 0u {
         return hemisphere;
@@ -2105,6 +2555,7 @@ fn ddgi_texel(probe: u32, uv: vec2<f32>, offset: u32) -> vec4<f32> {
 /// turned `n`, seen from `to_eye`: rgb, and in alpha how much it covers
 /// there (1 inside the grid and half a cell past it, 0 a cell past).
 fn ddgi_irradiance(p: vec3<f32>, n: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
+    if LEAN { return vec4<f32>(0.0); }
     if frame.ddgi[1].w < 0.5 {
         return vec4<f32>(0.0);
     }
@@ -2254,7 +2705,8 @@ fn cs_ddgi_update(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invoca
 
 /// What the probes and the sky give a reflection, without the screen.
 fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
-    let sky = environment(direction, perceptual_roughness);
+    // Unity's reflection intensity: its skybox's reflection, scaled.
+    let sky = environment(direction, perceptual_roughness) * frame.sky_color.w;
     let count = u32(frame.probe_params.x);
     if count == 0u {
         return sky;
@@ -2333,6 +2785,10 @@ struct SurfaceIn {
     params: array<vec4<f32>, 2>,
     // Where its textures are, for `texture_at`: not to be read otherwise.
     maps: vec4<u32>,
+    // The colour painted on the mesh's vertices, as its file has it (glTF's
+    // COLOR_0, Unity's Vertex Color), between them; white where the mesh
+    // has none. The standard shader does not use it, as URP Lit does not.
+    vertex_color: vec4<f32>,
 };
 
 // What the standard shader worked out for the fragment, before the light:
@@ -2355,7 +2811,8 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
 // scrap:surface }
 
 @fragment
-fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     return shade(in, front, true);
 }
 
@@ -2363,8 +2820,64 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
 /// what is cut out was cut there already, and a shader with no discard
 /// keeps the GPU's hidden surface removal.
 @fragment
-fn fs_prepassed(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_prepassed(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     return shade(in, front, false);
+}
+
+/// Whether the side seen is the surface's front: what the GPU says, the
+/// other way round for a thing placed mirrored.
+fn seen_front(in: VertexOutput, front: bool) -> bool {
+    let flags = u32(in.emission.w + 0.5);
+    // Its back lit as the front (URP's Render Face Both): never turned.
+    if (flags & 256u) != 0u {
+        return true;
+    }
+    return front != ((flags & 128u) != 0u);
+}
+
+/// A see-through surface lit by nothing — smoke, dust, a glow: its
+/// picture, what it emits and its own shader's say, and none of what
+/// `shade` does for the light (normal maps, decals, weather). A sky of
+/// smoke sprites, each over most of the screen, is what this is for.
+@fragment
+fn fs_unlit(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
+    var base_uv = in.uv;
+    let screen_flags = u32(in.emission.w + 0.5);
+    if (screen_flags & 48u) != 0u {
+        base_uv = in.clip_position.xy / frame.cluster_depth.zw;
+        if (screen_flags & 32u) != 0u {
+            base_uv.x = 1.0 - base_uv.x;
+        }
+    }
+    let sampled = surface_at(in.maps, base_uv);
+    let emitted = emission_at(in.maps, in.uv).rgb;
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, seen_front(in, front));
+    var alpha = in.surface.z * sampled.a;
+    if in.surface.w > 0.0 && alpha < in.surface.w {
+        discard;
+    }
+    let shaped = surface(
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
+        Surface(in.base_color * sampled.rgb, alpha, in.surface.x, in.surface.y, geometric, in.emission.rgb * emitted),
+    );
+    return unlit_seen(shaped.albedo + shaped.emission, shaped.alpha, in, screen_flags);
+}
+
+/// What an unlit surface's colour looks like from the eye: through the
+/// dust and the fog, premultiplied when its blend wants it.
+fn unlit_seen(colour: vec3<f32>, alpha: f32, in: VertexOutput, flags: u32) -> vec4<f32> {
+    var seen = colour;
+    if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
+        let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
+        seen = seen * c.a + c.rgb;
+    }
+    seen = through_fog(seen, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
+    if (flags & 8u) != 0u {
+        seen = seen * alpha;
+    }
+    return vec4<f32>(seen, alpha);
 }
 
 fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
@@ -2383,7 +2896,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let mask = mask_at(in.maps, in.uv);
     let emitted = emission_at(in.maps, in.uv).rgb;
     // A face seen from behind — a two-sided leaf — is lit from its own side.
-    let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, seen_front(in, front));
     var normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
     // How the position changes across the pixel: what a decal's picture is
     // filtered by, worked out here where every pixel still runs together.
@@ -2398,14 +2911,14 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let flags = u32(in.emission.w + 0.5);
     let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
     let grid = f32(abs(in.shading - 2.0) < 0.5);
-    let is_sand = in.shading > 3.5;
+    let is_sand = in.shading > 3.5 && !LEAN;
 
     var albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
     var smoothness = in.surface.y * mask.a;
     let cell = light_cells[light_cell(in.clip_position.xy, in.world_position)];
 
     // Decals, before the light: what they paint is lit as the surface is.
-    for (var n = 0u; n < cell.w; n = n + 1u) {
+    for (var n = 0u; n < select(cell.w, 0u, LEAN); n = n + 1u) {
         let d = decals[light_indices[cell.z + n]];
         let local = (d.world_to_box * vec4<f32>(in.world_position, 1.0)).xyz;
         if any(abs(local) > vec3<f32>(0.5)) {
@@ -2476,7 +2989,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 
     // The material's own shader has its say, before the light.
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
         Surface(albedo, alpha, in.surface.x * mask.r * weather.metal, smoothness, normal, in.emission.rgb * emitted),
     );
     albedo = shaped.albedo;
@@ -2490,16 +3003,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // or the other, so the branch costs nothing: a sky of smoke sprites,
     // each over most of the screen, is what this is for.
     if unlit > 0.5 {
-        var lit_not = albedo + shaped.emission;
-        if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
-            let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
-            lit_not = lit_not * c.a + c.rgb;
-        }
-        lit_not = through_fog(lit_not, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
-        if (flags & 8u) != 0u {
-            lit_not = lit_not * alpha;
-        }
-        return vec4<f32>(lit_not, alpha);
+        return unlit_seen(albedo + shaped.emission, alpha, in, flags);
     }
 
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);
@@ -2508,29 +3012,39 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let highlights = (flags & 1u) != 0u;
 
     let to_sun = -normalize(frame.sun_direction.xyz);
+    // Whether the sun's shadow counts for anything here: on a face turned
+    // from the sun its light is nothing — unless it shows through (a
+    // leaf's, what lies under skin) or a grain of sand glints — and the
+    // shadow, the most of a lit pixel's work, is not looked up.
+    let sun_matters = dot(normal, to_sun) > 0.0 || in.detail.w > 0.0
+        || (in.subsurface.r + in.subsurface.g + in.subsurface.b) > 0.0 || dot(glint_facet, glint_facet) > 0.0;
     var shadow = 1.0;
-    if (flags & 4u) != 0u {
-        if frame.ray.x > 0.5 {
+    if (flags & 4u) != 0u && sun_matters {
+        if frame.ray.x > 0.5 && !LEAN {
             shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
         } else {
-            shadow = sunlight(in.world_position, normal);
+            shadow = sunlight(in.world_position, normal, geometric);
             if frame.ambient_occlusion.z > 0.0 && shadow > 0.0 {
                 shadow *= contact_shadow(in.world_position, geometric, to_sun, in.clip_position.xy);
             }
         }
         shadow *= dust_wall_shadow(in.world_position, to_sun);
+        // A shadow short of full strength lets some of the sun in (w).
+        shadow = mix(shadow, 1.0, frame.sun_color.w);
     }
     // The scene's distance field softens the sun's shadow where the map
     // is coarse and adds what the map missed.
     let field_on = frame.distance[0].w > 0.5 && unlit < 0.5;
-    if field_on && shadow > 0.0 && (flags & 4u) != 0u {
+    if field_on && shadow > 0.0 && (flags & 4u) != 0u && sun_matters {
         shadow = min(shadow, field_shadow(in.world_position, geometric, to_sun));
     }
     // Under a cloud: in its shadow.
-    shadow *= cloud_shadow(in.world_position);
+    if sun_matters {
+        shadow *= cloud_shadow(in.world_position);
+    }
     // Under water: the sun comes down as caustics, dimmer the deeper.
     let submerged = under_water(in.world_position);
-    if submerged > 0.0 {
+    if submerged > 0.0 && sun_matters {
         let pattern = caustics(in.world_position.xz, frame.foliage.wind.w);
         shadow *= (0.35 + 1.8 * pattern) * exp(-submerged * 0.35);
     }
@@ -2539,7 +3053,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // Its pass also gathers the light bounced off what is near (rgb).
     var ao = 1.0;
     var bounce = vec3<f32>(0.0);
-    if frame.ray.z > 0.5 && unlit < 0.5 {
+    if frame.ray.z > 0.5 && unlit < 0.5 && !LEAN {
         ao = traced_occlusion(in.world_position, geometric, in.clip_position.xy);
     } else if frame.ambient_occlusion.x > 0.5 && unlit < 0.5 {
         let gathered = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0);
@@ -2594,7 +3108,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // pool is soft rather than a ring.
     // By ReSTIR, where asked: the one lamp this pixel's reservoir chose,
     // shadowed already, times its weight — all of them on average.
-    let restir_on = frame.restir.x > 0.5 && (flags & 4u) != 0u;
+    let restir_on = frame.restir.x > 0.5 && (flags & 4u) != 0u && !LEAN;
     if restir_on {
         let pixel = vec2<u32>(in.clip_position.xy);
         let reservoir = restir_shade[pixel.y * u32(frame.restir.y) + pixel.x];
@@ -2603,13 +3117,12 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
             let to_light = light.position_range.xyz - in.world_position;
             let distance_to = length(to_light);
             let toward = to_light / max(distance_to, 1e-4);
-            let reach = clamp(1.0 - distance_to / light.position_range.w, 0.0, 1.0);
+            let reach = lamp_falloff(light, distance_to);
             let facing = max(dot(normal, toward), 0.0);
             let along = dot(-toward, light.spot.xyz);
-            let edge = light.spot.w + (1.0 - light.spot.w) * 0.1;
-            let cone = select(smoothstep(light.spot.w, edge, along), 1.0, light.spot.w < -1.5);
+            let cone = spot_cone(light, along);
             color = color + direct(b, normal, toward, to_eye, highlights)
-                * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * reservoir.w;
+                * light.color_shadow.rgb * facing * reach * cone * direct_ao * reservoir.w;
         }
     }
     for (var n = 0u; n < select(cell.y, 0u, restir_on); n = n + 1u) {
@@ -2618,18 +3131,21 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         let to_light = at.xyz - in.world_position;
         let distance_to = length(to_light);
         let toward = to_light / max(distance_to, 1e-4);
-        let reach = clamp(1.0 - distance_to / at.w, 0.0, 1.0);
+        let reach = lamp_falloff(light, distance_to);
         let facing = max(dot(normal, toward), 0.0);
         // A spot: full inside the cone, fading over its last tenth.
         let spot = light.spot;
         let along = dot(-toward, spot.xyz);
-        let edge = spot.w + (1.0 - spot.w) * 0.1;
-        let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
+        let cone = spot_cone(light, along);
+        // Out of its reach or its cone, or behind the face: nothing to add.
+        if reach * facing * cone <= 0.0 {
+            continue;
+        }
         // A lamp's shadow, by a ray to it — only where it lights at all.
         // Or by its shadow map, where it has one.
         var blocked = 1.0;
         if reach * facing * cone > 0.0 && (flags & 4u) != 0u {
-            if frame.ray.y > 0.5 {
+            if frame.ray.y > 0.5 && !LEAN {
                 let start = in.world_position + geometric * 0.02;
                 // Aimed at a point of the lamp's ball, turned each frame
                 // and pixel: TAA gathers them into a soft shadow.
@@ -2651,7 +3167,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
             }
         }
         color = color + direct(b, normal, toward, to_eye, highlights)
-            * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * blocked;
+            * light.color_shadow.rgb * facing * reach * cone * direct_ao * blocked;
     }
 
     // Hemisphere ambient: a face turned up sees sky, one turned down sees
@@ -2667,14 +3183,14 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     }
     var all_round = mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5);
     if frame.ambient_equator.w > 0.5 {
-        // The scene's three colours, blended as smoothly as Unity's
-        // gradient is once it is spherical harmonics: straight up sees
-        // only the sky, sideways half the horizon and a quarter each of
-        // the sky and the ground.
+        // Unity's ambient probe, as spherical harmonics have it: what a
+        // face turned up, sideways and down sees, and a quadratic in how
+        // far it is turned up between them.
         let y = clamp(normal.y, -1.0, 1.0);
-        all_round = frame.sky_color.rgb * (1.0 + y) * (1.0 + y) * 0.25
-            + frame.ground_color.rgb * (1.0 - y) * (1.0 - y) * 0.25
-            + frame.ambient_equator.rgb * (1.0 - y * y) * 0.5;
+        let up = frame.sky_color.rgb;
+        let down = frame.ground_color.rgb;
+        let side = frame.ambient_equator.rgb;
+        all_round = max(side + (up - down) * 0.5 * y + ((up + down) * 0.5 - side) * y * y, vec3<f32>(0.0));
     }
     var ambient = around(in.world_position, normal, all_round);
     // Inside an irradiance volume its probes give the diffuse light.
@@ -2700,13 +3216,15 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let emission = shaped.emission;
     color = color + emission;
 
-    let distance = length(in.world_position - frame.camera_position.xyz);
-    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), storm_curtains(in.world_position, fog_amount(distance)));
+    // How deep the point is in the view, not how far — as URP's fog
+    // measures it (ComputeFogFactor of the clip-space depth).
+    let depth = -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0));
+    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), storm_curtains(in.world_position, fog_amount(depth)));
 
     // Glass by rays: what is behind it, bent through it, where the blend
     // would have laid the unbent picture — the glass's own light over it
     // as much as it is opaque.
-    if frame.glass.x > 0.5 && alpha < 0.999 && unlit < 0.5 {
+    if frame.glass.x > 0.5 && alpha < 0.999 && unlit < 0.5 && !LEAN {
         let facing_eye = select(normal, -normal, dot(normal, to_eye) < 0.0);
         let through = ray_refraction(in.world_position, -to_eye, facing_eye, frame.glass.y);
         if through.a > 0.5 {
@@ -2745,12 +3263,13 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 /// The depth-and-normals prepass for ambient occlusion: the world normal of
 /// what is solid, cut out where the surface is.
 @fragment
-fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_normals(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     let alpha = in.surface.z * surface_at(in.maps, in.uv).a;
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
     }
-    return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, front), 1.0);
+    return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, seen_front(in, front)), 1.0);
 }
 
 struct Sand {
@@ -2882,6 +3401,7 @@ fn metre_grid(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
 /// across, driven past by the wind, thicker and thinner along each way the
 /// eye looks. `amount` is the fog's even share; outside a storm, that.
 fn storm_curtains(p: vec3<f32>, amount: f32) -> f32 {
+    if LEAN { return amount; }
     let storm = frame.weather[1].y;
     if storm <= 0.0 {
         return amount;
@@ -2897,7 +3417,8 @@ fn storm_curtains(p: vec3<f32>, amount: f32) -> f32 {
     return clamp(amount * mix(1.0, 0.45 + 1.1 * curtain, storm), 0.0, 1.0);
 }
 
-/// How much fog stands between the eye and a point this far away.
+/// How much fog stands between the eye and a point this deep in the view:
+/// Unity's fog modes.
 fn fog_amount(distance: f32) -> f32 {
     let mode = u32(frame.fog_range.z + 0.5);
     let density = frame.fog_range.w;
@@ -3004,6 +3525,7 @@ fn fs_precipitation(in: SkyOut) -> @location(0) vec4<f32> {
 
 /// How deep a point lies under the water above it, if any, in metres.
 fn under_water(p: vec3<f32>) -> f32 {
+    if LEAN { return 0.0; }
     var depth = 0.0;
     for (var i = 0u; i < 4u; i = i + 1u) {
         let top = frame.waters[i * 2u];
@@ -3053,7 +3575,8 @@ fn water_normal(p: vec2<f32>, t: f32, height: f32) -> vec3<f32> {
 // much of that shows is how deep the water is there — read from the
 // prepass's depth.
 @fragment
-fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_water(slimmed: VertexSlim) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     let t = frame.foliage.wind.w;
     let p = in.world_position;
     let waves = max(in.detail.z, 0.0) * max(frame.foliage.wind.z, 0.2);
@@ -3073,7 +3596,7 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let murk = 1.0 - exp(-below / clarity);
 
     let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, to_eye), 0.0), 5.0);
-    let shadow = sunlight(p, vec3<f32>(0.0, 1.0, 0.0));
+    let shadow = sunlight(p, vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0));
     let body = in.base_color * (frame.sky_color.rgb + frame.sun_color.rgb * max(to_sun.y, 0.0) * 0.35 * shadow);
     let mirrored = reflected(p, reflect(-to_eye, n), 0.03);
     let glint = pow(max(dot(n, normalize(to_sun + to_eye)), 0.0), 600.0) * 30.0 * frame.sun_color.rgb * shadow;
@@ -3223,6 +3746,22 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
     let direction = normalize(far.xyz / far.w - near.xyz / near.w);
     let up = direction.y;
+    if frame.sky_zenith.w > 2.5 {
+        // Unity's procedural sky: its own exposure, its own disc — a round
+        // spot, fading as the square of the way out to its radius.
+        let unity = unity_sky(direction);
+        let radius = frame.sky_horizon.y;
+        var color = unity.color;
+        if radius > 0.0 {
+            let spot = 1.0 - smoothstep(0.0, radius, length(-normalize(frame.sun_direction.xyz) - direction));
+            color += unity.sun * spot * spot;
+        }
+        if frame.clouds[0].x > 0.0 || frame.weather[1].z > 0.0 || frame.dust.x > 0.5 {
+            let c = cloud_sharp(in.position.xy / frame.cluster_depth.zw);
+            color = color * c.a + c.rgb;
+        }
+        return vec4<f32>(through_fog(color, in.position.xy, frame.volume.y), 1.0);
+    }
     var color: vec3<f32>;
     if frame.sky_zenith.w > 1.5 {
         color = physical_sky(direction);

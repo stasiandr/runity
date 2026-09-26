@@ -121,7 +121,7 @@ fn ray_direct(hit: vec3<f32>, lifted: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         let lamp = lights[i];
         let to_lamp = lamp.position_range.xyz - hit;
         let distance_to = length(to_lamp);
-        let reach_lamp = clamp(1.0 - distance_to / lamp.position_range.w, 0.0, 1.0);
+        let reach_lamp = lamp_falloff(lamp, distance_to);
         if reach_lamp <= 0.0 {
             continue;
         }
@@ -131,7 +131,7 @@ fn ray_direct(hit: vec3<f32>, lifted: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
             continue;
         }
         let seen = ray_visible(lifted, toward, max(distance_to - 0.05, 0.0));
-        light += lamp.color_shadow.rgb * facing * reach_lamp * reach_lamp * seen;
+        light += lamp.color_shadow.rgb * facing * reach_lamp * seen;
     }
     return light;
 }
@@ -249,13 +249,12 @@ fn restir_target(i: u32, p: vec3<f32>, n: vec3<f32>) -> f32 {
     let to_light = light.position_range.xyz - p;
     let distance_to = length(to_light);
     let toward = to_light / max(distance_to, 1e-4);
-    let reach = clamp(1.0 - distance_to / light.position_range.w, 0.0, 1.0);
+    let reach = lamp_falloff(light, distance_to);
     let facing = max(dot(n, toward), 0.0);
     let along = dot(-toward, light.spot.xyz);
-    let edge = light.spot.w + (1.0 - light.spot.w) * 0.1;
-    let cone = select(smoothstep(light.spot.w, edge, along), 1.0, light.spot.w < -1.5);
+    let cone = spot_cone(light, along);
     let c = light.color_shadow.rgb;
-    return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * facing * reach * reach * cone;
+    return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * facing * reach * cone;
 }
 
 /// A random number in 0..1 from a state, stepped (PCG).

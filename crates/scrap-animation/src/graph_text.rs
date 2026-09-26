@@ -40,6 +40,8 @@ pub fn condition(c: &Condition) -> String {
     match c {
         Condition::Above(p, v) => format!("Above({}, {})", quote(p), number(*v)),
         Condition::Below(p, v) => format!("Below({}, {})", quote(p), number(*v)),
+        Condition::Equals(p, v) => format!("Equals({}, {})", quote(p), number(*v)),
+        Condition::NotEquals(p, v) => format!("NotEquals({}, {})", quote(p), number(*v)),
         Condition::Is(p) => format!("Is({})", quote(p)),
         Condition::Not(p) => format!("Not({})", quote(p)),
         Condition::Trigger(p) => format!("Trigger({})", quote(p)),

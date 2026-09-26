@@ -22,6 +22,9 @@ struct Ssao {
     // how much light bounces (0: none), how far its rays reach; 1 for GTAO;
     // how many screen pixels across the occlusion's one is
     bounce: vec4<f32>,
+    // near, far, 1 when orthographic; w 1 when no light bounces, and the
+    // occlusion's red carries its pixel's view distance (see `packed`)
+    depth_range: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> ssao: Ssao;
@@ -50,6 +53,36 @@ fn world_at(pixel: vec2<i32>) -> vec3<f32> {
     let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
     let world = ssao.inverse_view_projection * ndc;
     return world.xyz / world.w;
+}
+
+/// How far into the view a pixel's depth is, metres: all the blur needs
+/// to tell a neighbour on the same surface from one behind it, for a load
+/// and a division rather than a world position.
+fn view_distance(pixel: vec2<i32>) -> f32 {
+    let d = textureLoad(depth, pixel, 0);
+    let near = ssao.depth_range.x;
+    let far = ssao.depth_range.y;
+    if ssao.depth_range.z > 0.5 {
+        return near + d * (far - near);
+    }
+    return near * far / max(far - d * (far - near), 1e-6);
+}
+
+/// Whether the occlusion's pictures carry each pixel's view distance in
+/// red, which the bounce leaves free: the blur and the upsample read it
+/// with the occlusion, rather than each tap loading the whole-size depth
+/// again and working it out.
+fn packed() -> bool {
+    return ssao.depth_range.w > 0.5;
+}
+
+/// The view distance an occlusion texel `s` at `at` stands for: its own
+/// red where packed, else from the depth at its screen pixel.
+fn distance_of(s: vec4<f32>, at: vec2<i32>, scale: i32, screen: vec2<i32>) -> f32 {
+    if packed() {
+        return s.r;
+    }
+    return view_distance(min(at * scale, screen));
 }
 
 fn hash(p: vec2<f32>) -> f32 {
@@ -168,7 +201,7 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
     let pixel = min(own * i32(ssao.bounce.w), vec2<i32>(ssao.size.xy) - vec2<i32>(1));
     if textureLoad(depth, pixel, 0) >= 1.0 {
         // The sky: nothing to occlude, nothing to bounce.
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return vec4<f32>(select(0.0, view_distance(pixel), packed()), 0.0, 0.0, 1.0);
     }
     let p = world_at(pixel);
     let n = normalize(textureLoad(normals, pixel, 0).xyz);
@@ -191,31 +224,52 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
     let b = cross(n, t);
 
     var ao = 1.0;
-    if ssao.bounce.z > 0.5 {
-        ao = gtao(pixel, p, n, distance, turn);
-    } else {
-        ao = hemisphere_occlusion(p, n, t, b, distance);
-    }
-    ao = pow(clamp(ao, 0.0, 1.0), ssao.params.y);
-    // Fades out with distance, as URP's Falloff Distance.
     let falloff = ssao.params.z;
-    let fade = clamp((falloff - distance) / (falloff * 0.2), 0.0, 1.0);
+    var fade = 1.0;
+    if ssao.bounce.z > 0.5 {
+        ao = pow(clamp(gtao(pixel, p, n, distance, turn), 0.0, 1.0), ssao.params.y);
+        // Fades out with distance, as URP's Falloff Distance.
+        fade = clamp((falloff - distance) / (falloff * 0.2), 0.0, 1.0);
+    } else {
+        // URP's own: its intensity, contrast and falloff are in it.
+        ao = hemisphere_occlusion(p, n, t, b);
+    }
     var light = vec3<f32>(0.0);
     if ssao.bounce.x > 0.0 {
         light = bounced(p, n, t, b, fract(turn * 5.0)) * fade;
     }
+    if packed() {
+        light = vec3<f32>(view_distance(pixel), 0.0, 0.0);
+    }
     return vec4<f32>(light, mix(1.0, ao, fade));
 }
 
-/// URP's SSAO: the share of points in the hemisphere over `n` that fall
-/// behind what the camera sees, near enough to be what occludes.
-fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>, distance: f32) -> f32 {
+/// URP's SSAO (SSAO.hlsl), what is left of the light all round: points
+/// out to the radius in the hemisphere over `n`, and for each the surface
+/// the camera sees there — how much it stands over the point's plane,
+/// over how far it is (the Alchemy estimator), past a bias that grows with
+/// depth, counted while it is within the radius in depth. Scaled by the
+/// radius, the intensity and the falloff toward the Falloff Distance
+/// squared, raised to URP's contrast 0.6, and taken from one.
+fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>) -> f32 {
     let radius = ssao.params.x;
+    let intensity = ssao.params.y;
+    let falloff_distance = ssao.params.z;
     let count = u32(ssao.params.w);
-    var occluded = 0.0;
+    let depth_o = (ssao.view_projection * vec4<f32>(p, 1.0)).w;
+    if depth_o > falloff_distance {
+        return 1.0;
+    }
+    let beta = 0.002;
+    let epsilon = 0.0001;
+    var ao = 0.0;
     for (var i = 0u; i < count; i = i + 1u) {
-        let k = ssao.kernel[i].xyz;
-        let at = p + (t * k.x + b * k.y + n * k.z) * radius;
+        let k = normalize(ssao.kernel[i].xyz);
+        // URP's blue-noise lengths: from a tenth of the radius, more of
+        // them near.
+        let share = f32(i) / f32(count);
+        let along = mix(0.1, 1.0, share * share) * radius;
+        let at = p + (t * k.x + b * k.y + n * k.z) * along;
         let clip = ssao.view_projection * vec4<f32>(at, 1.0);
         if clip.w <= 0.0 {
             continue;
@@ -225,20 +279,23 @@ fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>, 
         if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
             continue;
         }
-        let there = world_at(vec2<i32>(uv * ssao.size.xy));
-        let seen = length(there - ssao.eye.xyz);
-        let sample_distance = length(at - ssao.eye.xyz);
-        // In front of the sample: it is inside something — past a margin
-        // that grows with distance, so a flat floor's own pixels do not
-        // shadow it. And only if that something is near this point: what
-        // stands a metre in front of a wall does not darken the wall.
-        let margin = max(radius * 0.05, sample_distance * 0.003);
-        if seen < sample_distance - margin {
-            let gap = abs(distance - seen);
-            occluded += 1.0 - smoothstep(radius * 0.5, radius, gap);
+        let pixel = vec2<i32>(uv * ssao.size.xy);
+        if textureLoad(depth, pixel, 0) >= 1.0 {
+            continue;
         }
+        let there = world_at(pixel);
+        let depth_s = (ssao.view_projection * vec4<f32>(there, 1.0)).w;
+        let inside = select(0.0, 1.0, abs(depth_o - depth_s) < radius);
+        let v = there - p;
+        let a1 = max(dot(v, n) - beta * depth_o, 0.0);
+        let a2 = dot(v, v) + epsilon;
+        ao += a1 / a2 * inside;
     }
-    return 1.0 - occluded / max(f32(count), 1.0);
+    ao *= radius;
+    var falloff = 1.0 - depth_o / falloff_distance;
+    falloff = falloff * falloff;
+    ao = pow(clamp(ao * intensity * falloff / max(f32(count), 1.0), 0.0, 1.0), 0.6);
+    return 1.0 - ao;
 }
 
 /// The pixel a world point falls on, unclamped, as floats.
@@ -339,22 +396,92 @@ fn fs_blur(in: Varyings) -> @location(0) vec4<f32> {
     let scale = i32(ssao.bounce.w);
     let screen = vec2<i32>(ssao.size.xy) - vec2<i32>(1);
     let limit = vec2<i32>(textureDimensions(source)) - vec2<i32>(1);
-    let here = length(world_at(pixel) - ssao.eye.xyz);
+    let here = view_distance(pixel);
     let centre = pixel / scale;
     var sum = vec4<f32>(0.0);
     var weight = 0.0;
     for (var y = -2; y < 2; y = y + 1) {
         for (var x = -2; x < 2; x = x + 1) {
             let at = clamp(centre + vec2<i32>(x, y), vec2<i32>(0), limit);
-            let there = length(world_at(min(at * scale, screen)) - ssao.eye.xyz);
+            let s = textureLoad(source, at, 0);
+            let there = distance_of(s, at, scale, screen);
             let w = 1.0 - smoothstep(0.02, 0.1, abs(there - here) / max(here, 1e-3));
-            sum += textureLoad(source, at, 0) * w;
+            sum += s * w;
             weight += w;
         }
     }
     if weight < 1e-3 {
         // Nothing near its depth among them (a thin thing's edge): its own.
-        return textureLoad(source, clamp(centre, vec2<i32>(0), limit), 0);
+        sum = textureLoad(source, clamp(centre, vec2<i32>(0), limit), 0);
+        weight = 1.0;
+    }
+    if packed() {
+        return vec4<f32>(0.0, 0.0, 0.0, sum.a / weight);
     }
     return sum / weight;
+}
+
+// On a big screen the blur is at the occlusion's own size — a quarter of
+// the pixels — each of its pixels from the 4x4 around it, weighed by how
+// near they are in depth; then brought up to the screen by fs_upsample.
+@fragment
+fn fs_blur_half(in: Varyings) -> @location(0) vec4<f32> {
+    let own = vec2<i32>(in.position.xy);
+    let scale = i32(ssao.bounce.w);
+    let screen = vec2<i32>(ssao.size.xy) - vec2<i32>(1);
+    let limit = vec2<i32>(textureDimensions(source)) - vec2<i32>(1);
+    let mine = textureLoad(source, clamp(own, vec2<i32>(0), limit), 0);
+    let here = distance_of(mine, own, scale, screen);
+    var sum = vec4<f32>(0.0);
+    var weight = 0.0;
+    for (var y = -2; y < 2; y = y + 1) {
+        for (var x = -2; x < 2; x = x + 1) {
+            let at = clamp(own + vec2<i32>(x, y), vec2<i32>(0), limit);
+            let s = textureLoad(source, at, 0);
+            let there = distance_of(s, at, scale, screen);
+            let w = 1.0 - smoothstep(0.02, 0.1, abs(there - here) / max(here, 1e-3));
+            sum += s * w;
+            weight += w;
+        }
+    }
+    if weight < 1e-3 {
+        return mine;
+    }
+    if packed() {
+        // Its own distance kept for the upsample.
+        return vec4<f32>(here, 0.0, 0.0, sum.a / weight);
+    }
+    return sum / weight;
+}
+
+// The blurred occlusion up to the screen's size: of the four of its pixels
+// round each of the screen's, bilinearly, those at the screen pixel's
+// depth — so an edge stays the depth's, not the occlusion's texel's.
+@fragment
+fn fs_upsample(in: Varyings) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(in.position.xy);
+    let scale = i32(ssao.bounce.w);
+    let screen = vec2<i32>(ssao.size.xy) - vec2<i32>(1);
+    let limit = vec2<i32>(textureDimensions(source)) - vec2<i32>(1);
+    let here = view_distance(pixel);
+    let f = (vec2<f32>(pixel) + 0.5) / f32(scale) - 0.5;
+    let base = vec2<i32>(floor(f));
+    let t = f - floor(f);
+    var sum = vec4<f32>(0.0);
+    var weight = 0.0;
+    for (var y = 0; y < 2; y = y + 1) {
+        for (var x = 0; x < 2; x = x + 1) {
+            let at = clamp(base + vec2<i32>(x, y), vec2<i32>(0), limit);
+            let s = textureLoad(source, at, 0);
+            let there = distance_of(s, at, scale, screen);
+            let bilinear = select(1.0 - t.x, t.x, x == 1) * select(1.0 - t.y, t.y, y == 1);
+            let w = bilinear * (1.0 - smoothstep(0.02, 0.1, abs(there - here) / max(here, 1e-3))) + 1e-5 * bilinear;
+            sum += s * w;
+            weight += w;
+        }
+    }
+    if packed() {
+        return vec4<f32>(0.0, 0.0, 0.0, sum.a / max(weight, 1e-6));
+    }
+    return sum / max(weight, 1e-6);
 }

@@ -12,7 +12,7 @@ scrap-core = { path = "../scrap-core" }
 scrap-geometry = { path = "../scrap-geometry" }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 hecs = "0.11.0"
-rapier3d = { version = "0.26.1", optional = true, features = ["enhanced-determinism"] }
+rapier3d = { version = "0.36.0", optional = true, features = ["enhanced-determinism"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tracing = "0.1.44"
 

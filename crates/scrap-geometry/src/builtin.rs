@@ -29,6 +29,7 @@ pub fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset
         vertices,
         indices,
         skin: None,
+        colors: Vec::new(),
         look: None,
     }
 }
@@ -367,13 +368,18 @@ pub fn by_name(name: &str) -> Option<MeshAsset> {
         "stairs" => Some(stairs(1.0, STAIRS)),
         "link" => Some(link(24, 8)),
         "capsule" => Some(capsule(0.5, 0.5, 20, 12)),
+        // Unity's own primitives, where they are not ours: its Plane is
+        // ten metres a side, its Quad a metre square standing up, facing
+        // its back (Unity's -z, mirrored to +z as a Unity scene is).
+        "unity_plane" => Some(plane(10.0, 10)),
+        "unity_quad" => Some(unity_quad()),
         _ => None,
     }
 }
 
 /// Every builtin name, for an editor's list and for tests that want to check
 /// all of them without repeating the list.
-pub const NAMES: [&str; 9] = [
+pub const NAMES: [&str; 11] = [
     "builtin:plane",
     "builtin:cube",
     "builtin:cone",
@@ -383,7 +389,22 @@ pub const NAMES: [&str; 9] = [
     "builtin:stairs",
     "builtin:link",
     "builtin:capsule",
+    "builtin:unity_plane",
+    "builtin:unity_quad",
 ];
+
+/// Unity's Quad: a metre square in its x and y, facing +z here (Unity's
+/// -z, brought over the scene's mirror).
+fn unity_quad() -> MeshAsset {
+    let mut mesh = plane(1.0, 1);
+    for v in &mut mesh.vertices {
+        let [x, _, z] = v.position;
+        v.position = [x, -z, 0.0];
+        v.normal = [0.0, 0.0, 1.0];
+    }
+    mesh.bounds = crate::asset::Bounds::of(&mesh.vertices);
+    mesh
+}
 
 /// A capsule standing up: a cylinder `2 × half_height` tall capped with
 /// half balls of `radius` — what fits `Capsule(half_height, radius)`.

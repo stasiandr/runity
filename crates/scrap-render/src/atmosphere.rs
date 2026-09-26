@@ -263,6 +263,8 @@ impl AtmosphereRenderer {
     pub(crate) fn new(gpu: &crate::gpu::Gpu) -> Self {
         let format = wgpu::TextureFormat::Rgba16Float;
         let usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
+        // Written from the CPU too: Unity's procedural sky, which is cheap
+        // to work out a texel at a time (`Renderer::bake_unity_sky`).
         let sky_view = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky view"),
             size: wgpu::Extent3d {
@@ -274,7 +276,7 @@ impl AtmosphereRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage,
+            usage: usage | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let aerial = gpu.device.create_texture(&wgpu::TextureDescriptor {

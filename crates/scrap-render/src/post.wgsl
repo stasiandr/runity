@@ -2,10 +2,12 @@
 //
 // The scene is drawn into a high-dynamic-range buffer, in linear light and
 // with no ceiling: the sun off a white wall is brighter than 1.0, and an
-// ember is brighter still. Everything here turns that into a picture —
-// bloom from what is brighter than the threshold, then exposure, white
-// balance and grading, then the tonemapper that brings it into range, and
-// last what a lens adds: vignette, chromatic fringes and grain.
+// ember is brighter still. Everything here turns that into a picture, in
+// the order and by the formulas of URP's uber pass and its colour-grading
+// LUT: bloom from what is brighter than the threshold, the vignette, the
+// exposure, then the grade and the tonemapper — the grade first in high
+// dynamic range, or after the tonemapper in low (URP's Grading Mode) —
+// and last grain.
 
 struct Post {
     // exposure multiplier, bloom intensity, tonemapper (0 none, 1 neutral,
@@ -56,7 +58,8 @@ struct Post {
     lamp_count: vec4<f32>,
     lamps: array<vec4<f32>, 8>,
     lamp_colors: array<vec4<f32>, 8>,
-    // how much it is night: the eye sees grey and blue
+    // how much it is night: the eye sees grey and blue; y 1 to grade in
+    // low dynamic range (after the tonemapper); z 1 for a round vignette
     night: vec4<f32>,
 };
 
@@ -110,9 +113,16 @@ fn downsample13(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
 
 // The first step down: only what is brighter than the threshold, with a
 // soft knee so the edge of what glows is not a hard line.
+/// A colour that is a number: a NaN or an infinity in one pixel is black,
+/// not a block of the bloom's — URP's Stop NaN.
+fn finite(c: vec3<f32>) -> vec3<f32> {
+    let bad = (c != c) | (abs(c) > vec3<f32>(65000.0));
+    return select(c, vec3<f32>(0.0), bad);
+}
+
 @fragment
 fn fs_prefilter(in: Varyings) -> @location(0) vec4<f32> {
-    let c = min(downsample13(in.uv, post.texel.xy) * exp2(adapted[0]), vec3<f32>(post.bloom.w));
+    let c = min(finite(downsample13(in.uv, post.texel.xy)) * exp2(adapted[0]), vec3<f32>(post.bloom.w));
     let brightness = max(c.r, max(c.g, c.b));
     let knee = max(post.bloom.y, 1e-4);
     var soft = clamp(brightness - post.bloom.x + knee, 0.0, 2.0 * knee);
@@ -126,8 +136,9 @@ fn fs_downsample(in: Varyings) -> @location(0) vec4<f32> {
     return vec4<f32>(downsample13(in.uv, post.texel.xy), 1.0);
 }
 
-// Up one step: a 3x3 tent over the smaller level, added onto the larger
-// one by the blend state, scaled by how far the glow is to spread.
+// Up one step: a 3x3 tent over the smaller level, blended over the larger
+// one by how far the glow is to spread — URP's lerp(high, low, scatter),
+// the alpha the blend state's share of what is there.
 @fragment
 fn fs_upsample(in: Varyings) -> @location(0) vec4<f32> {
     let t = post.texel.xy;
@@ -140,7 +151,7 @@ fn fs_upsample(in: Varyings) -> @location(0) vec4<f32> {
     sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, -t.y), 0.0).rgb;
     sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, t.y), 0.0).rgb;
     sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, t.y), 0.0).rgb;
-    return vec4<f32>(sum / 16.0 * post.bloom.z, 1.0);
+    return vec4<f32>(sum / 16.0 * post.bloom.z, post.bloom.z);
 }
 
 // Unity's neutral tonemapper (John Hable's curve with URP's constants):
@@ -302,9 +313,10 @@ fn distort_uv(uv_in: vec2<f32>) -> vec2<f32> {
 }
 
 // The bloom where it is far past white: a flare is made of the few
-// brightest things, not of every lit wall.
+// brightest things, not of every lit wall. (The bloom is the bright part
+// of the picture blurred, as URP's, not a sum of its levels.)
 fn flare_source(at: vec2<f32>) -> vec3<f32> {
-    let c = textureSampleLevel(bloom_texture, linear_clamp, at, 0.0).rgb;
+    let c = textureSampleLevel(bloom_texture, linear_clamp, at, 0.0).rgb * 3.0;
     let over = max(luma(c) - 2.0, 0.0);
     let share = over / max(luma(c), 1e-4);
     return c * share * share;
@@ -388,6 +400,76 @@ fn lamp_flares(uv: vec2<f32>) -> vec3<f32> {
     return color;
 }
 
+// The ALEXA LogC curve URP grades contrast in (Color.hlsl, precise).
+fn linear_to_logc(x: vec3<f32>) -> vec3<f32> {
+    let curve = 0.244161 * log10(max(5.555556 * x + 0.047996, vec3<f32>(1e-10))) + 0.386036;
+    return select(5.301883 * x + 0.092819, curve, x > vec3<f32>(0.011361));
+}
+
+fn logc_to_linear(x: vec3<f32>) -> vec3<f32> {
+    let curve = (pow(vec3<f32>(10.0), (x - 0.386036) / 0.244161) - 0.047996) / 5.555556;
+    return select((x - 0.092819) / 5.301883, curve, x > vec3<f32>(5.301883 * 0.011361 + 0.092819));
+}
+
+fn log10(x: vec3<f32>) -> vec3<f32> {
+    return log2(x) * 0.30102999566;
+}
+
+// URP's colour grade (LutBuilderHdr/Ldr's), in its order: white balance,
+// contrast about ACEScc's mid grey in LogC, the colour filter, split toning
+// in gamma 2.2, the channel mixer, shadows-midtones-highlights, lift gamma
+// gain, the hue shift and the saturation.
+fn grade(input: vec3<f32>) -> vec3<f32> {
+    var color = white_balance(input);
+    let midgray = 0.4135884;
+    color = logc_to_linear((linear_to_logc(color) - midgray) * post.filter_contrast.w + midgray);
+    color *= post.filter_contrast.rgb;
+    color = max(color, vec3<f32>(0.0));
+    if any(post.split_shadows.rgb != vec3<f32>(0.5)) || any(post.split_highlights.rgb != vec3<f32>(0.5)) {
+        var g = pow(color, vec3<f32>(1.0 / 2.2));
+        let t = clamp(luma(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0))) + post.split_shadows.w, 0.0, 1.0);
+        g = soft_light(g, mix(vec3<f32>(0.5), post.split_shadows.rgb, 1.0 - t));
+        g = soft_light(g, mix(vec3<f32>(0.5), post.split_highlights.rgb, t));
+        color = pow(max(g, vec3<f32>(0.0)), vec3<f32>(2.2));
+    }
+    color = vec3<f32>(
+        dot(color, post.mixer_red.rgb),
+        dot(color, post.mixer_green.rgb),
+        dot(color, post.mixer_blue.rgb),
+    );
+    // Shadows Midtones Highlights: by luminance, each its colour.
+    let y = luma(color);
+    let shadows = 1.0 - smoothstep(post.smh_shadows.w, post.smh_midtones.w, y);
+    let highlights = smoothstep(post.smh_highlights.w, post.lift.w, y);
+    let midtones = 1.0 - shadows - highlights;
+    color = color * (post.smh_shadows.rgb * shadows + post.smh_midtones.rgb * midtones
+        + post.smh_highlights.rgb * highlights);
+    // Lift Gamma Gain: scaled, raised, then bent.
+    color = color * post.gain.rgb + post.lift.rgb;
+    color = sign(color) * pow(abs(color), vec3<f32>(1.0) / post.gamma.rgb);
+    if abs(post.b.y) > 1e-5 {
+        var hsv = rgb_to_hsv(color);
+        hsv.x = fract(hsv.x + post.b.y);
+        color = hsv_to_rgb(hsv);
+    }
+    let l = luma(color);
+    return vec3<f32>(l) + post.b.x * (color - vec3<f32>(l));
+}
+
+// Into range: the scene's tonemapper, or clipped at white.
+fn tonemap(color: vec3<f32>) -> vec3<f32> {
+    let c = max(color, vec3<f32>(0.0));
+    let mode = u32(post.a.z + 0.5);
+    if mode == 1u {
+        return tonemap_neutral(c);
+    } else if mode == 2u {
+        return tonemap_aces(c);
+    } else if mode == 3u {
+        return tonemap_agx(c);
+    }
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
     let uv = distort_uv(panini_uv(in.uv));
@@ -400,9 +482,23 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
         textureSampleLevel(source, linear_clamp, uv, 0.0).g,
         textureSampleLevel(source, linear_clamp, uv + fringe, 0.0).b,
     ) * exp2(adapted[0]);
-    color += textureSampleLevel(bloom_texture, linear_clamp, uv, 0.0).rgb * post.a.y * post.bloom_tint.rgb;
+    // A NaN or an infinity is black (URP's Stop NaN): the tonemapper would
+    // make white of it.
+    color = finite(color);
+    color += finite(textureSampleLevel(bloom_texture, linear_clamp, uv, 0.0).rgb) * post.a.y * post.bloom_tint.rgb;
     color += lens_flare(uv);
     color += lamp_flares(uv);
+
+    // Vignette, as URP's: multiplied in before the grade, an ellipse the
+    // screen's shape unless it is round.
+    if post.vignette_color.w > 1e-4 {
+        var d = abs(in.uv - post.vignette.xy) * post.vignette_color.w * 3.0;
+        if post.night.z > 0.5 {
+            d.x *= post.vignette.w;
+        }
+        let f = pow(clamp(1.0 - dot(d, d), 0.0, 1.0), max(post.vignette.z, 0.01) * 5.0);
+        color *= mix(post.vignette_color.rgb, vec3<f32>(1.0), f);
+    }
 
     color *= post.a.x;
     // Night: the eye's cones give up to its rods, which see no colour and
@@ -414,59 +510,12 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
         let dim = 1.0 - smoothstep(0.04, 0.35, seen);
         color = mix(color, seen * vec3<f32>(0.62, 0.8, 1.12), post.night.x * 0.7 * dim);
     }
-    color = white_balance(color);
-    color *= post.filter_contrast.rgb;
-    // Contrast about middle grey, in log space where it is even-handed.
-    let log_color = log2(max(color, vec3<f32>(1e-6)) / 0.18);
-    color = 0.18 * exp2(log_color * post.filter_contrast.w);
-    // Channel Mixer.
-    color = vec3<f32>(
-        dot(color, post.mixer_red.rgb),
-        dot(color, post.mixer_green.rgb),
-        dot(color, post.mixer_blue.rgb),
-    );
-    color = max(color, vec3<f32>(0.0));
-    // Shadows Midtones Highlights: by luminance, each its colour.
-    let y = luma(color);
-    let shadows = 1.0 - smoothstep(post.smh_shadows.w, post.smh_midtones.w, y);
-    let highlights = smoothstep(post.smh_highlights.w, post.lift.w, y);
-    let midtones = 1.0 - shadows - highlights;
-    color = color * (post.smh_shadows.rgb * shadows + post.smh_midtones.rgb * midtones
-        + post.smh_highlights.rgb * highlights);
-    // Lift Gamma Gain.
-    color = post.gain.rgb * (color + post.lift.rgb * (vec3<f32>(1.0) - min(color, vec3<f32>(1.0))));
-    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0) / post.gamma.rgb);
-    // Split Toning, soft-lit in gamma space as URP does.
-    if any(post.split_shadows.rgb != vec3<f32>(0.5)) || any(post.split_highlights.rgb != vec3<f32>(0.5)) {
-        var g = linear_to_srgb(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)));
-        let t = clamp(luma(g) + post.split_shadows.w, 0.0, 1.0);
-        g = soft_light(g, mix(vec3<f32>(0.5), post.split_shadows.rgb, 1.0 - t));
-        g = soft_light(g, mix(vec3<f32>(0.5), post.split_highlights.rgb, t));
-        color = srgb_to_linear(g) + max(color - vec3<f32>(1.0), vec3<f32>(0.0));
-    }
-    if abs(post.b.y) > 1e-5 {
-        var hsv = rgb_to_hsv(color);
-        hsv.x = fract(hsv.x + post.b.y);
-        color = hsv_to_rgb(hsv);
-    }
-    color = max(mix(vec3<f32>(luma(color)), color, post.b.x), vec3<f32>(0.0));
-
-    let mode = u32(post.a.z + 0.5);
-    if mode == 1u {
-        color = tonemap_neutral(color);
-    } else if mode == 2u {
-        color = tonemap_aces(color);
-    } else if mode == 3u {
-        color = tonemap_agx(color);
+    if post.night.y > 0.5 {
+        // Low dynamic range: into range first, graded after.
+        color = clamp(grade(tonemap(color)), vec3<f32>(0.0), vec3<f32>(1.0));
     } else {
-        color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+        color = tonemap(grade(color));
     }
-
-    // Vignette: darkened towards the corners, round whatever the aspect.
-    let d = (in.uv - post.vignette.xy) * vec2<f32>(post.vignette.w, 1.0);
-    let falloff = smoothstep(0.0, 1.0, dot(d, d) * post.vignette_color.w * 2.0);
-    let edge = pow(falloff, max(1.0 - post.vignette.z, 0.05));
-    color = mix(color, post.vignette_color.rgb, edge * step(1e-4, post.vignette_color.w));
 
     // Grain, stronger in the darks, as film is.
     let grain = hash(in.position.xy + post.b.w * 61.0) - 0.5;

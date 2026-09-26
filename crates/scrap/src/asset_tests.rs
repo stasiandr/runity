@@ -23,6 +23,7 @@ mod tests {
             vertices,
             indices: (0..12u32).collect(),
             skin: None,
+            colors: Vec::new(),
             look: None,
             submeshes: vec![Submesh {
                 first_index: 0,

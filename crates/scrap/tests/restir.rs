@@ -21,6 +21,8 @@ fn frame(cube: scrap::render::MeshHandle, restir: bool) -> Frame {
             let a = i as f32 * std::f32::consts::TAU / 12.0;
             let hue = [(1.0, 0.6, 0.3), (0.4, 0.7, 1.0), (1.0, 1.0, 0.9)][i % 3];
             PointLight {
+                falloff: Default::default(),
+                inner_cone: None,
                 position: Vec3::new(a.cos() * 4.0, 1.2, a.sin() * 4.0),
                 color: Vec3::new(hue.0, hue.1, hue.2) * 0.35,
                 range: 7.0,

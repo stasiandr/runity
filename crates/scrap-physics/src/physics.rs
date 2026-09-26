@@ -37,6 +37,29 @@ use crate::world::{
     JointBreak, JointBroken, Jointed, Layer, Parent, Physics, Props, SceneId, Shape, WorldTransform,
 };
 
+// rapier speaks glam too, but its own version of it: the engine's vectors
+// and turns cross over by value, here and nowhere else.
+
+/// The engine's vector as rapier's.
+fn rv(v: Vec3) -> Vector {
+    Vector::new(v.x, v.y, v.z)
+}
+
+/// rapier's vector as the engine's.
+fn gv(v: Vector) -> Vec3 {
+    Vec3::new(v.x, v.y, v.z)
+}
+
+/// The engine's turn as rapier's.
+fn rq(q: Quat) -> Rotation {
+    Rotation::from_xyzw(q.x, q.y, q.z, q.w)
+}
+
+/// rapier's turn as the engine's.
+fn gq(q: Rotation) -> Quat {
+    Quat::from_xyzw(q.x, q.y, q.z, q.w)
+}
+
 /// Who is touching an entity's body: for a [`Body::Trigger`], what is
 /// inside it; for a solid body, what it is in contact with.
 ///
@@ -46,7 +69,9 @@ use crate::world::{
 /// to know. Rewritten after every step: `entered` and `left` are this
 /// step's changes, so a system that runs every step sees each exactly once.
 /// Unity's `OnTriggerEnter`/`OnCollisionEnter`, as data a system queries
-/// rather than callbacks on a class.
+/// rather than callbacks on a class — and, as PhysX's, what the step found
+/// at its *start*, before it moved anything: a system reading them on the
+/// next step reads where things were a step ago, as Unity's scripts do.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Contacts {
     /// Everything touching now, in no particular order.
@@ -60,6 +85,11 @@ pub struct Contacts {
     /// pair; a character tells ground from a wall by the `y` of these, the
     /// way a controller reads contact normals rather than probing.
     pub normals: Vec<Vec3>,
+    /// Of `inside`, what touches through a trigger — this body's or the
+    /// other's: Unity's `OnTrigger*`. The rest of `inside` is solid
+    /// contact, its `OnCollision*`. Something touching both ways is in
+    /// both.
+    pub triggers: Vec<hecs::Entity>,
 }
 
 /// What a ray met.
@@ -114,7 +144,50 @@ struct Built {
     props: crate::scene::BodyProps,
     layer: String,
     /// What its parts were built from ([`parts_of`]): any change rebuilds it.
-    parts: u64,
+    parts: Vec<PartKey>,
+    /// Where its parts sit on it ([`parts_placement`]): a change moves
+    /// their colliders on the body, which keeps its speed — a collider
+    /// under an animated child, as Unity's compound follows it.
+    parts_at: u64,
+}
+
+/// What one part was built from: compared field by field with what is
+/// found each step, which formats and allocates nothing.
+#[derive(Debug, Clone, PartialEq)]
+struct PartKey {
+    entity: hecs::Entity,
+    shape: ColliderShape,
+    props: crate::scene::BodyProps,
+    layer: String,
+    trigger: bool,
+    mesh: usize,
+}
+
+impl PartKey {
+    fn of(part: &PartFound) -> Self {
+        PartKey {
+            entity: part.entity,
+            shape: part.shape,
+            props: part.props,
+            layer: part.layer.clone(),
+            trigger: part.trigger,
+            mesh: part.mesh.as_ref().map_or(0, CollisionMesh::key),
+        }
+    }
+
+    fn is(&self, part: &PartFound) -> bool {
+        self.entity == part.entity
+            && self.shape == part.shape
+            && self.props == part.props
+            && self.layer == part.layer
+            && self.trigger == part.trigger
+            && self.mesh == part.mesh.as_ref().map_or(0, CollisionMesh::key)
+    }
+}
+
+/// Whether a body's parts are still the ones it was built with.
+fn same_parts(built: &[PartKey], found: &[PartFound]) -> bool {
+    built.len() == found.len() && built.iter().zip(found).all(|(k, p)| k.is(p))
 }
 
 /// The collider a part was built as, on its ancestor's body: what its
@@ -227,19 +300,11 @@ fn body_volume(
         .sum()
 }
 
-/// What a body's parts were built from, as one number: where each sits on
-/// the body, its shape, grip and layer.
-fn parts_signature(_owner: glam::Mat4, parts: &[PartFound]) -> u64 {
+/// Where a body's parts sit on it, to the millimetre.
+fn parts_placement(parts: &[PartFound]) -> u64 {
     use std::hash::{Hash, Hasher};
-    // No parts is nothing to compare: most bodies.
-    if parts.is_empty() {
-        return 0;
-    }
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     for part in parts {
-        part.entity.to_bits().hash(&mut hash);
-        format!("{:?}{:?}{}{}", part.shape, part.props, part.layer, part.trigger).hash(&mut hash);
-        part.mesh.as_ref().map_or(0, CollisionMesh::key).hash(&mut hash);
         for v in part.under.to_cols_array() {
             ((v * 1000.0).round() as i64).hash(&mut hash);
         }
@@ -410,7 +475,10 @@ pub struct PhysicsWorld {
     /// Joints broken since [`PhysicsWorld::broken`] was last asked.
     broken: Vec<hecs::Entity>,
     /// A body's speed when it went kinematic, for when it goes dynamic.
-    held_speed: std::collections::HashMap<RigidBodyHandle, (Vector<Real>, Vector<Real>)>,
+    held_speed: std::collections::HashMap<RigidBodyHandle, (Vector, Vector)>,
+    /// When a still body falls asleep: slower than this (m/s, rad/s) for
+    /// so long (s). `None` is rapier's own (0.4 m/s, 0.5 rad/s, 2 s).
+    sleep: Option<(f32, f32, f32)>,
     pipeline: PhysicsPipeline,
     islands: IslandManager,
     broad_phase: DefaultBroadPhase,
@@ -418,7 +486,8 @@ pub struct PhysicsWorld {
     impulse_joints: ImpulseJointSet,
     multibody_joints: MultibodyJointSet,
     ccd: CCDSolver,
-    queries: QueryPipeline,
+    /// None are made; rapier steps them with the rest.
+    soft_bodies: SoftBodySet,
     /// A fixed body with no shape, for joints to the world to hang from.
     /// Made the first time one asks.
     ground: Option<RigidBodyHandle>,
@@ -445,7 +514,7 @@ impl Ignoring<'_> {
 
 impl PhysicsHooks for Ignoring<'_> {
     fn filter_contact_pair(&self, context: &PairFilterContext) -> Option<SolverFlags> {
-        (!self.ignores(context)).then_some(SolverFlags::COMPUTE_IMPULSES)
+        (!self.ignores(context)).then_some(SolverFlags::COMPUTE_RIGID_IMPULSES)
     }
 
     fn filter_intersection_pair(&self, context: &PairFilterContext) -> bool {
@@ -476,7 +545,31 @@ impl PhysicsWorld {
     /// (a door standing in the ground), at a little more time a step. Four
     /// unless set.
     pub fn set_solver_iterations(&mut self, iterations: usize) {
-        self.parameters.num_solver_iterations = std::num::NonZeroUsize::new(iterations).unwrap_or(std::num::NonZeroUsize::MIN);
+        self.parameters.num_solver_iterations = iterations.max(1);
+    }
+
+    /// When a still body falls asleep: slower than `linear` m/s and
+    /// `angular` rad/s for `seconds`. PhysX (Unity) sleeps a body after 0.4 s
+    /// under about a tenth of a metre a second; rapier waits two seconds,
+    /// long enough for a standing thing's last drift to topple it.
+    pub fn set_sleep(&mut self, linear: f32, angular: f32, seconds: f32) {
+        self.sleep = Some((linear, angular, seconds));
+        for (_, body) in self.bodies.iter_mut() {
+            let a = body.activation_mut();
+            a.normalized_linear_threshold = linear;
+            a.angular_threshold = angular;
+            a.time_until_sleep = seconds;
+        }
+    }
+
+    /// Wake a body through the islands, so what it is joined to or rests
+    /// on wakes with it — PhysX wakes a joined chain when one link is
+    /// pushed; a body woken by itself stays held by its sleeping neighbours
+    /// as by a wall.
+    fn wake(&mut self, world: &World, entity: hecs::Entity) {
+        if let Some(handle) = self.body_of(world, entity) {
+            self.islands.wake_up(&mut self.bodies, handle, true);
+        }
     }
 
     /// `fixed_delta` must be the simulation clock's step, not a frame delta.
@@ -496,6 +589,7 @@ impl PhysicsWorld {
             colliders: ColliderSet::new(),
             broken: Vec::new(),
             held_speed: Default::default(),
+            sleep: None,
             parameters,
             pipeline: PhysicsPipeline::new(),
             islands: IslandManager::new(),
@@ -504,7 +598,7 @@ impl PhysicsWorld {
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
             ccd: CCDSolver::new(),
-            queries: QueryPipeline::new(),
+            soft_bodies: SoftBodySet::new(),
             ground: None,
             layers: crate::layers::Layers::default(),
             ignored: Default::default(),
@@ -534,6 +628,39 @@ impl PhysicsWorld {
         self.bodies.len()
     }
 
+    /// What an entity's body is pressed against now, by entity, with the
+    /// deepest contact's depth (negative is sunk in): for finding what
+    /// pushes a thing.
+    pub fn pressed_against(&self, world: &World, entity: hecs::Entity) -> Vec<(Option<hecs::Entity>, f32)> {
+        let Ok(handle) = world.get::<&BodyHandle>(entity).map(|h| h.0) else { return Vec::new() };
+        let Some(body) = self.bodies.get(handle) else { return Vec::new() };
+        let mut out = Vec::new();
+        for &collider in body.colliders() {
+            for pair in self.narrow_phase.contact_pairs_with(collider) {
+                if !pair.has_any_active_contact() {
+                    continue;
+                }
+                let other = if pair.collider1 == collider { pair.collider2 } else { pair.collider1 };
+                let who = self.colliders.get(other).and_then(|c| hecs::Entity::from_bits(c.user_data as u64));
+                let depth = pair.manifolds().iter().flat_map(|m| m.points.iter()).map(|p| p.dist).fold(f32::MAX, f32::min);
+                out.push((who, depth));
+            }
+        }
+        out
+    }
+
+    /// Every joint built, as the two entities it holds together (`None`
+    /// for the world's ground): what a line's `joint` came to.
+    pub fn joined(&self) -> Vec<(Option<hecs::Entity>, Option<hecs::Entity>)> {
+        let entity = |h: RigidBodyHandle| {
+            self.bodies.get(h).and_then(|b| hecs::Entity::from_bits(b.user_data as u64))
+        };
+        self.impulse_joints
+            .iter()
+            .map(|(_, j)| (entity(j.body1()), entity(j.body2())))
+            .collect()
+    }
+
     /// Bring rapier in line with the world: build a body for every entity
     /// that asks for one, rebuild the ones whose body kind or shape changed,
     /// move the ones whose transform was changed from outside the solver,
@@ -547,8 +674,11 @@ impl PhysicsWorld {
             Vec::new();
         let mut live: scrap_core::hash::FastSet<RigidBodyHandle> = Default::default();
         let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
+        let mut reseat: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
         // What is switched off has no body.
-        let off = crate::world::inactive_in_hierarchy(world);
+        // Asked only about what has physics: the rest of the level's
+        // entities are nothing to the solver.
+        let off = crate::world::inactive_among(world, world.query::<(hecs::Entity, &Physics)>().iter().map(|(e, _)| e));
         let parts = parts_of(world, &off);
         for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
             world
@@ -575,10 +705,14 @@ impl PhysicsWorld {
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.as_str()).unwrap_or("");
-            let signature = parts.get(&entity).map_or(0, |p| parts_signature(placed.0, p));
-            if signature != built.parts {
+            if !same_parts(&built.parts, parts.get(&entity).map(Vec::as_slice).unwrap_or(&[])) {
                 stale.push(entity);
                 continue;
+            }
+            if let Some(mine) = parts.get(&entity) {
+                if parts_placement(mine) != built.parts_at {
+                    reseat.push((entity, placed.0));
+                }
             }
             // Dynamic ↔ kinematic keeps the body and its speed: switched in
             // place, as Unity's isKinematic does.
@@ -617,13 +751,28 @@ impl PhysicsWorld {
                 }
             }
         }
+        // Parts that moved on their body: their colliders moved with them.
+        for (owner, placed) in reseat {
+            let Some(mine) = parts.get(&owner) else { continue };
+            for part in mine {
+                let Ok(handle) = world.get::<&PartCollider>(part.entity).map(|h| h.0) else { continue };
+                let own = shape_offset(part.shape, part.placed);
+                let offset = isometry(placed).inverse() * isometry(part.placed);
+                if let Some(c) = self.colliders.get_mut(handle) {
+                    c.set_position_wrt_parent(offset * own);
+                }
+            }
+            if let Ok(mut built) = world.get::<&mut Built>(owner) {
+                built.parts_at = parts_placement(mine);
+            }
+        }
         for (entity, handle, kind) in switched {
             if let Some(body) = self.bodies.get_mut(handle) {
                 match kind {
                     Body::Kinematic => {
                         // Its speed, kept for when it is let go again.
                         self.held_speed
-                            .insert(handle, (*body.linvel(), *body.angvel()));
+                            .insert(handle, (body.linvel(), body.angvel()));
                         body.set_body_type(RigidBodyType::KinematicPositionBased, true);
                     }
                     _ => {
@@ -632,7 +781,7 @@ impl PhysicsWorld {
                         // still: as fast as when it was taken.
                         let kept = self.held_speed.remove(&handle);
                         if let Some((linear, angular)) = kept {
-                            if body.linvel().norm() < 1e-3 && body.angvel().norm() < 1e-3 {
+                            if body.linvel().length() < 1e-3 && body.angvel().length() < 1e-3 {
                                 body.set_linvel(linear, true);
                                 body.set_angvel(angular, true);
                             }
@@ -660,6 +809,7 @@ impl PhysicsWorld {
                 &mut self.colliders,
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
+                &mut self.soft_bodies,
                 true,
             );
         }
@@ -673,8 +823,8 @@ impl PhysicsWorld {
                     }
                     _ => {
                         body.set_position(isometry(placed), true);
-                        body.set_linvel(vector![0.0, 0.0, 0.0], true);
-                        body.set_angvel(vector![0.0, 0.0, 0.0], true);
+                        body.set_linvel(Vector::new(0.0, 0.0, 0.0), true);
+                        body.set_angvel(Vector::new(0.0, 0.0, 0.0), true);
                     }
                 }
             }
@@ -722,14 +872,24 @@ impl PhysicsWorld {
             let dynamic = kind == Body::Dynamic;
             let mine = parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]);
             let own = build_collider(shape.0, placed.0, mesh, dynamic);
-            if own.is_none() && mine.is_empty() {
+            if own.is_none() && mine.is_empty() && kind != Body::Kinematic {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
-                // bounds is the kind of default that is wrong quietly.
+                // bounds is the kind of default that is wrong quietly. A
+                // kinematic one is kept, shapeless: it goes only where it
+                // is carried, and is something to hang a joint on, as
+                // Unity's Rigidbody with no collider is — the anchor a
+                // mouse's tail swings from.
                 continue;
             }
             // Its own collider, or — for a body made only of its parts — none.
             let mut collider = own.unwrap_or_else(|| ColliderBuilder::ball(1e-3).sensor(true).build());
+            // rapier sweeps any dynamic body fast for its size, asked or
+            // not: an unswept one is made of shapes too thick to sweep.
+            let unswept = dynamic && props.unswept;
+            if unswept {
+                unsweep(&mut collider);
+            }
             // Which entity a collider is, for contacts to be told in
             // entities rather than rapier handles.
             collider.user_data = entity.to_bits().get() as u128;
@@ -767,15 +927,29 @@ impl PhysicsWorld {
                 Body::Kinematic | Body::Trigger => RigidBodyBuilder::kinematic_position_based(),
                 _ => RigidBodyBuilder::fixed(),
             }
-            .position(isometry(placed.0))
+            .pose(isometry(placed.0))
             .linear_damping(props.drag.max(0.0))
             .angular_damping(props.spin_drag.max(0.0))
             .gravity_scale(props.gravity)
-            .ccd_enabled(props.fast)
+            // Swept between steps: a thin thing — a shovel's stick, a
+            // knife — falling onto ground that is a mesh with no inside
+            // would otherwise pass through it. Rapier sweeps only what
+            // moves further in a step than it is thick, so a resting
+            // level costs nothing for it; against what stands still it
+            // sweeps every dynamic body so (an unswept one is kept out by
+            // its shapes, above), and this sweeps it against what moves
+            // too. (`fast` is kept for lines that ask; it is always so now.)
+            .ccd_enabled(props.fast || (kind == Body::Dynamic && !props.unswept))
             .locked_axes(locked(&props))
             .build();
             let mut body = body;
             body.user_data = entity.to_bits().get() as u128;
+            if let Some((linear, angular, seconds)) = self.sleep {
+                let a = body.activation_mut();
+                a.normalized_linear_threshold = linear;
+                a.angular_threshold = angular;
+                a.time_until_sleep = seconds;
+            }
             let handle = self.bodies.insert(body);
             let solid_own = shape.0 != ColliderShape::None;
             self.colliders
@@ -787,6 +961,9 @@ impl PhysicsWorld {
                 let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else {
                     continue;
                 };
+                if unswept {
+                    unsweep(&mut c);
+                }
                 // Where it sits on the body: both as the solver places them,
                 // without scale — the part's own scale is in its shape.
                 let offset = isometry(placed.0).inverse() * isometry(part.placed);
@@ -848,7 +1025,8 @@ impl PhysicsWorld {
                     mesh: mesh.map_or(0, CollisionMesh::key),
                     props,
                     layer,
-                    parts: parts_signature(placed.0, mine),
+                    parts: mine.iter().map(PartKey::of).collect(),
+                    parts_at: parts_placement(mine),
                 },
             ));
         }
@@ -876,8 +1054,8 @@ impl PhysicsWorld {
                 .and_then(|h| self.bodies.get_mut(h.0))
             {
                 let (v, w) = (t.velocity, t.spin);
-                body.set_linvel(vector![v.x, v.y, v.z], true);
-                body.set_angvel(vector![w.x, w.y, w.z], true);
+                body.set_linvel(Vector::new(v.x, v.y, v.z), true);
+                body.set_angvel(Vector::new(w.x, w.y, w.z), true);
             }
             scrap_core::world::take_off::<crate::world::Takeover>(world, entity);
         }
@@ -992,7 +1170,11 @@ impl PhysicsWorld {
             let (Some(one), Some(two)) = (self.bodies.get(other), self.bodies.get(body)) else {
                 continue;
             };
-            let data = joint_data(&joint, placed, one.position(), two.position());
+            // The other body's scale, which its end's anchor is given in.
+            let one_scale = hecs::Entity::from_bits(one.user_data as u64)
+                .and_then(|e| world.get::<&WorldTransform>(e).ok().map(|t| t.0.to_scale_rotation_translation().0))
+                .unwrap_or(Vec3::ONE);
+            let data = joint_data(&joint, placed, one.position(), two.position(), one_scale);
             let Some(data) = data else {
                 continue;
             };
@@ -1003,7 +1185,13 @@ impl PhysicsWorld {
                     joint,
                     handle,
                     bodies: (other, body),
-                    fresh: Some(other) == self.ground,
+                    // Only a hinge or a slider — a door set flush in the
+                    // sand, a handle in its slot. A thing
+                    // tethered on a spring (a ripe sponge in its bed) stands
+                    // on what it was set into: freed of it, it fell through
+                    // and tore its tether.
+                    fresh: Some(other) == self.ground
+                        && matches!(joint, crate::scene::Joint::Hinge { .. } | crate::scene::Joint::Slider { .. }),
                 },
             );
         }
@@ -1012,6 +1200,10 @@ impl PhysicsWorld {
     /// Rewrite every [`Contacts`] from what rapier found this step. Part of
     /// [`PhysicsWorld::run`]; call it after [`PhysicsWorld::step`] when
     /// stepping by hand.
+    ///
+    /// rapier (since 0.36) finds contacts at the start of a step, before it
+    /// moves anything, as PhysX does for Unity: what is reported is where
+    /// things touched before the step, not after it.
     pub fn update_contacts(&self, world: &mut World) {
         let entity_of = |collider: ColliderHandle| self.entity_of(collider);
         // A part's own contacts: what its one collider touches.
@@ -1022,22 +1214,28 @@ impl PhysicsWorld {
             let mine = part.0;
             let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
             let mut now: Vec<hecs::Entity> = Vec::new();
+            let mut sensed: Vec<hecs::Entity> = Vec::new();
             for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
                 if touching {
-                    now.extend(entity_of(other(a, b)));
+                    sensed.extend(entity_of(other(a, b)));
                 }
             }
+            now.extend(sensed.iter().copied());
             for pair in self.narrow_phase.contact_pairs_with(mine) {
-                if pair.has_any_active_contact {
+                if pair.has_any_active_contact() {
                     now.extend(entity_of(other(pair.collider1, pair.collider2)));
                 }
             }
             now.retain(|e| *e != entity);
             now.sort();
             now.dedup();
+            sensed.retain(|e| *e != entity);
+            sensed.sort();
+            sensed.dedup();
             contacts.entered = now.iter().filter(|e| !contacts.inside.contains(e)).copied().collect();
             contacts.left = contacts.inside.iter().filter(|e| !now.contains(e)).copied().collect();
             contacts.inside = now;
+            contacts.triggers = sensed;
         }
         for (entity, handle, contacts) in world
             .query_mut::<(hecs::Entity, &BodyHandle, &mut Contacts)>()
@@ -1047,22 +1245,24 @@ impl PhysicsWorld {
                 continue;
             };
             let mut now: Vec<hecs::Entity> = Vec::new();
+            let mut sensed: Vec<hecs::Entity> = Vec::new();
             let mut normals: Vec<Vec3> = Vec::new();
             for &mine in body.colliders() {
                 let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
                 for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
                     if touching {
                         now.extend(entity_of(other(a, b)));
+                        sensed.extend(entity_of(other(a, b)));
                     }
                 }
                 for pair in self.narrow_phase.contact_pairs_with(mine) {
-                    if pair.has_any_active_contact {
+                    if pair.has_any_active_contact() {
                         now.extend(entity_of(other(pair.collider1, pair.collider2)));
                         // A manifold's normal points from the pair's first
                         // collider to its second; ours is the other way from
                         // whatever we touch.
                         let sign = if pair.collider1 == mine { -1.0 } else { 1.0 };
-                        for manifold in &pair.manifolds {
+                        for manifold in pair.manifolds() {
                             if manifold.points.iter().any(|p| p.dist <= 0.01) {
                                 let n = manifold.data.normal;
                                 normals.push(Vec3::new(n.x, n.y, n.z) * sign);
@@ -1087,6 +1287,10 @@ impl PhysicsWorld {
                 .collect();
             contacts.inside = now;
             contacts.normals = normals;
+            sensed.retain(|e| *e != entity);
+            sensed.sort();
+            sensed.dedup();
+            contacts.triggers = sensed;
         }
     }
 
@@ -1150,23 +1354,13 @@ impl PhysicsWorld {
                 .map(|c| c.compute_aabb().half_extents().y)
                 .fold(0.0f32, f32::max)
                 .max(0.05);
-            let down = Ray::new(
-                point![centre.x, centre.y, centre.z],
-                vector![0.0, -1.0, 0.0],
-            );
+            let down = Ray::new(rv(centre), Vector::NEG_Y);
             let others = QueryFilter::default()
                 .exclude_rigid_body(handle.0)
                 .exclude_sensors();
             let grounded = self
-                .queries
-                .cast_ray(
-                    &self.bodies,
-                    &self.colliders,
-                    &down,
-                    half + 0.08,
-                    true,
-                    others,
-                )
+                .queries(others)
+                .cast_ray(&down, half + 0.08, true)
                 .is_some();
             let mut hop = 0.0;
             if grounded && v.y.abs() < 1.0 {
@@ -1181,8 +1375,8 @@ impl PhysicsWorld {
             // A twist about the axis it rolls on, so it turns in the air too.
             let roll = up.cross(level) * (mass * half * half * blown * 2.0 * gust);
             let body = self.bodies.get_mut(handle.0).expect("looked up above");
-            body.apply_impulse(vector![push.x * dt, hop, push.z * dt], true);
-            body.apply_torque_impulse(vector![roll.x * dt, roll.y * dt, roll.z * dt], true);
+            body.apply_impulse(Vector::new(push.x * dt, hop, push.z * dt), true);
+            body.apply_torque_impulse(Vector::new(roll.x * dt, roll.y * dt, roll.z * dt), true);
         }
     }
 
@@ -1193,14 +1387,13 @@ impl PhysicsWorld {
     pub fn hinge_angle(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
         let built = world.get::<&JointBuilt>(entity).ok()?;
         let joint = self.impulse_joints.get(built.handle)?;
-        let one = self.bodies.get(joint.body1)?;
-        let two = self.bodies.get(joint.body2)?;
+        let one = self.bodies.get(joint.body1())?;
+        let two = self.bodies.get(joint.body2())?;
         let first = one.position() * joint.data.local_frame1;
         let second = two.position() * joint.data.local_frame2;
         // A revolute joint turns about its frames' x.
-        let relative = first.rotation.inverse() * second.rotation;
-        let q = relative.quaternion();
-        let (x, w) = if q.w < 0.0 { (-q.i, -q.w) } else { (q.i, q.w) };
+        let q = first.rotation.inverse() * second.rotation;
+        let (x, w) = if q.w < 0.0 { (-q.x, -q.w) } else { (q.x, q.w) };
         Some((2.0 * x.atan2(w)).to_degrees())
     }
 
@@ -1223,10 +1416,10 @@ impl PhysicsWorld {
             // not count: its pull is its stiffness times how far apart its
             // two anchors are.
             if let crate::scene::Joint::Spring { stiffness, .. } = built.joint {
-                if let (Some(one), Some(two)) = (self.bodies.get(joint.body1), self.bodies.get(joint.body2)) {
+                if let (Some(one), Some(two)) = (self.bodies.get(joint.body1()), self.bodies.get(joint.body2())) {
                     let a = one.position() * joint.data.local_frame1;
                     let b = two.position() * joint.data.local_frame2;
-                    let apart = (a.translation.vector - b.translation.vector).norm();
+                    let apart = (a.translation - b.translation).length();
                     force = force.max(stiffness.max(0.0) * apart);
                 }
             }
@@ -1252,9 +1445,8 @@ impl PhysicsWorld {
     /// Take one step. Call it once per simulation step, never per frame.
     pub fn step(&mut self) {
         self.steps += 1;
-        let gravity = vector![self.gravity.x, self.gravity.y, self.gravity.z];
         self.pipeline.step(
-            &gravity,
+            rv(self.gravity),
             &self.parameters,
             &mut self.islands,
             &mut self.broad_phase,
@@ -1263,14 +1455,14 @@ impl PhysicsWorld {
             &mut self.colliders,
             &mut self.impulse_joints,
             &mut self.multibody_joints,
+            &mut self.soft_bodies,
             &mut self.ccd,
-            Some(&mut self.queries),
             &Ignoring(&self.ignored),
             &(),
         );
     }
 
-    /// A thing just hung on the world — a door on its hinge — stops
+    /// A thing just hinged or slid on the world — a door, a handle — stops
     /// colliding with the still things it was put into: a door set flush
     /// in the sand would otherwise grind against it, and a stiff solver
     /// hold it shut by that friction. What it only comes to touch later (a
@@ -1298,7 +1490,7 @@ impl PhysicsWorld {
                         .and_then(|h| self.bodies.get(h))
                         .is_none_or(|b| b.is_fixed());
                     let deep = pair
-                        .manifolds
+                        .manifolds()
                         .iter()
                         .flat_map(|m| m.points.iter())
                         .any(|p| p.dist < -0.01);
@@ -1353,17 +1545,8 @@ impl PhysicsWorld {
                 continue;
             };
             let position = body.position();
-            let translation = Vec3::new(
-                position.translation.x,
-                position.translation.y,
-                position.translation.z,
-            );
-            let rotation = Quat::from_xyzw(
-                position.rotation.i,
-                position.rotation.j,
-                position.rotation.k,
-                position.rotation.w,
-            );
+            let translation = gv(position.translation);
+            let rotation = gq(position.rotation);
             // Rapier knows where a body is and how it is turned; it does not
             // know how big the thing being drawn is, because scale lives in
             // the collider's shape rather than the body. Keeping the
@@ -1434,21 +1617,15 @@ impl PhysicsWorld {
         if direction.length_squared() < 0.5 {
             return None;
         }
-        let ray = Ray::new(
-            point![from.x, from.y, from.z],
-            vector![direction.x, direction.y, direction.z],
-        );
-        let (collider, distance) = self.queries.cast_ray(
-            &self.bodies,
-            &self.colliders,
+        let ray = Ray::new(rv(from), rv(direction));
+        // A trigger is a zone, not a surface: a ray passes through it.
+        let (collider, distance) = self.queries(QueryFilter::default().exclude_sensors()).cast_ray(
             &ray,
             max_distance,
             // Solid: a ray starting inside a shape stops at zero rather than
             // passing through to the far wall. A camera inside a rock should
             // report the rock.
             true,
-            // A trigger is a zone, not a surface: a ray passes through it.
-            QueryFilter::default().exclude_sensors(),
         )?;
         Some(RayHit {
             point: from + direction * distance,
@@ -1473,27 +1650,17 @@ impl PhysicsWorld {
         if direction.length_squared() < 0.5 {
             return None;
         }
-        let ray = Ray::new(
-            point![from.x, from.y, from.z],
-            vector![direction.x, direction.y, direction.z],
-        );
+        let ray = Ray::new(rv(from), rv(direction));
         let filter = if statics_only {
             QueryFilter::only_fixed()
         } else {
             QueryFilter::default()
         }
         .exclude_sensors();
-        let (_, hit) = self.queries.cast_ray_and_get_normal(
-            &self.bodies,
-            &self.colliders,
-            &ray,
-            max_distance,
-            true,
-            filter,
-        )?;
+        let (_, hit) = self.queries(filter).cast_ray_and_get_normal(&ray, max_distance, true)?;
         Some((
             from + direction * hit.time_of_impact,
-            Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
+            gv(hit.normal),
             hit.time_of_impact,
         ))
     }
@@ -1511,22 +1678,15 @@ impl PhysicsWorld {
         if direction.length_squared() < 0.5 {
             return None;
         }
-        let ray = Ray::new(
-            point![from.x, from.y, from.z],
-            vector![direction.x, direction.y, direction.z],
-        );
+        let ray = Ray::new(rv(from), rv(direction));
         let only = InteractionGroups::new(
             Group::ALL,
             Group::from_bits_truncate(self.layers.mask(layers)),
+            InteractionTestMode::And,
         );
-        let (collider, distance) = self.queries.cast_ray(
-            &self.bodies,
-            &self.colliders,
-            &ray,
-            max_distance,
-            true,
-            QueryFilter::default().exclude_sensors().groups(only),
-        )?;
+        let (collider, distance) = self
+            .queries(QueryFilter::default().exclude_sensors().groups(only))
+            .cast_ray(&ray, max_distance, true)?;
         Some(RayHit {
             point: from + direction * distance,
             distance,
@@ -1552,19 +1712,12 @@ impl PhysicsWorld {
     /// same world gives the same answer.
     pub fn overlap_sphere(&self, centre: Vec3, radius: f32) -> Vec<hecs::Entity> {
         let ball = Ball::new(radius.max(0.0));
-        let at = Isometry::translation(centre.x, centre.y, centre.z);
-        let mut found = Vec::new();
-        self.queries.intersections_with_shape(
-            &self.bodies,
-            &self.colliders,
-            &at,
-            &ball,
-            QueryFilter::default().exclude_sensors(),
-            |collider| {
-                found.extend(self.entity_of(collider));
-                true
-            },
-        );
+        let at = Pose::translation(centre.x, centre.y, centre.z);
+        let queries = self.queries(QueryFilter::default().exclude_sensors());
+        let mut found: Vec<hecs::Entity> = queries
+            .intersect_shape(at, &ball)
+            .filter_map(|(collider, _)| self.entity_of(collider))
+            .collect();
         found.sort();
         found.dedup();
         found
@@ -1578,28 +1731,17 @@ impl PhysicsWorld {
         if direction.length_squared() < 0.5 {
             return Vec::new();
         }
-        let ray = Ray::new(
-            point![from.x, from.y, from.z],
-            vector![direction.x, direction.y, direction.z],
-        );
-        let mut hits = Vec::new();
-        self.queries.intersections_with_ray(
-            &self.bodies,
-            &self.colliders,
-            &ray,
-            max_distance,
-            true,
-            QueryFilter::default().exclude_sensors(),
-            |collider, hit| {
-                hits.push(RayHit {
-                    point: from + direction * hit.time_of_impact,
-                    distance: hit.time_of_impact,
-                    collider: ColliderRef(collider),
-                    entity: self.entity_of(collider),
-                });
-                true
-            },
-        );
+        let ray = Ray::new(rv(from), rv(direction));
+        let queries = self.queries(QueryFilter::default().exclude_sensors());
+        let mut hits: Vec<RayHit> = queries
+            .intersect_ray(ray, max_distance, true)
+            .map(|(collider, _, hit)| RayHit {
+                point: from + direction * hit.time_of_impact,
+                distance: hit.time_of_impact,
+                collider: ColliderRef(collider),
+                entity: self.entity_of(collider),
+            })
+            .collect();
         hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
         hits
     }
@@ -1609,25 +1751,13 @@ impl PhysicsWorld {
     /// is half its size on each axis, turned by `rotation`. Triggers are
     /// left out; sorted.
     pub fn overlap_box(&self, centre: Vec3, half: Vec3, rotation: glam::Quat) -> Vec<hecs::Entity> {
-        let cuboid = Cuboid::new(vector![half.x.max(0.0), half.y.max(0.0), half.z.max(0.0)]);
-        let at = Isometry::from_parts(
-            Translation::new(centre.x, centre.y, centre.z),
-            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                rotation.w, rotation.x, rotation.y, rotation.z,
-            )),
-        );
-        let mut found = Vec::new();
-        self.queries.intersections_with_shape(
-            &self.bodies,
-            &self.colliders,
-            &at,
-            &cuboid,
-            QueryFilter::default().exclude_sensors(),
-            |collider| {
-                found.extend(self.entity_of(collider));
-                true
-            },
-        );
+        let cuboid = Cuboid::new(rv(half.max(Vec3::ZERO)));
+        let at = Pose::from_parts(rv(centre), rq(rotation.normalize()));
+        let queries = self.queries(QueryFilter::default().exclude_sensors());
+        let mut found: Vec<hecs::Entity> = queries
+            .intersect_shape(at, &cuboid)
+            .filter_map(|(collider, _)| self.entity_of(collider))
+            .collect();
         found.sort();
         found.dedup();
         found
@@ -1649,26 +1779,62 @@ impl PhysicsWorld {
     /// Set how fast a body moves — Unity's `Rigidbody.velocity`. `false`
     /// when the entity has no body yet.
     pub fn set_velocity(&mut self, world: &World, entity: hecs::Entity, velocity: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
         else {
             return false;
         };
-        body.set_linvel(vector![velocity.x, velocity.y, velocity.z], true);
+        body.set_linvel(Vector::new(velocity.x, velocity.y, velocity.z), true);
         true
     }
 
     /// Set how fast a body turns, radians a second about each axis: a
     /// thrown plank's tumble. Unity's `angularVelocity`.
     pub fn set_spin(&mut self, world: &World, entity: hecs::Entity, spin: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
         else {
             return false;
         };
-        body.set_angvel(vector![spin.x, spin.y, spin.z], true);
+        body.set_angvel(Vector::new(spin.x, spin.y, spin.z), true);
+        true
+    }
+
+    /// Turn a body where it stands, at once, keeping how it moves — as
+    /// Unity does when a script sets a Rigidbody's `transform.rotation`
+    /// (a billboard on a loose crate). Its transform follows.
+    pub fn turn(&mut self, world: &mut World, entity: hecs::Entity, rotation: Quat) -> bool {
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        let mut pose = *body.position();
+        pose.rotation = rq(rotation.normalize());
+        body.set_position(pose, true);
+        // The transform is its parent's: the turn as the parent sees it.
+        let parent = world
+            .get::<&Parent>(entity)
+            .ok()
+            .and_then(|p| world.get::<&WorldTransform>(p.0).ok().map(|t| t.0));
+        let local = match parent {
+            Some(m) => {
+                let (_, turn, _) = m.to_scale_rotation_translation();
+                turn.inverse() * rotation
+            }
+            None => rotation,
+        };
+        if let Ok(mut transform) = world.get::<&mut Transform>(entity) {
+            transform.set_rotation(local);
+        }
+        if let Ok(mut built) = world.get::<&mut Built>(entity) {
+            built.local.set_rotation(local);
+        }
         true
     }
 
@@ -1687,15 +1853,10 @@ impl PhysicsWorld {
         let Some(body) = self.bodies.get_mut(handle) else {
             return false;
         };
-        let pose = Isometry::from_parts(
-            Translation::new(position.x, position.y, position.z),
-            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                rotation.w, rotation.x, rotation.y, rotation.z,
-            )),
-        );
+        let pose = Pose::from_parts(rv(position), rq(rotation.normalize()));
         body.set_position(pose, true);
-        body.set_linvel(vector![0.0, 0.0, 0.0], true);
-        body.set_angvel(vector![0.0, 0.0, 0.0], true);
+        body.set_linvel(Vector::new(0.0, 0.0, 0.0), true);
+        body.set_angvel(Vector::new(0.0, 0.0, 0.0), true);
         if let Ok(mut transform) = world.get::<&mut Transform>(entity) {
             transform.position = position;
             transform.set_rotation(rotation);
@@ -1707,13 +1868,14 @@ impl PhysicsWorld {
     /// explosion's shove. Heavier bodies move less for the same kick.
     /// Unity's `AddForce(…, ForceMode.Impulse)`.
     pub fn add_impulse(&mut self, world: &World, entity: hecs::Entity, impulse: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
         else {
             return false;
         };
-        body.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
+        body.apply_impulse(Vector::new(impulse.x, impulse.y, impulse.z), true);
         true
     }
 
@@ -1728,6 +1890,7 @@ impl PhysicsWorld {
     /// the world: it turns the body as well as moving it — water lifting
     /// one end of a boat. Unity's `AddForceAtPosition`.
     pub fn add_force_at(&mut self, world: &World, entity: hecs::Entity, force: Vec3, at: Vec3) -> bool {
+        self.wake(world, entity);
         let dt = self.parameters.dt;
         let Some(body) = self
             .body_of(world, entity)
@@ -1736,7 +1899,7 @@ impl PhysicsWorld {
             return false;
         };
         let impulse = force * dt;
-        body.apply_impulse_at_point(vector![impulse.x, impulse.y, impulse.z], point![at.x, at.y, at.z], true);
+        body.apply_impulse_at_point(Vector::new(impulse.x, impulse.y, impulse.z), Vector::new(at.x, at.y, at.z), true);
         true
     }
 
@@ -1749,13 +1912,14 @@ impl PhysicsWorld {
     /// what a rope's end did to the hand holding it over the last step.
     /// Unity's `AddForceAtPosition` with `ForceMode.Impulse`.
     pub fn add_impulse_at(&mut self, world: &World, entity: hecs::Entity, impulse: Vec3, at: Vec3) -> bool {
+        self.wake(world, entity);
         let Some(body) = self
             .body_of(world, entity)
             .and_then(|h| self.bodies.get_mut(h))
         else {
             return false;
         };
-        body.apply_impulse_at_point(vector![impulse.x, impulse.y, impulse.z], point![at.x, at.y, at.z], true);
+        body.apply_impulse_at_point(Vector::new(impulse.x, impulse.y, impulse.z), Vector::new(at.x, at.y, at.z), true);
         true
     }
 
@@ -1768,6 +1932,7 @@ impl PhysicsWorld {
     /// A twist for the coming step, in newton-metres, in the world: what a
     /// muscle does to a limb. Unity's `AddTorque`.
     pub fn add_torque(&mut self, world: &World, entity: hecs::Entity, torque: Vec3) -> bool {
+        self.wake(world, entity);
         let dt = self.parameters.dt;
         let Some(body) = self
             .body_of(world, entity)
@@ -1776,7 +1941,7 @@ impl PhysicsWorld {
             return false;
         };
         let t = torque * dt;
-        body.apply_torque_impulse(vector![t.x, t.y, t.z], true);
+        body.apply_torque_impulse(Vector::new(t.x, t.y, t.z), true);
         true
     }
 
@@ -1788,16 +1953,54 @@ impl PhysicsWorld {
         Some(Vec3::new(i.x, i.y, i.z))
     }
 
+    /// Its inverse inertia in the world's axes, as it is turned now: how
+    /// much a torque about each axis spins it. Zero rows about an axis it
+    /// cannot turn about. What a hand's spring budget reads to know how light
+    /// a thing held off its centre feels (Dacha's `DragMath.InverseInertia`).
+    pub fn world_inverse_inertia(&self, world: &World, entity: hecs::Entity) -> Option<glam::Mat3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let props = body.mass_properties().local_mprops;
+        let i = props.principal_inertia();
+        let frame = props.principal_inertia_local_frame;
+        let q = gq(*body.rotation() * frame);
+        let basis = glam::Mat3::from_quat(q);
+        let inverse = |v: f32| if v > 1e-9 { 1.0 / v } else { 0.0 };
+        let diag = glam::Mat3::from_diagonal(glam::Vec3::new(inverse(i.x), inverse(i.y), inverse(i.z)));
+        Some(basis * diag * basis.transpose())
+    }
+
+    /// Where its centre of mass is, in the world.
+    pub fn center_of_mass(&self, world: &World, entity: hecs::Entity) -> Option<Vec3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let c = body.center_of_mass();
+        Some(Vec3::new(c.x, c.y, c.z))
+    }
+
     /// Its mass, kilograms.
     pub fn mass(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
         Some(self.bodies.get(self.body_of(world, entity)?)?.mass())
+    }
+
+    /// What a body carries besides its colliders' own weight — the water
+    /// in a bucket: `mass` kilograms at `centre`, a point in the body's own
+    /// space (its position and turn, not its scale). Its mass and centre
+    /// of mass are then its colliders' and this together, as Unity's are
+    /// after writing `Rigidbody.mass` and `centerOfMass`; zero takes it
+    /// off. Replaces what was carried before, and wakes the body when it
+    /// changes. False when the entity has no body yet.
+    pub fn set_carried_mass(&mut self, world: &World, entity: hecs::Entity, mass: f32, centre: Vec3) -> bool {
+        let Some(handle) = self.body_of(world, entity) else { return false };
+        let Some(body) = self.bodies.get_mut(handle) else { return false };
+        let props = MassProperties::new(Vector::new(centre.x, centre.y, centre.z), mass.max(0.0), Vector::new(0.0, 0.0, 0.0));
+        body.set_additional_mass_properties(props, true);
+        true
     }
 
     /// How fast a point of the body is going, in the world: its own speed
     /// and its turning together.
     pub fn velocity_at(&self, world: &World, entity: hecs::Entity, at: Vec3) -> Option<Vec3> {
         let body = self.bodies.get(self.body_of(world, entity)?)?;
-        let v = body.velocity_at_point(&point![at.x, at.y, at.z]);
+        let v = body.velocity_at_point(rv(at));
         Some(Vec3::new(v.x, v.y, v.z))
     }
 
@@ -1817,19 +2020,16 @@ impl PhysicsWorld {
             return None;
         }
         let ball = Ball::new(radius.max(1e-4));
-        let at = Isometry::translation(from.x, from.y, from.z);
-        let (collider, hit) = self.queries.cast_shape(
-            &self.bodies,
-            &self.colliders,
+        let at = Pose::translation(from.x, from.y, from.z);
+        let (collider, hit) = self.queries(QueryFilter::default().exclude_sensors()).cast_shape(
             &at,
-            &vector![direction.x, direction.y, direction.z],
+            rv(direction),
             &ball,
             rapier3d::parry::query::ShapeCastOptions {
                 max_time_of_impact: max_distance,
                 stop_at_penetration: true,
                 ..Default::default()
             },
-            QueryFilter::default().exclude_sensors(),
         )?;
         Some(RayHit {
             point: from + direction * hit.time_of_impact,
@@ -1842,7 +2042,22 @@ impl PhysicsWorld {
     /// Bring ray queries up to date with the bodies, without a step: after
     /// [`PhysicsWorld::sync_from_world`], before asking where things are.
     pub fn refresh_queries(&mut self) {
-        self.queries.update(&self.colliders);
+        // Queries walk the broad phase's tree, which a step keeps; without
+        // one, each collider's box is put there by hand.
+        for (handle, collider) in self.colliders.iter() {
+            let aabb = collider.compute_broad_phase_aabb(&self.parameters, &self.bodies);
+            self.broad_phase.set_aabb(&self.parameters, handle, aabb);
+        }
+    }
+
+    /// The scene's queries, through `filter`.
+    fn queries<'a>(&'a self, filter: QueryFilter<'a>) -> QueryPipeline<'a> {
+        self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            filter,
+        )
     }
 
     /// Where a body is now, for tests and for anything that wants one
@@ -1863,6 +2078,7 @@ fn groups(layers: &crate::layers::Layers, name: &str) -> InteractionGroups {
     InteractionGroups::new(
         Group::from_bits_truncate(member),
         Group::from_bits_truncate(filter),
+        InteractionTestMode::And,
     )
 }
 
@@ -1873,24 +2089,25 @@ fn same_but_drive(a: &crate::scene::Joint, b: &crate::scene::Joint) -> bool {
     match (*a, *b) {
         (
             Joint::Hinge {
-                to, anchor, axis, ..
+                to, anchor, axis, connected, ..
             },
             Joint::Hinge {
                 to: t,
                 anchor: n,
                 axis: x,
+                connected: c,
                 ..
             },
-        ) => to == t && anchor == n && axis == x,
+        ) => to == t && anchor == n && axis == x && connected == c,
         (Joint::Slider { to, axis, .. }, Joint::Slider { to: t, axis: x, .. }) => {
             to == t && axis == x
         }
         (
-            Joint::Spring { to, anchor, .. },
+            Joint::Spring { to, anchor, connected, .. },
             Joint::Spring {
-                to: t, anchor: n, ..
+                to: t, anchor: n, connected: c, ..
             },
-        ) => to == t && anchor == n,
+        ) => to == t && anchor == n && connected == c,
         _ => false,
     }
 }
@@ -1963,8 +2180,9 @@ fn set_motor(
 fn joint_data(
     joint: &crate::scene::Joint,
     placed: glam::Mat4,
-    one: &Isometry<Real>,
-    two: &Isometry<Real>,
+    one: &Pose,
+    two: &Pose,
+    one_scale: Vec3,
 ) -> Option<GenericJoint> {
     use crate::scene::Joint;
     let (_, rotation, _) = placed.to_scale_rotation_translation();
@@ -1981,10 +2199,7 @@ fn joint_data(
         return None;
     }
     let turn = Quat::from_rotation_arc(Vec3::X, along);
-    let frame = Isometry::from_parts(
-        nalgebra::Translation3::new(at.x, at.y, at.z),
-        nalgebra::Unit::new_normalize(nalgebra::Quaternion::new(turn.w, turn.x, turn.y, turn.z)),
-    );
+    let frame = Pose::from_parts(rv(at), rq(turn.normalize()));
     let locked = match joint {
         Joint::Fixed { .. } => JointAxesMask::LOCKED_FIXED_AXES,
         Joint::Hinge { .. } => JointAxesMask::LOCKED_REVOLUTE_AXES,
@@ -1994,8 +2209,20 @@ fn joint_data(
         Joint::Spring { .. } => JointAxesMask::empty(),
         Joint::None => return None,
     };
+    // The other body's end: where the anchor is now, or where the joint
+    // says in that body's own space — Unity's connected anchor, which holds
+    // a rope's links a set length apart however they were laid out.
+    let connected = match *joint {
+        Joint::Ball { connected, .. } | Joint::Hinge { connected, .. } | Joint::Spring { connected, .. } => connected,
+        _ => None,
+    };
+    let mut frame1 = one.inverse() * frame;
+    if let Some(c) = connected {
+        let c = c * one_scale;
+        frame1.translation = rv(c);
+    }
     let mut builder = GenericJointBuilder::new(locked)
-        .local_frame1(one.inverse() * frame)
+        .local_frame1(frame1)
         .local_frame2(two.inverse() * frame)
         .contacts_enabled(false);
     match *joint {
@@ -2010,6 +2237,14 @@ fn joint_data(
             ..
         } => {
             builder = builder.limits(JointAxis::LinX, [low, high]);
+        }
+        Joint::Ball {
+            limits_deg: Some(limits),
+            ..
+        } => {
+            for (axis, (low, high)) in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ].into_iter().zip(limits) {
+                builder = builder.limits(axis, [low.to_radians(), high.to_radians()]);
+            }
         }
         _ => {}
     }
@@ -2046,17 +2281,46 @@ fn moved(a: &glam::Mat4, b: &glam::Mat4) -> bool {
 
 /// Where a world matrix puts a body: its translation and rotation. Scale
 /// lives in the collider's shape.
-fn isometry(placed: glam::Mat4) -> Isometry<Real> {
+fn isometry(placed: glam::Mat4) -> Pose {
     let (_, rotation, translation) = placed.to_scale_rotation_translation();
     // A zero scale on an axis leaves no turn to read: none, rather than a
     // NaN that parry then panics on.
     let rotation = if rotation.is_finite() { rotation } else { glam::Quat::IDENTITY };
-    Isometry::from_parts(
-        nalgebra::Translation3::new(translation.x, translation.y, translation.z),
-        nalgebra::Unit::new_normalize(nalgebra::Quaternion::new(
-            rotation.w, rotation.x, rotation.y, rotation.z,
-        )),
-    )
+    Pose::from_parts(rv(translation), rq(rotation.normalize()))
+}
+
+/// The convex hull of `points`, as a collider that stands on the whole of
+/// a broad face (see [`crate::shapes::Hull`]).
+fn hull(points: &[Vector]) -> Option<Collider> {
+    let polyhedron = rapier3d::parry::shape::ConvexPolyhedron::from_convex_hull(points)?;
+    Some(ColliderBuilder::new(SharedShape::new(crate::shapes::Hull::new(polyhedron))).build())
+}
+
+/// `collider`'s shape, never swept between steps (see
+/// [`crate::shapes::Unswept`]).
+fn unsweep(collider: &mut Collider) {
+    let shape = collider.shared_shape().clone();
+    collider.set_shape(SharedShape::new(crate::shapes::Unswept(shape)));
+}
+
+/// Where [`build_collider`] puts a shape on its body, without building it:
+/// what a part that moved on its body is moved by, which for a hull or a
+/// mesh would otherwise be worked out anew every step.
+fn shape_offset(shape: ColliderShape, transform: glam::Mat4) -> Pose {
+    let (scale, _, _) = transform.to_scale_rotation_translation();
+    match shape {
+        ColliderShape::Box { center, .. }
+        | ColliderShape::Sphere { center, .. }
+        | ColliderShape::Capsule { center, .. } => {
+            let c = center * scale;
+            Pose::translation(c.x, c.y, c.z)
+        }
+        ColliderShape::None
+        | ColliderShape::Model
+        | ColliderShape::Cylinder { .. }
+        | ColliderShape::Ramp { .. }
+        | ColliderShape::Stairs { .. } => Pose::IDENTITY,
+    }
 }
 
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
@@ -2073,34 +2337,49 @@ fn build_collider(
             // No geometry yet — the model is not imported, or nobody
             // attached it: no collider, and the next sync tries again.
             let mesh = mesh?;
-            let points: Vec<Point<Real>> = mesh
+            let points: Vec<Vector> = mesh
                 .vertices
                 .iter()
                 .map(|v| {
                     let v = *v * scale;
-                    point![v.x, v.y, v.z]
+                    Vector::new(v.x, v.y, v.z)
                 })
                 .collect();
             if dynamic {
-                ColliderBuilder::convex_hull(&points)?.build()
+                hull(&points)?
             } else {
                 // Triangles with no area — a mesh squashed flat by a zero
                 // scale, a sliver — are nothing to stand on, and a query
-                // against a tree of only those panics in parry.
+                // against a tree of only those panics in parry. A mirroring
+                // scale turns every triangle inside out: turned back, so
+                // each still faces the side it was drawn to face.
+                let mirrored = scale.x * scale.y * scale.z < 0.0;
                 let triangles: Vec<[u32; 3]> = mesh
                     .triangles
                     .iter()
-                    .copied()
+                    .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
                     .filter(|t| {
                         let [a, b, c] = t.map(|i| points.get(i as usize).copied());
                         let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
-                        (b - a).cross(&(c - a)).norm() > 1e-10
+                        (b - a).cross(c - a).length() > 1e-10
                     })
                     .collect();
-                if triangles.is_empty() || points.iter().any(|p| !p.coords.iter().all(|v| v.is_finite())) {
+                if triangles.is_empty() || points.iter().any(|p| !p.is_finite()) {
                     return None;
                 }
-                ColliderBuilder::trimesh(points, triangles)
+                // Ground as PhysX has it. Its internal edges fixed: a body
+                // sliding over the seam between two triangles is pushed by
+                // the surface the two make, not bumped up by the edge of the
+                // one ahead. And one-sided — each triangle solid on the side
+                // it faces — so a body swept between steps is stopped by
+                // the ground it would pass through, not by the next rise of
+                // the ground it slides over (it ends the step in front of
+                // that, and rapier's sweep lets it go on).
+                ColliderBuilder::trimesh_with_flags(
+                    points,
+                    triangles,
+                    TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::ORIENTED,
+                )
                     .ok()?
                     .build()
             }
@@ -2108,24 +2387,39 @@ fn build_collider(
         ColliderShape::Box { half, center } => {
             let (h, c) = (half * scale, center * scale);
             ColliderBuilder::cuboid(h.x.max(1e-4), h.y.max(1e-4), h.z.max(1e-4))
-                .translation(vector![c.x, c.y, c.z])
+                .translation(Vector::new(c.x, c.y, c.z))
                 .build()
         }
-        ColliderShape::Sphere { radius } => {
+        ColliderShape::Sphere { radius, center } => {
             // One radius, so a sphere scaled unevenly takes the largest —
             // a ball that is not a ball is an ellipsoid, and rapier's ball
             // cannot be one.
             let r = radius * scale.max_element();
-            ColliderBuilder::ball(r.max(1e-4)).build()
+            let c = center * scale;
+            ColliderBuilder::ball(r.max(1e-4)).translation(Vector::new(c.x, c.y, c.z)).build()
         }
         ColliderShape::Capsule {
             half_height,
             radius,
-        } => ColliderBuilder::capsule_y(
-            (half_height * scale.y).max(1e-4),
-            (radius * scale.x.max(scale.z)).max(1e-4),
-        )
-        .build(),
+            center,
+            axis,
+        } => {
+            let c = center * scale;
+            // Its length along its axis, its girth across it.
+            let (along, across) = match axis {
+                0 => (scale.x, scale.y.max(scale.z)),
+                2 => (scale.z, scale.x.max(scale.y)),
+                _ => (scale.y, scale.x.max(scale.z)),
+            };
+            let (h, r) = ((half_height * along).max(1e-4), (radius * across).max(1e-4));
+            match axis {
+                0 => ColliderBuilder::capsule_x(h, r),
+                2 => ColliderBuilder::capsule_z(h, r),
+                _ => ColliderBuilder::capsule_y(h, r),
+            }
+            .translation(Vector::new(c.x, c.y, c.z))
+            .build()
+        }
         ColliderShape::Cylinder {
             half_height,
             radius,
@@ -2136,7 +2430,7 @@ fn build_collider(
         .build(),
         ColliderShape::Ramp { half } => {
             let h = half * scale;
-            let points: Vec<Point<Real>> = [
+            let points: Vec<Vector> = [
                 (-1.0, -1.0, -1.0),
                 (1.0, -1.0, -1.0),
                 (1.0, -1.0, 1.0),
@@ -2145,9 +2439,9 @@ fn build_collider(
                 (1.0, 1.0, -1.0),
             ]
             .into_iter()
-            .map(|(x, y, z)| point![x * h.x, y * h.y, z * h.z])
+            .map(|(x, y, z)| Vector::new(x * h.x, y * h.y, z * h.z))
             .collect();
-            ColliderBuilder::convex_hull(&points)?.build()
+            hull(&points)?
         }
         ColliderShape::Stairs { half, steps } => {
             // One box per step, each from the ground up, as the mesh has
@@ -2161,7 +2455,7 @@ fn build_collider(
                     let z = h.z - depth * (i as f32 + 0.5);
                     let y = -h.y + height * 0.5;
                     (
-                        Isometry::translation(0.0, y, z),
+                        Pose::translation(0.0, y, z),
                         SharedShape::cuboid(
                             h.x.max(1e-4),
                             (height * 0.5).max(1e-4),
@@ -2270,6 +2564,33 @@ mod tests {
             world.get::<&Contacts>(head).is_ok(),
             "a part can have contacts of its own"
         );
+    }
+
+    /// A bucket of 1 kg carrying 3 kg of water low down: 4 kg, its centre
+    /// pulled toward the water's; carrying nothing again is the bucket.
+    #[test]
+    fn a_body_weighs_what_it_carries() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "bucket", body: Dynamic, physics: (mass: Some(1.0), gravity: 0.0),
+             collider: Box(half: (0.2, 0.2, 0.2)), transform: (position: (0.0, 1.0, 0.0))),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let bucket = world.query::<(hecs::Entity, &crate::world::SceneId)>().iter().next().map(|(e, _)| e).unwrap();
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        assert!(!physics.set_carried_mass(&world, bucket, 3.0, Vec3::ZERO), "no body before the first step");
+        physics.run(&mut world);
+        assert!(physics.set_carried_mass(&world, bucket, 3.0, Vec3::new(0.0, -0.1, 0.0)));
+        physics.run(&mut world);
+        assert!((physics.mass(&world, bucket).unwrap() - 4.0).abs() < 1e-4);
+        let centre = physics.center_of_mass(&world, bucket).unwrap();
+        let y = world.get::<&Transform>(bucket).unwrap().position.y;
+        assert!((centre.y - (y - 0.075)).abs() < 1e-4, "(1·0 + 3·-0.1)/4 below its origin: {centre} at {y}");
+        physics.set_carried_mass(&world, bucket, 0.0, Vec3::ZERO);
+        physics.run(&mut world);
+        assert!((physics.mass(&world, bucket).unwrap() - 1.0).abs() < 1e-4);
     }
 
     #[test]
@@ -2485,7 +2806,7 @@ mod tests {
                     "ball",
                     from,
                     Body::Dynamic,
-                    ColliderShape::Sphere { radius: 0.5 },
+                    ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO },
                 ),
             ],
             ..Default::default()
@@ -2511,7 +2832,7 @@ mod tests {
                 "weed",
                 0.6,
                 Body::Dynamic,
-                ColliderShape::Sphere { radius: 0.5 },
+                ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO },
             );
             e.transform.position.x = x;
             let mut props = e.physics();
@@ -2627,7 +2948,7 @@ mod tests {
             }
             .with(crate::scene::ModelRef("m".into()))
             .with(Body::Dynamic)
-            .with(ColliderShape::Sphere { radius: 0.5 })],
+            .with(ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO })],
             ..Default::default()
         };
         let mut world = World::new();
@@ -2693,6 +3014,34 @@ mod tests {
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
         assert_eq!(physics.body_count(), 0);
+    }
+
+    #[test]
+    fn a_shape_sits_on_its_body_where_its_collider_is_built() {
+        let placed = glam::Mat4::from_scale_rotation_translation(
+            Vec3::new(1.5, 0.5, 2.0),
+            glam::Quat::from_rotation_y(0.7),
+            Vec3::new(3.0, 1.0, -2.0),
+        );
+        let center = Vec3::new(0.1, -0.2, 0.3);
+        for shape in [
+            ColliderShape::Box { half: Vec3::splat(0.5), center },
+            ColliderShape::Sphere { radius: 0.4, center },
+            ColliderShape::Capsule { half_height: 0.5, radius: 0.2, center, axis: 0 },
+            ColliderShape::Capsule { half_height: 0.5, radius: 0.2, center, axis: 1 },
+            ColliderShape::Capsule { half_height: 0.5, radius: 0.2, center, axis: 2 },
+            ColliderShape::Cylinder { half_height: 0.5, radius: 0.2 },
+            ColliderShape::Ramp { half: Vec3::splat(0.5) },
+            ColliderShape::Stairs { half: Vec3::splat(0.5), steps: 3 },
+        ] {
+            let built = *build_collider(shape, placed, None, true).unwrap().position();
+            let offset = shape_offset(shape, placed);
+            assert!(
+                (built.translation - offset.translation).length() < 1e-6
+                    && built.rotation.angle_between(offset.rotation) < 1e-6,
+                "{shape:?}: built at {built:?}, offset says {offset:?}"
+            );
+        }
     }
 
     #[test]
@@ -2871,7 +3220,7 @@ mod tests {
         let (mut physics, mut world, ball) = dropped(0.6);
         let before = *world.get::<&BodyHandle>(ball).unwrap();
         world
-            .insert_one(ball, Shape(ColliderShape::Sphere { radius: 2.0 }))
+            .insert_one(ball, Shape(ColliderShape::Sphere { radius: 2.0, center: Vec3::ZERO }))
             .unwrap();
         run_for(&mut physics, &mut world, 1);
         let after = *world.get::<&BodyHandle>(ball).unwrap();
@@ -2919,7 +3268,7 @@ mod tests {
                 half: Vec3::splat(0.5),
             },
             Vec3::new(4.0, 2.0, 4.0),
-            ColliderShape::Sphere { radius: 0.2 },
+            ColliderShape::Sphere { radius: 0.2, center: Vec3::ZERO },
             Vec3::new(0.0, 1.5, -1.0),
         );
         run_for(&mut physics, &mut world, 60);
@@ -2982,7 +3331,7 @@ mod tests {
             "ball",
             0.0,
             Body::Dynamic,
-            ColliderShape::Sphere { radius: 0.2 },
+            ColliderShape::Sphere { radius: 0.2, center: Vec3::ZERO },
         );
         ball.transform.position = Vec3::new(0.0, 1.5, -1.0);
         let scene = Scene {
@@ -3161,7 +3510,7 @@ mod tests {
                     "ball",
                     6.0,
                     Body::Dynamic,
-                    ColliderShape::Sphere { radius: 0.25 },
+                    ColliderShape::Sphere { radius: 0.25, center: Vec3::ZERO },
                 ),
             ],
             ..Default::default()
@@ -3182,6 +3531,7 @@ mod tests {
                 assert!(entered_at.is_none(), "entered once");
                 entered_at = Some(step);
                 assert_eq!(contacts.inside, [ball]);
+                assert_eq!(contacts.triggers, [ball], "through the trigger");
             }
             if contacts.left.contains(&ball) {
                 assert!(left_at.is_none(), "left once");
@@ -3249,6 +3599,10 @@ mod tests {
                 .inside
                 .contains(&platform),
             "resting on it"
+        );
+        assert!(
+            world.get::<&Contacts>(crate_).unwrap().triggers.is_empty(),
+            "a solid contact, not a trigger's"
         );
 
         // A lift: the game raises it two metres over two seconds.
@@ -3350,6 +3704,81 @@ mod tests {
     }
 
     #[test]
+    fn a_body_made_only_of_a_scaled_part_lands_on_the_floor() {
+        // The greybox shovel: a dynamic root with no collider of its own, a
+        // unit box under it scaled to a stick.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000a1", name: "floor", model: "m", body: Static,
+                 collider: Box(half: (5.0, 0.5, 5.0)), transform: (position: (0.0, -0.5, 0.0))),
+                (id: "00000000000000a2", name: "shovel", model: "m", body: Dynamic, physics: (mass: Some(3.0)),
+                 transform: (position: (0.0, 1.5, 0.0)), children: [
+                    (id: "00000000000000a3", name: "Mesh", model: "builtin:cube", body: Part,
+                     collider: Box(half: (0.5, 0.5, 0.5)), transform: (scale: (0.18, 0.18, 0.7))),
+                ]),
+            ])"#,
+        );
+        let shovel = by_id(&world, scene.entities[1].id);
+        run_for(&mut physics, &mut world, 120);
+        let y = world.get::<&WorldTransform>(shovel).unwrap().0.w_axis.y;
+        assert!(y > 0.0 && y < 0.2, "lies on the floor: {y}");
+    }
+
+    #[test]
+    fn a_body_whose_part_is_animated_falls_as_freely_as_any() {
+        // A seed packet: its fruit, a collider, bobs on an animated child;
+        // the packet falls all the same, its speed kept step to step.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "packet", model: "m", body: Dynamic,
+                 collider: Box(half: (0.18, 0.16, 0.18)), transform: (position: (0.0, 20.0, 0.0)), children: [
+                    (id: "00000000000000f2", name: "fruit", model: "m", body: Part,
+                     collider: Sphere(radius: 0.1), transform: (position: (0.0, 0.3, 0.0))),
+                ]),
+            ])"#,
+        );
+        let packet = by_id(&world, scene.entities[0].id);
+        let fruit = by_id(&world, crate::id::EntityId::from_raw(0xf2));
+        run_for(&mut physics, &mut world, 1);
+        let start = world.get::<&WorldTransform>(packet).unwrap().0.w_axis.y;
+        for i in 0..30 {
+            world.get::<&mut Transform>(fruit).unwrap().position.y = 0.3 + 0.05 * (i as f32 * 0.7).sin();
+            run_for(&mut physics, &mut world, 1);
+        }
+        let fell = start - world.get::<&WorldTransform>(packet).unwrap().0.w_axis.y;
+        // Half a second of free fall is 1.2 m; rebuilt every step it was
+        // a few centimetres.
+        assert!(fell > 1.0, "fell {fell} m in half a second");
+    }
+
+    #[test]
+    fn a_rope_hung_on_a_shapeless_anchor_follows_what_carries_it() {
+        // A mouse's tail: a segment on a ball joint to a kinematic anchor
+        // that has no collider, under the mouse, which moves.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000e1", name: "mouse", model: "m", transform: (position: (0.0, 2.0, 0.0)), children: [
+                    (id: "00000000000000e2", name: "anchor", model: "m", body: Kinematic, physics: (gravity: 0.0)),
+                ]),
+                (id: "00000000000000e3", name: "segment", model: "m", body: Dynamic,
+                 collider: Sphere(radius: 0.05), physics: (mass: 0.001),
+                 transform: (position: (0.0, 1.7, 0.0)),
+                 joint: Ball(to: "00000000000000e2")),
+            ])"#,
+        );
+        let mouse = by_id(&world, scene.entities[0].id);
+        let segment = by_id(&world, scene.entities[1].id);
+        run_for(&mut physics, &mut world, 10);
+        assert!(world.get::<&JointBuilt>(segment).is_ok(), "hung on the anchor");
+        for _ in 0..60 {
+            world.get::<&mut Transform>(mouse).unwrap().position.x += 0.05;
+            run_for(&mut physics, &mut world, 1);
+        }
+        let at = world.get::<&WorldTransform>(segment).unwrap().0.w_axis.truncate();
+        assert!(at.x > 2.0 && (at - Vec3::new(3.0, 2.0, 0.0)).length() < 0.6, "dragged along: {at:?}");
+    }
+
+    #[test]
     fn a_joint_pulled_past_its_break_force_breaks_once_and_says_so() {
         // A heavy block hanging from the world on a weak fixed joint.
         let (mut physics, mut world, scene) = scene_world(
@@ -3408,6 +3837,7 @@ mod tests {
             anchor: Vec3::ZERO,
             stiffness: 400.0,
             damping: 20.0,
+            connected: None,
         };
         run_for(&mut physics, &mut world, 1);
         assert_eq!(
@@ -3555,6 +3985,172 @@ mod tests {
         run_for(&mut physics, &mut world, 240);
         let door = turned(&world, "d2").abs();
         assert!((door - 45.0).abs() < 6.0, "held at 45°: {door}");
+    }
+
+    /// A hinge on a moving kinematic body (a lever on the train) rides
+    /// with it, held upright by its spring, as in Unity's PhysX. rapier 0.26
+    /// dragged it back as if by wind: it put the kinematic end of a joint
+    /// where the body stood at the start of the step and never moved it
+    /// over the substeps, so the joint pulled the lever toward where the
+    /// train had been, and Dacha's train lever took three seconds to
+    /// return to centre instead of half a second. rapier 0.36 solves a
+    /// kinematic body with the rest; this keeps it so.
+    #[test]
+    fn a_lever_on_a_moving_kinematic_body_is_not_dragged() {
+        let (_, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f0", name: "train", model: "m", body: Kinematic,
+                 collider: Box(half: (1.0, 0.1, 3.0)), transform: (position: (0.0, 1.0, 0.0))),
+                (id: "00000000000000f1", name: "lever", model: "m", body: Dynamic,
+                 collider: Box(half: (0.05, 0.5, 0.05)), transform: (position: (0.0, 2.0, 0.0)),
+                 physics: (gravity: 0.0, mass: Some(1.0)),
+                 joint: Hinge(to: "00000000000000f0", anchor: (0.0, -0.5, 0.0), axis: (-1.0, 0.0, 0.0),
+                              motor: (hold: 0.0, strength: 100.0, damping: 10.0))),
+            ])"#,
+        );
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        let lever = by_id(&world, "00000000000000f1".parse().unwrap());
+        let train = by_id(&world, "00000000000000f0".parse().unwrap());
+        // Up to speed gently, then two seconds at 9 m/s.
+        let (mut z, mut v) = (0.0f32, 0.0f32);
+        for _ in 0..120 {
+            v = (v + 3.0 / 30.0).min(9.0);
+            z -= v / 30.0;
+            world.get::<&mut Transform>(train).unwrap().position.z = z;
+            run_for(&mut physics, &mut world, 1);
+        }
+        let angle = physics.hinge_angle(&world, lever).unwrap();
+        assert!(angle.abs() < 2.0, "a spring holding it upright on a steady train: {angle}°");
+    }
+
+    #[test]
+    fn a_turned_body_keeps_moving() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000c1", name: "crate", model: "m", body: Dynamic,
+                 collider: Box(half: (0.5, 0.5, 0.5)), transform: (position: (0.0, 5.0, 0.0)),
+                 physics: (gravity: 0.0)),
+            ])"#,
+        );
+        let crate_ = by_id(&world, "00000000000000c1".parse().unwrap());
+        run_for(&mut physics, &mut world, 1);
+        physics.set_velocity(&world, crate_, Vec3::new(3.0, 0.0, 0.0));
+        let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(physics.turn(&mut world, crate_, quarter));
+        run_for(&mut physics, &mut world, 10);
+        let t = *world.get::<&Transform>(crate_).unwrap();
+        assert!(t.rotation().angle_between(quarter) < 1e-3, "turned: {:?}", t.rotation());
+        assert!((t.position.x - 0.5).abs() < 0.05, "still going: {}", t.position.x);
+    }
+
+    /// `ground` standing still as a mesh (scaled by `scale`) and `thing`
+    /// over it, its mesh `thing_mesh` if it is a model: their world and the
+    /// thing, stepped at 30 Hz as the game steps.
+    fn on_mesh(
+        ground: CollisionMesh,
+        scale: Vec3,
+        thing: EntityDesc,
+        thing_mesh: Option<CollisionMesh>,
+    ) -> (PhysicsWorld, World, hecs::Entity) {
+        let mut floor = entity("ground", 0.0, Body::Static, ColliderShape::Model);
+        floor.transform.scale = scale;
+        let mut scene = Scene { entities: vec![floor, thing], ..Default::default() };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let (floor, thing) = (by_id(&world, scene.entities[0].id), by_id(&world, scene.entities[1].id));
+        let _ = world.insert_one(floor, ground);
+        if let Some(mesh) = thing_mesh {
+            let _ = world.insert_one(thing, mesh);
+        }
+        (PhysicsWorld::new(1.0 / 30.0), world, thing)
+    }
+
+    /// A grid of 1 m squares, each two triangles facing up, its height at
+    /// (x, z) `height(x, z)`.
+    fn ground_mesh(cells: i32, height: impl Fn(f32, f32) -> f32) -> CollisionMesh {
+        let side = cells + 1;
+        let vertices = (0..side * side).map(|k| {
+            let (x, z) = ((k % side - cells / 2) as f32, (k / side - cells / 2) as f32);
+            Vec3::new(x, height(x, z), z)
+        });
+        let indices = (0..cells * cells).flat_map(|k| {
+            let (i, j) = (k % cells, k / cells);
+            let a = (j * side + i) as u32;
+            let (b, c, d) = (a + 1, a + side as u32, a + side as u32 + 1);
+            [a, c, b, b, c, d]
+        });
+        CollisionMesh::from_parts(vertices, indices)
+    }
+
+    /// A mine, round and flat, lands on a slope of mesh ground and lies on
+    /// it — on the whole of its round bottom, not tipped over the side of
+    /// it parry would stand on, and not into the mesh and through.
+    #[test]
+    fn a_disc_lands_flat_on_a_slope_of_mesh_ground() {
+        let slope = |x: f32, _z: f32| 0.2 * x;
+        let rim: Vec<Vec3> = (0..24)
+            .flat_map(|i| {
+                let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                [Vec3::new(0.39 * a.cos(), -0.06, 0.39 * a.sin()), Vec3::new(0.39 * a.cos(), 0.06, 0.39 * a.sin())]
+            })
+            .collect();
+        let disc = CollisionMesh::from_parts(rim.into_iter(), std::iter::empty());
+        let mut mine = entity("mine", 0.0, Body::Dynamic, ColliderShape::Model);
+        mine.transform.position = Vec3::new(0.3, 1.0, 0.2);
+        let (mut physics, mut world, mine) = on_mesh(ground_mesh(8, slope), Vec3::ONE, mine, Some(disc));
+        run_for(&mut physics, &mut world, 90);
+        let placed = world.get::<&WorldTransform>(mine).unwrap().0;
+        let at = placed.w_axis.truncate();
+        let up = placed.transform_vector3(Vec3::Y).normalize();
+        let normal = Vec3::new(-0.2, 1.0, 0.0).normalize();
+        let above = (at - Vec3::new(at.x, slope(at.x, at.z), at.z)).dot(normal);
+        assert!((above - 0.06).abs() < 0.02, "lying on the ground: {above} above it, at {at}");
+        assert!(up.angle_between(normal).to_degrees() < 2.0, "flat on the slope: up {up}");
+    }
+
+    /// Ground mirrored by its scale still faces up: a ball lands on it.
+    #[test]
+    fn a_ball_lands_on_mesh_ground_its_scale_mirrors() {
+        let ball = entity("ball", 2.0, Body::Dynamic, ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO });
+        let (mut physics, mut world, ball) = on_mesh(ground_mesh(4, |_, _| 0.0), Vec3::new(-1.0, 1.0, 1.0), ball, None);
+        run_for(&mut physics, &mut world, 60);
+        let y = world.get::<&WorldTransform>(ball).unwrap().0.w_axis.y;
+        assert!((y - 0.5).abs() < 0.05, "on the ground: y {y}");
+    }
+
+    /// Two links of a rope on a ball joint, unswept, stood on end and
+    /// dropped a metre onto the floor: they land and stay, as Unity's
+    /// (Discrete) links do. Swept, rapier stops the lower link at the floor
+    /// mid-step and not the upper, and the joint flings both back up.
+    #[test]
+    fn unswept_links_dropped_on_end_land_without_a_bounce() {
+        let (_, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f0", name: "floor", body: Static, collider: Box(half: (10.0, 0.5, 10.0)), transform: (position: (0.0, -0.5, 0.0))),
+                (id: "00000000000000f1", name: "upper", body: Dynamic, collider: Capsule(half_height: 0.4, radius: 0.1),
+                 physics: (mass: Some(0.4), unswept: true), transform: (position: (0.0, 2.5, 0.0), rotation_deg: (180.0, 0.0, 0.0))),
+                (id: "00000000000000f2", name: "lower", body: Dynamic, collider: Capsule(half_height: 0.4, radius: 0.1),
+                 physics: (mass: Some(0.4), unswept: true), transform: (position: (0.0, 1.5, 0.0), rotation_deg: (180.0, 0.0, 0.0)),
+                 joint: Ball(to: "00000000000000f1", anchor: (0.0, -0.5, 0.0), connected: (0.0, 0.5, 0.0))),
+            ])"#,
+        );
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.set_solver_iterations(16);
+        let (upper, lower) = (by_id(&world, scene.entities[1].id), by_id(&world, scene.entities[2].id));
+        physics.ignore_collision(upper, lower, true);
+        let mut highest_after_landing = f32::MIN;
+        let mut landed = false;
+        for _ in 0..45 {
+            run_for(&mut physics, &mut world, 1);
+            let y = world.get::<&WorldTransform>(lower).unwrap().0.w_axis.y;
+            landed |= y < 0.6;
+            if landed {
+                highest_after_landing = highest_after_landing.max(y);
+            }
+        }
+        assert!(landed, "it fell");
+        assert!(highest_after_landing < 0.75, "no bounce: the lower link rose to {highest_after_landing}");
     }
 
     #[test]
@@ -3790,8 +4386,11 @@ mod tests {
         );
         assert!((y(balloon) - 50.0).abs() < 1e-3, "floats: {}", y(balloon));
 
-        // A stone thrown at 300 m/s at a thin wall: without `fast` it is
-        // past the wall between two steps; with it, it stops there.
+        // A stone thrown at 300 m/s at a thin wall stops there, `fast` or
+        // not: every dynamic body is swept between steps, so a shovel's
+        // stick does not fall through a mesh ground either. (Unity's
+        // discrete bodies would let the stone through; nothing in a game
+        // wants that, and a stick through the sand is what it cost.)
         let throw = |fast: bool| {
             let (mut physics, mut world, scene) = scene_world(&format!(
                 r#"(entities: [
@@ -3807,12 +4406,12 @@ mod tests {
                 .bodies
                 .get_mut(handle)
                 .unwrap()
-                .set_linvel(vector![300.0, 0.0, 0.0], true);
+                .set_linvel(Vector::new(300.0, 0.0, 0.0), true);
             run_for(&mut physics, &mut world, 10);
             let x = world.get::<&WorldTransform>(stone).unwrap().0.w_axis.x;
             x
         };
-        assert!(throw(false) > 0.5, "tunnelled: {}", throw(false));
+        assert!(throw(false) < 0.0, "stopped at the wall: {}", throw(false));
         assert!(throw(true) < 0.0, "stopped at the wall: {}", throw(true));
     }
 
@@ -3940,3 +4539,4 @@ impl crate::world::Dress for PhysicsDress {
         }
     }
 }
+

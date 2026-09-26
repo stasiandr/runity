@@ -59,6 +59,8 @@ fn a_lamp_lights_the_fog_round_it_and_the_fog_dims_what_is_far() {
         clear_color: Vec3::ZERO,
         // A lamp hanging in the air to the right, nothing near it to light.
         lights: vec![PointLight {
+            falloff: Default::default(),
+            inner_cone: None,
             position: Vec3::new(1.2, 0.0, -4.0),
             color: Vec3::splat(4.0),
             range: 4.0,

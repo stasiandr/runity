@@ -480,6 +480,35 @@ impl LiveScene {
         })
     }
 
+    /// Upload what was spawned without a GPU since — a prefab put down in
+    /// a fixed step, which runs apart from the renderer: each model's mesh
+    /// in place of its stand-in, and the maps of its materials. Call it
+    /// with the frame, which has the GPU.
+    pub fn upload_pending(&mut self, world: &mut World, gpu: &Gpu, renderer: &mut Renderer) {
+        let pending: Vec<(hecs::Entity, crate::AssetLink)> = world
+            .query::<(hecs::Entity, &crate::appearance::MeshPending)>()
+            .iter()
+            .map(|(e, p)| (e, p.0.clone()))
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        let library = self.library.as_ref();
+        let mut resolve = resolver(&mut self.meshes, library, gpu, renderer);
+        for (entity, link) in &pending {
+            if let Some(mesh) = resolve(link) {
+                if let Ok(mut model) = world.get::<&mut crate::world::Model>(*entity) {
+                    model.0 = mesh;
+                }
+            }
+            let _ = world.remove_one::<crate::appearance::MeshPending>(*entity);
+        }
+        drop(resolve);
+        for problem in crate::world::upload_material_maps(world, self.library.as_ref(), gpu, renderer) {
+            eprintln!("{problem}");
+        }
+    }
+
     /// [`Self::spawn_prefab`] without a GPU — for a test, a server, a
     /// headless run: every model resolves to a placeholder handle, as
     /// [`Self::spawn_headless`] does for a scene.
@@ -526,9 +555,17 @@ impl LiveScene {
                 .unwrap_or_default();
             return Err(format!("no prefab named `{name}` in prefabs/{hint}"));
         }
+        // Named as its prefab's root is, as Unity names what it
+        // instantiates: a prefab's file may be called apart from others
+        // (`Organic_MouseDefault`) while the thing is a `MouseDefault`.
+        let root_name = prefabs
+            .get(name)
+            .map(|p| p.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| name.to_string());
         let instance = crate::EntityDesc {
             id: crate::EntityId::fresh(),
-            name: name.to_string(),
+            name: root_name,
             prefab: name.into(),
             transform,
             ..crate::EntityDesc::default()

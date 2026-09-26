@@ -7,6 +7,10 @@
 //! committed text is asked for once per commit and scene; comparing the
 //! document with it is the session's (`Session::changed_since`) and runs
 //! when the document changes.
+//!
+//! The same asking brings the whole status — branch, how far from its
+//! upstream, a merge under way, each file — and `HEAD`, for the Git tab:
+//! it redraws when either changes, never polling git itself.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -22,7 +26,8 @@ const EVERY: Duration = Duration::from_secs(2);
 
 /// What one asking found.
 struct Found {
-    files: HashSet<PathBuf>,
+    status: history::Status,
+    head: String,
     /// The scene and commit the text is of, and the text (`None`: the scene
     /// is not in that commit). Absent when the cached one still holds.
     committed: Option<(PathBuf, String, Option<String>)>,
@@ -33,6 +38,12 @@ pub struct GitMarks {
     asked: Option<Instant>,
     /// Files not as committed, absolute.
     pub files: HashSet<PathBuf>,
+    /// The last status git gave, and the commit `HEAD` named then.
+    pub status: Option<history::Status>,
+    pub head: String,
+    /// Counts up each time the status or `HEAD` changes: the Git tab
+    /// redraws when it has not seen this one.
+    pub generation: u64,
     committed: Option<(PathBuf, String, Option<String>)>,
     /// Entities of the open document not as committed.
     pub entities: HashSet<EntityId>,
@@ -48,11 +59,20 @@ impl GitMarks {
             asking: None,
             asked: None,
             files: HashSet::new(),
+            status: None,
+            head: String::new(),
+            generation: 0,
             committed: None,
             entities: HashSet::new(),
             compared: None,
             known: false,
         }
+    }
+
+    /// Ask git at the next poll rather than when it is time: something
+    /// here changed the repository, a commit.
+    pub fn ask_soon(&mut self) {
+        self.asked = None;
     }
 
     /// Ask git again when it is time, take its answer when it has come,
@@ -66,9 +86,16 @@ impl GitMarks {
                     self.asking = None;
                     match found {
                         Some(found) => {
-                            if found.files != self.files {
-                                self.files = found.files;
+                            let files: HashSet<PathBuf> =
+                                found.status.files.iter().map(|f| f.path.clone()).collect();
+                            if files != self.files {
+                                self.files = files;
                                 changed = true;
+                            }
+                            if self.status.as_ref() != Some(&found.status) || found.head != self.head {
+                                self.status = Some(found.status);
+                                self.head = found.head;
+                                self.generation += 1;
                             }
                             if found.committed.is_some() {
                                 self.committed = found.committed;
@@ -82,6 +109,9 @@ impl GitMarks {
                             self.files.clear();
                             self.entities.clear();
                             self.committed = None;
+                            if self.status.take().is_some() {
+                                self.generation += 1;
+                            }
                             self.known = false;
                         }
                     }
@@ -135,14 +165,18 @@ fn ask(
     scene: Option<PathBuf>,
     cached: Option<(PathBuf, String)>,
 ) -> Option<Found> {
-    let files = history::uncommitted(root).ok()?;
+    let status = history::status(root).ok()?;
     let head = history::head(root).unwrap_or_default();
     let committed = scene.and_then(|scene| {
         if cached.as_ref() == Some(&(scene.clone(), head.clone())) {
             return None;
         }
         let text = history::show(&scene, "HEAD").ok();
-        Some((scene, head, text))
+        Some((scene, head.clone(), text))
     });
-    Some(Found { files, committed })
+    Some(Found {
+        status,
+        head,
+        committed,
+    })
 }

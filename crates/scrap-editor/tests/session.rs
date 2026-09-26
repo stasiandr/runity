@@ -1484,11 +1484,108 @@ fn a_merge_conflict_is_listed_with_its_values_and_settled_theirs_way() {
     let pine = id(&session, "pine");
     assert_eq!(session.transform(pine).unwrap().position.x, 5.0);
 
+    use scrap::merge::Side;
+    assert_eq!(session.conflict_sides(), [Some(Side::Ours)]);
     session.take_theirs(0).unwrap();
     let now = session.transform(pine).unwrap().position;
     assert_eq!((now.x, now.z), (0.0, 9.0), "theirs, taken");
+    assert_eq!(session.conflict_sides(), [Some(Side::Theirs)]);
     assert!(session.undo().unwrap(), "one step");
     assert_eq!(session.transform(pine).unwrap().position.x, 5.0);
+
+    // Theirs, then ours again: back to the merge's choice.
+    session.take_theirs(0).unwrap();
+    session.take_ours(0).unwrap();
+    assert_eq!(session.transform(pine).unwrap().position.x, 5.0);
+    assert_eq!(session.conflict_sides(), [Some(Side::Ours)]);
+
+    // Settled, saved, told to git, committed: the merge is over.
+    session.take_theirs(0).unwrap();
+    assert!(session.mark_resolved().is_err(), "unsaved edits are refused");
+    session.save_scene(None).unwrap();
+    let status = session.git_status().unwrap();
+    assert!(status.merging);
+    assert!(status.files.iter().any(|f| f.conflicted()), "{status:?}");
+    session.mark_resolved().unwrap();
+    let files: Vec<_> = session
+        .git_status()
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    session.commit(&files, "merge theirs").unwrap();
+    let status = session.git_status().unwrap();
+    assert!(!status.merging && status.files.is_empty(), "{status:?}");
+}
+
+#[test]
+fn the_git_tab_commits_chosen_files_and_says_what_a_commit_changed() {
+    let Some((mut session, path)) = open("commit") else {
+        return;
+    };
+    let root = root_of(&path);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q", "-b", "main"]) {
+        eprintln!("skipping: no git");
+        return;
+    }
+    git(&["config", "user.email", "a@scrap"]);
+    git(&["config", "user.name", "Ada"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "start"]);
+
+    let status = session.git_status().unwrap();
+    assert_eq!(status.branch.as_deref(), Some("main"));
+    assert!(status.files.is_empty(), "{status:?}");
+
+    let crate_id = id(&session, "crate");
+    session
+        .set_transform(crate_id, transform([6.0, 0.5, 0.0], [0.0; 3], [1.0; 3]))
+        .unwrap();
+    let scene = session.scene_path().unwrap().to_path_buf();
+    let err = session.commit(&[scene.clone()], "move it").unwrap_err();
+    assert!(err.to_string().contains("unsaved"), "{err}");
+    session.save_scene(None).unwrap();
+    std::fs::write(root.join("notes.txt"), "not this one").unwrap();
+
+    let status = session.git_status().unwrap();
+    let letters: Vec<(char, bool)> = status
+        .files
+        .iter()
+        .map(|f| (f.letter(), f.name.ends_with("notes.txt")))
+        .collect();
+    assert_eq!(letters.len(), 2, "{status:?}");
+    assert!(letters.contains(&('A', true)) && letters.contains(&('M', false)));
+    assert!(session.commit(&[scene.clone()], "  ").is_err(), "a message is needed");
+
+    let short = session.commit(&[scene.clone()], "move the crate").unwrap();
+    let status = session.git_status().unwrap();
+    assert_eq!(status.files.len(), 1, "only the chosen file went: {status:?}");
+    assert!(status.files[0].name.ends_with("notes.txt"));
+
+    let project = session.project_history(10).unwrap();
+    assert_eq!(project[0].summary, "move the crate");
+    assert!(project[0].commit.starts_with(&short));
+    assert!(project[0].when > 0);
+
+    let changes = session.commit_changes(&project[0].commit).unwrap();
+    assert_eq!(changes.files.len(), 1, "{changes:?}");
+    assert_eq!(changes.scene.len(), 1, "{changes:?}");
+    assert!(changes.scene[0].is_field(Some(crate_id), "its position"));
+    // The first commit: everything added, against nothing.
+    let first = session.commit_changes(&project[1].commit).unwrap();
+    assert!(first
+        .scene
+        .iter()
+        .all(|c| matches!(c, scrap::merge::Change::Added { .. })));
 }
 
 #[test]
@@ -5908,15 +6005,15 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
         return;
     };
     let root = root_of(&path);
-    let file = root.join("tuning/enemies.ron");
+    let file = root.join("configs/enemies.ron");
     let text = "// Who the player meets.\n{\n    \"goblin\": (hp: 10, speed: 2.5), // small\n    \"orc\": (hp: 30),\n}\n";
     std::fs::write(&file, text).unwrap();
     assert!(session
         .table_sources()
-        .contains(&"tuning/enemies.ron".to_string()));
+        .contains(&"configs/enemies.ron".to_string()));
 
     // Before the game says what it reads: the fields the records write.
-    let table = session.table("tuning/enemies.ron").unwrap();
+    let table = session.table("configs/enemies.ron").unwrap();
     let columns: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(columns, ["hp", "speed"]);
     let rows: Vec<(&str, Vec<String>)> = table
@@ -5934,7 +6031,7 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
 
     // One cell: that number changes, the comments and the rest stay.
     session
-        .set_cell("tuning/enemies.ron", "orc", "hp", "35")
+        .set_cell("configs/enemies.ron", "orc", "hp", "35")
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
@@ -5954,15 +6051,15 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
     components
         .write_shapes(root.join(scrap::project::SHAPES))
         .unwrap();
-    let table = session.table("tuning/enemies").unwrap();
+    let table = session.table("configs/enemies").unwrap();
     assert_eq!(table.columns[0].shape, "whole number");
     let e = session
-        .set_cell("tuning/enemies.ron", "orc", "hpp", "1")
+        .set_cell("configs/enemies.ron", "orc", "hpp", "1")
         .unwrap_err()
         .to_string();
     assert!(e.contains("did you mean `hp`?"), "{e}");
     let e = session
-        .set_cell("tuning/enemies.ron", "orc", "hp", "\"lots\"")
+        .set_cell("configs/enemies.ron", "orc", "hp", "\"lots\"")
         .unwrap_err()
         .to_string();
     assert!(e.contains("whole number"), "{e}");
@@ -5971,7 +6068,7 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
     // A column for several rows at once, as one step back.
     session
         .set_cells(
-            "tuning/enemies.ron",
+            "configs/enemies.ron",
             &["goblin".into(), "orc".into()],
             "speed",
             "3.0",
@@ -5989,7 +6086,7 @@ fn a_tuning_file_of_records_is_a_table_whose_cells_change_only_themselves() {
 
     // A record that does not fit says so on its row.
     std::fs::write(&file, "{ \"orc\": (hp: 30, sped: 1.0) }").unwrap();
-    let table = session.table("tuning/enemies.ron").unwrap();
+    let table = session.table("configs/enemies.ron").unwrap();
     assert!(
         table.rows[0].problems[0].contains("did you mean `speed`?"),
         "{table:?}"

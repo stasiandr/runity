@@ -52,6 +52,9 @@ pub enum Holds {
     EntityRef,
     /// An entity by its bare id: a joint's `to: "4f1c…"`.
     EntityId,
+    /// A record of one of the game's tables, `kind` its type: `("Доска",
+    /// "02f9…")` (docs/data.md).
+    Record,
 }
 
 /// An object field: where it writes, what it takes, and how the value
@@ -142,6 +145,16 @@ impl ObjectRef {
             Holds::AssetId => tree::quote(if key.is_empty() { "0" } else { key }),
             Holds::EntityRef => format!("{}({})", scrap::EntityRef::NAME, tree::quote(key)),
             Holds::EntityId => tree::quote(if key.is_empty() { "0" } else { key }),
+            Holds::Record => {
+                let id = session
+                    .project()
+                    .and_then(|p| scrap_editor::configs::index(p.root()).id_of(&self.kind, key));
+                match id {
+                    Some(id) => scrap::ron::to_string(&scrap::Link::<()>::to(key, id))
+                        .unwrap_or_else(|_| tree::quote(key)),
+                    None => tree::quote(key),
+                }
+            }
         }
     }
 }
@@ -291,6 +304,18 @@ impl Inspector {
                         None => found(Some(format!("missing {}", id.as_hex())), true),
                     },
                 }
+            }
+            Holds::Record => {
+                let name = linked_name(text);
+                let missing = name.as_deref().is_some_and(|n| {
+                    !n.is_empty()
+                        && session.project().is_some_and(|p| {
+                            scrap_editor::configs::index(p.root())
+                                .id_of(&target.kind, n)
+                                .is_none()
+                        })
+                });
+                found(name, missing)
             }
             Holds::EntityRef | Holds::EntityId => {
                 let id = id_text(text).and_then(|t| t.parse::<EntityId>().ok());
@@ -453,6 +478,12 @@ impl Inspector {
                     note: c.path,
                 })
                 .collect(),
+            (Holds::Record, kind) => named(
+                session
+                    .project()
+                    .map(|p| scrap_editor::configs::index(p.root()).names(kind))
+                    .unwrap_or_default(),
+            ),
             (Holds::AssetId, kind) => session
                 .asset_ids_of_kind(kind)
                 .into_iter()

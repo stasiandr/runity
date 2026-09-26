@@ -46,6 +46,8 @@ fn behind_the_wall(gpu: &Gpu, rays: scrap::ray::RayTracing) -> u32 {
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::ZERO,
         lights: vec![PointLight {
+            falloff: Default::default(),
+            inner_cone: None,
             position: Vec3::new(-1.0, 0.5, 0.0),
             color: Vec3::splat(3.0),
             range: 8.0,
@@ -380,6 +382,8 @@ fn a_wall_shadows_the_mist_behind_it_only_with_rays() {
                 ..Default::default()
             },
             lights: vec![PointLight {
+                falloff: Default::default(),
+                inner_cone: None,
                 position: Vec3::new(-1.0, 1.0, 0.0),
                 color: Vec3::splat(4.0),
                 range: 8.0,

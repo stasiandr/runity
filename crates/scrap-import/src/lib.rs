@@ -107,6 +107,20 @@ pub struct ImportSettings {
     /// Blender's in Blender.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub materials: BTreeMap<String, String>,
+    /// An image whose shape is in one of its colours, not its alpha: that
+    /// colour copied into the alpha on the way in. A grass card whose
+    /// blade is its green is cut by it everywhere the alpha cuts — the
+    /// shadow pass too, which runs no material's own shader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_from: Option<ColourChannel>,
+}
+
+/// One of an image's colour channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColourChannel {
+    Red,
+    Green,
+    Blue,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -127,6 +141,7 @@ impl Default for ImportSettings {
             scene: false,
             parts: BTreeMap::new(),
             materials: BTreeMap::new(),
+            alpha_from: None,
         }
     }
 }
@@ -361,6 +376,7 @@ pub fn mesh_from_obj(path: impl AsRef<Path>, settings: &ImportSettings) -> Resul
         submeshes,
         // OBJ has no concept of a skeleton.
         skin: None,
+        colors: Vec::new(),
         look: None,
     })
 }
@@ -434,6 +450,8 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     let mut submeshes: Vec<Submesh> = Vec::new();
     let mut joint_indices: Vec<[u16; 4]> = Vec::new();
     let mut joint_weights: Vec<[f32; 4]> = Vec::new();
+    // Each vertex's painted colour, white where its primitive has none.
+    let mut colors: Vec<[u8; 4]> = Vec::new();
 
     // Walked through the scene graph rather than over `document.meshes()`,
     // because a node carries the transform that places its mesh. Reading the
@@ -449,10 +467,20 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                 .collect()
         });
 
+    // Where a skinned mesh's vertices are, at rest: glTF ignores the
+    // transform of the node that carries a skinned mesh — its joints place
+    // it — so its vertices go where its joints at rest and their inverse
+    // binds put them, not under that node (which, from Blender, is often
+    // the Armature at a hundredth scale).
+    let bind = bind_space(&document, &buffers);
     while let Some((node, parent)) = stack.pop() {
         let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
         let world = parent * local;
-        let normal_matrix = glam::Mat3::from_mat4(world).inverse().transpose();
+        let placed = match (node.skin().is_some(), bind) {
+            (true, Some(bind)) => bind,
+            _ => world,
+        };
+        let normal_matrix = glam::Mat3::from_mat4(placed).inverse().transpose();
 
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
@@ -481,6 +509,14 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                     reader.read_joints(0).map(|j| j.into_u16().collect());
                 let skin_weights: Option<Vec<[f32; 4]>> =
                     reader.read_weights(0).map(|w| w.into_f32().collect());
+                // COLOR_0 as the file has it, in bytes as Unity keeps a
+                // mesh's colours (rounded, as it rounds them): no curve
+                // either way.
+                let painted_colors: Option<Vec<[u8; 4]>> = reader.read_colors(0).map(|c| {
+                    c.into_rgba_f32()
+                        .map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
+                        .collect()
+                });
 
                 let base = vertices.len() as u32;
                 for (i, position) in positions.iter().enumerate() {
@@ -502,8 +538,15 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                             // is.
                             .unwrap_or([1.0, 0.0, 0.0, 0.0]),
                     );
+                    colors.push(
+                        painted_colors
+                            .as_ref()
+                            .and_then(|c| c.get(i))
+                            .copied()
+                            .unwrap_or([255; 4]),
+                    );
                     let p =
-                        world.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
+                        placed.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
                     let n = normals
                         .as_ref()
                         .and_then(|n| n.get(i))
@@ -551,7 +594,12 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         }
     }
 
-    let skin = read_skin(&document, &buffers, joint_indices, joint_weights);
+    // A mesh painted all white — or not painted — keeps no colours: it
+    // reads as white all the same, and costs nothing.
+    if colors.iter().all(|c| *c == [255; 4]) {
+        colors.clear();
+    }
+    let skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
     let look = if settings.keep_uvs {
         None
     } else {
@@ -569,8 +617,52 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         indices,
         submeshes,
         skin,
+        colors,
         look,
     })
+}
+
+/// Every node's place in the file's world: its ancestors' transforms and
+/// its own.
+fn node_globals(document: &gltf::Document) -> Vec<glam::Mat4> {
+    let mut parent_of = vec![None; document.nodes().len()];
+    for node in document.nodes() {
+        for child in node.children() {
+            parent_of[child.index()] = Some(node.index());
+        }
+    }
+    let locals: Vec<glam::Mat4> = document
+        .nodes()
+        .map(|n| glam::Mat4::from_cols_array_2d(&n.transform().matrix()))
+        .collect();
+    (0..locals.len())
+        .map(|i| {
+            let mut m = locals[i];
+            let mut at = parent_of[i];
+            // A file whose parents loop is broken; stop rather than spin.
+            let mut steps = 0;
+            while let (Some(p), true) = (at, steps < locals.len()) {
+                m = locals[p] * m;
+                at = parent_of[p];
+                steps += 1;
+            }
+            m
+        })
+        .collect()
+}
+
+/// Where the first skin's mesh stands at rest, in the file's world: its
+/// first joint's place times that joint's inverse bind — the same for
+/// every joint of a well-made file.
+fn bind_space(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Option<glam::Mat4> {
+    let skin = document.skins().next()?;
+    let first = skin.joints().next()?;
+    let inverse = skin
+        .reader(|buffer| Some(&buffers[buffer.index()]))
+        .read_inverse_bind_matrices()
+        .and_then(|mut m| m.next())
+        .map_or(glam::Mat4::IDENTITY, |m| glam::Mat4::from_cols_array_2d(&m));
+    Some(node_globals(document)[first.index()] * inverse)
 }
 
 /// The skeleton and animations, if the file has any.
@@ -579,12 +671,17 @@ fn read_skin(
     buffers: &[gltf::buffer::Data],
     joints: Vec<[u16; 4]>,
     weights: Vec<[f32; 4]>,
+    bind: Option<glam::Mat4>,
 ) -> Option<MeshSkin> {
     let gltf_skin = document.skins().next()?;
     let reader = gltf_skin.reader(|buffer| Some(&buffers[buffer.index()]));
+    // The vertices were put in the bind space (see `bind_space`): each
+    // inverse bind takes them out of it first, so at rest a skin moves
+    // nothing.
+    let unplace = bind.map_or(glam::Mat4::IDENTITY, |b| b.inverse());
     let inverse_binds: Vec<[[f32; 4]; 4]> = reader
         .read_inverse_bind_matrices()
-        .map(|m| m.collect())
+        .map(|m| m.map(|m| (glam::Mat4::from_cols_array_2d(&m) * unplace).to_cols_array_2d()).collect())
         .unwrap_or_default();
 
     // A joint's parent is whichever node in the skin lists it as a child.
@@ -604,7 +701,7 @@ fn read_skin(
         }
     }
 
-    let skeleton = Skeleton {
+    let mut skeleton = Skeleton {
         joints: gltf_skin
             .joints()
             .enumerate()
@@ -628,6 +725,52 @@ fn read_skin(
             })
             .collect(),
     };
+
+    // What the skeleton hangs under without being part of it — Blender's
+    // `Armature` at a hundredth scale and a quarter turn, the Unity
+    // import's turn — is a joint too, the root's parent, which no clip
+    // moves: else a skeleton in centimetres is posed a hundred times too
+    // big. Put last, so no weight's joint index moves.
+    let mut parent_of = vec![None; document.nodes().len()];
+    for node in document.nodes() {
+        for child in node.children() {
+            parent_of[child.index()] = Some(node.index());
+        }
+    }
+    let above = |node: usize| {
+        let mut matrix = glam::Mat4::IDENTITY;
+        let mut at = parent_of[node];
+        while let Some(n) = at {
+            if node_indices.contains(&n) {
+                return None;
+            }
+            let local = document.nodes().nth(n).map(|n| n.transform().matrix()).unwrap_or(glam::Mat4::IDENTITY.to_cols_array_2d());
+            matrix = glam::Mat4::from_cols_array_2d(&local) * matrix;
+            at = parent_of[n];
+        }
+        Some(matrix)
+    };
+    let roots: Vec<usize> = (0..skeleton.joints.len()).filter(|i| skeleton.joints[*i].parent.is_none()).collect();
+    if let Some(carrier) = roots.first().and_then(|r| above(node_indices[*r])) {
+        if !carrier.abs_diff_eq(glam::Mat4::IDENTITY, 1e-6) && skeleton.joints.len() < u16::MAX as usize {
+            let slot = skeleton.joints.len() as u16;
+            let (scale, rotation, translation) = carrier.to_scale_rotation_translation();
+            skeleton.joints.push(Joint {
+                name: "(skeleton root)".into(),
+                parent: None,
+                // Nothing is weighted to it; bound where it stands.
+                inverse_bind: carrier.inverse().to_cols_array_2d(),
+                rest: PoseTransform {
+                    translation: translation.to_array(),
+                    rotation: rotation.to_array(),
+                    scale: scale.to_array(),
+                },
+            });
+            for r in roots {
+                skeleton.joints[r].parent = Some(slot);
+            }
+        }
+    }
 
     let clips = document
         .animations()
@@ -835,7 +978,13 @@ pub fn texture_from_image(
         .with_context(|| format!("{}", path.display()))?
         .to_rgba8();
     let (width, height) = image.dimensions();
-    let pixels = image.into_raw();
+    let mut pixels = image.into_raw();
+    if let Some(channel) = settings.alpha_from {
+        let from = channel as usize;
+        for texel in pixels.chunks_exact_mut(4) {
+            texel[3] = texel[from];
+        }
+    }
     let mips = build_mips(width, height, &pixels, settings.srgb);
     Ok(TextureAsset {
         id: settings.asset_id(),
@@ -2421,6 +2570,56 @@ f 1 4 3
         assert!(plain.look.is_none());
     }
 
+    /// A triangle whose COLOR_0 is `colors` (floats, as Blender writes a
+    /// float colour attribute), or none.
+    fn painted_triangle(dir: &Path, colors: Option<[[f32; 4]; 3]>) -> PathBuf {
+        let mut bin: Vec<u8> = Vec::new();
+        for p in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+            bin.extend(p.iter().flat_map(|f| f.to_le_bytes()));
+        }
+        let mut attributes = r#""POSITION": 0"#.to_string();
+        let mut accessors = r#"{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 0, 1]}"#.to_string();
+        let mut views = r#"{"buffer": 0, "byteOffset": 0, "byteLength": 36}"#.to_string();
+        if let Some(colors) = colors {
+            for c in colors {
+                bin.extend(c.iter().flat_map(|f| f.to_le_bytes()));
+            }
+            attributes += r#", "COLOR_0": 1"#;
+            accessors += r#", {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC4"}"#;
+            views += r#", {"buffer": 0, "byteOffset": 36, "byteLength": 48}"#;
+        }
+        std::fs::write(dir.join("triangle.bin"), &bin).unwrap();
+        let json = format!(
+            r#"{{"asset": {{"version": "2.0"}}, "scene": 0, "scenes": [{{"nodes": [0]}}], "nodes": [{{"mesh": 0}}],
+            "meshes": [{{"primitives": [{{"attributes": {{{attributes}}}}}]}}],
+            "accessors": [{accessors}], "bufferViews": [{views}],
+            "buffers": [{{"uri": "triangle.bin", "byteLength": {}}}]}}"#,
+            bin.len()
+        );
+        let path = dir.join("triangle.gltf");
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_gltf_keeps_the_colours_painted_on_its_vertices_as_the_file_has_them() {
+        let dir = temp("vertex-colours");
+        let source = painted_triangle(
+            &dir,
+            Some([[0.29, 0.0, 1.0, 1.0], [1.0, 0.5, 0.0, 1.0], [0.0, 0.0, 0.0, 0.25]]),
+        );
+        let settings = ImportSettings::for_source("triangle.gltf");
+        let mesh = mesh_from_gltf(&source, &settings).unwrap();
+        // As numbers, not bent through a curve: 0.29 is 74 of 255, not
+        // the 147 that 0.29 made sRGB would be.
+        assert_eq!(mesh.colors, vec![[74, 0, 255, 255], [255, 128, 0, 255], [0, 0, 0, 64]]);
+        // Unpainted, or painted all white: no colours kept.
+        let plain = mesh_from_gltf(painted_triangle(&dir, None), &settings).unwrap();
+        assert!(plain.colors.is_empty());
+        let white = mesh_from_gltf(painted_triangle(&dir, Some([[1.0; 4]; 3])), &settings).unwrap();
+        assert!(white.colors.is_empty(), "white everywhere is what no colours read as");
+    }
+
     #[test]
     fn an_unskinned_gltf_carries_no_skeleton_and_costs_nothing() {
         let settings = ImportSettings::for_source("floating_quad.gltf");
@@ -2477,6 +2676,26 @@ f 1 4 3
         assert_eq!(texture.pixels.len(), 16, "two by two, four bytes each");
         assert_eq!(texture.pixels[0], 255, "the red pixel is first");
         assert!(texture.srgb, "a colour map is sRGB unless told otherwise");
+    }
+
+    #[test]
+    fn a_shape_in_the_green_becomes_the_alpha_when_asked() {
+        let dir = temp("alpha-from");
+        let path = dir.join("blade.png");
+        let mut image = image::RgbImage::new(2, 1);
+        image.put_pixel(0, 0, image::Rgb([200, 255, 10]));
+        image.put_pixel(1, 0, image::Rgb([200, 0, 10]));
+        image.save(&path).unwrap();
+
+        let plain = texture_from_image(&path, &ImportSettings::for_source("blade.png")).unwrap();
+        assert_eq!((plain.pixels[3], plain.pixels[7]), (255, 255), "no alpha of its own: opaque");
+        let settings = ImportSettings {
+            alpha_from: Some(ColourChannel::Green),
+            ..ImportSettings::for_source("blade.png")
+        };
+        let cut = texture_from_image(&path, &settings).unwrap();
+        assert_eq!((cut.pixels[3], cut.pixels[7]), (255, 0), "the blade where green is, nothing where not");
+        assert_eq!(&cut.pixels[..3], &[200, 255, 10], "the colours stay");
     }
 
     #[test]

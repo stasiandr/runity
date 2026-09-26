@@ -273,6 +273,7 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
             indices: Vec::new(),
             submeshes: Vec::new(),
             skin: None,
+            colors: Vec::new(),
             look: None,
             bounds: scrap::Bounds::of(&[]),
         },

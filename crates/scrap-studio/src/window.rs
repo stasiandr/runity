@@ -21,10 +21,39 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::window::{Icon, Window, WindowId};
 
 use crate::native_menu::Chosen;
 use crate::studio::Studio;
+
+/// The editor's icon (`assets/icon`, drawn from `scrap.svg`), for the
+/// title bar and taskbar on Windows and Linux. macOS ignores it.
+fn window_icon() -> Option<Icon> {
+    let png = include_bytes!("../assets/icon/scrap-256.png");
+    let image = image::load_from_memory(png).ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
+/// The Dock's icon, for an editor started as a bare binary (`cargo run`);
+/// `Scrap.app` has it in its bundle already (`tools/studio-app.sh`).
+#[cfg(target_os = "macos")]
+fn dock_icon() {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../assets/icon/scrap.icns"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn dock_icon() {}
 
 struct Running {
     window: Arc<Window>,
@@ -170,7 +199,9 @@ impl ApplicationHandler<Chosen> for App {
         };
         let attrs = Window::default_attributes()
             .with_title(title)
-            .with_inner_size(LogicalSize::new(1440.0, 900.0));
+            .with_inner_size(LogicalSize::new(1440.0, 900.0))
+            .with_window_icon(window_icon());
+        dock_icon();
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {

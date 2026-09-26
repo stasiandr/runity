@@ -97,6 +97,8 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
     );
 
     let lamp = PointLight {
+        falloff: Default::default(),
+        inner_cone: None,
         position: Vec3::new(0.0, 1.0, 0.0),
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 3.0,
@@ -112,6 +114,8 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
     // A spot pointing down in a narrow cone: lit under it, dark beside it
     // although well within its range.
     let torch = PointLight {
+        falloff: Default::default(),
+        inner_cone: None,
         position: Vec3::new(0.0, 2.0, 0.0),
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 10.0,

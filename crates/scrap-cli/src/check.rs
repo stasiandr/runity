@@ -75,6 +75,8 @@ struct Names {
     layers: scrap::layers::Layers,
     /// What the game's components look like, as the game last wrote them.
     shapes: std::collections::BTreeMap<String, scrap::shape::Shape>,
+    /// The records of the game's tables, for a component's link to one.
+    records: scrap::table::Index,
 }
 
 const MODEL_SOURCES: [&str; 6] = ["gltf", "glb", "obj", "scrterrain", "scrpoly", "scrbrush"];
@@ -204,7 +206,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
     // The numbers are RON, and fit what the game reads them as when it
     // has said (library/tuning.ron): a misspelt field of one record is
     // named with the record and the nearest field there is.
-    let tuning = project.root().join(scrap::project::TUNING);
+    let tuning = project.root().join(scrap::project::CONFIGS);
     let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> =
         std::fs::read_to_string(project.root().join(scrap::project::TUNING_SHAPES))
             .ok()
@@ -234,6 +236,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
             ));
         }
     }
+    check_configs(project, &mut out);
 
     // The modules scrap.ron lists hold together, and Cargo.toml builds
     // the engine with them.
@@ -245,6 +248,97 @@ pub fn check(project: &Project) -> Vec<Finding> {
     check_layout(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
     out
+}
+
+/// Every file in `configs/` is RON, and every table in it holds together
+/// (docs/data.md): what is wrong with each as
+/// written — a name or an id said twice, a `base` that names nothing or goes
+/// round, an `id` not written yet — and, where the game has said what its
+/// tables hold (`library/tables.ron`), a record that does not fit its type
+/// and a link to a record that is not there. A file the game has not named
+/// is a table when it is written as one: a map of records with an `id` or a
+/// `base` among them.
+fn check_configs(project: &Project, out: &mut Vec<Finding>) {
+    use scrap::table;
+    let shapes = table::read_shapes(project.root().join(scrap::project::TABLE_SHAPES))
+        .unwrap_or_default();
+    for shape in &shapes {
+        if !project.root().join(&shape.path).exists() {
+            out.push(error(
+                &shape.path,
+                format!(
+                    "the game reads its `{}` records from here, and there is no such file",
+                    shape.record
+                ),
+            ));
+        }
+    }
+    for path in files(&project.root().join(scrap::project::CONFIGS), "ron") {
+        let file = relative(project, &path);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                out.push(error(&file, e));
+                continue;
+            }
+        };
+        // Scanned, not read as one value: serde's reading of a large map
+        // is slow, and a table can be thousands of records.
+        if scrap::ron_text::outline(&text).is_none() {
+            match ron::from_str::<ron::Value>(&text) {
+                Err(e) => out.push(error(&file, e)),
+                Ok(_) => out.push(error(&file, "does not scan as RON")),
+            }
+            continue;
+        }
+        // What is not a table is small: read whole, it says what the scan
+        // lets through (`(gravity: )`).
+        if !scrap::table::is_table(&text) {
+            if let Err(e) = ron::from_str::<ron::Value>(&text) {
+                out.push(error(&file, e));
+                continue;
+            }
+        }
+        let shape = shapes.iter().find(|s| s.holds(&file));
+        let records = match table::written(&text) {
+            Ok(records) => records,
+            Err(e) => {
+                if let Some(shape) = shape {
+                    out.push(error(&file, format!("holds `{}` records: {e}", shape.record)));
+                }
+                continue;
+            }
+        };
+        if shape.is_none() && !records.iter().any(|r| r.id.is_some() || r.base.is_some()) {
+            continue;
+        }
+        for problem in table::problems_of(&records) {
+            out.push(Finding {
+                severity: if problem.warning {
+                    Severity::Warning
+                } else {
+                    Severity::Error
+                },
+                file: file.clone(),
+                message: problem.to_string(),
+            });
+        }
+        if let Some(shape) = shape {
+            let (fields, _) = table::resolved(&records);
+            for (record, fields) in records.iter().zip(fields) {
+                for problem in shape.shape.problems(&table::compose(&fields)) {
+                    out.push(error(
+                        &file,
+                        format!("line {}: `{}`: {problem}", record.line, record.name),
+                    ));
+                }
+            }
+        }
+    }
+    let read = |path: &str| table::read_table_files(project.root(), path);
+    for (file, line, message) in table::link_problems(&shapes, &read) {
+        out.push(error(&file, format!("line {line}: {message}")));
+    }
 }
 
 /// What is at the top of the project that the layout has no place for
@@ -262,7 +356,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
         SRC,
         UI,
         INPUT,
-        TUNING,
+        CONFIGS,
         ANIMATORS,
         SHADERS,
         scrap::layers::FILE,
@@ -308,6 +402,10 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
             _ => None,
         };
         let message = match home {
+            // The folder's old name, from before it held more than numbers.
+            _ if dir && name == "tuning" => {
+                format!("`tuning/` is `{CONFIGS}/` now: `git mv tuning {CONFIGS}`")
+            }
             Some(home) => format!(
                 "`{name}` is outside the layout, where no tool looks for it — it goes in {home}/"
             ),
@@ -495,6 +593,13 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             .ok()
             .and_then(|text| ron::from_str(&text).ok())
             .unwrap_or_default(),
+        records: {
+            let tables = scrap::table::read_shapes(project.root().join(scrap::project::TABLE_SHAPES))
+                .unwrap_or_default();
+            scrap::table::Index::build(&tables, &|path| {
+                scrap::table::read_table_files(project.root(), path)
+            })
+        },
         layers: match scrap::layers::Layers::of(project) {
             Ok(layers) => layers,
             Err(e) => {
@@ -630,6 +735,20 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                         suggest(&emitter.graph, names.effects.iter().map(String::as_str))
                     ),
                 ));
+            }
+        }
+        // A game component's links to the records of its tables, where the
+        // game has said which of its fields are one.
+        for (component, value) in &entity.components {
+            let Some(shape) = names.shapes.get(component.as_str()) else {
+                continue;
+            };
+            let mut links = Vec::new();
+            scrap::table::links_in(shape, value.get_ron(), "", &mut links);
+            for (at, record, text) in links {
+                if let Some(problem) = names.records.problem(&record, &text) {
+                    out.push(error(file, format!("{who}: `{component}.{at}`: {problem}")));
+                }
             }
         }
         if let MaterialRef::Named(link) = &entity.material_ref() {

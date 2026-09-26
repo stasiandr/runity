@@ -97,6 +97,8 @@ pub struct GpuTimer {
     frames: u32,
     /// The GPU's time for the last frame read back, all its passes.
     last_frame: Option<f32>,
+    /// The frame on its way back was timed before a reset: not folded in.
+    stale: bool,
 }
 
 impl GpuTimer {
@@ -134,6 +136,7 @@ impl GpuTimer {
             times: Vec::new(),
             frames: 0,
             last_frame: None,
+            stale: false,
         })
     }
 
@@ -164,6 +167,9 @@ impl GpuTimer {
     }
 
     fn fold(&mut self, labels: &[&'static str], ticks: &[u64]) {
+        if std::mem::take(&mut self.stale) {
+            return;
+        }
         self.frames += 1;
         if self.frames == 1 {
             return;
@@ -232,6 +238,15 @@ impl GpuTimer {
     /// The GPU's time for the last frame read back, milliseconds.
     pub fn frame_ms(&self) -> Option<f32> {
         self.last_frame
+    }
+
+    /// Forget the averages: what a pass that stops running took would
+    /// otherwise stay on the list.
+    pub fn reset(&mut self) {
+        self.times.clear();
+        self.last_frame = None;
+        // The frame whose times are on their way back is the old one's.
+        self.stale = self.waiting.is_some();
     }
 
     /// Each pass's average time, milliseconds.
