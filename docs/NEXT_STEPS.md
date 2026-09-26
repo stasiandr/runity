@@ -219,8 +219,11 @@
 - [ ] `start_scene` и `animator` — ссылки; шейдер — имя, уникальное в
       проекте; шаблон игры без путей `scenes/…`, `ui/…`
 - [ ] `build.rs` обходит весь `src/`: компоненты и системы по фичам
-- [ ] Шаблон `scrap new`, `examples/kitchen` и `examples/valley` по фичам;
-      CLAUDE.md шаблона и stack.md «Проект»
+- [ ] Раскладка по умолчанию — схема Unreal: `config/`,
+      `content/<проект>/maps|core|фичи`, `content/localization/`,
+      `content/developers/` (не едет в сборку); шаблон `scrap new`,
+      `examples/kitchen` и `examples/valley` по ней; CLAUDE.md шаблона и
+      stack.md «Проект»
 - [ ] Компоненты экрана: экран ставит кусок UI, как сцена префаб (docs/ui.md)
 
 # Графовые редакторы

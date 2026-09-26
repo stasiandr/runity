@@ -12,6 +12,11 @@
 держать рядом. Код раскладывается по фичам, UI — по экранам и
 компонентам.
 
+Раскладка по умолчанию — схема Unreal (уточнение того же дня): корень
+как у проекта Unreal (`Config/`, `Content/`, `Source/`), а внутри контента
+— по стайлгайду Allar: папка проекта, `maps/`, `core/`, фичи,
+`developers/`, сторонние паки рядом с папкой проекта.
+
 ## Что сейчас
 
 Раскладка закреплена в `scrap-core/src/project.rs`. Это тринадцать папок
@@ -151,34 +156,91 @@ Unity (`.unity`, `.prefab`, `.mat`, `.controller`), и так же расшир�
 `rock.glb` в разных папках — нормально, пока сцена ссылается по ID, и
 ошибка `check` только для строки без ID.
 
-### Что остаётся в корне и почему
+### Раскладка по умолчанию — схема Unreal
 
-Фиксированным остаётся то, что относится к проекту целиком, а не к фиче:
+Движку место файла безразлично (вид — по расширению, ссылка — по ID).
+Но у проекта есть раскладка по умолчанию: её пишет `scrap new`, по ней
+лежат примеры, её описывает CLAUDE.md шаблона. Это схема Unreal: корень
+проекта Unreal и стайлгайд Allar для контента.
 
 ```
-scrap.ron     проект: имя, модули, первая сцена
-input.ron     действия и клавиши — одни на игру
-layers.ron    слои столкновений — одни на игру
-strings/      тексты игры, файл на язык — одна таблица на игру
-Cargo.toml    крейт игры
-build.rs      находит компоненты и системы
-src/main.rs   игра и `step` — порядок систем
-library/      производное, в .gitignore
-CLAUDE.md
+kitchen/
+  scrap.ron              проект                       ≈ Kitchen.uproject
+  config/                настройки игры целиком       ≈ Config/
+    input.ron            действия и клавиши           ≈ DefaultInput.ini
+    layers.ron           слои столкновений            ≈ Collision в DefaultEngine.ini
+  content/               всё, что делают художники,   ≈ Content/
+                         дизайнеры и техдизайнеры
+    kitchen/             папка проекта (Allar 2.2)
+      maps/              все уровни (2.4)
+      core/              то, на чём стоит игра (2.5): игрок, камера,
+                         общие материалы, конфиг мира
+      food/tomato/       фича: модель, текстура, материал, префаб рядом
+      stations/stove/
+      effects/
+      ui/screens/        экраны
+      ui/components/     куски экранов
+    kenney/              сторонний пак как пришёл, с лицензией
+    localization/        тексты, файл на язык         ≈ Content/Localization/
+    developers/<имя>/    песочница (2.3): не едет в сборку
+  src/                   код игры, по фичам           ≈ Source/<Project>/
+  Cargo.toml  build.rs
+  library/               производное, в .gitignore    ≈ DerivedDataCache/
+  .scrap/                состояние редактора          ≈ Saved/
+  CLAUDE.md
 ```
 
-Это как `ProjectSettings/` в Unity и `Config/` в Unreal: настройки проекта
-не лежат в фиче. `check_layout` меняет смысл: он больше не требует папок,
-а называет файл, вид которого движок не знает (например, `.ron` без
-двойного расширения), и советует расширение.
+Что взято из Unreal и почему:
+
+* **Корень: `config/`, `content/`, `src/`.** Настройки проекта, контент и
+  код не перемешаны в одном корне с `Cargo.toml` и `library/`. Художнику
+  нужна только `content/`, программисту — `src/`. `src/`, а не `source/`,
+  потому что так ждёт cargo.
+* **Папка проекта внутри `content/` (Allar 2.2).** Сторонний пак или
+  модуль, распакованный в `content/`, ложится рядом с ней и ничего не
+  смешивает: видно, что своё, а что чужое, и чужое обновляется целиком.
+* **`maps/` — все уровни в одном месте (Allar 2.4).** Единственная
+  «папка по типу», которую Allar оставляет: уровни — это точки входа, их
+  перечисляют сборка, меню выбора уровня и человек. У нас сцена-уровень
+  лежит в `maps/`, а сцена-кусок (комната, собранная для префаба) может
+  лежать в фиче.
+* **`core/` (Allar 2.5).** Сигнал «не трогай походя». Здесь лежит то, от
+  чего зависит всё остальное.
+* **`developers/<имя>/` (Allar 2.3).** Песочница, в которой не страшно
+  мусорить. `scrap build` её не везёт. `check` называет ссылку из
+  остального контента в `developers/`: такой ассет надо сначала
+  перенести в фичу.
+* **Фичи без папок по типу (Allar 2.6).** Никаких `meshes/`, `textures/`,
+  `materials/` внутри фичи.
+
+Что не взято:
+
+* **Префиксы имён (`SM_`, `T_`, `M_`).** В Unreal они нужны, потому что
+  все ассеты — `.uasset` и тип по имени файла не виден. У нас тип виден
+  по расширению (`tomato.scrmat`, `tomato.prefab`), а имя без префикса
+  короче в сцене и в диффе.
+* **PascalCase.** Имена — snake_case, как в Godot: регистр файлов на
+  macOS и Windows не различается, а имя файла — это имя в сцене и имя
+  компонента в коде.
+* **`Public/`/`Private/` в коде.** Это нужно из-за заголовков C++. В Rust
+  видимость задаёт `pub`.
+
+Что движок требует на самом деле: `scrap.ron` в корне, `config/input.ron`
+и `config/layers.ron` (одни на игру; их читают код движка и `check`),
+`content/localization/` (таблица на язык), крейт игры и `library/`.
+Остальное — умолчание: проект, разложенный иначе, работает так же.
+`check_layout` меняет смысл: он больше не требует папок, а называет файл,
+вид которого движок не знает (например, `.ron` без двойного расширения),
+и советует расширение.
 
 ### Конфиги — там, где их читает код
 
 `Tuned` и `Table` грузятся путём из кода игры, и игра сама пишет, какие
 таблицы читает и откуда (`library/tables.ron`, `TableShape.path`). Окно
 Configs и `check` берут список из этого файла, а не из папки `configs/`.
-Таблица рецептов может лежать в `cooking/recipes/`, рядом с кодом готовки.
-`configs/` в шаблоне остаётся просто удобным местом.
+Таблица рецептов лежит в `content/kitchen/food/recipes/`, рядом с едой,
+как DataTable в Unreal лежит в контенте. Общие числа игры — в `core/`.
+Отдельной папки `configs/` в раскладке по умолчанию нет.
 
 ### Код — по фичам
 
@@ -206,8 +268,9 @@ Configs и `check` берут список из этого файла, а не �
 
 ### UI — экраны и компоненты
 
-Экран — `.screen.ron` в любой папке. Шаблон кладёт их в `ui/screens/`, а
-общие куски — в `ui/components/`. Но переиспользуемых кусков у экрана
+Экран — `.screen.ron` в любой папке. Раскладка по умолчанию кладёт
+экраны в `content/<проект>/ui/screens/`, а общие куски — в
+`ui/components/` (в Unreal так же разделяют экраны и виджеты UMG). Но переиспользуемых кусков у экрана
 сейчас нет: элемент — текст, кнопка или картинка, и карточки заказов в
 kitchen рисует код. «Экран ставит компонент, как сцена ставит префаб»
 (`kind: Use(("order_card", "…"))` с переопределениями) — отдельная фича
@@ -215,45 +278,55 @@ kitchen рисует код. «Экран ставит компонент, ка�
 
 ### Шаблон и пример
 
-`scrap new` пишет рекомендованную раскладку, а не обязательную. По ней
-видно, как принято, но переложить можно всё:
+`scrap new my_game` пишет раскладку по умолчанию:
 
 ```
 my_game/
-  scrap.ron  input.ron  layers.ron  CLAUDE.md  Cargo.toml  build.rs
-  strings/en.ron
-  levels/main.scene.ron
-  ui/screens/hud.screen.ron
-  ui/components/
-  props/cube/cube.scrmat
+  scrap.ron  Cargo.toml  build.rs  CLAUDE.md
+  config/input.ron  config/layers.ron
+  content/my_game/maps/main.scene.ron
+  content/my_game/core/world.ron
+  content/my_game/props/cube/cube.scrmat
+  content/my_game/ui/screens/hud.screen.ron
+  content/my_game/ui/components/
+  content/localization/en.ron
+  content/developers/.gitkeep
   src/main.rs
   src/spin/spin.rs          компонент Spin
   src/spin/spin_system.rs   система
 ```
 
-`examples/kitchen` переезжает по фичам. Так пример показывает, зачем это
-всё:
+`examples/kitchen` переезжает по этой схеме. Так пример показывает, зачем
+это всё:
 
 ```
 kitchen/
-  levels/main.scene.ron  levels/rush.scene.ron
-  food/tomato/   tomato.scrmat  tomato.prefab
-  food/soup/     soup_tomato.scrmat  soup_onion.scrmat  soup_mixed.scrmat
-  station/stove/ stove.scrmat  burner.scrmat  flame_fx.scrmat
-  cook/          cook.animator.ron  walker.animator.ron
-  fx/            flame_03.png  flame_fx.scrmat  smoke_04.png  smoke_fx.scrmat
-  ui/screens/    menu.screen.ron  hud.screen.ron  …
-  vendor/kenney/ пак как пришёл, с LICENSE
-  src/orders/    orders.rs  served.rs
-  src/cooking/   pot.rs  fry.rs  chop.rs  cook.rs
-  src/player/    player.rs  walk.rs  hands.rs  held_by.rs
-  src/net/       lobby.rs  session.rs
+  config/                     input.ron  layers.ron
+  content/kitchen/
+    maps/                     main.scene.ron  rush.scene.ron
+    core/                     world.ron  flyby.ron  floor.scrmat  wall.scrmat
+    characters/cook/          cook.animator.ron  walker.animator.ron
+    food/tomato/              tomato.scrmat  tomato.prefab
+    food/soup/                soup_tomato.scrmat  soup_onion.scrmat  soup_mixed.scrmat
+    stations/stove/           stove.scrmat  burner.scrmat
+    stations/window/          window.scrmat  window.animator.ron  bell_ring.clip.ron
+    effects/flame/            flame_03.png  flame_fx.scrmat
+    audio/                    music.wav  ding.wav …
+    dialogues/                chef.dialogue.ron
+    ui/screens/               menu.screen.ron  hud.screen.ron  …
+    ui/fonts/                 kenney_future.ttf
+  content/kenney/             пак как пришёл, с LICENSE
+  content/localization/       en.ron  ru.ron
+  src/orders/                 orders.rs  served.rs
+  src/cooking/                pot.rs  fry.rs  chop.rs  cook.rs
+  src/player/                 player.rs  walk.rs  hands.rs  held_by.rs
+  src/net/                    lobby.rs  session.rs
 ```
 
-Сторонний пак (Kenney) остаётся одной папкой с лицензией, как его
-выпустили: так делают Unity (Asset Store), Godot (`addons/`) и Unreal
-(`Marketplace/`). Модель помидора ссылается из материала и префаба по
-ID, поэтому ей не нужно лежать в `food/tomato/`.
+Модель помидора остаётся в паке Kenney: материал и префаб ссылаются на
+неё по ID, поэтому переносить её в `food/tomato/` не нужно, а пак
+остаётся целым и обновляемым. Своя модель, сделанная в Blender для этой
+игры, легла бы в `food/tomato/` рядом с материалом.
 
 ## Ответы постулатам
 
@@ -270,10 +343,11 @@ ID, поэтому ей не нужно лежать в `food/tomato/`.
    видит фичу целиком.
 3. **Модульность.** Это прямо то, что нужно ассет-стору: модуль приносит
    свою папку как есть (код, префабы, материалы, текстуры рядом), и
-   движку не нужно раскладывать её по шести чужим папкам. Виды файлов
-   регистрируют модули, ядро знает только таблицу расширений. Куда ставятся
-   модули в проект (`modules/<имя>/`?) решает docs/modules.md, этот вопрос
-   здесь открыт.
+   движку не нужно раскладывать её по шести чужим папкам. Контент модуля
+   ложится в `content/<модуль>/` рядом с папкой проекта, как пак из
+   Fab/Marketplace в Unreal. Виды файлов регистрируют модули, ядро знает
+   только таблицу расширений. Где лежит код модуля, решает
+   docs/modules.md («Модуль — исходник»).
 4. **Сеть.** Ничего: `Spawn` называет префаб по ID.
 5. **AI.** Агенту не надо гадать и сейчас: «все префабы» — это
    `**/*.prefab`, так же просто, как `prefabs/*`. MCP-инструмент
@@ -285,8 +359,9 @@ ID, поэтому ей не нужно лежать в `food/tomato/`.
    проекта и при изменении файлов.
 7. **Opinionated.** Стандарт остаётся, но он о другом: закреплено, **как
    файл говорит, что он такое** (расширение) и **как на него ссылаются**
-   (ID плюс имя), и что лежит в корне. Место остального выбирает человек,
-   а шаблон показывает, как принято. Это пересмотр пункта постулата
+   (ID плюс имя), и что лежит в корне. Раскладка по умолчанию —
+   схема Unreal, её пишет генератор, и по ней лежат примеры. Проект,
+   разложенный иначе, работает так же. Это пересмотр пункта постулата
    «структура папок закреплена», сделанный явно (см. «Нарушения»). На
    вопрос постулата «с этим согласятся 90% игр?» ответ «да» именно для
    свободного места: раскладку по типу крупные проекты на Unity и Unreal
@@ -339,8 +414,11 @@ ID, поэтому ей не нужно лежать в `food/tomato/`.
 4. **Код по фичам.** `build.rs` обходит `src/`, `scrap add component
    cooking/pot` пишет файл в фичу, `Project::component_names` — из того же
    обхода.
-5. **Шаблон и примеры.** `scrap new` пишет рекомендованную раскладку,
-   `examples/kitchen` и `examples/valley` переезжают по фичам,
+5. **Шаблон и примеры.** `scrap new` пишет раскладку по умолчанию
+   (схема Unreal): `config/`, `content/<проект>/maps|core|фичи`,
+   `content/localization/`, `content/developers/`. `scrap build` не везёт
+   `developers/`, `check` называет ссылку туда. `examples/kitchen` и
+   `examples/valley` переезжают по этой схеме,
    CLAUDE.md шаблона и stack.md («Проект») переписываются.
    `check_layout` называет файлы непонятного вида, а не «не в той папке».
 6. **Компоненты экрана.** Отдельной карточкой в docs/ui.md.
@@ -349,5 +427,6 @@ ID, поэтому ей не нужно лежать в `food/tomato/`.
 
 * [Godot: Project organization](https://docs.godotengine.org/en/stable/tutorials/best_practices/project_organization.html)
 * [Allar: UE5 Style Guide, раздел 2 «Content Directory Structure»](https://github.com/Allar/ue5-style-guide)
+* [Unreal: Directory Structure](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-directory-structure)
 * [Unity: Best practices for organizing your Unity project](https://unity.com/how-to/organizing-your-project)
 * [Anchorpoint: A guide to folder structures for Unity 6 projects](https://www.anchorpoint.app/blog/unity-folder-structure)
