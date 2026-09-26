@@ -65,6 +65,13 @@ fn texture_at(in: SurfaceIn, slot: u32, uv: vec2<f32>) -> vec4<f32> {
     let texel = textureSampleGrad(map_textures[in.maps[min(slot, 3u)] >> 16u], surface_sampler, uv, dx, dy);
     return select(texel, vec4<f32>(1.0), slot > 3u);
 }
+fn texture_at_level(in: SurfaceIn, slot: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> {
+    let texel = textureSampleLevel(map_textures[in.maps[min(slot, 3u)] >> 16u], surface_sampler, uv, lod);
+    return select(texel, vec4<f32>(1.0), slot > 3u);
+}
+fn texture_size(in: SurfaceIn, slot: u32) -> vec2<f32> {
+    return vec2<f32>(textureDimensions(map_textures[in.maps[min(slot, 3u)] >> 16u]));
+}
 "#;
 
 /// The renderer's shader, bindless where `on`: the bound maps' stub

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/pot-stew.glb",
+    hash: "c8cd7316d8b63456f473ca42ca62d4e5",
+    id: Some("fa2dd8389b6a5f9ce5ccefe9eced96e5"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/models/tumbleweed.obj",
-    hash: "e5434d5c93d94ef75368a63dc697d61b",
-    id: Some("2e79c1637b652753d394c221365c2035"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: false,
-)

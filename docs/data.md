@@ -52,7 +52,7 @@
   таблицы; неверное имя — проблема с ближайшим.
 * **MCP**: `configs` (список, файл сеткой, поиск по именам), `config_set`
   (ячейка с теми же проверками), `config_undo`.
-* **Потребитель** — экономика Долины: `examples/valley/configs/materials.ron`
+* **Потребитель** — экономика Долины: `examples/valley/content/valley/crafting/materials.ron`
   (14 материалов по тегам) и `recipes.ron` (4 рецепта, верёвка ссылается на
   материал), читаются `crates/scrap/tests/valley_tables.rs` с правилами
   игры.

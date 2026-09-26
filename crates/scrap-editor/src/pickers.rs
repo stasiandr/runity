@@ -44,13 +44,12 @@ impl Session {
             "shader" => self
                 .project
                 .as_ref()
-                .and_then(|p| std::fs::read_dir(p.root().join(scrap::project::SHADERS)).ok())
+                .map(|p| p.files(scrap::layout::Kind::Shader))
                 .into_iter()
                 .flatten()
-                .flatten()
-                .filter_map(|e| {
+                .filter_map(|path| {
                     // `water.wgsl` and a shader graph `lava.graph.ron` alike.
-                    let name = scrap::render::material_shader_name(&e.path())?;
+                    let name = scrap::render::material_shader_name(&path)?;
                     let id = scrap::asset::shader_id(&name);
                     Some((name, id))
                 })

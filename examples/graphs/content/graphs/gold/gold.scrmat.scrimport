@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/gold/gold.scrmat",
+    hash: "76392c1518ebe57a2932615377d83e38",
+    id: Some("ee567aa170e8da23e3a8f69bd0a08988"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -1,0 +1,21 @@
+// Marble: veins where two noises meet, a twirl through them, the colour
+// from a gradient and graded — Overlay over itself, a turn of the hue,
+// more contrast — as a colour grade would in an image editor. `hue` turns
+// the whole of it.
+(
+    params: ["hue"],
+    nodes: {
+        "turned": Twirl(uv: "uv", center: (0.5, 0.5), strength: 4.0, offset: (0.0, 0.0)),
+        "warp": SimpleNoise(at: "turned", scale: 6.0),
+        "shifted": Add(a: "position.x", b: "warp"),
+        "stripes": Multiply(a: "shifted", b: 9.0),
+        "vein_wave": Sine(of: "stripes"),
+        "vein_abs": Abs(of: "vein_wave"),
+        "veins": Power(a: "vein_abs", b: 0.25),
+        "stone": Gradient(t: "veins", keys: [(0.0, (0.15, 0.1, 0.12)), (0.35, (0.55, 0.45, 0.4)), (1.0, (0.95, 0.93, 0.9))]),
+        "overlaid": Blend(base: "stone", blend: "stone", mode: Overlay, opacity: 0.5),
+        "hued": Hue(of: "overlaid", offset: "hue"),
+        "graded": Contrast(of: "hued", amount: 1.2),
+    },
+    surface: (albedo: "graded", smoothness: 0.85),
+)

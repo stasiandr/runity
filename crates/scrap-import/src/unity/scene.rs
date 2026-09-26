@@ -51,20 +51,80 @@ fn axis(v: [f32; 3]) -> Vec3 {
 }
 
 /// A scene's directional light as scrap's sun: the hour whose sun
-/// shines the way it does, and how bright.
-pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
+/// shines the way it does, and how bright. The light may be the scene's
+/// own or one inside a prefab placed in it (a level's lights prefab),
+/// turned as the instance turns it.
+pub fn sun(unity: &Unity, text: &str) -> Option<scrap::scene::Sun> {
     let docs = yaml::documents(text);
-    let light = docs
-        .iter()
-        .find(|d| d.kind == "Light" && d.body.i64("m_Type") == Some(1))?;
-    let object = light.body.reference("m_GameObject")?.file_id;
-    let transform = docs.iter().find(|d| {
-        matches!(d.class, TRANSFORM)
-            && d.body
-                .reference("m_GameObject")
-                .is_some_and(|r| r.file_id == object)
+    if let Some(sun) = sun_in(&docs, &HashMap::new()) {
+        return Some(sun);
+    }
+    for instance in docs.iter().filter(|d| d.kind == "PrefabInstance") {
+        let Some(prefab) = instance
+            .body
+            .reference("m_SourcePrefab")
+            .and_then(|r| r.guid)
+            .and_then(|g| unity.guids.get(&g))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+        else {
+            continue;
+        };
+        // What the instance changes on the prefab's objects: by fileID
+        // and property path.
+        let mut changed: HashMap<(i64, String), Yaml> = HashMap::new();
+        for m in instance.body["m_Modification"].list("m_Modifications") {
+            let (Some(target), Some(path)) = (m.reference("target"), m.str("propertyPath")) else {
+                continue;
+            };
+            changed.insert((target.file_id, path.to_string()), m["value"].clone());
+        }
+        if let Some(sun) = sun_in(&yaml::documents(&prefab), &changed) {
+            return Some(sun);
+        }
+    }
+    None
+}
+
+/// [`sun`] among `docs`, an instance's `changed` properties over theirs.
+fn sun_in(docs: &[Doc], changed: &HashMap<(i64, String), Yaml>) -> Option<scrap::scene::Sun> {
+    let number = |id: i64, path: &str| changed.get(&(id, path.to_string())).and_then(yaml::number).map(|n| n as f32);
+    let light = docs.iter().find(|d| {
+        d.kind == "Light"
+            && d.body.i64("m_Type") == Some(1)
+            && number(d.file_id, "m_Enabled").map_or(d.body.i64("m_Enabled") != Some(0), |v| v != 0.0)
     })?;
-    let turn = transform.body.quat("m_LocalRotation").map(rotation)?;
+    let object = light.body.reference("m_GameObject")?.file_id;
+    let transform_of = |object: i64| {
+        docs.iter().find(|d| {
+            matches!(d.class, TRANSFORM)
+                && d.body
+                    .reference("m_GameObject")
+                    .is_some_and(|r| r.file_id == object)
+        })
+    };
+    let local = |t: &Doc| -> Option<Quat> {
+        let own = t.body.quat("m_LocalRotation")?;
+        let q = [
+            number(t.file_id, "m_LocalRotation.x").unwrap_or(own[0]),
+            number(t.file_id, "m_LocalRotation.y").unwrap_or(own[1]),
+            number(t.file_id, "m_LocalRotation.z").unwrap_or(own[2]),
+            number(t.file_id, "m_LocalRotation.w").unwrap_or(own[3]),
+        ];
+        Some(rotation(q))
+    };
+    // Up the chain of fathers: the light's turn in the file's frame.
+    let mut transform = transform_of(object)?;
+    let mut turn = local(transform)?;
+    for _ in 0..64 {
+        let Some(father) = transform.body.reference("m_Father").filter(|r| r.file_id != 0) else {
+            break;
+        };
+        let Some(up) = docs.iter().find(|d| d.file_id == father.file_id) else {
+            break;
+        };
+        turn = local(up).unwrap_or(Quat::IDENTITY) * turn;
+        transform = up;
+    }
     // Unity's light shines along its +z; mirrored, scrap's −z.
     let travel = turn * Vec3::NEG_Z;
     let up = (-travel.y).clamp(-1.0, 1.0).asin().max(0.05);
@@ -74,10 +134,18 @@ pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
     } else {
         std::f32::consts::PI - up
     };
-    let tint = light.body.color("m_Color").map(|c| [c[0], c[1], c[2]]);
+    let tint = light.body.color("m_Color").map(|c| {
+        [
+            number(light.file_id, "m_Color.r").unwrap_or(c[0]),
+            number(light.file_id, "m_Color.g").unwrap_or(c[1]),
+            number(light.file_id, "m_Color.b").unwrap_or(c[2]),
+        ]
+    });
     Some(scrap::scene::Sun {
         hour: 6.0 + angle / std::f32::consts::PI * 12.0,
-        intensity: light.body.f32("m_Intensity").unwrap_or(1.0),
+        intensity: number(light.file_id, "m_Intensity")
+            .or(light.body.f32("m_Intensity"))
+            .unwrap_or(1.0),
         // Exactly where Unity's stood, and its colour: the hour is only
         // near it.
         toward: Some(travel),
@@ -221,7 +289,15 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 // drawn either: its mesh is not brought over to be drawn.
                 let own = || components.get(&d.file_id).into_iter().flatten();
                 let renderer = |c: &&Doc| matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer");
+                // A renderer that only casts shadows (a light blocker) is
+                // not drawn: scrap has no shadow-only draw, so its shadow
+                // is lost rather than the blocker shown.
+                let shadows_only = own().any(|c| renderer(&c) && c.body.i64("m_CastShadows") == Some(3));
+                if shadows_only {
+                    report.skip("a shadows-only renderer (not drawn; its shadow is lost)");
+                }
                 let hidden = own().any(|c| renderer(&c) && c.body.i64("m_Enabled") == Some(0))
+                    || shadows_only
                     || (own().any(|c| c.kind == "MeshFilter") && !own().any(|c| renderer(&c)));
                 // A mesh collider keeps its mesh as its collision model.
                 if hidden {
@@ -309,6 +385,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         // its own is not the one that counts — Dacha's providers contribute
         // only what is absent, and the prefab's comes first — so the
         // prefab's stays (a heap's own drops, its burst of scrap with them).
+        // The part's key in the prefab, and what this instance took off it
+        // (a script taken off and added back is this file's own).
+        let part_key = part_of_stripped(d.file_id).and_then(|(fid, guid)| parts.of(unity, &guid, 0).keys.get(&fid).copied());
+        let taken_off: HashSet<String> = part_key
+            .and_then(|k| entities.get(&instance.file_id)?.overrides.get(&k))
+            .map(|o| o.removed.iter().cloned().collect())
+            .unwrap_or_default();
         let had: HashSet<String> = part_of_stripped(d.file_id)
             .map(|(fid, guid)| {
                 let of = parts.of(unity, &guid, 0);
@@ -317,6 +400,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     .values()
                     .filter(|(on, _)| Some(*on) == key)
                     .map(|(_, name)| name.clone())
+                    .filter(|name| !taken_off.contains(name))
                     .collect()
             })
             .unwrap_or_default();
@@ -339,6 +423,11 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         let Some(desc) = entities.get_mut(&instance.file_id) else {
             continue;
         };
+        // Added back: no longer taken off.
+        let back: Vec<String> = added.iter().filter_map(|c| removal(c, unity)).filter(|n| taken_off.contains(n)).collect();
+        if let Some(o) = part_key.and_then(|k| desc.overrides.get_mut(&k)) {
+            o.removed.retain(|n| !back.contains(n));
+        }
         match part {
             None => {
                 for c in added {
@@ -572,11 +661,21 @@ fn instance(
         .list("m_Modifications")
         .iter()
         .any(|m| m.str("propertyPath").is_some_and(|p| p.starts_with("m_AnchoredPosition")));
+    // Components this instance takes off: what it changed on them before
+    // is left over, and Unity applies none of it.
+    let taken_off: HashSet<i64> = modification
+        .list("m_RemovedComponents")
+        .iter()
+        .filter_map(|r| yaml::reference(r).map(|r| r.file_id))
+        .collect();
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
         };
         let target = m.reference("target").map(|r| r.file_id);
+        if target.is_some_and(|t| taken_off.contains(&t)) {
+            continue;
+        }
         let behaviour = target.and_then(|t| Some((t, of.as_ref()?.behaviours.get(&t)?)));
         if let Some((t, b)) = behaviour.filter(|_| kind == "prefab" && !path.starts_with("m_")) {
             let b = behaviours.entry(t).or_insert_with(|| b.clone());
@@ -1261,6 +1360,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 if let Some(model) = model(&r, refs.unity) {
                     let model = piece_of(refs.unity, model, &desc.name, &r);
                     desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                } else if r.guid.is_none() && r.file_id != 0 {
+                    report.skip("a mesh kept inside the scene that did not read");
+                } else if !r.is_none() {
+                    report.skip("a mesh the import has no model for");
                 }
             }
         }
@@ -1315,6 +1418,19 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 axis: b.i64("m_Direction").map_or(1, |d| d.clamp(0, 2) as u8),
             });
             solid(desc, b);
+        }
+        "CharacterController" => {
+            // Unity's character capsule: a kinematic body the game moves
+            // (PhysicsWorld::move_character), its capsule upright.
+            let radius = b.f32("m_Radius").unwrap_or(0.5);
+            let height = b.f32("m_Height").unwrap_or(2.0);
+            desc.set_part(&Collider::Capsule {
+                half_height: (height * 0.5 - radius).max(0.0),
+                radius,
+                center: b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO),
+                axis: 1,
+            });
+            desc.set_part(&Body::Kinematic);
         }
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
@@ -1523,7 +1639,19 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             let value = mono_behaviour(b, refs);
             match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
                 Ok(raw) => {
-                    desc.components.insert(name, raw);
+                    // A second of one script on the object (a plate that
+                    // sends two commands): `name_2`, for the game to read
+                    // as the same component.
+                    let mut key = name.clone();
+                    let mut n = 1;
+                    while desc.components.contains_key(&key) {
+                        n += 1;
+                        key = format!("{name}_{n}");
+                    }
+                    if n > 1 {
+                        report.skip(format!("a second `{name}` on one object, kept as `{key}`"));
+                    }
+                    desc.components.insert(key, raw);
                 }
                 Err(_) => report.skip(format!("component `{name}` whose fields did not make RON")),
             }
@@ -2118,7 +2246,10 @@ fn solid(desc: &mut EntityDesc, b: &Yaml) {
 /// The model a mesh reference names: Unity's builtins by fileID, anything
 /// else by its file's scrap name.
 fn model(r: &Ref, unity: &Unity) -> Option<String> {
-    let guid = r.guid.as_deref()?;
+    let Some(guid) = r.guid.as_deref() else {
+        // A mesh the file keeps inside itself (ProBuilder's).
+        return unity.local_meshes.get(&r.file_id).cloned();
+    };
     if guid == BUILTIN {
         return Some(
             match r.file_id {
@@ -2470,6 +2601,8 @@ mod tests {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
@@ -2819,6 +2952,72 @@ MonoBehaviour:
         let roots = convert_file(&unity, scene, &mut report);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(roots[0].components.get("door").is_none(), "the prefab's own door counts: {:?}", roots[0].components);
+    }
+
+    #[test]
+    fn a_script_taken_off_an_instance_and_added_back_is_the_added_one() {
+        let dir = std::env::temp_dir().join(format!("scrap-back-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heap = dir.join("Heap.prefab");
+        std::fs::write(
+            &heap,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Heap
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!114 &102
+MonoBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 2
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("hhh".into(), heap);
+        unity.names.insert("hhh".into(), "Heap".into());
+        // Level1's way out: the prefab's TransitionPoint taken off, a
+        // change to it left behind, and the scene's own added.
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 102, guid: hhh, type: 3}
+      propertyPath: drops
+      value: 7
+      objectReference: {fileID: 0}
+    m_RemovedComponents:
+    - {fileID: 102, guid: hhh, type: 3}
+  m_SourcePrefab: {fileID: 100100000, guid: hhh, type: 3}
+--- !u!1 &902 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 100, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &903
+MonoBehaviour:
+  m_GameObject: {fileID: 902}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 1
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let door = roots[0].components.get("door").map(|v| v.get_ron().to_string()).unwrap_or_default();
+        assert!(door.contains("drops: 1"), "the scene's own: {door:?}");
+        let text = format!("{:?}", roots[0].overrides);
+        assert!(!text.contains("door"), "nothing of the removed one left: {text}");
     }
 
     #[test]

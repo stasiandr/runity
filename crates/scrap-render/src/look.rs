@@ -428,6 +428,10 @@ pub struct Emitter {
     /// still reads. Unity's VFX Graph.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub graph: String,
+    /// Up to eight numbers its effect graph reads as its `params`, in their
+    /// order: Unity's VFX exposed properties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<f32>,
 }
 
 /// One of an emitter's streams of numbers to its particles' shader: from
@@ -906,6 +910,7 @@ crate::impl_parts! {
         "dust_devils", "drifted", "lightning", "drying", "mud",
     ];
     crate::reflections::ScreenSpaceReflections => "screen_space_reflections";
+    crate::fullscreen::FullscreenPass => "fullscreen";
 }
 
 /// What a line of a scene looks like, read off it: what was `desc.model`

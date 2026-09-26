@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/bowl-soup.glb",
+    hash: "707eef87b1b83f8a77d228a87ca49e7e",
+    id: Some("375d59b3321b993620640a2f29269ed6"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

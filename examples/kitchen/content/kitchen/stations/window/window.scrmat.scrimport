@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/stations/window/window.scrmat",
+    hash: "bf90985a39faad8ff78084b1fc068dd2",
+    id: Some("bba39ededba5506ef40010a972859a6c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

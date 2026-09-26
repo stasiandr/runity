@@ -88,6 +88,8 @@ pub struct GitTab {
     status: Option<Status>,
     /// Ask git again now rather than in a couple of seconds.
     ask_git: bool,
+    /// The HEAD the history was read at.
+    history_head: Option<String>,
 }
 
 impl GitTab {
@@ -249,6 +251,7 @@ impl GitTab {
             seen_modified: None,
             status: None,
             ask_git: false,
+            history_head: None,
         }
     }
 
@@ -266,12 +269,23 @@ impl GitTab {
         let mut files_stale = false;
         let mut conflicts_stale = false;
         if std::mem::take(&mut self.stale) {
-            // Asked here, once: git_marks' answer may be seconds away, or
-            // never come outside a project.
-            self.status = session.git_status().ok();
+            if marks.status.is_some() {
+                // What git said last, shown at once, and git asked again
+                // beside the frames: the tab comes on top without waiting
+                // for it. The history is read again only for a new HEAD.
+                self.status = marks.status.clone();
+                marks.ask_soon();
+                if self.history_head.as_deref() != Some(marks.head.as_str()) {
+                    self.history_stale = true;
+                }
+            } else {
+                // Asked here, once: git_marks' answer may be seconds away,
+                // or never come outside a project.
+                self.status = session.git_status().ok();
+                self.history_stale = true;
+            }
             self.seen_generation = Some(marks.generation);
             self.seen_head = marks.head.clone();
-            self.history_stale = true;
             files_stale = true;
             conflicts_stale = true;
         } else if self.seen_generation != Some(marks.generation) {
@@ -302,6 +316,7 @@ impl GitTab {
             self.draw_conflicts(ui, session);
         }
         if std::mem::take(&mut self.history_stale) {
+            self.history_head = Some(marks.head.clone());
             self.load_history(session);
             self.list_stale = true;
         }

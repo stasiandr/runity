@@ -51,6 +51,33 @@ pub struct Animator {
     /// Layers over the pose, in order: each its own clips and crossfade,
     /// laid on the joints its mask names (see [`Layer`]).
     layers: Vec<Layer>,
+    /// Root motion, when the game takes it ([`Self::use_root_motion`]).
+    root: Option<RootMotion>,
+}
+
+/// Root motion: the root joint's travel over the ground and its turn about
+/// up, taken out of the pose and handed to the game — Unity's Apply Root
+/// Motion, a character that walks as fast as its clip walks.
+#[derive(Debug, Clone, Default)]
+struct RootMotion {
+    joint: usize,
+    /// The joint's own axis that lies most level at rest: its yaw is read
+    /// from where this points.
+    axis: glam::Vec3,
+    /// The root's model-space place and yaw at rest: where the pose keeps it.
+    rest_at: glam::Vec3,
+    rest_yaw: f32,
+    /// Travel and turn since the game last took them, in model space.
+    moved: glam::Vec3,
+    turned: f32,
+}
+
+/// What an animator plays at one moment: to tell how far it moved after.
+#[derive(Clone, Copy)]
+struct Snapshot {
+    current: Option<Playing>,
+    previous: Option<Playing>,
+    blend: Option<Blend>,
 }
 
 /// How a layer lays its pose on the one below it.
@@ -154,7 +181,147 @@ impl Animator {
             blend: None,
             from_empty: false,
             layers: Vec::new(),
+            root: None,
         }
+    }
+
+    /// Take root motion from now on: the root joint's travel over the
+    /// ground and turn about up leave the pose and are kept for
+    /// [`Self::take_root_motion`]. The root is the joint named `…Root`
+    /// (Unity's rigs), else the first with no parent. Returns its name.
+    pub fn use_root_motion(&mut self) -> Option<String> {
+        use crate::animation::bare_joint_name;
+        let joints = &self.skeleton.joints;
+        let joint = joints
+            .iter()
+            .position(|j| bare_joint_name(&j.name).to_lowercase().ends_with("root"))
+            .or_else(|| joints.iter().position(|j| j.parent.is_none()))?;
+        let rest = self.skeleton.rest_pose();
+        let global = self.global_of(&rest, joint);
+        let axis = [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z]
+            .into_iter()
+            .min_by(|a, b| {
+                global.transform_vector3(*a).normalize_or_zero().y.abs()
+                    .total_cmp(&global.transform_vector3(*b).normalize_or_zero().y.abs())
+            })
+            .unwrap_or(glam::Vec3::Z);
+        let mut root = RootMotion { joint, axis, ..Default::default() };
+        (root.rest_at, root.rest_yaw) = Self::place_of(&global, axis);
+        self.root = Some(root);
+        Some(joints[joint].name.clone())
+    }
+
+    /// The travel over the ground (model space, metres of the model) and
+    /// the turn about up (radians, counter-clockwise seen from above) since
+    /// this was last asked, with root motion on; nothing without.
+    pub fn take_root_motion(&mut self) -> (glam::Vec3, f32) {
+        match &mut self.root {
+            Some(root) => (std::mem::take(&mut root.moved), std::mem::take(&mut root.turned)),
+            None => (glam::Vec3::ZERO, 0.0),
+        }
+    }
+
+    /// A joint's model-space matrix in `pose`, by its chain of parents.
+    fn global_of(&self, pose: &[PoseTransform], joint: usize) -> Mat4 {
+        let mut m = Mat4::IDENTITY;
+        let mut at = Some(joint);
+        let mut guard = 0;
+        while let (Some(j), true) = (at, guard < 256) {
+            m = pose.get(j).map_or(Mat4::IDENTITY, |p| p.matrix()) * m;
+            at = self.skeleton.joints.get(j).and_then(|x| x.parent).map(|p| p as usize);
+            guard += 1;
+        }
+        m
+    }
+
+    /// Where a joint's matrix stands, and its yaw by `axis`.
+    fn place_of(global: &Mat4, axis: glam::Vec3) -> (glam::Vec3, f32) {
+        let forward = global.transform_vector3(axis);
+        (global.w_axis.truncate(), forward.x.atan2(forward.z))
+    }
+
+    /// The root's place and yaw in `clip` at `time`.
+    fn root_in(&self, root: &RootMotion, clip: usize, time: f32, looping: bool) -> (glam::Vec3, f32) {
+        let Some(c) = self.clips.get(clip) else {
+            return (root.rest_at, root.rest_yaw);
+        };
+        let pose = c.sample(&self.skeleton, time, looping);
+        Self::place_of(&self.global_of(&pose, root.joint), root.axis)
+    }
+
+    /// How far the root went in `clip` from `from` to `to` seconds, round
+    /// its end as often as a looping clip went round.
+    fn root_delta(&self, root: &RootMotion, clip: usize, from: f32, to: f32, looping: bool) -> (glam::Vec3, f32) {
+        let Some(d) = self.clips.get(clip).map(|c| c.duration).filter(|d| *d > 1e-4) else {
+            return (glam::Vec3::ZERO, 0.0);
+        };
+        let turn = |a: f32, b: f32| (b - a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        if !looping {
+            let (a, b) = (from.clamp(0.0, d), to.clamp(0.0, d));
+            let (pa, ya) = self.root_in(root, clip, a, false);
+            let (pb, yb) = self.root_in(root, clip, b, false);
+            return (pb - pa, turn(ya, yb));
+        }
+        let laps = (to / d).floor() - (from / d).floor();
+        let (pa, ya) = self.root_in(root, clip, from.rem_euclid(d), true);
+        let (pb, yb) = self.root_in(root, clip, to.rem_euclid(d), true);
+        let (mut moved, mut turned) = (pb - pa, turn(ya, yb));
+        if laps != 0.0 {
+            let (p0, y0) = self.root_in(root, clip, 0.0, false);
+            let (p1, y1) = self.root_in(root, clip, d, false);
+            moved += (p1 - p0) * laps;
+            turned += turn(y0, y1) * laps;
+        }
+        (moved, turned)
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { current: self.current, previous: self.previous, blend: self.blend }
+    }
+
+    /// What this animator's own clips moved the root between `before` and
+    /// now, each clip by its share of the pose.
+    fn own_root_delta(&self, root: &RootMotion, before: &Snapshot) -> (glam::Vec3, f32) {
+        let mut moved = glam::Vec3::ZERO;
+        let mut turned = 0.0;
+        let mut add = |d: (glam::Vec3, f32), w: f32| {
+            moved += d.0 * w;
+            turned += d.1 * w;
+        };
+        let fade = if self.fade_length > 0.0 && self.previous.is_some() {
+            1.0 - self.fade_remaining / self.fade_length
+        } else {
+            1.0
+        };
+        let delta_of = |was: Option<Playing>, now: Option<Playing>| -> Option<(glam::Vec3, f32)> {
+            let (was, now) = (was?, now?);
+            (was.clip == now.clip).then(|| self.root_delta(root, now.clip, was.time, now.time, now.looping))
+        };
+        match (self.blend, before.blend) {
+            (Some(now), Some(was)) => {
+                let length = |c: usize| self.clips.get(c).map_or(0.0, |c| c.duration);
+                let laps = if now.phase < was.phase { 1.0 } else { 0.0 };
+                let mut clip = |c: usize, w: f32| {
+                    let d = length(c);
+                    add(self.root_delta(root, c, was.phase * d, (now.phase + laps) * d, true), w * fade);
+                };
+                let third = now.third.map_or(0.0, |(_, w)| w);
+                clip(now.a, (1.0 - now.weight) * (1.0 - third));
+                clip(now.b, now.weight * (1.0 - third));
+                if let Some((c, w)) = now.third {
+                    clip(c, w);
+                }
+            }
+            _ => {
+                if let Some(d) = delta_of(before.current, self.current) {
+                    add(d, fade);
+                }
+            }
+        }
+        if let Some(d) = delta_of(before.previous, self.previous) {
+            add(d, 1.0 - fade);
+        }
+        (moved, turned)
     }
 
     /// Add a layer over what plays now, masked to the joints `mask` names
@@ -387,12 +554,25 @@ impl Animator {
     /// Advance by a timestep and return the pose: what plays, then each
     /// layer laid over it on the joints of its mask, in order.
     pub fn advance(&mut self, dt: f32) -> Vec<PoseTransform> {
+        let before = self.snapshot();
+        let layers_before: Vec<Snapshot> = self.layers.iter().map(|l| l.animator.snapshot()).collect();
         let mut pose = self.advance_own(dt);
-        for layer in &mut self.layers {
+        let mut root_step = self.root.clone().map(|root| self.own_root_delta(&root, &before));
+        for (i, layer) in self.layers.iter_mut().enumerate() {
             // A layer keeps its time at no weight, as Unity's does: turned
             // back up, its wave is where it would have been.
             let own = layer.animator.advance(dt);
             let weight = layer.weight.clamp(0.0, 1.0) * layer.animator.presence();
+            // The root's travel, as much of the layer's as it takes of the
+            // root joint (an action played on the whole body walks it).
+            if let (Some(step), Some(root)) = (&mut root_step, &self.root) {
+                let w = weight * layer.mask.get(root.joint).copied().unwrap_or(0.0);
+                if w > 0.0 && layer.blend == LayerBlend::Override {
+                    let (m, t) = layer.animator.own_root_delta(root, &layers_before[i]);
+                    step.0 = step.0 * (1.0 - w) + m * w;
+                    step.1 = step.1 * (1.0 - w) + t * w;
+                }
+            }
             if weight <= 0.0 {
                 continue;
             }
@@ -406,6 +586,31 @@ impl Animator {
                     LayerBlend::Additive => slot.add(with, &self.skeleton.joints[j].rest, w),
                 };
             }
+        }
+        if let (Some(step), Some(root)) = (root_step, self.root.clone()) {
+            // Handed to the game, and taken out of the pose: the root kept
+            // over its place at rest, facing its rest yaw, at its height.
+            if let Some(r) = &mut self.root {
+                r.moved += glam::Vec3::new(step.0.x, 0.0, step.0.z);
+                r.turned += step.1;
+            }
+            let global = self.global_of(&pose, root.joint);
+            let parent = self.skeleton.joints[root.joint]
+                .parent
+                .map_or(Mat4::IDENTITY, |p| self.global_of(&pose, p as usize));
+            let (at, yaw) = Self::place_of(&global, root.axis);
+            let (scale, turn, _) = global.to_scale_rotation_translation();
+            let kept = Mat4::from_scale_rotation_translation(
+                scale,
+                glam::Quat::from_rotation_y(root.rest_yaw - yaw) * turn,
+                glam::Vec3::new(root.rest_at.x, at.y, root.rest_at.z),
+            );
+            let (s2, r2, t2) = (parent.inverse() * kept).to_scale_rotation_translation();
+            pose[root.joint] = PoseTransform {
+                translation: t2.to_array(),
+                rotation: r2.to_array(),
+                scale: s2.to_array(),
+            };
         }
         pose
     }
@@ -677,8 +882,101 @@ pub fn advance_animations_on(world: &mut World, dt: f32, ground: crate::ik::Grou
             let _ = world.insert_one(entity, Posed(matrices));
         }
     }
+    drive_bone_rigs(world);
     pose_bound_skins(world);
     hold_on_bones(world);
+}
+
+/// On an animator's entity whose skeleton is its model's, while its bones
+/// are the scene's — Unity's usual character: the Animator on the root,
+/// the SkinnedMeshRenderer a child, the bones GameObjects of the scene.
+/// The animator's pose moves those bone entities, so the mesh bound to
+/// them ([`BoundSkin`]) and what hangs on them (a staff in a hand) follow.
+#[derive(Debug, Clone, Default)]
+pub struct BoneRig {
+    /// Each bone: its joint in the animator's skeleton, its entity, and
+    /// what turns the joint's model-space place into the bone's
+    /// (`W_bone = W_root · J · K`), fixed when bound.
+    pub bones: Vec<(usize, hecs::Entity, Mat4)>,
+}
+
+impl BoneRig {
+    /// Bind the bones under `root` to `skeleton`'s joints by name, as the
+    /// scene holds them now (the rest pose).
+    pub fn bind(world: &World, root: hecs::Entity, skeleton: &crate::animation::Skeleton) -> Self {
+        use crate::world::{LineName, Parent, WorldTransform};
+        let Some(root_at) = world.get::<&WorldTransform>(root).ok().map(|w| w.0) else {
+            return Self::default();
+        };
+        let mut children: std::collections::HashMap<hecs::Entity, Vec<hecs::Entity>> = Default::default();
+        for (e, p) in world.query::<(hecs::Entity, &Parent)>().iter() {
+            children.entry(p.0).or_default().push(e);
+        }
+        let mut named: std::collections::HashMap<String, hecs::Entity> = Default::default();
+        let mut queue = std::collections::VecDeque::from([root]);
+        while let Some(e) = queue.pop_front() {
+            if e != root {
+                if let Ok(name) = world.get::<&LineName>(e) {
+                    named.entry(name.0.clone()).or_insert(e);
+                }
+            }
+            queue.extend(children.get(&e).into_iter().flatten().copied());
+        }
+        let rest = skeleton.world_matrices(&skeleton.rest_pose());
+        let mut bones = Vec::new();
+        for (j, joint) in skeleton.joints.iter().enumerate() {
+            let Some(&bone) = named
+                .get(&joint.name)
+                .or_else(|| named.get(crate::animation::bare_joint_name(&joint.name)))
+            else {
+                continue;
+            };
+            let Some(at) = world.get::<&WorldTransform>(bone).ok().map(|w| w.0) else { continue };
+            bones.push((j, bone, (root_at * rest[j]).inverse() * at));
+        }
+        Self { bones }
+    }
+}
+
+/// Put every [`BoneRig`]'s bones where its pose says, their local places
+/// under their parents as the parents now stand.
+pub fn drive_bone_rigs(world: &mut World) {
+    use crate::world::{Parent, WorldTransform};
+    let rigs: Vec<hecs::Entity> = world.query::<(hecs::Entity, &BoneRig)>().iter().map(|(e, _)| e).collect();
+    for root in rigs {
+        let Some(root_at) = world.get::<&WorldTransform>(root).ok().map(|w| w.0) else { continue };
+        let Some(joints) = world.query_one_mut::<(&Animator, &Posed)>(root).ok().map(|(a, p)| {
+            p.0.iter()
+                .zip(&a.skeleton.joints)
+                .map(|(m, j)| *m * Mat4::from_cols_array_2d(&j.inverse_bind).inverse())
+                .collect::<Vec<Mat4>>()
+        }) else {
+            continue;
+        };
+        let bones = world.get::<&BoneRig>(root).map(|r| r.bones.clone()).unwrap_or_default();
+        let mut placed: std::collections::HashMap<hecs::Entity, Mat4> = Default::default();
+        for (j, bone, keep) in &bones {
+            if let Some(joint) = joints.get(*j) {
+                placed.insert(*bone, root_at * *joint * *keep);
+            }
+        }
+        for (_, bone, _) in &bones {
+            let Some(at) = placed.get(bone).copied() else { continue };
+            let parent = world.get::<&Parent>(*bone).ok().map(|p| p.0);
+            let parent_at = parent
+                .and_then(|p| placed.get(&p).copied().or_else(|| world.get::<&WorldTransform>(p).ok().map(|t| t.0)))
+                .unwrap_or(Mat4::IDENTITY);
+            let (scale, rotation, position) = (parent_at.inverse() * at).to_scale_rotation_translation();
+            if let Ok(mut t) = world.get::<&mut crate::Transform>(*bone) {
+                t.position = position;
+                t.set_rotation(rotation);
+                t.scale = scale;
+            }
+            if let Ok(mut w) = world.get::<&mut WorldTransform>(*bone) {
+                w.0 = at;
+            }
+        }
+    }
 }
 
 /// What rides on a bone of its parent's skeleton — a spade in a hand, a
@@ -744,6 +1042,36 @@ mod tests {
             }],
         };
         Arc::new(vec![at("low", 10.0), at("high", 20.0)])
+    }
+
+    /// A walk whose root goes 2 m forward (+z) a second, looping: with
+    /// root motion on, the game is handed the travel — round the loop too
+    /// — and the pose keeps the root where it rests.
+    #[test]
+    fn root_motion_hands_the_walk_to_the_game_and_keeps_the_root_home() {
+        let walk = Clip {
+            name: "walk".into(),
+            duration: 1.0,
+            channels: vec![Channel {
+                joint: 0,
+                path: Path::Translation,
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 1.0, 0.0, 0.0, 1.0, 2.0],
+            }],
+        };
+        let mut a = Animator::new(skeleton(), Arc::new(vec![walk]));
+        assert_eq!(a.use_root_motion().as_deref(), Some("root"));
+        a.play(0, 0.0);
+        let mut moved = glam::Vec3::ZERO;
+        for _ in 0..15 {
+            let pose = a.advance(0.1);
+            let t = pose[0].translation;
+            assert!(t[0].abs() < 1e-4 && t[2].abs() < 1e-4, "kept home: {t:?}");
+            assert!((t[1] - 1.0).abs() < 1e-4, "its height stays: {t:?}");
+            moved += a.take_root_motion().0;
+        }
+        assert!((moved.z - 3.0).abs() < 1e-3, "1.5 s at 2 m/s, round the loop: {moved}");
+        assert!(moved.x.abs() < 1e-4);
     }
 
     #[test]

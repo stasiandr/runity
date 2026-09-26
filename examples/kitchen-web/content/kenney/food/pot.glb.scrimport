@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/pot.glb",
+    hash: "5ecacc071bc51cc958e570f5374c0ec6",
+    id: Some("360a8c221cd4831355dfc9bb5e55c54d"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

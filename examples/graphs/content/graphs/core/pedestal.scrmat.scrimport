@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/core/pedestal.scrmat",
+    hash: "f6ede58a79b864bef3ccf316c17f280e",
+    id: Some("e66c93c4be7c9a481722eacf862b1831"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

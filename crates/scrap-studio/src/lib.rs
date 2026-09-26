@@ -23,6 +23,7 @@ mod bottom;
 mod clipboard;
 mod configs;
 mod dialogues;
+mod shader_graphs;
 mod dock;
 mod git_marks;
 mod git_tab;
@@ -52,9 +53,23 @@ pub use studio::{MenuState, Studio, REFERENCE_SCENE};
 /// The size is a first guess: the Scene view resizes the session to
 /// whatever the layout gives it on the first frame.
 pub fn open(scene: &Path) -> Result<Session, String> {
+    open_with(scene, false)
+}
+
+/// [`open`] for a window a person works in: the scene is drawn as its
+/// meshes and pipelines come in rather than after all of them are built
+/// ([`Session::draw_while_building`]).
+pub fn open_live(scene: &Path) -> Result<Session, String> {
+    open_with(scene, true)
+}
+
+fn open_with(scene: &Path, live: bool) -> Result<Session, String> {
     let mut session = Session::offscreen(1280, 720).map_err(|e| {
         format!("no renderer: {e}\nSCRAP_RENDERER and a working adapter are what this needs.")
     })?;
+    if live {
+        session.draw_while_building();
+    }
     let missing = session
         .open_scene(scene)
         .map_err(|e| format!("cannot open {}: {e}", scene.display()))?;

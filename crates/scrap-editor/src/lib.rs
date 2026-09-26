@@ -41,9 +41,11 @@ mod scene_view;
 mod surface;
 pub mod table;
 mod thumbnail;
+pub mod shader_graphs;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
 mod visibility;
+mod watch;
 
 pub use views::{Pivot, Side, Space};
 
@@ -121,6 +123,29 @@ pub struct Session {
     library_dir: Option<PathBuf>,
     /// Where `.scrmat` sources go: the project's `materials/`.
     material_dir: Option<PathBuf>,
+    /// [`Session::assets`] as last listed, and what the project's files
+    /// were then: listing reads every scene and prefab, which a big project
+    /// (Dacha's twelve hundred prefabs) cannot afford each time a panel
+    /// updates.
+    assets_listed: std::sync::Mutex<Option<(u64, Vec<scrap_import::assets::Entry>)>>,
+    /// The project's folder watched ([`Session::disk`]), started the first
+    /// time it is asked for.
+    watch: std::sync::Mutex<Option<watch::Watch>>,
+    /// Files this session (or its caller, [`Session::wrote`]) wrote: counted
+    /// at once, before the system's word of it arrives.
+    own_writes: std::sync::atomic::AtomicU64,
+    /// [`Session::wrote`]'s count when the listing was last read.
+    listed_own: std::sync::atomic::AtomicU64,
+    /// A listing being read beside the frames ([`Session::assets_soon`]):
+    /// for the disk as it was when it started.
+    listing: std::sync::Mutex<Option<(u64, std::thread::JoinHandle<EditResult<Vec<scrap_import::assets::Entry>>>)>>,
+    /// [`Session::disk`] when the scene's stamps were last compared.
+    reload_seen: Option<u64>,
+    /// [`Session::disk`] when the last library update started.
+    synced_disk: Option<u64>,
+    /// When the last library update finished: the next waits a moment
+    /// rather than walking the project again straight away.
+    synced_at: Option<std::time::Instant>,
     /// A library update running beside the frame ([`Session::poll_assets`]):
     /// a `.blend` takes Blender a second or more, and the editor keeps
     /// drawing meanwhile.
@@ -369,6 +394,14 @@ impl Session {
             library_dir: None,
             material_dir: None,
             syncing: None,
+            assets_listed: std::sync::Mutex::new(None),
+            watch: std::sync::Mutex::new(None),
+            own_writes: std::sync::atomic::AtomicU64::new(0),
+            listed_own: std::sync::atomic::AtomicU64::new(u64::MAX),
+            reload_seen: None,
+            synced_disk: None,
+            listing: std::sync::Mutex::new(None),
+            synced_at: None,
             blender: None,
             prefabs: scrap::Prefabs::new(),
             prefab_dir: None,
@@ -542,12 +575,19 @@ impl Session {
 
     /// Open a prefab of the project by name: Prefab Mode.
     pub fn open_prefab(&mut self, name: &str) -> EditResult<Vec<String>> {
-        let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
-        let path = directory.join(format!("{name}.{}", scrap::prefab::EXTENSION));
-        if !path.is_file() {
-            return Err(EditError::UnknownPrefab(name.to_string()));
-        }
+        self.prefab_dir.as_ref().ok_or(EditError::NotInProject)?;
+        let path = self.prefab_path(name).ok_or_else(|| EditError::UnknownPrefab(name.to_string()))?;
         self.open_scene(path)
+    }
+
+    /// A prefab's file by name, wherever it lies in the project
+    /// (docs/layout.md), or under the folder prefabs were read from.
+    fn prefab_path(&self, name: &str) -> Option<PathBuf> {
+        let kind = scrap::layout::Kind::Prefab;
+        match &self.project {
+            Some(project) => project.file(kind, name),
+            None => scrap::layout::find(self.prefab_dir.as_ref()?, kind, name),
+        }
     }
 
     /// Whether the open document is a prefab rather than a scene.
@@ -572,6 +612,7 @@ impl Session {
 
     /// Write the scene back: to `path`, or where it was opened from.
     pub fn save_scene(&mut self, path: Option<&Path>) -> EditResult<()> {
+        self.wrote();
         let target = path
             .map(Path::to_path_buf)
             .or_else(|| self.scene_path.clone())
@@ -581,9 +622,9 @@ impl Session {
         if is_prefab(Some(&target)) {
             // Everything placed from here on — and every instance in the
             // next scene opened — is what was just saved.
-            if let Some(name) = target.file_stem() {
+            if target.file_stem().is_some() {
                 self.prefabs.insert(
-                    name.to_string_lossy().into_owned(),
+                    scrap::layout::name_of(&target),
                     self.history.scene().entities[0].clone(),
                 );
             }
@@ -910,7 +951,7 @@ impl Session {
             .ok_or(EditError::NoEntity(terrain))?
             .clone();
         let mut source = None;
-        scrap_import::walk(&project.assets(), &mut |path| {
+        scrap_import::walk(project.root(), &mut |path| {
             let named = path
                 .file_stem()
                 .is_some_and(|s| *s.to_string_lossy() == *desc.model());
@@ -987,7 +1028,7 @@ impl Session {
             return Ok(0);
         }
         let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
-        let path = directory.join(format!("{}.prefab", line.prefab));
+        let path = self.prefab_path(&line.prefab).unwrap_or_else(|| directory.join(format!("{}.prefab", line.prefab)));
         let (_, mut prefab) = scrap::Prefabs::read(&path).map_err(EditError::Io)?;
         fn find(desc: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
             if desc.id == id {
@@ -1029,6 +1070,7 @@ impl Session {
     /// that the next campfire placed from `name` is already mossy. One undo
     /// step in the scene; the file stays, as a saved prefab does.
     pub fn make_variant(&mut self, instance: EntityId, name: &str) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a prefab variant"));
@@ -1059,6 +1101,8 @@ impl Session {
         }
         .with(scrap::scene::ModelRef(Default::default()));
         std::fs::create_dir_all(&directory)?;
+        // Beside its base: a variant belongs to the same feature.
+        let directory = self.prefab_path(&line.prefab).and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or(directory);
         let path = directory.join(format!("{name}.{}", scrap::prefab::EXTENSION));
         scrap::Prefabs::save(&variant, &path).map_err(EditError::Io)?;
         self.prefabs.insert(name.to_string(), variant);
@@ -1498,12 +1542,27 @@ impl Session {
     /// either way — that is [`SceneReload::Conflict`], and the caller asks.
     /// While playing it waits: the change is picked up after stop.
     pub fn reload_scene(&mut self) -> EditResult<SceneReload> {
-        let (Some(path), Some((seen, stamps))) = (&self.scene_path, &self.on_disk) else {
+        if self.scene_path.is_none() || self.on_disk.is_none() {
             return Ok(SceneReload::Unchanged);
-        };
+        }
         if self.play.is_some() {
             return Ok(SceneReload::Unchanged);
         }
+        // Nothing on disk moved since the last look, the system says, and
+        // the scene's own file (a stat) is as it was: nothing to compare.
+        // Its prefabs are looked at only when something moved.
+        let disk = self.disk();
+        let (Some(path), Some((_, stamps))) = (&self.scene_path, &self.on_disk) else {
+            return Ok(SceneReload::Unchanged);
+        };
+        let scene_as_was = stamps.first().is_some_and(|(_, at)| *at == scrap::files::modified(path));
+        if disk.is_some() && disk == self.reload_seen && scene_as_was {
+            return Ok(SceneReload::Unchanged);
+        }
+        self.reload_seen = disk;
+        let (Some(path), Some((seen, stamps))) = (&self.scene_path, &self.on_disk) else {
+            return Ok(SceneReload::Unchanged);
+        };
         let now = scrap::live::stamps(path, self.project.as_ref());
         if &now == stamps {
             return Ok(SceneReload::Unchanged);
@@ -1517,7 +1576,21 @@ impl Session {
         }
         if prefabs_changed {
             if let Some(project) = &self.project {
-                self.prefabs = scrap::Prefabs::of(project).0;
+                // The ones whose files changed, read again; all of them
+                // only when one came or went, or an import's did.
+                let was: std::collections::HashMap<&PathBuf, _> = stamps[1..].iter().map(|(p, t)| (p, t)).collect();
+                let library = project.library();
+                let changed: Vec<&PathBuf> = now[1..]
+                    .iter()
+                    .filter(|(p, t)| was.get(p) != Some(&t))
+                    .map(|(p, _)| p)
+                    .collect();
+                let same_files = now.len() == stamps.len() && changed.iter().all(|p| was.contains_key(p));
+                let one_by_one = same_files && changed.iter().all(|p| !p.starts_with(&library));
+                let reread = one_by_one && changed.iter().all(|p| self.prefabs.reread(p).is_ok());
+                if !reread {
+                    self.prefabs = scrap::Prefabs::of(project).0;
+                }
             }
         }
         if scene_changed {
@@ -1724,12 +1797,7 @@ impl Session {
         // An animator's parameters, read from its graph when a wire pulls
         // one: seldom, so from the file each time.
         let parameters = |graph: &str| -> Option<std::collections::BTreeSet<String>> {
-            let path = self
-                .project
-                .as_ref()?
-                .root()
-                .join(scrap::project::ANIMATORS)
-                .join(format!("{graph}.ron"));
+            let path = self.project.as_ref()?.file(scrap::layout::Kind::Animator, graph)?;
             let text = std::fs::read_to_string(path).ok()?;
             let graph: scrap::animgraph::Graph = scrap::ron::from_str(&text).ok()?;
             Some(graph.parameters())
@@ -2323,9 +2391,10 @@ impl Session {
         // Whatever way each was named — `studio scenes/main.ron` opens a
         // relative path, the project's root is absolute.
         let absolute = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        if !absolute(&path).starts_with(absolute(&project.scenes())) || is_prefab(Some(&path)) {
+        let is_scene = project.files(scrap::layout::Kind::Scene).iter().any(|p| absolute(p) == absolute(&path));
+        if !is_scene || is_prefab(Some(&path)) {
             return Err(EditError::Scene(
-                "the game plays scenes from scenes/; open one to play it".into(),
+                "the game plays scenes (*.scene.ron); open one to play it".into(),
             ));
         }
         // Saved when there is something to save: an untouched scene is
@@ -2333,10 +2402,7 @@ impl Session {
         if self.is_modified() {
             self.save_scene(None)?;
         }
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = scrap::layout::name_of(&path);
         // What the game watches is the editor's document as it stands, not
         // the saved file: an edit shows in the running game without a save
         // (see `game::Mirror`). One person's, so under `.scrap/`.
@@ -2370,15 +2436,19 @@ impl Session {
         };
         self.say(
             console::Level::Info,
-            format!("playing scenes/{name}.ron in the game"),
+            format!(
+                "playing {} in the game",
+                project.relative(&path).unwrap_or_else(|| name.clone())
+            ),
         );
         Ok(command)
     }
 
-    /// File → New Scene: make `scenes/NAME.ron` in the open project — a
+    /// File → New Scene: make the scene NAME in the open project's `maps/` — a
     /// ground to stand on — and open it. What was open is not saved first;
     /// save it before, as Unity asks.
     pub fn new_scene(&mut self, name: &str) -> EditResult<PathBuf> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let path = project.new_scene(name).map_err(EditError::Scene)?;
@@ -2463,7 +2533,7 @@ impl Session {
     pub fn layer_names(&self) -> Vec<String> {
         self.project
             .as_ref()
-            .map(|p| p.root().join(scrap::layers::FILE))
+            .map(|p| p.layers_file())
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| scrap::ron::from_str::<scrap::layers::Layers>(&text).ok())
             .map(|l| l.layers)
@@ -2591,6 +2661,7 @@ impl Session {
     /// beside the scene and imports it, so the thing the editor produced is
     /// the same kind of file a person would have written.
     pub fn save_material(&mut self, id: EntityId, name: &str) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
@@ -2722,6 +2793,7 @@ impl Session {
     /// retype it as an instance": doing it by hand leaves the scene holding
     /// a copy that drifts from the file the moment either changes.
     pub fn make_prefab(&mut self, id: EntityId, name: &str) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a prefab"));
@@ -2771,6 +2843,7 @@ impl Session {
         from: impl AsRef<Path>,
         to: impl AsRef<Path>,
     ) -> EditResult<scrap_import::assets::Renamed> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         self.refuse_if_locked_by_others(&project, from.as_ref())?;
@@ -2837,14 +2910,120 @@ impl Session {
 
     /// Every asset source in the project, with its kind, ID, whether it is
     /// built, and how many lines use it: the Project window's list.
+    /// Draw what is ready while the rest is built — pipelines, a dense
+    /// mesh's clusters — rather than wait for all of it, as a game's window
+    /// does: an editor's window, where a scene opens at once and fills in.
+    /// (A session drawing pictures, a test's or a tool's, waits: every
+    /// picture is the whole scene.)
+    pub fn draw_while_building(&mut self) {
+        self.renderer.set_wait_for_pipelines(false);
+    }
+
+    /// A number that moves whenever a file of the open project may have
+    /// changed: the operating system's word of it, and the writes this
+    /// session was told of ([`Session::wrote`]). `None` without a project,
+    /// or where the system cannot watch a folder — then the caller looks.
+    pub fn disk(&self) -> Option<u64> {
+        let project = self.project.as_ref()?;
+        let mut watch = self.watch.lock().unwrap_or_else(|e| e.into_inner());
+        if watch.as_ref().is_none_or(|w| w.root != project.root()) {
+            *watch = watch::Watch::start(project.root());
+        }
+        let changes = watch.as_ref()?.changes();
+        let own = self.own_writes.load(std::sync::atomic::Ordering::Acquire);
+        Some(changes.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ own)
+    }
+
+    /// Files of the project were written here, just now — by this session
+    /// or by whoever drives it (the studio after an action, an agent's
+    /// tool): what was read from the disk is read again at the next ask,
+    /// not when the system's word of it arrives.
+    pub fn wrote(&self) {
+        self.own_writes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// [`Session::assets`] without waiting for it: the listing as last
+    /// read, with the disk it was read for, while a newer one is read on
+    /// another thread — a change heard from the disk (a file saved in
+    /// another program, a `git pull`) no longer stops the frame that hears
+    /// it. What this session wrote itself ([`Session::wrote`]) is read at
+    /// once, as [`Session::assets`] does. `None` before anything was read.
+    pub fn assets_soon(&self) -> Option<(u64, Vec<scrap_import::assets::Entry>)> {
+        use std::sync::atomic::Ordering;
+        let project = self.project.as_ref()?;
+        let disk = self.disk()?;
+        fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+            m.lock().unwrap_or_else(|e| e.into_inner())
+        }
+        let listed = |s: &Self| -> Option<(u64, Vec<scrap_import::assets::Entry>)> {
+            lock(&s.assets_listed).as_ref().map(|(was, entries): &(u64, Vec<_>)| (*was, entries.clone()))
+        };
+        // As read: nothing moved since.
+        if let Some((was, entries)) = listed(self) {
+            if was == disk {
+                return Some((was, entries));
+            }
+        }
+        // Never read, or written here: read now.
+        let own = self.own_writes.load(Ordering::Acquire);
+        if listed(self).is_none() || own != self.listed_own.load(Ordering::Acquire) {
+            return self.assets().ok().map(|entries| (disk, entries));
+        }
+        // Heard from the disk: read beside the frames, the last listing
+        // meanwhile.
+        let mut listing = lock(&self.listing);
+        if let Some((for_disk, job)) = listing.take() {
+            if !job.is_finished() {
+                *listing = Some((for_disk, job));
+            } else if let Ok(Ok(entries)) = job.join() {
+                *lock(&self.assets_listed) = Some((for_disk, entries));
+            }
+        }
+        let now = listed(self);
+        if listing.is_none() && now.as_ref().is_none_or(|(was, _)| *was != disk) {
+            let project = project.clone();
+            *listing = Some((
+                disk,
+                std::thread::spawn(move || {
+                    scrap_import::assets::list(&project).map_err(|e| EditError::Import(format!("{e:#}")))
+                }),
+            ));
+        }
+        now
+    }
+
+    /// A listing read beside the frames has come in, and
+    /// [`Session::assets_soon`] would give it now.
+    pub fn listing_ready(&self) -> bool {
+        self.listing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|(_, job)| job.is_finished())
+    }
+
     pub fn assets(&self) -> EditResult<Vec<scrap_import::assets::Entry>> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
-        scrap_import::assets::list(project).map_err(|e| EditError::Import(format!("{e:#}")))
+        // Listed again only when a file of the project, or what the library
+        // holds, is not as it was: a walk and a stat a file, not a parse.
+        let seen = self.disk().unwrap_or_else(|| files_as_they_are(project));
+        let mut listed = self.assets_listed.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((was, entries)) = listed.as_ref() {
+            if *was == seen {
+                return Ok(entries.clone());
+            }
+        }
+        let own = self.own_writes.load(std::sync::atomic::Ordering::Acquire);
+        let entries = scrap_import::assets::list(project).map_err(|e| EditError::Import(format!("{e:#}")))?;
+        *listed = Some((seen, entries.clone()));
+        self.listed_own.store(own, std::sync::atomic::Ordering::Release);
+        Ok(entries)
     }
 
     /// Delete an asset source nothing uses — on disk, or in the open scene's
     /// unsaved edits. Refused, with the lines, when something does.
     pub fn delete_asset(&mut self, file: impl AsRef<Path>) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let file = file.as_ref();
@@ -2875,6 +3054,7 @@ impl Session {
         from: impl AsRef<Path>,
         to: impl AsRef<Path>,
     ) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         scrap_import::assets::duplicate(&project, from.as_ref(), to.as_ref())
@@ -2896,6 +3076,7 @@ impl Session {
     /// warning that comes back says a clone elsewhere will not find it —
     /// that is for the editor to show, not to swallow.
     pub fn import(&mut self, source: impl AsRef<Path>) -> EditResult<Vec<String>> {
+        self.wrote();
         let source = source.as_ref();
         let warnings = match &self.project {
             Some(project) => {
@@ -3024,24 +3205,12 @@ impl Session {
         out
     }
 
-    /// The animator graphs in `animators/`, by file stem.
+    /// The project's animator graphs, by name.
     fn animator_names(&self) -> Vec<String> {
         let Some(project) = self.project.as_ref() else {
             return Vec::new();
         };
-        std::fs::read_dir(project.root().join(scrap::project::ANIMATORS))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().is_some_and(|x| x == "ron") {
-                    Some(p.file_stem()?.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        project.files(scrap::layout::Kind::Animator).iter().map(scrap::layout::name_of).collect()
     }
 
     /// Whether a typed link finds its asset: by its ID, or by its name.
@@ -3066,14 +3235,11 @@ impl Session {
                 let named = project.scene_names().iter().any(|n| n == link.as_str());
                 named
                     || link.id.is_some_and(|id| {
-                        std::fs::read_dir(project.scenes())
+                        project
+                            .files(scrap::layout::Kind::Scene)
                             .into_iter()
-                            .flatten()
-                            .flatten()
-                            .any(|e| {
-                                let p = e.path();
-                                p.extension().is_some_and(|x| x == "ron")
-                                    && scrap::asset::sidecar_id(scrap::asset::sidecar_of(&p))
+                            .any(|p| {
+                                scrap::asset::sidecar_id(scrap::asset::sidecar_of(&p))
                                         == Some(id)
                             })
                     })
@@ -3109,7 +3275,7 @@ impl Session {
         let found = found.or_else(|| match kind {
             "prefab" => self.prefabs.id_of(name).map(|id| (id, name.to_string())),
             "scene" => {
-                let file = self.project.as_ref()?.scenes().join(format!("{name}.ron"));
+                let file = self.project.as_ref()?.scene(name)?;
                 scrap::asset::sidecar_id(scrap::asset::sidecar_of(&file))
                     .map(|id| (id, name.to_string()))
             }
@@ -3125,14 +3291,12 @@ impl Session {
     fn material_file(&self, name: &str) -> EditResult<PathBuf> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
         let mut found = None;
-        scrap_import::walk(&project.materials(), &mut |p| {
-            if p.extension().is_some_and(|e| e == "scrmat")
-                && p.file_stem().is_some_and(|s| s == name)
-            {
-                found = Some(p.to_path_buf());
+        for p in project.files(scrap::layout::Kind::Material) {
+            if found.is_none() && scrap::layout::name_of(&p) == name {
+                found = Some(p);
             }
-        });
-        found.ok_or_else(|| EditError::Scene(format!("no material `{name}` in materials/")))
+        }
+        found.ok_or_else(|| EditError::Scene(format!("no material `{name}` in the project")))
     }
 
     /// A material's parent and parameters: what each is and whether the
@@ -3190,13 +3354,19 @@ impl Session {
         match self.syncing.take() {
             Some((job, _)) if job.is_finished() => {
                 let synced = job.join().unwrap_or_default();
+                self.synced_at = Some(std::time::Instant::now());
                 Some(self.apply_synced(synced))
             }
             Some(running) => {
                 self.syncing = Some(running);
                 None
             }
+            // Looked a moment ago: a file saved since is found at the next.
+            None if self.synced_at.is_some_and(|t| t.elapsed() < SYNC_EVERY) => None,
+            // Nothing on disk moved since the last update started.
+            None if self.disk().is_some_and(|d| Some(d) == self.synced_disk) => None,
             None => {
+                self.synced_disk = self.disk();
                 // A .blend an open Blender just saved is on its way over
                 // the link; this leaves it a moment to arrive.
                 self.syncing = Some((
@@ -3444,7 +3614,7 @@ impl Session {
         // The project's material shaders, as they are saved.
         if self.shaders.is_none() {
             self.shaders = self.project().map(|p| {
-                scrap::render::MaterialShaders::new(p.root().join(scrap::project::SHADERS))
+                scrap::render::MaterialShaders::new(p.root())
             });
         }
         if let Some(shaders) = &mut self.shaders {
@@ -5413,4 +5583,36 @@ fn find_in(tree: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
         return Some(tree);
     }
     tree.children.iter_mut().find_map(|c| find_in(c, id))
+}
+
+/// How long after one library update the next starts: each walks the
+/// whole project, and back to back they kept a core busy on a big one.
+const SYNC_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Every file of the project as it is — where, when changed, how long —
+/// and the library's folders (a built asset added or taken out changes
+/// theirs), as one number: what [`Session::assets`] lists from.
+fn files_as_they_are(project: &scrap::project::Project) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    let stamp = |path: &Path, hash: &mut std::collections::hash_map::DefaultHasher| {
+        path.hash(hash);
+        if let Ok(meta) = std::fs::metadata(path) {
+            meta.len().hash(hash);
+            meta.modified().ok().hash(hash);
+        }
+    };
+    for path in scrap::layout::walk(project.root()) {
+        stamp(&path, &mut hash);
+    }
+    let library = project.library();
+    stamp(&library, &mut hash);
+    if let Ok(entries) = std::fs::read_dir(&library) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stamp(&entry.path(), &mut hash);
+            }
+        }
+    }
+    hash.finish()
 }

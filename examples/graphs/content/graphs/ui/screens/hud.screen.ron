@@ -1,0 +1,10 @@
+// The heads-up display, drawn over the scene. Each element hangs from an
+// anchor (TopLeft, Top, Center, BottomRight, ...), in pixels of a 1280x720
+// screen, scaled with the window. Move something here and the running game
+// shows it there. See scrap::screen.
+(
+    elements: [
+        (id: "title", anchor: TopLeft, at: (20, 16), size: (400, 30), kind: Text("graphs"), text_size: 22),
+        (id: "quit", anchor: TopRight, at: (-20, 16), size: (120, 36), kind: Button("@hud.quit")),
+    ],
+)

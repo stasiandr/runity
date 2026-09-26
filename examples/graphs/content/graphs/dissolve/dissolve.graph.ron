@@ -1,0 +1,22 @@
+// Burning away and back: noise under a threshold that rises and falls
+// with time is cut out, and a band just over it glows. `edge` is the
+// glowing band's colour, `width` how wide it is.
+(
+    params: [("edge", Color), "width"],
+    nodes: {
+        "grain": SimpleNoise(at: "uv", scale: 30.0),
+        "cells": Noise(at: "position", scale: 2.5),
+        "mixed": Lerp(a: "grain", b: "cells", t: 0.6),
+        "slow": Multiply(a: "time", b: 0.4),
+        "swing": Sine(of: "slow"),
+        "gone": Remap(of: "swing", from: (-1.0, 1.0), to: (-0.05, 1.05)),
+        "left": Subtract(a: "mixed", b: "gone"),
+        "keep": Step(edge: 0.0, of: "left"),
+        "near": Smoothstep(low: 0.0, high: "width", of: "left"),
+        "band": OneMinus(of: "near"),
+        "burn": Multiply(a: "edge", b: "band"),
+        "hot": Multiply(a: "burn", b: 6.0),
+        "paint": Gradient(t: "cells", keys: [(0.0, (0.1, 0.12, 0.2)), (0.5, (0.3, 0.35, 0.55)), (1.0, (0.75, 0.8, 0.95))]),
+    },
+    surface: (albedo: "paint", emission: "hot", alpha: "keep", clip: 0.5, metallic: 0.2, smoothness: 0.6),
+)

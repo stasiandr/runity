@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/lava/lava.scrmat",
+    hash: "1085f218d338df318714529284012d02",
+    id: Some("c97b6958708dc8533a1232f62703e228"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

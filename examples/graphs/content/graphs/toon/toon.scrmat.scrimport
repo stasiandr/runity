@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/toon/toon.scrmat",
+    hash: "45ae00c3f9e2b2e50cad1a08f24f5e29",
+    id: Some("958653df13b9f89e02d24aca0b08426c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

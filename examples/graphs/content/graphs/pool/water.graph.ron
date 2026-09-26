@@ -1,0 +1,38 @@
+// A pool: waves raised by the vertex stage, what is under it seen bent
+// through it (SceneColor, moved by the ripples), foam where it is shallow
+// (the scene's depth behind it), the sky reflected at a glance (Fresnel
+// over Environment). `deep` is its colour where it is deep.
+(
+    params: [("deep", Color)],
+    nodes: {
+        // The vertex stage: two crossing swells.
+        "along": Multiply(a: "position.x", b: 1.7),
+        "across": Multiply(a: "position.z", b: 2.3),
+        "t2": Multiply(a: "time", b: 1.3),
+        "wa": Add(a: "along", b: "t2"),
+        "wb": Subtract(a: "across", b: "time"),
+        "sa": Sine(of: "wa"),
+        "sb": Sine(of: "wb"),
+        "swell": Add(a: "sa", b: "sb"),
+        "height": Multiply(a: "swell", b: 0.04),
+        "lift": Combine(x: 0.0, y: "height", z: 0.0),
+        "raised": Add(a: "position", b: "lift"),
+        // The surface.
+        "drops": Subgraph(name: "ripple", inputs: { "at": "position.xz", "center": (0.4, 3.2), "count": 5.0, "speed": 0.8 }),
+        "bent": Multiply(a: "drops.rings", b: 0.012),
+        "under_at": Add(a: "screen", b: "bent"),
+        "under": SceneColor(at: "under_at"),
+        "through": Subtract(a: "scene_depth", b: "depth"),
+        "murk": Smoothstep(low: 0.0, high: 1.5, of: "through"),
+        "tinted": Lerp(a: "under", b: "deep", t: "murk"),
+        "shallow": Smoothstep(low: 0.0, high: 0.12, of: "through"),
+        "foam": OneMinus(of: "shallow"),
+        "glance": Fresnel(power: 5.0),
+        "sky": Environment(direction: "normal", roughness: 0.05),
+        "mirror": Multiply(a: "sky", b: "glance"),
+        "seen": Add(a: "tinted", b: "mirror"),
+        "frothy": Lerp(a: "seen", b: (0.9, 0.95, 1.0), t: "foam"),
+    },
+    vertex: (position: "raised"),
+    surface: (albedo: (0.0, 0.0, 0.0), emission: "frothy", smoothness: 0.95, alpha: 1.0),
+)

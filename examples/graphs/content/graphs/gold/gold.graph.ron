@@ -1,0 +1,12 @@
+// Gold in Unity's Specular workflow: a dark diffuse and a golden
+// specular colour, turned into the metallic the renderer shades with; a
+// hammered face from noise bent into the normal.
+(
+    nodes: {
+        "dents": Voronoi(at: "uv", scale: 14.0),
+        "bumps": NormalFromHeight(height: "dents.x", strength: 0.04),
+        "wear": Noise(at: "position", scale: 4.0),
+        "shine": Lerp(a: 0.62, b: 0.9, t: "wear"),
+    },
+    surface: (albedo: (0.05, 0.04, 0.02), specular: (1.0, 0.77, 0.34), smoothness: "shine", normal: "bumps"),
+)

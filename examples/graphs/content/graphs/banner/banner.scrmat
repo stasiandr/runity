@@ -1,0 +1,4 @@
+// A banner in the wind: shaders/banner.graph.ron. `params` are its
+// `wind`, its `stripe` and `field` colours (linear) and whether it has a
+// `border` (1 or 0).
+(color: "#ffffff", shader: "banner", params: [0.35, 0.75, 0.06, 0.05, 0.04, 0.09, 0.3, 1.0], render_face: Both)

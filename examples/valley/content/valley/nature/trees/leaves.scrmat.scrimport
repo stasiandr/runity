@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/trees/leaves.scrmat",
+    hash: "dbdeb7afbbc799b6a1cd876d23e20683",
+    id: Some("7d796814931cfa1b27df047e231a9d9c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

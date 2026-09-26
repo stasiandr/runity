@@ -261,8 +261,7 @@ impl Hierarchy {
         let prefab = session.is_prefab();
         let name = session
             .scene_path()
-            .and_then(|p| p.file_stem())
-            .map(|n| n.to_string_lossy().into_owned())
+            .map(scrap::layout::name_of)
             .unwrap_or_else(|| "untitled".into());
         let modified = if session.is_modified() { "*" } else { "" };
         ui.set_text(self.scene_name, &format!("{name}{modified}"));

@@ -49,10 +49,7 @@ impl Asset {
 
     pub fn label(&self) -> String {
         match self {
-            Asset::Scene(p) => p
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            Asset::Scene(p) => scrap::layout::name_of(p),
             Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) | Asset::Sound(n, _) => {
                 n.strip_prefix("builtin:").unwrap_or(n).to_string()
             }
@@ -61,6 +58,9 @@ impl Asset {
 }
 
 pub struct Bottom {
+    /// The project's assets as last read, for the disk as it was then
+    /// ([`Session::disk`]): read again only when it moved.
+    listed: Option<(u64, std::rc::Rc<Listed>)>,
     /// Project, Console, History and Git: each panel's content.
     pub roots: [NodeId; 4],
     /// Which of them is on top in its dock, and so worth updating.
@@ -85,6 +85,10 @@ pub struct Bottom {
     folder: String,
     /// Folders opened in the tree.
     open_folders: std::collections::HashSet<String>,
+    /// Whether the project's own folder has been opened in the tree yet:
+    /// `content/` and `content/<name>/` start open, so its features show at
+    /// once (docs/layout.md).
+    opened_content: bool,
     /// Each tree row's folder, and whether the click was on its arrow.
     folder_rows: HashMap<NodeId, (String, bool)>,
     /// Each folder tile in the grid.
@@ -396,6 +400,7 @@ impl Bottom {
         let git_tab = crate::git_tab::GitTab::new(ui, git);
 
         Self {
+            listed: None,
             roots: [project, console, history, git],
             visible: [true, false, false, false],
             search,
@@ -410,6 +415,7 @@ impl Bottom {
             crumbs,
             folder: String::new(),
             open_folders: Default::default(),
+            opened_content: false,
             folder_rows: HashMap::new(),
             folder_tiles: HashMap::new(),
             crumb_nodes: HashMap::new(),
@@ -750,13 +756,8 @@ fn assets_of(session: &Session, entries: &[Entry]) -> Vec<Asset> {
     {
         let mut out = Vec::new();
         if let Some(project) = session.project() {
-            let dir = project.root().join("scenes");
-            if let Ok(read) = std::fs::read_dir(&dir) {
-                let mut scenes: Vec<PathBuf> = read
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-                    .collect();
-                scenes.sort();
+            {
+                let scenes = project.files(scrap::layout::Kind::Scene);
                 out.extend(scenes.into_iter().map(Asset::Scene));
             }
         }
@@ -791,11 +792,35 @@ fn assets_of(session: &Session, entries: &[Entry]) -> Vec<Asset> {
 impl Bottom {
     /// The Project: the two columns or the one tree, the path of what is
     /// chosen under them, the kind chips.
-    fn update_project(&mut self, ui: &mut Ui, session: &Session) {
-        let entries = session.assets().unwrap_or_default();
+    /// The project's assets, their folders and the imported materials'
+    /// sources: read and sorted when the disk moved ([`Session::disk`]),
+    /// else as last time — a click elsewhere in the studio updates this
+    /// panel too, and on a big project reading it all was most of the
+    /// click.
+    fn listed(&mut self, session: &Session) -> std::rc::Rc<Listed> {
+        // The listing as the session has it — read beside the frames when
+        // the change was heard from the disk — sorted again only when it
+        // is a newer one.
+        let (disk, entries) = match session.assets_soon() {
+            Some((disk, entries)) => (Some(disk), entries),
+            None => (None, session.assets().unwrap_or_default()),
+        };
+        if let (Some(disk), Some((was, listed))) = (disk, &self.listed) {
+            if disk == *was {
+                return listed.clone();
+            }
+        }
         let all = assets_of(session, &entries);
         let sources = sources_of(&entries);
         let folders = folders(&all, session, &sources);
+        let listed = std::rc::Rc::new(Listed { all, sources, folders });
+        self.listed = disk.map(|d| (d, listed.clone()));
+        listed
+    }
+
+    fn update_project(&mut self, ui: &mut Ui, session: &Session) {
+        let listed = self.listed(session);
+        let (all, sources, folders) = (&listed.all, &listed.sources, &listed.folders);
         // A folder gone (moved, deleted): back to the project.
         if !self.folder.is_empty() && !folders.contains(&self.folder) {
             self.folder = String::new();
@@ -1477,6 +1502,16 @@ impl Bottom {
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        if !self.opened_content {
+            if let Some(project) = session.project() {
+                self.opened_content = true;
+                if !project.is_legacy() {
+                    let own = scrap::layout::relative(project.root(), &project.content());
+                    self.open_folders.insert(scrap::project::CONTENT.to_string());
+                    self.open_folders.insert(own);
+                }
+            }
+        }
         self.update_project(ui, session);
 
         // Console
@@ -1917,16 +1952,58 @@ fn asset_file(asset: &Asset, session: &Session) -> Option<String> {
     match asset {
         Asset::Scene(p) => rel(p.clone()),
         Asset::Model(_, file) => file.clone(),
-        Asset::Prefab(n) => {
-            let p = root.join("prefabs").join(format!("{n}.prefab"));
-            p.is_file().then(|| rel(p)).flatten()
-        }
-        Asset::Material(n) => {
-            let p = root.join("materials").join(format!("{n}.scrmat"));
-            p.is_file().then(|| rel(p)).flatten()
-        }
+        Asset::Prefab(n) => file_of(&root, scrap::layout::Kind::Prefab, n).and_then(rel),
+        Asset::Material(n) => file_of(&root, scrap::layout::Kind::Material, n).and_then(rel),
         Asset::Sound(_, file) => Some(file.clone()),
     }
+}
+
+/// How long a walk of the project answers [`file_of`]: a file made or
+/// moved shows in the Project panel this soon.
+const INDEX_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Every file of the project by its kind and name, from one walk.
+struct Index {
+    root: PathBuf,
+    made: std::time::Instant,
+    files: HashMap<(scrap::layout::Kind, String), PathBuf>,
+}
+
+thread_local! {
+    static INDEX: std::cell::RefCell<Option<Index>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The file of `kind` a name names, as [`scrap::layout::find`] finds it,
+/// but from one walk of the project every [`INDEX_FOR`] rather than one a
+/// call: the panel asks for every prefab and material of the project each
+/// update, and a walk of a big one (Dacha's four thousand files) each time
+/// was seconds a frame.
+fn file_of(root: &std::path::Path, kind: scrap::layout::Kind, name: &str) -> Option<PathBuf> {
+    if name.contains('/') {
+        return scrap::layout::find(root, kind, name);
+    }
+    INDEX.with(|index| {
+        let mut index = index.borrow_mut();
+        let stale = index
+            .as_ref()
+            .is_none_or(|i| i.root != root || i.made.elapsed() > INDEX_FOR);
+        if stale {
+            let mut files = HashMap::new();
+            // Sorted, as `find` walks: the first of a name is the one.
+            for path in scrap::layout::walk(root) {
+                let Some(kind) = scrap::layout::kind_of(&scrap::layout::relative(root, &path)) else {
+                    continue;
+                };
+                files.entry((kind, scrap::layout::name_of(&path))).or_insert(path);
+            }
+            *index = Some(Index {
+                root: root.to_path_buf(),
+                made: std::time::Instant::now(),
+                files,
+            });
+        }
+        index.as_ref()?.files.get(&(kind, name.to_string())).cloned()
+    })
 }
 
 /// A right click on a Project entry: Unity's asset context menu.
@@ -2026,6 +2103,13 @@ fn folder_of(asset: &Asset, session: &Session, sources: &Sources) -> String {
         Some(file) => parent_folder(&file),
         None => BUILTIN.to_string(),
     }
+}
+
+/// What the Project panel shows, read from the project.
+struct Listed {
+    all: Vec<Asset>,
+    sources: Sources,
+    folders: Vec<String>,
 }
 
 /// Materials without a file of their own, by the file they were imported

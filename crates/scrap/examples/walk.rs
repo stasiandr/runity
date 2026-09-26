@@ -1,7 +1,7 @@
 //! A window you can walk around in.
 //!
 //! ```text
-//! cargo run --release --features desktop-shell --example walk -- examples/valley/scenes/first-light.ron
+//! cargo run --release --features desktop-shell --example walk -- examples/valley/content/valley/maps/first-light.scene.ron
 //! ```
 //!
 //! WASD moves, the mouse looks, shift runs, space rises, control sinks, and
@@ -177,7 +177,7 @@ impl Game for Walk {
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "examples/valley/scenes/first-light.ron".into());
+        .unwrap_or_else(|| "examples/valley/content/valley/maps/first-light.scene.ron".into());
     // Prefabs and the library come from the project the scene is in, the
     // same way the headless render finds them — walking into a scene and
     // rendering it have to show the same thing.

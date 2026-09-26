@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/food/meat-cooked.glb",
-    hash: "5268199874545692c8a1c33e11d1ec39",
-    id: Some("0ae70a07159633c8058e19c1ed04f389"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

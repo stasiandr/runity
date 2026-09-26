@@ -115,6 +115,22 @@ pub struct ImportSettings {
     /// shadow pass too, which runs no material's own shader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_from: Option<ColourChannel>,
+    /// Named clips cut from a model's takes by frame — Unity's
+    /// `clipAnimations`: one take of a file, `Ellen_JumpTakeOff` its frames
+    /// 1 to 19. The takes themselves are kept beside them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips: Vec<ClipCut>,
+}
+
+/// A clip cut from a take: frames `from` to `to` of the take `take` (its
+/// name, or any take when empty), at the take's own frame rate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipCut {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take: String,
+    pub from: f32,
+    pub to: f32,
 }
 
 /// One of an image's colour channels.
@@ -144,6 +160,7 @@ impl Default for ImportSettings {
             parts: BTreeMap::new(),
             materials: BTreeMap::new(),
             alpha_from: None,
+            clips: Vec::new(),
         }
     }
 }
@@ -601,7 +618,10 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     if colors.iter().all(|c| *c == [255; 4]) {
         colors.clear();
     }
-    let skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
+    let mut skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
+    if let Some(skin) = &mut skin {
+        skin.clips = cut_clips(merge_takes(std::mem::take(&mut skin.clips)), &settings.clips);
+    }
     let look = if settings.keep_uvs {
         None
     } else {
@@ -753,26 +773,62 @@ fn read_skin(
         Some(matrix)
     };
     let roots: Vec<usize> = (0..skeleton.joints.len()).filter(|i| skeleton.joints[*i].parent.is_none()).collect();
-    if let Some(carrier) = roots.first().and_then(|r| above(node_indices[*r])) {
-        if !carrier.abs_diff_eq(glam::Mat4::IDENTITY, 1e-6) && skeleton.joints.len() < u16::MAX as usize {
-            let slot = skeleton.joints.len() as u16;
-            let (scale, rotation, translation) = carrier.to_scale_rotation_translation();
-            skeleton.joints.push(Joint {
-                name: "(skeleton root)".into(),
-                parent: None,
-                // Nothing is weighted to it; bound where it stands.
-                inverse_bind: carrier.inverse().to_cols_array_2d(),
-                rest: PoseTransform {
-                    translation: translation.to_array(),
-                    rotation: rotation.to_array(),
-                    scale: scale.to_array(),
-                },
-            });
+    // The nodes above the skin's root, each a joint of its own under its
+    // name, top first: the armature's scale and turn, and a Unity rig's
+    // root bone that carries its root motion (`Ellen_Root` above
+    // `Ellen_Hips`), whose clips' keys are kept then. Only when there is
+    // something to carry: a skeleton at the model's origin gets none.
+    let mut extra_nodes: Vec<usize> = Vec::new();
+    if let Some(&first) = roots.first() {
+        let mut chain = Vec::new();
+        let mut at = parent_of[node_indices[first]];
+        while let Some(n) = at {
+            if node_indices.contains(&n) {
+                chain.clear();
+                break;
+            }
+            chain.push(n);
+            at = parent_of[n];
+        }
+        chain.reverse();
+        let carried = above(node_indices[first]).is_some_and(|m| !m.abs_diff_eq(glam::Mat4::IDENTITY, 1e-6));
+        let mut node_indices_more = Vec::new();
+        let animated: std::collections::HashSet<usize> = document
+            .animations()
+            .flat_map(|a| a.channels().map(|c| c.target().node().index()).collect::<Vec<_>>())
+            .collect();
+        let needed = carried || chain.iter().any(|n| animated.contains(n));
+        if needed && skeleton.joints.len() + chain.len() < u16::MAX as usize {
+            let mut global = glam::Mat4::IDENTITY;
+            let mut parent: Option<u16> = None;
+            for n in chain {
+                let node = document.nodes().nth(n).expect("a node of the file");
+                let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+                global *= local;
+                let (scale, rotation, translation) = local.to_scale_rotation_translation();
+                let slot = skeleton.joints.len() as u16;
+                skeleton.joints.push(Joint {
+                    name: node.name().unwrap_or("(skeleton root)").to_string(),
+                    parent,
+                    // Nothing is weighted to it; bound where it stands.
+                    inverse_bind: global.inverse().to_cols_array_2d(),
+                    rest: PoseTransform {
+                        translation: translation.to_array(),
+                        rotation: rotation.to_array(),
+                        scale: scale.to_array(),
+                    },
+                });
+                node_indices_more.push(n);
+                parent = Some(slot);
+            }
             for r in roots {
-                skeleton.joints[r].parent = Some(slot);
+                skeleton.joints[r].parent = parent;
             }
         }
+        extra_nodes = node_indices_more;
     }
+    let mut node_indices = node_indices;
+    node_indices.extend(extra_nodes);
 
     let clips = document
         .animations()
@@ -785,6 +841,102 @@ fn read_skin(
         skeleton,
         clips,
     })
+}
+
+/// One take a file exporter split by object — Blender writes
+/// `Ellen_Skeleton|Take 001|BaseLayer` and `Ellen_Root|Take 001|BaseLayer`
+/// for one take of one armature — made one clip again, under the first's
+/// name. Takes of one name only are left as they are.
+fn merge_takes(clips: Vec<Clip>) -> Vec<Clip> {
+    let key = |name: &str| name.split_once('|').map_or(name, |(_, rest)| rest).to_string();
+    let mut out: Vec<Clip> = Vec::new();
+    for clip in clips {
+        match out.iter_mut().find(|c| c.name.contains('|') && key(&c.name) == key(&clip.name)) {
+            Some(same) => {
+                same.duration = same.duration.max(clip.duration);
+                same.channels.extend(clip.channels);
+            }
+            None => out.push(clip),
+        }
+    }
+    out
+}
+
+/// A clip's frame rate, from how far apart its keys are: an exporter that
+/// samples every frame keys each one.
+fn frame_rate(clip: &Clip) -> f32 {
+    let step = clip
+        .channels
+        .iter()
+        .flat_map(|c| c.times.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d > 1e-4)
+        .fold(f32::MAX, f32::min);
+    if step == f32::MAX {
+        30.0
+    } else {
+        (1.0 / step).round().max(1.0)
+    }
+}
+
+/// The takes, and each cut ([`ClipCut`]) as a clip of its own: its keys
+/// from its first frame to its last, with a key made at each end.
+fn cut_clips(mut clips: Vec<Clip>, cuts: &[ClipCut]) -> Vec<Clip> {
+    let mut made = Vec::new();
+    for cut in cuts {
+        let take = clips
+            .iter()
+            .find(|c| !cut.take.is_empty() && (c.name == cut.take || c.name.split('|').any(|p| p == cut.take)))
+            .or_else(|| clips.iter().max_by(|a, b| a.duration.total_cmp(&b.duration)));
+        let Some(take) = take else { continue };
+        let fps = frame_rate(take);
+        let (t0, t1) = (cut.from / fps, (cut.to / fps).max(cut.from / fps));
+        let channels = take
+            .channels
+            .iter()
+            .map(|ch| {
+                let width = ch.values.len() / ch.times.len().max(1);
+                let at = |t: f32| -> Vec<f32> {
+                    let i = ch.times.partition_point(|x| *x < t);
+                    if i == 0 {
+                        return ch.values[..width].to_vec();
+                    }
+                    if i >= ch.times.len() {
+                        return ch.values[(ch.times.len() - 1) * width..].to_vec();
+                    }
+                    let (a, b) = (ch.times[i - 1], ch.times[i]);
+                    let f = if b > a { (t - a) / (b - a) } else { 0.0 };
+                    let (va, vb) = (&ch.values[(i - 1) * width..i * width], &ch.values[i * width..(i + 1) * width]);
+                    if width == 4 {
+                        // A rotation: the short way, then made whole.
+                        let qa = glam::Quat::from_slice(va);
+                        let mut qb = glam::Quat::from_slice(vb);
+                        if qa.dot(qb) < 0.0 {
+                            qb = -qb;
+                        }
+                        qa.slerp(qb, f).to_array().to_vec()
+                    } else {
+                        va.iter().zip(vb).map(|(x, y)| x + (y - x) * f).collect()
+                    }
+                };
+                let mut times = vec![0.0];
+                let mut values = at(t0);
+                for (i, t) in ch.times.iter().enumerate() {
+                    if *t > t0 + 1e-5 && *t < t1 - 1e-5 {
+                        times.push(t - t0);
+                        values.extend_from_slice(&ch.values[i * width..(i + 1) * width]);
+                    }
+                }
+                if t1 > t0 {
+                    times.push(t1 - t0);
+                    values.extend(at(t1));
+                }
+                Channel { joint: ch.joint, path: ch.path, times, values }
+            })
+            .collect();
+        made.push(Clip { name: cut.name.clone(), duration: t1 - t0, channels });
+    }
+    clips.extend(made);
+    clips
 }
 
 fn read_clip(
@@ -1391,33 +1543,31 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<scrap::a
     })?;
     let mut found = Vec::new();
     let mut names = Vec::new();
-    let mut stack = vec![project.assets()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let image = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .is_some_and(|e| ["png", "jpg", "jpeg", "tga", "bmp"].contains(&e.as_str()));
-            if !image {
-                continue;
-            }
-            let stem = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if stem == name {
-                found.push(path);
-            } else {
-                names.push(stem);
-            }
+    walk(project.root(), &mut |path| {
+        let image = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .is_some_and(|e| ["png", "jpg", "jpeg", "tga", "bmp"].contains(&e.as_str()));
+        if !image {
+            return;
+        }
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if stem == name {
+            found.push(path.to_path_buf());
+        } else {
+            names.push(stem);
+        }
+    });
+    found.sort();
+    // Two of one name: the one beside the material is the one it means —
+    // a feature's texture and material lie together (docs/layout.md).
+    if found.len() > 1 {
+        let beside: Vec<PathBuf> = found.iter().filter(|p| p.parent() == material.parent()).cloned().collect();
+        if beside.len() == 1 {
+            found = beside;
         }
     }
     match found.len() {
@@ -1426,7 +1576,7 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<scrap::a
                 .map(|n| format!(" — did you mean `{n}`?"))
                 .unwrap_or_default();
             anyhow::bail!(
-                "{}: no texture `{name}` under assets/{near}",
+                "{}: no texture `{name}` in the project{near}",
                 material.display()
             )
         }
@@ -1652,7 +1802,7 @@ fn parent_link(value: &ron::Value) -> Option<scrap::AssetLink> {
 /// or the one with the name.
 fn find_material(near: &Path, link: &scrap::AssetLink) -> Option<PathBuf> {
     let root = scrap::Project::find(near)
-        .map(|p| p.materials())
+        .map(|p| p.root().to_path_buf())
         .unwrap_or_else(|_| near.parent().map(Path::to_path_buf).unwrap_or_default());
     let mut found = Vec::new();
     walk(&root, &mut |p| {
@@ -2013,15 +2163,18 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
     }
     let mut sidecars = Vec::new();
     let mut sources = Vec::new();
-    for root in [project.assets(), project.materials()] {
-        walk(&root, &mut |path| {
-            if path.extension().and_then(|e| e.to_str()) == Some("scrimport") {
+    // Wherever they lie (docs/layout.md). A sidecar is an import's when
+    // what it is beside is a kind of file the importer takes; a scene's or a
+    // prefab's is `identify`'s.
+    walk(project.root(), &mut |path| {
+        if path.extension().and_then(|e| e.to_str()) == Some("scrimport") {
+            if importable(&path.with_extension("")) {
                 sidecars.push(path.to_path_buf());
-            } else if importable(path) {
-                sources.push(path.to_path_buf());
             }
-        });
-    }
+        } else if importable(path) {
+            sources.push(path.to_path_buf());
+        }
+    });
     sidecars.sort();
     sources.sort();
 
@@ -2135,9 +2288,10 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
         let result = import_to(&source, &library, &new_sidecar, settings)
             .map(|imported| imported.id)
             .map_err(|e| format!("{e:#}"));
-        if result.is_ok() {
-            // The asset is built under its ID, so the one built before the
-            // move has just been written over: only the old sidecar goes.
+        // The asset is built under its ID, so the one built before the move
+        // has just been written over: only the old sidecar goes — unless it
+        // was moved along with its source, and is the new one.
+        if result.is_ok() && !same(&old_sidecar, &new_sidecar) {
             let _ = std::fs::remove_file(&old_sidecar);
         }
         out.push(Reimported {
@@ -2168,15 +2322,21 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
     out
 }
 
-/// Where the project's own text assets are — prefabs, scenes, animator
-/// graphs, screens — with the extension each folder's files have.
-fn text_assets(project: &scrap::Project) -> [(PathBuf, &'static str); 4] {
-    [
-        (project.prefabs(), scrap::prefab::EXTENSION),
-        (project.scenes(), "ron"),
-        (project.root().join(scrap::project::ANIMATORS), "ron"),
-        (project.root().join(scrap::project::UI), "ron"),
-    ]
+/// The kinds of the project's own text assets — prefabs, scenes, animator
+/// graphs, screens — which get a sidecar with an ID and nothing to import.
+const TEXT_ASSETS: [scrap::layout::Kind; 4] = [
+    scrap::layout::Kind::Prefab,
+    scrap::layout::Kind::Scene,
+    scrap::layout::Kind::Animator,
+    scrap::layout::Kind::Screen,
+];
+
+/// Whether a file is one of [`TEXT_ASSETS`], by its path in the project.
+fn is_text_asset(project: &scrap::Project, path: &Path) -> bool {
+    project
+        .relative(path)
+        .and_then(|relative| scrap::layout::kind_of(&relative))
+        .is_some_and(|kind| TEXT_ASSETS.contains(&kind))
 }
 
 /// Give every prefab, scene, animator graph and screen a sidecar with its
@@ -2192,16 +2352,15 @@ fn text_assets(project: &scrap::Project) -> [(PathBuf, &'static str); 4] {
 pub fn identify(project: &scrap::Project) -> Vec<Reimported> {
     let mut sidecars = Vec::new();
     let mut files = Vec::new();
-    for (root, extension) in text_assets(project) {
-        walk(
-            &root,
-            &mut |path| match path.extension().and_then(|e| e.to_str()) {
-                Some("scrimport") => sidecars.push(path.to_path_buf()),
-                Some(e) if e == extension => files.push(path.to_path_buf()),
-                _ => {}
-            },
-        );
-    }
+    walk(project.root(), &mut |path| {
+        if path.extension().and_then(|e| e.to_str()) == Some("scrimport") {
+            if is_text_asset(project, &path.with_extension("")) {
+                sidecars.push(path.to_path_buf());
+            }
+        } else if is_text_asset(project, path) {
+            files.push(path.to_path_buf());
+        }
+    });
     sidecars.sort();
     files.sort();
     let name = |path: &Path| {
@@ -2298,17 +2457,19 @@ pub fn importable(path: &Path) -> bool {
 }
 
 /// Every file under `root`, depth first. Hidden files and folders are
-/// skipped: `.gitkeep`, editor droppings, a `.git` someone nested.
+/// skipped: `.gitkeep`, editor droppings, a `.git` someone nested. So is,
+/// in a project's root, what is derived or code — `library/`, `target/`,
+/// `build/`, `src/` ([`scrap::layout::SKIPPED`]) — so a project's root can
+/// be walked for its content, wherever it lies (docs/layout.md).
 pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
+    let project = root.join(scrap::project::FILE).is_file();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-        {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if name.starts_with('.') || (project && path.is_dir() && scrap::layout::SKIPPED.contains(&name.as_str())) {
             continue;
         }
         if path.is_dir() {

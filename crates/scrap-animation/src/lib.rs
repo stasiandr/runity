@@ -15,6 +15,7 @@ pub mod graph_text;
 pub mod ik;
 pub mod matching;
 pub mod motion;
+pub mod rules;
 pub mod tween;
 
 pub use animator::{advance_animations, Animator, Playing};
@@ -40,6 +41,7 @@ pub fn systems_on(player_loop: &mut scrap_core::player_loop::PlayerLoop, ground:
         "animation",
         move |world, seconds| {
             animgraph::run_controllers(world);
+            rules::run_rules(world, seconds);
             let feet = world.query::<&ik::Ik>().iter().any(|ik| !ik.feet.is_off());
             if feet {
                 let probe = ground(world);

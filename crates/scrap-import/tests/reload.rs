@@ -17,6 +17,16 @@ use std::path::{Path, PathBuf};
 use scrap::{asset, Library, MeshAsset, Project};
 use scrap_import::{import_into, sidecar_for, sync, Change, ImportSettings};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const SQUARE: &str = "\
 v -1.0 0.0 -1.0
 v  1.0 0.0 -1.0
@@ -40,7 +50,7 @@ fn project(name: &str) -> (Project, PathBuf) {
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
+    write_all(path, text).unwrap();
 }
 
 /// File timestamps have a resolution, and a test that writes twice in a
@@ -172,6 +182,28 @@ fn a_moved_source_is_found_by_its_contents_and_keeps_its_settings_and_id() {
     assert!(problems.is_empty(), "{problems:?}");
     assert_eq!(library.len(), 1, "not a second copy under the old name");
     assert!(library.mesh(first.imported.id).is_some());
+}
+
+#[test]
+fn a_source_moved_with_its_sidecar_keeps_the_sidecar_and_its_id() {
+    // Moved as `git mv` or a file manager moves a folder: the sidecar
+    // along with the source, still naming where it was.
+    let (project, root) = project("moved-together");
+    let before = root.join("assets/shape.obj");
+    write(&before, SQUARE);
+    let first = import_into(&project, &before, None).unwrap();
+    let after = root.join("assets/rocks/pebble.obj");
+    std::fs::create_dir_all(after.parent().unwrap()).unwrap();
+    std::fs::rename(&before, &after).unwrap();
+    std::fs::rename(sidecar_for(&before), sidecar_for(&after)).unwrap();
+
+    let done = sync(&project);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].result, Ok(first.imported.id), "the same asset");
+    let settings = ImportSettings::load(sidecar_for(&after)).expect("the sidecar is still there");
+    assert_eq!(settings.source, "assets/rocks/pebble.obj");
+    assert_eq!(settings.id, Some(first.imported.id));
+    assert!(sync(&project).is_empty(), "and nothing is new the next time");
 }
 
 #[test]
@@ -372,6 +404,7 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
         image.save(root.join("assets/ramp.png")).unwrap();
         touch_forward(&root.join("assets/ramp.png"));
     };
+    std::fs::create_dir_all(root.join("assets")).unwrap();
     paint(255);
     let source = root.join("assets/field.scrterrain");
     write(

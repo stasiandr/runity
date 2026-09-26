@@ -17,6 +17,8 @@ scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap" }
 scrap-import = { version = "0.1.0", path = "../scrap-import" }
 serde = "1.0.229"
 serde_json = "1.0.151"
+# Told what changed on disk rather than walking the project to find out.
+notify = "8"
 
 [dev-dependencies]
 image = { version = "0.25.9", default-features = false, features = ["png"] }

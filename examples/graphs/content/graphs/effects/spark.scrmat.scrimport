@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/effects/spark.scrmat",
+    hash: "3ae11c22d8f5f111f417414166d918f9",
+    id: Some("60925c41a75eba032fc976b680f94307"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

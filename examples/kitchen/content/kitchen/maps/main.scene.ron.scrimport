@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/kitchen/maps/main.scene.ron",
+    id: Some("fc47e8b0e3740fbd06e57277b3256469"),
+)

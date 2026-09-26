@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/kitchen/stations/window/window.animator.ron",
+    id: Some("1301c0635ad26aa067cd6003dd32b3d3"),
+)

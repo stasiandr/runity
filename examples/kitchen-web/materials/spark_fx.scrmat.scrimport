@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/spark_fx.scrmat",
-    hash: "251946a29b76f3671e2c873e763de735",
-    id: Some("b637bd84435e722b59e8fca20b998f04"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

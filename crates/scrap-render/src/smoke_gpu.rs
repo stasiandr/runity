@@ -47,7 +47,7 @@ struct Sim {
     n: [u32; 3],
     cells: u32,
     params: wgpu::Buffer,
-    buffers: [wgpu::Buffer; 11],
+    buffers: [wgpu::Buffer; 10],
     solid_version: Option<u64>,
     group: Option<(wgpu::BindGroup, u32)>,
     seen: u64,
@@ -109,10 +109,10 @@ impl SmokeSim {
             },
             count: None,
         }];
-        for b in 1..=10 {
+        for b in 1..=9 {
             entries.push(storage(b, false));
         }
-        entries.push(storage(11, true));
+        entries.push(storage(10, true));
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 12,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -185,7 +185,7 @@ impl SmokeSim {
             let sim = self.sims.get_mut(&smoke.key).expect("made above");
             sim.seen = self.frame;
             if sim.solid_version != Some(smoke.solid_version) && smoke.solid.len() == cells as usize {
-                gpu.queue.write_buffer(&sim.buffers[10], 0, bytemuck::cast_slice(&smoke.solid));
+                gpu.queue.write_buffer(&sim.buffers[9], 0, bytemuck::cast_slice(&smoke.solid));
                 sim.solid_version = Some(smoke.solid_version);
             }
             let group = match &sim.group {
@@ -299,7 +299,6 @@ impl Sim {
             buffer("smoke heat (next)", c * 4),
             buffer("smoke pressure", c * 4),
             buffer("smoke pressure (next)", c * 4),
-            buffer("smoke divergence", c * 4),
             buffer("smoke curl", c * 16),
             buffer("smoke solid", c * 4),
         ];
@@ -331,10 +330,10 @@ impl Sim {
                 size: wgpu::BufferSize::new(std::mem::size_of::<Params>() as u64),
             }),
         }];
-        // Bindings 1..=11 in the shader's order: speed, speed next, smoke,
-        // smoke next, heat, heat next, pressure, pressure next, divergence,
-        // curl, solid.
-        let order = [0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        // Bindings 1..=10 in the shader's order: speed, speed next, smoke,
+        // smoke next, heat, heat next, pressure, pressure next, curl (and
+        // divergence), solid.
+        let order = [0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         for (b, &i) in order.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
                 binding: b as u32 + 1,

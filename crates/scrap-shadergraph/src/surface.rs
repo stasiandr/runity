@@ -38,9 +38,11 @@ pub const TEXTURES: usize = 4;
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShaderGraph {
-    /// Names for the material's `params`, in order: at most eight numbers.
+    /// The material's properties, in order, packed into its eight numbers
+    /// (`params` in its .scrmat): a name alone is a number; `("tint",
+    /// Color)` takes three, `("wind", Vector2)` two, `("on", Boolean)` one.
     #[serde(default)]
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     /// Names of the material's `textures` the graph reads: at most four.
     #[serde(default)]
     pub textures: Vec<String>,
@@ -96,19 +98,141 @@ impl Context for VertexStage<'_> {
         if let Some((_, code, ty)) = VERTEX_BUILTINS.iter().find(|(n, _, _)| *n == name) {
             return Some(Value::new(*code, *ty));
         }
-        let i = self.graph.params.iter().position(|p| p == name)?;
-        Some(Value::new(format!("in.params[{}].{}", i / 4, ["x", "y", "z", "w"][i % 4]), Ty::F1))
+        param_value(self.graph, name, "in.params")
     }
 
     fn builtins(&self) -> Vec<String> {
-        let mut out: Vec<String> = VERTEX_BUILTINS.iter().map(|(n, _, _)| n.to_string()).collect();
-        out.extend(self.graph.params.iter().cloned());
+        let mut out: Vec<String> = VERTEX_BUILTINS
+            .iter()
+            .map(|(n, _, _)| n.to_string())
+            .collect();
+        out.extend(self.graph.params.iter().map(|p| p.name().to_string()));
         out
     }
 
     fn texture(&self, _name: &str, _uv: &str) -> Result<Value, String> {
         Err("the vertex stage reads no textures".to_string())
     }
+}
+
+/// A property of the material the graph reads: a name alone is a number.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Param {
+    Number(String),
+    Typed(String, Kind),
+}
+
+/// What a property is: how many of the material's numbers it takes, and
+/// how a node reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Kind {
+    Float,
+    Vector2,
+    Vector3,
+    Vector4,
+    /// Three numbers, linear red, green and blue: a picker's colour.
+    Color,
+    /// One number, on above a half: read as 1 or 0.
+    Boolean,
+}
+
+impl Param {
+    pub fn name(&self) -> &str {
+        match self {
+            Param::Number(n) | Param::Typed(n, _) => n,
+        }
+    }
+
+    pub fn kind(&self) -> Kind {
+        match self {
+            Param::Number(_) => Kind::Float,
+            Param::Typed(_, k) => *k,
+        }
+    }
+}
+
+impl Kind {
+    /// How many of the eight numbers it takes.
+    pub fn size(self) -> usize {
+        match self {
+            Kind::Float | Kind::Boolean => 1,
+            Kind::Vector2 => 2,
+            Kind::Vector3 | Kind::Color => 3,
+            Kind::Vector4 => 4,
+        }
+    }
+
+    /// Each number's name after the property's: `tint.r`, `wind.x`.
+    fn parts(self) -> &'static [&'static str] {
+        match self {
+            Kind::Float | Kind::Boolean => &[""],
+            Kind::Vector2 => &[".x", ".y"],
+            Kind::Vector3 => &[".x", ".y", ".z"],
+            Kind::Vector4 => &[".x", ".y", ".z", ".w"],
+            Kind::Color => &[".r", ".g", ".b"],
+        }
+    }
+}
+
+/// Where each property starts in the eight numbers, in order.
+pub fn slots(graph: &ShaderGraph) -> Vec<(&Param, usize)> {
+    slots_of(&graph.params)
+}
+
+/// Where each of `params` starts in the eight numbers, in order: a
+/// material's or an emitter's.
+pub fn slots_of(params: &[Param]) -> Vec<(&Param, usize)> {
+    let mut at = 0;
+    params
+        .iter()
+        .map(|p| {
+            let here = at;
+            at += p.kind().size();
+            (p, here)
+        })
+        .collect()
+}
+
+/// The names of the eight numbers a graph uses, as its `// scrap:params`
+/// line gives them: `speed tint.r tint.g tint.b on`.
+pub fn slot_names(graph: &ShaderGraph) -> Vec<String> {
+    slot_names_of(&graph.params)
+}
+
+/// [`slot_names`] of any list of properties.
+pub fn slot_names_of(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .flat_map(|p| {
+            p.kind()
+                .parts()
+                .iter()
+                .map(move |part| format!("{}{part}", p.name()))
+        })
+        .collect()
+}
+
+/// A property read by a node, from the eight numbers at `numbers` (WGSL:
+/// an `array<vec4<f32>, 2>`).
+fn param_value(graph: &ShaderGraph, name: &str, numbers: &str) -> Option<Value> {
+    param_value_of(&graph.params, name, numbers)
+}
+
+/// [`param_value`] of any list of properties.
+pub(crate) fn param_value_of(params: &[Param], name: &str, numbers: &str) -> Option<Value> {
+    let (param, at) = slots_of(params).into_iter().find(|(p, _)| p.name() == name)?;
+    let one = |i: usize| format!("{numbers}[{}].{}", i / 4, ["x", "y", "z", "w"][i % 4]);
+    let kind = param.kind();
+    Some(match kind {
+        Kind::Float => Value::new(one(at), Ty::F1),
+        Kind::Boolean => Value::new(format!("step(0.5, {})", one(at)), Ty::F1),
+        _ => {
+            let ty = Ty::of(kind.size()).expect("two to four");
+            let parts: Vec<String> = (at..at + kind.size()).map(one).collect();
+            Value::new(format!("{}({})", ty.wgsl(), parts.join(", ")), ty)
+        }
+    })
 }
 
 /// What the graph sets of the surface; what is left out stays as the
@@ -132,6 +256,12 @@ pub struct SurfaceOut {
     /// Cut away where the alpha is below this.
     #[serde(default)]
     pub clip: Option<Input>,
+    /// Unity's Specular workflow: the colour of the light it reflects
+    /// straight on, `albedo` then the diffuse colour alone — turned into
+    /// the metallic and base colour the renderer shades with, as glTF turns
+    /// specular-glossiness into metal-roughness. Not with `metallic`.
+    #[serde(default)]
+    pub specular: Option<Input>,
 }
 
 impl SurfaceOut {
@@ -145,6 +275,7 @@ impl SurfaceOut {
             ("normal", &self.normal, Ty::F3),
             ("emission", &self.emission, Ty::F3),
             ("clip", &self.clip, Ty::F1),
+            ("specular", &self.specular, Ty::F3),
         ] {
             if let Some(input) = input {
                 out.push((name, input, ty));
@@ -205,39 +336,35 @@ struct Material<'a> {
     graph: &'a ShaderGraph,
 }
 
+impl Material<'_> {
+    /// Which of the material's four textures `name` is.
+    fn slot(&self, name: &str) -> Result<usize, String> {
+        self.graph.textures.iter().position(|t| t == name).ok_or_else(|| {
+            let hint = scrap_core::spelling::closest(name, self.graph.textures.iter().map(String::as_str))
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            format!("the graph declares no texture `{name}` in `textures`{hint}")
+        })
+    }
+}
+
 impl Context for Material<'_> {
     fn builtin(&self, name: &str) -> Option<Value> {
         if let Some((_, code, ty)) = BUILTINS.iter().find(|(n, _, _)| *n == name) {
             return Some(Value::new(*code, *ty));
         }
-        let i = self.graph.params.iter().position(|p| p == name)?;
-        Some(Value::new(
-            format!("in.params[{}].{}", i / 4, ["x", "y", "z", "w"][i % 4]),
-            Ty::F1,
-        ))
+        param_value(self.graph, name, "in.params")
     }
 
     fn builtins(&self) -> Vec<String> {
         let mut out: Vec<String> = BUILTINS.iter().map(|(n, _, _)| n.to_string()).collect();
-        out.extend(self.graph.params.iter().cloned());
+        out.extend(self.graph.params.iter().map(|p| p.name().to_string()));
         out
     }
 
     fn texture(&self, name: &str, uv: &str) -> Result<Value, String> {
-        match self.graph.textures.iter().position(|t| t == name) {
-            Some(slot) => Ok(Value::new(format!("texture_at(in, {slot}u, {uv})"), Ty::F4)),
-            None => {
-                let hint = scrap_core::spelling::closest(
-                    name,
-                    self.graph.textures.iter().map(String::as_str),
-                )
-                .map(|n| format!(" — did you mean `{n}`?"))
-                .unwrap_or_default();
-                Err(format!(
-                    "the graph declares no texture `{name}` in `textures`{hint}"
-                ))
-            }
-        }
+        let slot = self.slot(name)?;
+        Ok(Value::new(format!("texture_at(in, {slot}u, {uv})"), Ty::F4))
     }
 
     fn derivatives(&self) -> bool {
@@ -266,6 +393,24 @@ impl Context for Material<'_> {
         Ok(Value::new(format!("surface_scene_color({at})"), Ty::F3))
     }
 
+    fn texture_with(&self, name: &str, uv: &str, lod: Option<&str>) -> Result<Value, String> {
+        match lod {
+            None => self.texture(name, uv),
+            Some(lod) => {
+                let slot = self.slot(name)?;
+                Ok(Value::new(format!("texture_at_level(in, {slot}u, {uv}, {lod})"), Ty::F4))
+            }
+        }
+    }
+
+    fn texture_size(&self, name: &str) -> Result<String, String> {
+        Ok(format!("texture_size(in, {}u)", self.slot(name)?))
+    }
+
+    fn environment(&self, direction: &str, roughness: &str) -> Result<Value, String> {
+        Ok(Value::new(format!("surface_environment(in, {direction}, {roughness})"), Ty::F3))
+    }
+
     fn fresnel(&self, power: &str) -> Result<Value, String> {
         Ok(Value::new(
             format!(
@@ -280,7 +425,44 @@ impl Context for Material<'_> {
 /// `// scrap:textures` lines, the helpers it needs, and `fn surface`. `from`
 /// names the file, in the first comment.
 pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
+    to_wgsl_with(graph, from, &crate::subgraph::NoSubgraphs)
+}
+
+/// The graph with its subgraphs put in ([`crate::subgraph::expand`]).
+fn expanded(
+    graph: &ShaderGraph,
+    library: &dyn crate::subgraph::Library,
+) -> Result<ShaderGraph, String> {
+    let mut out = graph.clone();
+    let s = &mut out.surface;
+    let v = &mut out.vertex;
+    let mut outputs: Vec<&mut Input> = [
+        &mut s.albedo,
+        &mut s.alpha,
+        &mut s.metallic,
+        &mut s.smoothness,
+        &mut s.normal,
+        &mut s.emission,
+        &mut s.clip,
+        &mut s.specular,
+        &mut v.position,
+        &mut v.normal,
+    ]
+    .into_iter()
+    .filter_map(Option::as_mut)
+    .collect();
+    out.nodes = crate::subgraph::expand(&graph.nodes, &mut outputs, library)?;
+    Ok(out)
+}
+
+/// [`to_wgsl`], its `Subgraph` nodes found in `library`.
+pub fn to_wgsl_with(
+    graph: &ShaderGraph,
+    from: &str,
+    library: &dyn crate::subgraph::Library,
+) -> Result<String, String> {
     shape(graph)?;
+    let graph = &expanded(graph, library)?;
     let context = Material { graph };
     let outputs = graph.surface.fields();
     let wanted: Vec<(String, &Input)> = outputs
@@ -296,26 +478,39 @@ pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
     let vertex = if moves.is_empty() {
         None
     } else {
-        Some(expr::compile(&graph.nodes, &vertex_wanted, &VertexStage { graph })?)
+        Some(expr::compile(
+            &graph.nodes,
+            &vertex_wanted,
+            &VertexStage { graph },
+        )?)
     };
     let mut out = String::new();
     out.push_str(&format!(
         "// Made from {from} by the shader graph: edit that, not this.\n"
     ));
     if !graph.params.is_empty() {
-        out.push_str(&format!("// scrap:params {}\n", graph.params.join(" ")));
+        out.push_str(&format!(
+            "// scrap:params {}\n",
+            slot_names(graph).join(" ")
+        ));
     }
     if !graph.textures.is_empty() {
         out.push_str(&format!("// scrap:textures {}\n", graph.textures.join(" ")));
     }
     // Each helper once, whichever stage wanted it.
     let mut helpers: Vec<&str> = Vec::new();
-    for h in std::iter::once(&compiled).chain(vertex.as_ref()).flat_map(|c| c.helpers.split_inclusive("\n}\n")) {
+    for h in std::iter::once(&compiled)
+        .chain(vertex.as_ref())
+        .flat_map(|c| c.helpers.split_inclusive("\n}\n"))
+    {
         if !h.trim().is_empty() && !helpers.contains(&h) {
             helpers.push(h);
         }
     }
     out.extend(helpers);
+    if graph.surface.specular.is_some() {
+        out.push_str(SPECULAR);
+    }
     out.push_str("fn surface(in: SurfaceIn, out: Surface) -> Surface {\n");
     out.push_str(&compiled.body);
     out.push_str("    var o = out;\n");
@@ -324,6 +519,10 @@ pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
         if *name == "clip" {
             out.push_str(&format!(
                 "    if (o.alpha < {code}) {{\n        discard;\n    }}\n"
+            ));
+        } else if *name == "specular" {
+            out.push_str(&format!(
+                "    let sg_metal = sg_specular_workflow(o.albedo, {code});\n    o.albedo = sg_metal.rgb;\n    o.metallic = sg_metal.a;\n"
             ));
         } else {
             out.push_str(&format!("    o.{name} = {code};\n"));
@@ -343,9 +542,69 @@ pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// The graph made to show one of its nodes: black, glowing with the
+/// node's value — a number as grey, a vec2 as red and green, a vec4's
+/// colour — its vertex stage as it is. What an editor's node preview draws.
+pub fn preview_of(
+    graph: &ShaderGraph,
+    node: &str,
+    library: &dyn crate::subgraph::Library,
+) -> Result<ShaderGraph, String> {
+    if !graph.nodes.contains_key(node) {
+        return Err(format!("no node `{node}` to show"));
+    }
+    // Read as the graph reads it: a subgraph call's one output.
+    let mut read = Input::from(node);
+    let mut expanded = graph.clone();
+    expanded.nodes = crate::subgraph::expand(&graph.nodes, &mut [&mut read], library)?;
+    let compiled = expr::compile(
+        &expanded.nodes,
+        &[(format!("node `{node}`"), &read)],
+        &Material { graph: &expanded },
+    )?;
+    let node = match &read {
+        Input::Name(n) => n.as_str(),
+        _ => node,
+    };
+    let ty = compiled.outputs[0].ty;
+    let mut out = graph.clone();
+    let shown = match ty {
+        Ty::F1 | Ty::F3 => Input::from(node),
+        Ty::F4 => Input::Name(format!("{node}.rgb")),
+        Ty::F2 => {
+            out.nodes.insert(
+                "__shown".to_string(),
+                Node::Combine {
+                    x: Input::Name(format!("{node}.x")),
+                    y: Input::Name(format!("{node}.y")),
+                    z: Some(Input::Number(0.0)),
+                    w: None,
+                },
+            );
+            Input::from("__shown")
+        }
+    };
+    out.surface = SurfaceOut {
+        albedo: Some(Input::Vector(vec![0.0, 0.0, 0.0])),
+        emission: Some(shown),
+        ..Default::default()
+    };
+    Ok(out)
+}
+
 /// What a graph is fine with but is likely a mistake: nodes nothing reads,
 /// parameters and textures declared and not read.
 pub fn problems(graph: &ShaderGraph) -> Vec<String> {
+    problems_with(graph, &crate::subgraph::NoSubgraphs)
+}
+
+/// [`problems`], its `Subgraph` nodes found in `library`.
+pub fn problems_with(graph: &ShaderGraph, library: &dyn crate::subgraph::Library) -> Vec<String> {
+    let Ok(expanded) = expanded(graph, library) else {
+        return Vec::new();
+    };
+    let original = graph;
+    let graph = &expanded;
     let context = Material { graph };
     let outputs = graph.surface.fields();
     let wanted: Vec<(String, &Input)> = outputs
@@ -356,17 +615,32 @@ pub fn problems(graph: &ShaderGraph) -> Vec<String> {
         return Vec::new();
     };
     let moves = graph.vertex.fields();
-    let vertex_wanted: Vec<(String, &Input)> = moves.iter().map(|(n, i, _)| (n.to_string(), *i)).collect();
+    let vertex_wanted: Vec<(String, &Input)> =
+        moves.iter().map(|(n, i, _)| (n.to_string(), *i)).collect();
     if !moves.is_empty() {
         let Ok(vertex) = expr::compile(&graph.nodes, &vertex_wanted, &VertexStage { graph }) else {
             return Vec::new();
         };
         compiled.unused.retain(|n| vertex.unused.contains(n));
     }
-    let mut out: Vec<String> = compiled
-        .unused
+    // Said of the graph as written: a subgraph call is unused when none
+    // of its outputs is read.
+    let unused_call = |call: &str| {
+        let outs: Vec<&String> = graph
+            .nodes
+            .keys()
+            .filter(|k| k.starts_with(&format!("{call}__out__")))
+            .collect();
+        !outs.is_empty() && outs.iter().all(|k| compiled.unused.contains(k))
+    };
+    let mut out: Vec<String> = original
+        .nodes
         .iter()
-        .map(|n| format!("node `{n}` is read by nothing the surface or the vertex stage sets"))
+        .filter(|(n, node)| match node {
+            Node::Subgraph { .. } => unused_call(n),
+            _ => compiled.unused.contains(n),
+        })
+        .map(|(n, _)| format!("node `{n}` is read by nothing the surface or the vertex stage sets"))
         .collect();
     let reads = |name: &str| {
         graph.nodes.iter().any(|(n, node)| {
@@ -381,7 +655,7 @@ pub fn problems(graph: &ShaderGraph) -> Vec<String> {
             .chain(&moves)
             .any(|(_, i, _)| matches!(i, Input::Name(s) if expr::split(s).0 == name))
     };
-    for p in &graph.params {
+    for p in graph.params.iter().map(Param::name) {
         if !reads(p) {
             out.push(format!("parameter `{p}` is read by no node"));
         }
@@ -394,12 +668,40 @@ pub fn problems(graph: &ShaderGraph) -> Vec<String> {
     out
 }
 
+/// Diffuse and specular colours as a base colour and a metallic (in `a`),
+/// by the glTF sample's conversion: the metallic that gives the specular's
+/// brightness over the dielectric's 0.04, the colour blended from what
+/// each side says by it.
+const SPECULAR: &str = "fn sg_brightness(c: vec3<f32>) -> f32 {
+    return sqrt(dot(c * c, vec3<f32>(0.299, 0.587, 0.114)));
+}
+fn sg_specular_workflow(diffuse: vec3<f32>, specular: vec3<f32>) -> vec4<f32> {
+    let one_minus = 1.0 - max(specular.r, max(specular.g, specular.b));
+    let d = sg_brightness(diffuse);
+    let s = sg_brightness(specular);
+    var metallic = 0.0;
+    if s >= 0.04 {
+        let b = d * one_minus / 0.96 + s - 0.08;
+        let c = 0.04 - s;
+        metallic = clamp((-b + sqrt(max(b * b - 0.16 * c, 0.0))) / 0.08, 0.0, 1.0);
+    }
+    let from_diffuse = diffuse * one_minus / (0.96 * max(1.0 - metallic, 1e-4));
+    let from_specular = (specular - vec3<f32>(0.04 * (1.0 - metallic))) / max(metallic, 1e-4);
+    let base = clamp(mix(from_diffuse, from_specular, metallic * metallic), vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(base, metallic);
+}
+";
+
 /// What the file says that no graph can be, before its nodes are looked at.
 fn shape(graph: &ShaderGraph) -> Result<(), String> {
-    if graph.params.len() > PARAMS {
+    if graph.surface.specular.is_some() && graph.surface.metallic.is_some() {
+        return Err("surface: `specular` and `metallic` are two ways of saying one thing — keep one".into());
+    }
+    let numbers: usize = graph.params.iter().map(|p| p.kind().size()).sum();
+    if numbers > PARAMS {
         return Err(format!(
-            "a material hands its shader {PARAMS} numbers, and `params` names {}",
-            graph.params.len()
+            "a material hands its shader {PARAMS} numbers, and `params` takes {numbers} ({})",
+            slot_names(graph).join(" ")
         ));
     }
     if graph.textures.len() > TEXTURES {
@@ -412,8 +714,8 @@ fn shape(graph: &ShaderGraph) -> Result<(), String> {
     for name in graph
         .params
         .iter()
-        .chain(&graph.textures)
-        .map(String::as_str)
+        .map(Param::name)
+        .chain(graph.textures.iter().map(String::as_str))
     {
         if name.is_empty() || name.contains(['.', ' ']) {
             return Err(format!(
@@ -429,7 +731,12 @@ fn shape(graph: &ShaderGraph) -> Result<(), String> {
         if name.is_empty() || name.contains(['.', ' ']) {
             return Err(format!("`{name}` cannot name a node: no dots or spaces"));
         }
-        if BUILTINS.iter().chain(VERTEX_BUILTINS).any(|(b, _, _)| b == name) || graph.params.contains(name) {
+        if BUILTINS
+            .iter()
+            .chain(VERTEX_BUILTINS)
+            .any(|(b, _, _)| b == name)
+            || graph.params.iter().any(|p| p.name() == name)
+        {
             return Err(format!(
                 "node `{name}` has the name of an input it would hide — call it something else"
             ));
@@ -497,5 +804,55 @@ mod tests {
             w.contains("mix(vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0)"),
             "{w}"
         );
+    }
+
+    #[test]
+    fn the_specular_workflow_is_turned_into_metallic_and_is_not_said_twice() {
+        let g = parse(r#"(surface: (albedo: (0.5, 0.1, 0.1), specular: (0.9, 0.9, 0.9)))"#).unwrap();
+        let wgsl = to_wgsl(&g, "shaders/spec.graph.ron").unwrap();
+        assert!(wgsl.contains("fn sg_specular_workflow") && wgsl.contains("o.metallic = sg_metal.a;"), "{wgsl}");
+        let both = parse(r#"(surface: (metallic: 1.0, specular: (0.9, 0.9, 0.9)))"#).unwrap();
+        assert!(to_wgsl(&both, "x").unwrap_err().contains("two ways of saying one thing"));
+    }
+
+    #[test]
+    fn typed_properties_are_packed_into_the_eight_numbers_in_order() {
+        let g = parse(
+            r#"(
+                params: ["speed", ("tint", Color), ("on", Boolean), ("wind", Vector2)],
+                nodes: {
+                    "lit": Multiply(a: "tint", b: "on"),
+                    "blown": Multiply(a: "wind", b: "speed"),
+                    "all": Add(a: "lit", b: "blown.x"),
+                },
+                surface: (albedo: "all"),
+            )"#,
+        )
+        .unwrap();
+        assert_eq!(
+            slot_names(&g),
+            ["speed", "tint.r", "tint.g", "tint.b", "on", "wind.x", "wind.y"]
+        );
+        let w = to_wgsl(&g, "x").unwrap();
+        assert!(
+            w.contains("// scrap:params speed tint.r tint.g tint.b on wind.x wind.y"),
+            "{w}"
+        );
+        assert!(
+            w.contains("vec3<f32>(in.params[0].y, in.params[0].z, in.params[0].w)"),
+            "{w}"
+        );
+        assert!(w.contains("step(0.5, in.params[1].x)"), "{w}");
+        assert!(
+            w.contains("vec2<f32>(in.params[1].y, in.params[1].z)"),
+            "{w}"
+        );
+        let e = to_wgsl(
+            &parse(r#"(params: [("a", Vector4), ("b", Vector4), "c"], surface: (albedo: "c"))"#)
+                .unwrap(),
+            "x",
+        )
+        .unwrap_err();
+        assert!(e.contains("takes 9"), "{e}");
     }
 }

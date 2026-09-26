@@ -20,6 +20,8 @@
 //! something else — onto a name another file has, or one lines already use
 //! (a builtin a project has not shadowed yet) — is refused rather than done.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -99,19 +101,18 @@ fn stem(path: &Path) -> String {
 
 fn kind(project: &Project, path: &Path) -> Result<Kind> {
     let ext = extension(path);
-    let inside = |dir: PathBuf| normalize(path).starts_with(normalize(&dir));
-    if inside(project.prefabs()) && ext == "prefab" {
-        ensure!(
-            normalize(path.parent().unwrap_or(Path::new(""))) == normalize(&project.prefabs()),
-            "{}: prefabs sit directly in prefabs/, which is where scenes look for them",
-            shown(project, path)
-        );
+    // Anywhere in the project but what is derived or code (docs/layout.md).
+    let relative = project.relative(path).unwrap_or_default();
+    let first = relative.split('/').next().unwrap_or_default();
+    let content =
+        !relative.is_empty() && !scrap::layout::SKIPPED.contains(&first) && !first.starts_with('.');
+    if content && ext == "prefab" {
         return Ok(Kind::Prefab);
     }
-    if inside(project.materials()) && ext == "scrmat" {
+    if content && ext == "scrmat" {
         return Ok(Kind::Material);
     }
-    if inside(project.assets()) && importable(path) {
+    if content && importable(path) {
         return Ok(if MODEL_EXTENSIONS.contains(&ext.as_str()) {
             Kind::Model
         } else {
@@ -119,7 +120,7 @@ fn kind(project: &Project, path: &Path) -> Result<Kind> {
         });
     }
     bail!(
-        "{} is not an asset source: renaming works on models, textures and sounds in assets/, .scrmat in materials/ and .prefab in prefabs/",
+        "{} is not an asset source: renaming works on models, textures, sounds, .scrmat and .prefab in the project's content",
         shown(project, path)
     )
 }
@@ -151,7 +152,7 @@ pub fn usages_of(project: &Project, what: &AssetRef) -> Result<Vec<Usage>> {
         }
     }
     for (path, prefab) in &documents.prefabs {
-        for at in refs::uses(std::slice::from_ref(prefab), what) {
+        for at in refs::uses(std::slice::from_ref(prefab.as_ref()), what) {
             out.push(Usage {
                 file: shown(project, path),
                 at,
@@ -225,14 +226,16 @@ pub fn rename(project: &Project, from: &Path, to: &Path) -> Result<Renamed> {
 
     let mut rewritten = Vec::new();
     if let Some(what) = &reference {
-        for (path, mut scene) in documents.scenes {
+        for (path, scene) in documents.scenes {
+            let mut scene = Arc::unwrap_or_clone(scene);
             let count = refs::rewrite_scene(&mut scene, what, &new);
             if count > 0 {
                 scene.save(&path)?;
                 rewritten.push((shown(project, &path), count));
             }
         }
-        for (path, mut prefab) in documents.prefabs {
+        for (path, prefab) in documents.prefabs {
+            let mut prefab = Arc::unwrap_or_clone(prefab);
             let count = refs::rewrite(std::slice::from_mut(&mut prefab), what, &new);
             if count > 0 {
                 Prefabs::save(&prefab, &path).map_err(anyhow::Error::msg)?;
@@ -291,7 +294,7 @@ fn target(
         kind(project, to).with_context(|| format!("{} as the new name", shown(project, to)))?;
     ensure!(
         kind_from == kind_to && extension(from) == extension(to),
-        "{} to {}: a different extension or folder kind makes it another asset, not a {doing}",
+        "{} to {}: a different extension makes it another asset, not a {doing}",
         shown(project, from),
         shown(project, to)
     );
@@ -349,34 +352,50 @@ pub struct Entry {
     pub uses: usize,
 }
 
-/// Every asset source in the project — models, textures and sounds in
-/// `assets/`, materials, prefabs — sorted by file, with how much each is
-/// used.
+/// Every asset source in the project — models, textures, sounds,
+/// materials, prefabs, wherever they lie — sorted by file, with how much
+/// each is used.
 pub fn list(project: &Project) -> Result<Vec<Entry>> {
     let documents = Documents::read(project)?;
-    let mut files = Vec::new();
-    for root in [project.assets(), project.materials(), project.prefabs()] {
-        walk(&root, &mut |path| {
-            if kind(project, path).is_ok() {
-                files.push(path.to_path_buf());
-            }
-        });
+    // Every name every scene and prefab uses, counted in one walk of them:
+    // asked per asset, it was a walk of them all for each of thousands.
+    let mut counts = std::collections::HashMap::new();
+    for (_, scene) in &documents.scenes {
+        refs::count_uses(&scene.entities, &mut counts);
     }
+    for (_, prefab) in &documents.prefabs {
+        refs::count_uses(std::slice::from_ref(prefab.as_ref()), &mut counts);
+    }
+    let used = |what: &AssetRef| counts.get(what).copied().unwrap_or(0);
+    // Which images the terrains paint with, found once: asked per image,
+    // it was a walk of the project for each of hundreds.
+    let mut painted: std::collections::HashMap<PathBuf, usize> = Default::default();
+    walk(project.root(), &mut |path| {
+        if extension(path) != "scrterrain" {
+            return;
+        }
+        if let Some(name) = terrain::heightmap(path) {
+            let dir = path.parent().unwrap_or(Path::new(""));
+            *painted.entry(normalize(&dir.join(name))).or_default() += 1;
+        }
+    });
+    let mut files = Vec::new();
+    walk(project.root(), &mut |path| {
+        if kind(project, path).is_ok() {
+            files.push(path.to_path_buf());
+        }
+    });
     files.sort();
     files.dedup();
     let mut out = Vec::new();
     for path in files {
         let kind = kind(project, &path)?;
-        let sidecar = ImportSettings::load(sidecar_for(&path)).ok();
+        let sidecar = sidecar_read(&sidecar_for(&path));
         let uses = match kind {
-            Kind::Model => documents.uses(project, &AssetRef::Model(stem(&path))).len(),
-            Kind::Material => documents
-                .uses(project, &AssetRef::Material(stem(&path)))
-                .len(),
-            Kind::Prefab => documents
-                .uses(project, &AssetRef::Prefab(stem(&path)))
-                .len(),
-            Kind::Other => painted_by(project, &path).len(),
+            Kind::Model => used(&AssetRef::Model(stem(&path))),
+            Kind::Material => used(&AssetRef::Material(stem(&path))),
+            Kind::Prefab => used(&AssetRef::Prefab(stem(&path))),
+            Kind::Other => painted.get(&normalize(&path)).copied().unwrap_or(0),
         };
         out.push(Entry {
             file: shown(project, &path),
@@ -472,7 +491,7 @@ pub fn duplicate(project: &Project, from: &Path, to: &Path) -> Result<Vec<Reimpo
 fn painted_by(project: &Project, image: &Path) -> Vec<PathBuf> {
     let image = normalize(image);
     let mut found = Vec::new();
-    walk(&project.assets(), &mut |path| {
+    walk(project.root(), &mut |path| {
         if extension(path) != "scrterrain" {
             return;
         }
@@ -486,50 +505,92 @@ fn painted_by(project: &Project, image: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// A source's import settings, read again only when its sidecar changed
+/// (a listing reads every one; see [`documents_read`]).
+fn sidecar_read(path: &Path) -> Option<ImportSettings> {
+    type Read = HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Option<ImportSettings>)>;
+    static READ: std::sync::OnceLock<std::sync::Mutex<Read>> = std::sync::OnceLock::new();
+    let meta = std::fs::metadata(path).ok()?;
+    let (at, len) = (meta.modified().ok(), meta.len());
+    let mut read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((was_at, was_len, settings)) = read.get(path) {
+        if at.is_some() && *was_at == at && *was_len == len {
+            return settings.clone();
+        }
+    }
+    let settings = ImportSettings::load(path).ok();
+    read.insert(path.to_path_buf(), (at, len, settings.clone()));
+    settings
+}
+
 /// Every scene and prefab in a project, read.
 struct Documents {
-    scenes: Vec<(PathBuf, Scene)>,
-    prefabs: Vec<(PathBuf, scrap::EntityDesc)>,
+    scenes: Vec<(PathBuf, Arc<Scene>)>,
+    prefabs: Vec<(PathBuf, Arc<scrap::EntityDesc>)>,
+}
+
+/// A scene or a prefab as read, and the file as it was then.
+#[derive(Clone)]
+enum Read {
+    Scene(Arc<Scene>),
+    Prefab(Arc<scrap::EntityDesc>),
+}
+
+/// What [`Documents::read`] read, by file: a file as it was when read is
+/// not read again. A project's listing reads every scene and prefab, and
+/// an editor asks for it each time a file changes; Dacha's twelve hundred
+/// prefabs took a quarter of a second to parse.
+fn documents_read() -> &'static std::sync::Mutex<HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Read)>> {
+    static READ: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Read)>>> =
+        std::sync::OnceLock::new();
+    READ.get_or_init(Default::default)
 }
 
 impl Documents {
     fn read(project: &Project) -> Result<Self> {
-        let mut scene_paths = Vec::new();
-        walk(&project.scenes(), &mut |path| {
-            if extension(path) == "ron" {
-                scene_paths.push(path.to_path_buf());
-            }
-        });
-        scene_paths.sort();
-        let mut prefab_paths = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(project.prefabs()) {
-            for entry in entries.flatten() {
-                if extension(&entry.path()) == "prefab" {
-                    prefab_paths.push(entry.path());
+        let scene_paths = project.files(scrap::layout::Kind::Scene);
+        let prefab_paths = project.files(scrap::layout::Kind::Prefab);
+        let mut read = documents_read().lock().unwrap_or_else(|e| e.into_inner());
+        let mut cached = |path: &Path, load: &dyn Fn() -> Result<Read>| -> Result<Read> {
+            let meta = std::fs::metadata(path).ok();
+            let (at, len) = (meta.as_ref().and_then(|m| m.modified().ok()), meta.map_or(0, |m| m.len()));
+            if let Some((was_at, was_len, doc)) = read.get(path) {
+                if at.is_some() && *was_at == at && *was_len == len {
+                    return Ok(doc.clone());
                 }
             }
-        }
-        prefab_paths.sort();
+            let doc = load()?;
+            read.insert(path.to_path_buf(), (at, len, doc.clone()));
+            Ok(doc)
+        };
 
         let mut scenes = Vec::new();
         for path in scene_paths {
-            let scene = Scene::load(&path).with_context(|| {
-                format!(
-                    "{} does not load, so what it names cannot be known; fix it first",
-                    shown(project, &path)
-                )
+            let doc = cached(&path, &|| {
+                Scene::load(&path).map(|s| Read::Scene(Arc::new(s))).with_context(|| {
+                    format!(
+                        "{} does not load, so what it names cannot be known; fix it first",
+                        shown(project, &path)
+                    )
+                })
             })?;
-            scenes.push((path, scene));
+            if let Read::Scene(scene) = doc {
+                scenes.push((path, scene));
+            }
         }
         let mut prefabs = Vec::new();
         for path in prefab_paths {
-            let (_, desc) = Prefabs::read(&path).map_err(|e| {
-                anyhow::anyhow!(
-                    "{e}\n{} does not load, so what it names cannot be known; fix it first",
-                    shown(project, &path)
-                )
+            let doc = cached(&path, &|| {
+                Prefabs::read(&path).map(|(_, desc)| Read::Prefab(Arc::new(desc))).map_err(|e| {
+                    anyhow::anyhow!(
+                        "{e}\n{} does not load, so what it names cannot be known; fix it first",
+                        shown(project, &path)
+                    )
+                })
             })?;
-            prefabs.push((path, desc));
+            if let Read::Prefab(desc) = doc {
+                prefabs.push((path, desc));
+            }
         }
         Ok(Self { scenes, prefabs })
     }
@@ -541,7 +602,7 @@ impl Documents {
                 .map(move |at| (path, at))
         });
         let prefabs = self.prefabs.iter().flat_map(|(path, prefab)| {
-            refs::uses(std::slice::from_ref(prefab), what)
+            refs::uses(std::slice::from_ref(prefab.as_ref()), what)
                 .into_iter()
                 .map(move |at| (path, at))
         });
@@ -557,13 +618,8 @@ impl Documents {
 
 /// Another source of the same kind already called `name`.
 fn same_stem(project: &Project, kind: Kind, name: &str, except: Option<&Path>) -> Option<PathBuf> {
-    let root = match kind {
-        Kind::Model => project.assets(),
-        Kind::Material => project.materials(),
-        _ => project.prefabs(),
-    };
     let mut found = None;
-    walk(&root, &mut |path| {
+    walk(project.root(), &mut |path| {
         let matches = match kind {
             Kind::Model => MODEL_EXTENSIONS.contains(&extension(path).as_str()),
             Kind::Material => extension(path) == "scrmat",

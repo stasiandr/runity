@@ -23,8 +23,12 @@ use std::path::{Path, PathBuf};
 
 use crate::Tuned;
 
-/// Where the language files are, in a project.
-pub const DIR: &str = "strings";
+/// Where the language files are, in a project (Unreal's
+/// `Content/Localization/`).
+pub const DIR: &str = "content/localization";
+/// Where a project laid out before 2026-09-26 kept them, read until
+/// 2026-10-31.
+pub const LEGACY_DIR: &str = "strings";
 
 /// One language's table.
 pub type Table = BTreeMap<String, String>;

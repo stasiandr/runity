@@ -112,7 +112,7 @@ claude mcp add scrap -- cargo run -q --release -p scrap-mcp
 ## Посмотреть на кадр
 
 ```
-cargo run --release --example scene_shot -- examples/valley/scenes/first-light.ron -o frame.png
+cargo run --release --example scene_shot -- examples/valley/content/valley/maps/first-light.scene.ron -o frame.png
 ```
 
 Референсная сцена открывается без библиотеки и без импорта — все модели в ней
@@ -123,7 +123,7 @@ cargo run --release --example scene_shot -- examples/valley/scenes/first-light.r
 ## Походить внутри
 
 ```
-cargo run --release --features desktop-shell --example walk -- examples/valley/scenes/first-light.ron
+cargo run --release --features desktop-shell --example walk -- examples/valley/content/valley/maps/first-light.scene.ron
 ```
 
 WASD ходит, левая кнопка мыши крутит голову, Escape выходит. Сцену можно
@@ -149,7 +149,7 @@ WASD ходит, левая кнопка мыши крутит голову, Esc
 же.
 
 ```
-cargo run --release --example scene_shot -- examples/valley/scenes/camp.ron -o camp.png
+cargo run --release --example scene_shot -- examples/valley/content/valley/maps/camp.scene.ron -o camp.png
 ```
 
 Переопределений глубже корня пока нет — «у этого костра третий камень
@@ -190,7 +190,7 @@ cargo nextest run -P daily     # + медленные: > 5 с каждый — C
 
 ```
 cargo run -p scrap-import -- examples/valley/assets/models/pine_large.obj --library examples/valley/library
-cargo run --release --example scene_shot -- examples/valley/scenes/my-scene.ron
+cargo run --release --example scene_shot -- examples/valley/content/valley/maps/my-scene.scene.ron
 ```
 
 Понимает `.gltf`/`.glb` (то, чем экспортируют настоящие инструменты), `.obj`,

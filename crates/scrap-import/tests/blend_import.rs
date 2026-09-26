@@ -16,6 +16,16 @@ use scrap::scene::{Collider, MaterialRef};
 use scrap::{EntityDesc, Library, Prefabs, Project};
 use scrap_import::{sidecar_for, sync, ImportSettings};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 /// Build the test file in Blender: the scene below, IDs stamped, saved.
 const BUILD: &str = r#"
 import sys, bpy
@@ -210,7 +220,7 @@ fn the_scrap_panel_adds_components_a_field_at_a_time() {
     let project = Project::create(&root, "panel").unwrap();
     // What the editor writes for the plugin.
     std::fs::create_dir_all(project.library()).unwrap();
-    std::fs::write(
+    write_all(
         project.library().join("blender.json"),
         r#"{
   "materials": ["stone", "moss"],

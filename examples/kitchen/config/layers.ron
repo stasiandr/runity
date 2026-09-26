@@ -1,0 +1,7 @@
+// Collision layers. A scene line puts a body on one with `layer: "debris"`;
+// a line without one is on "default". Pairs in `ignore` pass through each
+// other. Up to 32. A running game picks up a change here.
+(
+    layers: ["default", "player", "debris"],
+    ignore: [("debris", "player")],
+)

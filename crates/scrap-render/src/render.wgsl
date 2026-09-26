@@ -804,6 +804,26 @@ fn texture_at(in: SurfaceIn, slot: u32, uv: vec2<f32>) -> vec4<f32> {
         default: { return vec4<f32>(1.0); }
     }
 }
+// Its texture `slot` at mip level `lod`, 0 the sharpest.
+fn texture_at_level(in: SurfaceIn, slot: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> {
+    switch slot {
+        case 0u: { return textureSampleLevel(material_texture_0, surface_sampler, uv, lod); }
+        case 1u: { return textureSampleLevel(material_texture_1, surface_sampler, uv, lod); }
+        case 2u: { return textureSampleLevel(material_texture_2, surface_sampler, uv, lod); }
+        case 3u: { return textureSampleLevel(material_texture_3, surface_sampler, uv, lod); }
+        default: { return vec4<f32>(1.0); }
+    }
+}
+// Its texture `slot`'s size in texels.
+fn texture_size(in: SurfaceIn, slot: u32) -> vec2<f32> {
+    switch slot {
+        case 0u: { return vec2<f32>(textureDimensions(material_texture_0)); }
+        case 1u: { return vec2<f32>(textureDimensions(material_texture_1)); }
+        case 2u: { return vec2<f32>(textureDimensions(material_texture_2)); }
+        case 3u: { return vec2<f32>(textureDimensions(material_texture_3)); }
+        default: { return vec2<f32>(1.0); }
+    }
+}
 // maps: end
 
 struct VertexInput {
@@ -2872,6 +2892,13 @@ fn surface_depth(in: SurfaceIn) -> f32 {
 fn surface_scene_depth(in: SurfaceIn) -> f32 {
     let size = vec2<i32>(frame.cluster_depth.zw);
     return scene_view_depth(clamp(vec2<i32>(in.screen), vec2<i32>(0), size - vec2<i32>(1)));
+}
+
+/// The surroundings along `direction` from where the surface is — the
+/// scene's reflection probes, and the sky past them — blurred as a surface
+/// of this roughness sees them: a shader graph's `Environment` node.
+fn surface_environment(in: SurfaceIn, direction: vec3<f32>, roughness: f32) -> vec3<f32> {
+    return probes_and_sky(in.world_position, normalize(direction), saturate(roughness));
 }
 
 /// What was drawn at `at` on the screen (0 to 1): the last frame's picture.

@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/snowfall.scene.ron",
+    id: Some("18198a4392cf87f56712263268493b19"),
+)

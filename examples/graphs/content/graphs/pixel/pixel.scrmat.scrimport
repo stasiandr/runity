@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/pixel/pixel.scrmat",
+    hash: "cae922fca90d126bcc9dc1728b73ac4f",
+    id: Some("1952c2b22bd2e675abf0adbaf2caff82"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -185,45 +185,45 @@ impl std::fmt::Debug for Moving {
 #[derive(Debug, Default, Clone)]
 pub struct Motions {
     pub graphs: HashMap<String, Graph>,
+    /// Animators written as rules (docs/animator.md), by name.
+    pub rules: HashMap<String, crate::rules::RulesFile>,
     pub clips: HashMap<String, Motion>,
 }
 
 impl Motions {
-    /// `animators/*.ron` and `clips/*.ron` under a project's root; what did
-    /// not read, said.
+    /// Every animator graph and clip under a project's root, wherever
+    /// they lie (`*.animator.ron`, `*.clip.ron`; `animators/*.ron` and
+    /// `clips/*.ron` of a project laid out before); what did not read,
+    /// said.
     pub fn load(root: impl AsRef<Path>) -> (Self, Vec<String>) {
         let root = root.as_ref();
         let mut out = Self::default();
         let mut problems = Vec::new();
-        let files = |dir: &Path| -> Vec<std::path::PathBuf> {
-            let mut paths: Vec<_> = scrap_core::files::read_dir(dir)
-                .map(|r| {
-                    r.flatten()
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension().is_some_and(|e| e == "ron")
-                                && !p.to_string_lossy().ends_with(".cases.ron")
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            paths.sort();
-            paths
-        };
-        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned());
-        for path in files(&root.join(crate::project::ANIMATORS)) {
+        let name = |p: &Path| Some(scrap_core::layout::name_of(p));
+        for path in scrap_core::layout::files(root, scrap_core::layout::Kind::Animator) {
             let read = scrap_core::files::read_to_string(&path).map_err(|e| e.to_string());
+            if let Ok(text) = &read {
+                if crate::rules::RulesFile::is_rules(text) {
+                    match ron::from_str::<crate::rules::RulesFile>(text) {
+                        Ok(rules) => {
+                            out.rules.insert(name(&path).unwrap_or_default(), rules);
+                        }
+                        Err(e) => problems.push(format!("{}: {e}", path.display())),
+                    }
+                    continue;
+                }
+            }
             match read.and_then(|t| ron::from_str::<Graph>(&t).map_err(|e| e.to_string())) {
                 Ok(graph) => {
-                    out.graphs.insert(stem(&path).unwrap_or_default(), graph);
+                    out.graphs.insert(name(&path).unwrap_or_default(), graph);
                 }
                 Err(e) => problems.push(format!("{}: {e}", path.display())),
             }
         }
-        for path in files(&root.join(DIR)) {
+        for path in scrap_core::layout::files(root, scrap_core::layout::Kind::Clip) {
             match Motion::load(&path) {
                 Ok(motion) => {
-                    out.clips.insert(stem(&path).unwrap_or_default(), motion);
+                    out.clips.insert(name(&path).unwrap_or_default(), motion);
                 }
                 Err(e) => problems.push(e),
             }
@@ -272,6 +272,62 @@ pub fn attach(
     );
     let mut problems = Vec::new();
     for (entity, animates) in waiting {
+        // Rules (docs/animator.md): on the model's skeleton, as a graph
+        // without clips of its own is.
+        if let Some(rules) = motions.rules.get(&animates.graph) {
+            // No model of its own: the skinned mesh under it, whose bones
+            // are the scene's (Unity's Animator over a SkinnedMeshRenderer).
+            let rig = if animates.model.is_empty() { skinned_under(world, entity) } else { None };
+            if animates.model.is_empty() && rig.is_none() {
+                // Its mesh binds to its bones first.
+                continue;
+            }
+            // The whole model's skeleton, in the frame its clips' files
+            // share (`Ellen` for its piece `Ellen@Ellen_Body`), where there
+            // is one; else the piece's.
+            let model = match &rig {
+                Some((_, link)) => {
+                    let whole = link.name.split('@').next().unwrap_or(&link.name).to_string();
+                    if skins(&crate::AssetLink::named(whole.clone())).is_some() {
+                        crate::AssetLink::named(whole)
+                    } else {
+                        link.clone()
+                    }
+                }
+                None => animates.model.clone(),
+            };
+            scrap_core::world::take_off::<Animates>(world, entity);
+            match skins(&model) {
+                Some(skin) => {
+                    let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
+                    for clip in rules.clips() {
+                        if animator.clip_named(&clip).is_some() {
+                            continue;
+                        }
+                        if let Some(from) = skins(&crate::AssetLink::named(clip.clone())) {
+                            animator.take_clips(&clip, &from.skeleton, &from.clips);
+                        }
+                    }
+                    let clips: Vec<&str> = animator.clips.iter().map(|c| c.name.as_str()).collect();
+                    for problem in rules.problems(&clips) {
+                        problems.push(format!("animator `{}`: {problem}", animates.graph));
+                    }
+                    if world.get::<&crate::rules::RootMotion>(entity).is_ok() {
+                        animator.use_root_motion();
+                    }
+                    if rig.is_some() {
+                        let bound = crate::animator::BoneRig::bind(world, entity, &animator.skeleton);
+                        let _ = world.insert_one(entity, bound);
+                    }
+                    let _ = world.insert(entity, (animator, crate::rules::Rules::new(rules.clone())));
+                }
+                None => problems.push(format!(
+                    "animator `{}`: `{}` has no skeleton",
+                    animates.graph, animates.model
+                )),
+            }
+            continue;
+        }
         let Some(graph) = motions.graphs.get(&animates.graph) else {
             problems.push(format!(
                 "animator `{}`: no such graph in animators/",
@@ -414,6 +470,28 @@ pub fn attach(
         );
     }
     problems
+}
+
+/// The first skinned mesh under `root` bound to its bones, and its model.
+fn skinned_under(world: &World, root: hecs::Entity) -> Option<(hecs::Entity, crate::AssetLink)> {
+    use crate::world::Parent;
+    let mut children: HashMap<hecs::Entity, Vec<hecs::Entity>> = HashMap::new();
+    for (e, p) in world.query::<(hecs::Entity, &Parent)>().iter() {
+        children.entry(p.0).or_default().push(e);
+    }
+    let mut queue = std::collections::VecDeque::from([root]);
+    while let Some(e) = queue.pop_front() {
+        if e != root {
+            if let (Ok(skin), true) = (
+                world.get::<&crate::animator::SkinOf>(e),
+                world.get::<&crate::animator::BoundSkin>(e).is_ok(),
+            ) {
+                return Some((e, skin.0.clone()));
+            }
+        }
+        queue.extend(children.get(&e).into_iter().flatten().copied());
+    }
+    None
 }
 
 /// Samples baked between two keys of a track on a curve: the skeleton's

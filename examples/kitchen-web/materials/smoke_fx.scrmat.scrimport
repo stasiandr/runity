@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/smoke_fx.scrmat",
-    hash: "a8775428e9c0ee58851622bc894fff23",
-    id: Some("78bf0bfe5fd7a27ad21378fcf347cf78"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

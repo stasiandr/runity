@@ -759,6 +759,97 @@ pub fn describe(when: &[Condition]) -> String {
         .join(", ")
 }
 
+/// Which two of a blend state's clips, and how far between them, for
+/// the parameter's value now: below the first is all the first, above
+/// the last all the last.
+pub(crate) fn mix_1d(state: &State, animator: &Animator, value: f32) -> Option<(usize, usize, f32)> {
+    let index = |name: &str| animator.clip_named(name);
+    let points = &state.blend;
+    let (first, last) = (points.first()?, points.last()?);
+    if value <= first.0 {
+        let a = index(&first.1)?;
+        return Some((a, a, 0.0));
+    }
+    if value >= last.0 {
+        let a = index(&last.1)?;
+        return Some((a, a, 0.0));
+    }
+    let pair = points.windows(2).find(|w| value <= w[1].0)?;
+    let weight = (value - pair[0].0) / (pair[1].0 - pair[0].0).max(1e-6);
+    Some((index(&pair[0].1)?, index(&pair[1].1)?, weight))
+}
+
+/// A 2D blend state's mix for the parameters now: the two points either
+/// side of the direction, how far between them, and the middle point
+/// (if there is one) by how far short of their ring it is.
+#[allow(clippy::type_complexity)]
+pub(crate) fn mix_2d(
+state: &State,
+animator: &Animator,
+x: f32,
+y: f32,
+) -> Option<(usize, usize, f32, Option<(usize, f32)>)> {
+    let index = |clip: &str| animator.clip_named(clip);
+    let q = glam::Vec2::new(x, y);
+    let points: Vec<(glam::Vec2, usize)> = state
+        .directional
+        .iter()
+        .filter_map(|(x, y, clip)| Some((glam::Vec2::new(*x, *y), index(clip)?)))
+        .collect();
+    let middle = points
+        .iter()
+        .find(|(p, _)| p.length() < 1e-4)
+        .map(|(_, c)| *c);
+    let ring: Vec<(f32, f32, usize)> = points
+        .iter()
+        .filter(|(p, _)| p.length() >= 1e-4)
+        .map(|(p, c)| (p.y.atan2(p.x), p.length(), *c))
+        .collect();
+    if ring.is_empty() || q.length() < 1e-4 {
+        let c = middle.or(ring.first().map(|r| r.2))?;
+        return Some((c, c, 0.0, None));
+    }
+    let heading = q.y.atan2(q.x);
+    let turn = |a: f32| {
+        let d = (a - heading).rem_euclid(std::f32::consts::TAU);
+        if d > std::f32::consts::PI {
+            d - std::f32::consts::TAU
+        } else {
+            d
+        }
+    };
+    // The nearest on each side; of several at one heading, the one
+    // whose distance is nearest the parameters'.
+    let pick = |before: bool| {
+        ring.iter()
+            .map(|r| (turn(r.0), r))
+            .filter(|(d, _)| if before { *d <= 0.0 } else { *d > 0.0 })
+            .min_by(|(d1, r1), (d2, r2)| {
+                d1.abs().total_cmp(&d2.abs()).then(
+                    (r1.1 - q.length())
+                        .abs()
+                        .total_cmp(&(r2.1 - q.length()).abs()),
+                )
+            })
+            .map(|(d, r)| (d, *r))
+    };
+    let (from, to) = match (pick(true), pick(false)) {
+        (Some(a), Some(b)) => (a, b),
+        (Some(a), None) | (None, Some(a)) => (a, a),
+        (None, None) => return None,
+    };
+    let t = if to.1 .2 == from.1 .2 {
+        0.0
+    } else {
+        -from.0 / (to.0 - from.0)
+    };
+    let edge = from.1 .1 + (to.1 .1 - from.1 .1) * t;
+    let out = (q.length() / edge.max(1e-4)).min(1.0);
+    let third = middle.map(|c| (c, 1.0 - out));
+    Some((from.1 .2, to.1 .2, t, third))
+}
+
+
 /// A controller for each layer of a graph.
 fn graph_layers(graph: &Graph) -> Vec<Controller> {
     graph
@@ -869,94 +960,17 @@ impl Controller {
         self.params.get(name).copied().unwrap_or(0.0)
     }
 
-    /// Which two of a blend state's clips, and how far between them, for
-    /// the parameter's value now: below the first is all the first, above
-    /// the last all the last.
     fn mix(&self, state: &State, animator: &Animator) -> Option<(usize, usize, f32)> {
-        let index = |name: &str| animator.clip_named(name);
-        let value = self.param(&state.blend_by);
-        let points = &state.blend;
-        let (first, last) = (points.first()?, points.last()?);
-        if value <= first.0 {
-            let a = index(&first.1)?;
-            return Some((a, a, 0.0));
-        }
-        if value >= last.0 {
-            let a = index(&last.1)?;
-            return Some((a, a, 0.0));
-        }
-        let pair = points.windows(2).find(|w| value <= w[1].0)?;
-        let weight = (value - pair[0].0) / (pair[1].0 - pair[0].0).max(1e-6);
-        Some((index(&pair[0].1)?, index(&pair[1].1)?, weight))
+        mix_1d(state, animator, self.param(&state.blend_by))
     }
 
-    /// A 2D blend state's mix for the parameters now: the two points either
-    /// side of the direction, how far between them, and the middle point
-    /// (if there is one) by how far short of their ring it is.
     #[allow(clippy::type_complexity)]
     fn mix_2d(
         &self,
         state: &State,
         animator: &Animator,
     ) -> Option<(usize, usize, f32, Option<(usize, f32)>)> {
-        let index = |clip: &str| animator.clip_named(clip);
-        let q = glam::Vec2::new(self.param(&state.blend_by), self.param(&state.blend_by_y));
-        let points: Vec<(glam::Vec2, usize)> = state
-            .directional
-            .iter()
-            .filter_map(|(x, y, clip)| Some((glam::Vec2::new(*x, *y), index(clip)?)))
-            .collect();
-        let middle = points
-            .iter()
-            .find(|(p, _)| p.length() < 1e-4)
-            .map(|(_, c)| *c);
-        let ring: Vec<(f32, f32, usize)> = points
-            .iter()
-            .filter(|(p, _)| p.length() >= 1e-4)
-            .map(|(p, c)| (p.y.atan2(p.x), p.length(), *c))
-            .collect();
-        if ring.is_empty() || q.length() < 1e-4 {
-            let c = middle.or(ring.first().map(|r| r.2))?;
-            return Some((c, c, 0.0, None));
-        }
-        let heading = q.y.atan2(q.x);
-        let turn = |a: f32| {
-            let d = (a - heading).rem_euclid(std::f32::consts::TAU);
-            if d > std::f32::consts::PI {
-                d - std::f32::consts::TAU
-            } else {
-                d
-            }
-        };
-        // The nearest on each side; of several at one heading, the one
-        // whose distance is nearest the parameters'.
-        let pick = |before: bool| {
-            ring.iter()
-                .map(|r| (turn(r.0), r))
-                .filter(|(d, _)| if before { *d <= 0.0 } else { *d > 0.0 })
-                .min_by(|(d1, r1), (d2, r2)| {
-                    d1.abs().total_cmp(&d2.abs()).then(
-                        (r1.1 - q.length())
-                            .abs()
-                            .total_cmp(&(r2.1 - q.length()).abs()),
-                    )
-                })
-                .map(|(d, r)| (d, *r))
-        };
-        let (from, to) = match (pick(true), pick(false)) {
-            (Some(a), Some(b)) => (a, b),
-            (Some(a), None) | (None, Some(a)) => (a, a),
-            (None, None) => return None,
-        };
-        let t = if to.1 .2 == from.1 .2 {
-            0.0
-        } else {
-            -from.0 / (to.0 - from.0)
-        };
-        let edge = from.1 .1 + (to.1 .1 - from.1 .1) * t;
-        let out = (q.length() / edge.max(1e-4)).min(1.0);
-        let third = middle.map(|c| (c, 1.0 - out));
-        Some((from.1 .2, to.1 .2, t, third))
+        mix_2d(state, animator, self.param(&state.blend_by), self.param(&state.blend_by_y))
     }
 
     /// Take the first transition whose conditions hold, if any, and play

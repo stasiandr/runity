@@ -1,0 +1,31 @@
+// A flag in the wind, from a subdivided plane: the vertex stage waves it
+// along its length, still at the pole (its −x end) and most at the free
+// end, pushed along its own normal; the surface paints its stripes and
+// darkens the folds turned away. `wind` is how far it flaps; `red` and
+// `pale` are its stripes' colours, the material's to pick.
+(
+    params: ["wind", ("red", Color), ("pale", Color)],
+    nodes: {
+        "along": Multiply(a: "object.x", b: 0.9),
+        "clock": Multiply(a: "time", b: 4.0),
+        "phase": Subtract(a: "along", b: "clock"),
+        "wave": Sine(of: "phase"),
+        "free": Remap(of: "object.x", from: (-5.0, 5.0), to: (0.0, 1.0)),
+        "flap": Multiply(a: "wave", b: "free"),
+        "far": Multiply(a: "flap", b: "wind"),
+        "push": Multiply(a: "normal", b: "far"),
+        "waved": Add(a: "position", b: "push"),
+
+        "bands": Multiply(a: "uv.y", b: 3.0),
+        "band": Fract(of: "bands"),
+        "stripe": Step(edge: 0.5, of: "band"),
+        "cloth": Lerp(a: "red", b: "pale", t: "stripe"),
+        "lit": Dot(a: "normal", b: "light_direction"),
+        "fold": Remap(of: "lit", from: (-1.0, 1.0), to: (0.55, 1.0)),
+        "paint": Multiply(a: "cloth", b: "fold"),
+        // Lit from below by the lava.
+        "glow": Multiply(a: "paint", b: 0.35),
+    },
+    surface: (albedo: "paint", emission: "glow", smoothness: 0.15),
+    vertex: (position: "waved"),
+)

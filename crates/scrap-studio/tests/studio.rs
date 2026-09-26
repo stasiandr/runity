@@ -38,14 +38,14 @@ fn studio() -> Option<(Studio, std::path::PathBuf)> {
     copy_dir(src.as_ref(), &dir);
     // Only the scene opened: the example's others would fill the Project
     // panel, which does not scroll, and push the tiles dragged here off it.
-    for entry in std::fs::read_dir(dir.join("scenes")).unwrap() {
+    for entry in std::fs::read_dir(dir.join("content/valley/maps")).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         if !name.starts_with("first-light.") {
             std::fs::remove_file(&path).unwrap();
         }
     }
-    let scene = dir.join("scenes/first-light.ron");
+    let scene = dir.join("content/valley/maps/first-light.scene.ron");
     let session = match scrap_studio::open(&scene) {
         Ok(s) => s,
         Err(e) => {
@@ -54,6 +54,9 @@ fn studio() -> Option<(Studio, std::path::PathBuf)> {
         }
     };
     let mut studio = Studio::new(session, 1440.0, 900.0, 1.0);
+    // The library built before anything is looked at, as a project
+    // already opened once has it: not in the background under the test.
+    studio.session.reload_assets();
     studio.frame();
     Some((studio, dir))
 }
@@ -146,6 +149,12 @@ fn key(studio: &mut Studio, key: Key) {
 /// folder it is in, as a person finds it.
 fn find_in_project(s: &mut Studio, name: &str) {
     click(s, "project search");
+    // Over whatever the search held: a second click selects it all only
+    // as a double click, which a slow frame between the two is not.
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
     type_text(s, name);
     s.frame();
 }
@@ -509,7 +518,7 @@ fn save_writes_the_file_and_clears_the_mark() {
     assert!(s.session.is_modified());
     click(&mut s, "save");
     assert!(!s.session.is_modified());
-    let text = std::fs::read_to_string(dir.join("scenes/first-light.ron")).unwrap();
+    let text = std::fs::read_to_string(dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
     assert!(
         !text.contains("\"crate\""),
         "the crate is gone from the file"
@@ -547,7 +556,7 @@ fn play_runs_the_game_itself_and_stops_it() {
     std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"not-built\"\n").unwrap();
     click(&mut s, "play");
     assert!(!s.session.is_playing(), "the game plays, not the editor");
-    assert!(said(&s, "playing scenes/first-light.ron in the game"));
+    assert!(said(&s, "playing content/valley/maps/first-light.scene.ron in the game"));
     s.session.stop_game();
 
     // While a game runs, the button is Stop, and stops it.
@@ -650,7 +659,7 @@ fn snap_and_views_from_the_corner() {
 #[test]
 fn a_scene_changed_on_disk_comes_in_by_itself() {
     let Some((mut s, dir)) = studio() else { return };
-    let path = dir.join("scenes/first-light.ron");
+    let path = dir.join("content/valley/maps/first-light.scene.ron");
     let text = std::fs::read_to_string(&path).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&path, text.replace("\"boulder\"", "\"big rock\"")).unwrap();
@@ -735,11 +744,43 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     click(&mut s, "prefab back");
     assert!(!s.session.is_prefab());
     assert_eq!(s.session.scene_path(), Some(scene.as_path()));
-    let prefab = std::fs::read_to_string(dir.join("prefabs/campfire.prefab")).unwrap();
+    let prefab = std::fs::read_to_string(dir.join("content/valley/camp/campfire/campfire.prefab")).unwrap();
     assert!(
         !prefab.contains("\"ember\""),
         "the prefab was saved without its ember"
     );
+}
+
+/// Time this thread has spent on a core: what the editor itself costs,
+/// however busy the machine is. The wall's time where there is no such
+/// clock.
+#[derive(Clone, Copy)]
+struct Clock(std::time::Duration, std::time::Instant);
+
+impl Clock {
+    fn thread() -> Option<std::time::Duration> {
+        #[cfg(unix)]
+        {
+            let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            // SAFETY: a valid timespec to write into, and a clock every
+            // unix has.
+            if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0 {
+                return Some(std::time::Duration::new(t.tv_sec as u64, t.tv_nsec as u32));
+            }
+        }
+        None
+    }
+
+    fn now() -> Clock {
+        Clock(Self::thread().unwrap_or_default(), std::time::Instant::now())
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        match Self::thread() {
+            Some(t) => t.saturating_sub(self.0),
+            None => self.1.elapsed(),
+        }
+    }
 }
 
 #[test]
@@ -759,19 +800,27 @@ fn a_big_scene_stays_quick() {
     // being drawn once.
     draw_pictures(&mut s);
     // Idle: nothing changed.
-    let t = std::time::Instant::now();
+    // The editor's own work: its thread's time on a core, not the wall's,
+    // which counts the other tests' drawing sharing the cores — on a
+    // software GPU (a CI runner's lavapipe) drawing is the processor's work,
+    // on threads of the driver's own.
+    let mut idle = std::time::Duration::ZERO;
     for _ in 0..10 {
+        let t = Clock::now();
         s.frame();
+        idle += t.elapsed();
     }
-    let idle = t.elapsed() / 10;
+    let idle = idle / 10;
     // A selection change: every line is looked at again.
     let ids = s.session.entities();
-    let t = std::time::Instant::now();
+    let mut select = std::time::Duration::ZERO;
     for id in ids.iter().take(10) {
+        let t = Clock::now();
         s.session.select(Some(*id)).unwrap();
         s.frame();
+        select += t.elapsed();
     }
-    let select = t.elapsed() / 10;
+    let select = select / 10;
     eprintln!("2000 entities: first {first:?}, idle frame {idle:?}, selection frame {select:?}");
     // Debug build, our crates unoptimised: a budget with room, not a target.
     assert!(select.as_millis() < 80, "a selection took {select:?}");
@@ -953,7 +1002,7 @@ fn the_git_tab_commits_what_is_ticked_and_shows_what_a_commit_changed() {
     click(&mut s, "tab git");
     s.frame();
     let dump = s.ui.dump();
-    assert!(dump.contains("#git file scenes/first-light.ron"), "{dump}");
+    assert!(dump.contains("#git file content/valley/maps/first-light.scene.ron"), "{dump}");
     assert!(dump.contains("\"unsaved\""), "the unsaved scene is a change: {dump}");
     assert!(dump.contains("#git file notes.txt"), "{dump}");
     assert!(dump.contains("\"main\""), "the branch: {dump}");
@@ -1012,7 +1061,7 @@ fn the_layout_is_kept_between_runs() {
     s.frame();
     drop(s);
 
-    let session = scrap_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
     let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
     again.frame();
     again.ui.paint();
@@ -1242,7 +1291,7 @@ fn a_tab_dragged_to_another_dock_takes_its_panel_there_and_stays() {
     std::thread::sleep(std::time::Duration::from_millis(600));
     s.frame();
     drop(s);
-    let session = scrap_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
     let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
     again.frame();
     again.ui.paint();
@@ -1399,12 +1448,12 @@ fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
 #[test]
 fn the_project_shows_pictures_of_scenes_and_materials_by_default() {
     let Some((mut s, _dir)) = studio() else { return };
-    click(&mut s, "folder scenes");
+    click(&mut s, "folder maps");
     draw_pictures(&mut s);
     assert_eq!(s.bottom_pictures_pending(), 0, "every picture drawn");
     assert!(s.ui.dump().contains("thumb scene:"), "a scene's picture");
     click(&mut s, "crumb Project");
-    double_click(&mut s, "folder tile materials");
+    click(&mut s, "folder water");
     draw_pictures(&mut s);
     assert!(s.ui.dump().contains("thumb material:"), "a material's picture");
 }
@@ -1521,14 +1570,19 @@ fn assets_are_renamed_and_made_from_the_menus() {
     assert!(s.ui.find("menu Rename…").is_some(), "{menu_dump:?}");
     click(&mut s, "menu Rename…");
     answer(&mut s, "soil");
-    assert!(dir.join("materials/soil.scrmat").is_file(), "renamed");
+    assert!(dir.join("content/valley/nature/ground/soil.scrmat").is_file(), "renamed");
     let crate_id = s.session.find("crate").unwrap();
     assert_eq!(s.session.material_name(crate_id).as_deref(), Some("soil"));
 
     // A component script, then on the crate from the list.
     menu(&mut s, "Assets", "Create Component…");
     answer(&mut s, "door");
-    assert!(dir.join("src/components/door.rs").is_file());
+    // Wherever the layout puts it (docs/layout.md): a component the game
+    // finds by name.
+    assert!(
+        scrap::project::component_files(&dir.join("src")).iter().any(|(n, _)| n == "door"),
+        "door is a component"
+    );
     click(&mut s, "line crate");
     click(&mut s, "add component");
     type_text(&mut s, "doo");
@@ -1555,7 +1609,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     // The crate's colour as a material of its own.
     menu(&mut s, "Assets", "Save Material from Selection…");
     answer(&mut s, "rust");
-    assert!(dir.join("materials/rust.scrmat").is_file());
+    assert!(dir.join("content/valley/rust.scrmat").is_file());
 
     // A variant of an instance of the campfire prefab.
     let fire = s.session.add_instance(None, "campfire").unwrap();
@@ -1573,7 +1627,10 @@ fn assets_are_renamed_and_made_from_the_menus() {
             .collect::<Vec<_>>()
     );
     answer(&mut s, "campfire_lit");
-    assert!(dir.join("prefabs/campfire_lit.prefab").is_file());
+    assert!(
+        scrap::layout::find(&dir, scrap::layout::Kind::Prefab, "campfire_lit").is_some(),
+        "the variant is a prefab, wherever the layout puts it"
+    );
 }
 
 #[test]
@@ -1698,7 +1755,7 @@ fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
     impl scrap::Record for Material {}
 
     let Some((mut s, dir)) = studio() else { return };
-    let file = dir.join("configs/materials.ron");
+    let file = dir.join("content/valley/crafting/materials.ron");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
         &file,
@@ -1706,13 +1763,13 @@ fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
     )
     .unwrap();
     let mut tables = scrap::Tables::new();
-    tables.register::<Material>("configs/materials.ron");
+    tables.register::<Material>("content/valley/crafting/materials.ron");
     tables
         .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
         .unwrap();
     let read = || std::fs::read_to_string(&file).unwrap();
     click(&mut s, "tab configs");
-    click(&mut s, "configs materials.ron");
+    click(&mut s, "configs content/valley/crafting/materials.ron");
 
     // Typed: the cell's text, all of it, then a number and Enter.
     click(&mut s, "configs cell  Палка hard");
@@ -1901,7 +1958,7 @@ fn the_animation_tab_plays_a_clip_in_the_view() {
     let Some((mut s, dir)) = studio() else { return };
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../scrap-import/tests/fixtures/skinned_banner.gltf");
-    std::fs::copy(&fixture, dir.join("assets/banner.gltf")).unwrap();
+    std::fs::copy(&fixture, dir.join("content/valley/banner.gltf")).unwrap();
     menu(&mut s, "Assets", "Refresh");
     let banner = s.session.add(None, "banner").unwrap();
     s.session.select(Some(banner)).unwrap();
@@ -1985,7 +2042,7 @@ fn silence() -> Vec<u8> {
 #[test]
 fn a_sound_is_listed_in_the_project_to_listen_to() {
     let Some((mut s, dir)) = studio() else { return };
-    std::fs::write(dir.join("assets/beep.wav"), silence()).unwrap();
+    std::fs::write(dir.join("content/valley/beep.wav"), silence()).unwrap();
     menu(&mut s, "Assets", "Refresh");
     assert!(s.session.sound("beep").is_some(), "imported");
     click(&mut s, "project search");
@@ -2071,7 +2128,7 @@ fn the_project_filters_by_kind() {
     click(&mut s, "kind All");
     // Not searching: the project's folders, the engine's own among them.
     let dump = s.ui.dump();
-    assert!(dump.contains("#folder tile scenes") && !dump.contains("#asset cube"));
+    assert!(dump.contains("#folder tile content") && !dump.contains("#asset cube"));
     double_click(&mut s, "folder tile Built-in");
     assert!(s.ui.dump().contains("#asset cube"));
 }
@@ -2081,17 +2138,19 @@ fn the_project_goes_into_folders_and_back_up_its_path() {
     let Some((mut s, _dir)) = studio() else { return };
     s.ui.paint();
     // The project's top: folders, nothing loose.
-    assert!(s.ui.find("folder tile scenes").is_some());
+    assert!(s.ui.find("folder tile content").is_some());
     assert!(s.ui.find("asset first-light").is_none());
     // In by the tree…
-    click(&mut s, "folder scenes");
+    click(&mut s, "folder maps");
     assert!(s.ui.find("asset first-light").is_some());
-    assert!(s.ui.find("crumb scenes").is_some());
+    assert!(s.ui.find("crumb maps").is_some());
     // …up by the path…
     click(&mut s, "crumb Project");
     assert!(s.ui.find("asset first-light").is_none());
-    // …in by a double click on a folder's tile.
-    double_click(&mut s, "folder tile scenes");
+    // …in by a double click on a folder's tile, a level at a time.
+    for folder in ["content", "valley", "maps"] {
+        double_click(&mut s, &format!("folder tile {folder}"));
+    }
     assert!(s.ui.find("asset first-light").is_some());
     // A search looks everywhere, and clearing it comes back.
     find_in_project(&mut s, "cube");
@@ -2866,7 +2925,7 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     press(&mut s, "asset stone", MouseButton::Right);
     click(&mut s, "menu Create Material Instance");
     s.frame();
-    let file = dir.join("materials/stone_instance.scrmat");
+    let file = dir.join("content/valley/nature/rocks/stone_instance.scrmat");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
         text.contains(r#"(parent: ("stone", ""#),
@@ -3007,12 +3066,12 @@ fn a_component_s_link_to_a_record_is_picked_from_its_table_and_a_wrong_one_named
     };
     std::fs::create_dir_all(dir.join("configs")).unwrap();
     std::fs::write(
-        dir.join("configs/materials.ron"),
+        dir.join("content/valley/crafting/materials.ron"),
         "{\n    \"Палка\": (id: \"4c1e\", hard: 1),\n    \"Доска\": (id: \"9a02\", hard: 2),\n}\n",
     )
     .unwrap();
     let mut tables = scrap::Tables::new();
-    tables.register::<Material>("configs/materials.ron");
+    tables.register::<Material>("content/valley/crafting/materials.ron");
     tables
         .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
         .unwrap();
@@ -3784,7 +3843,7 @@ fn a_bone_is_picked_from_the_parents_skeleton() {
     let Some((mut s, dir)) = studio() else {
         return;
     };
-    let assets = dir.join("assets");
+    let assets = dir.join("content/valley");
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../scrap-import/tests/fixtures/skinned_banner.gltf"),
@@ -3881,7 +3940,7 @@ fn the_scene_is_the_first_line_and_its_menu_saves_and_reloads() {
     click(&mut s, "hierarchy scene menu");
     click(&mut s, "menu Save Scene");
     assert!(!s.session.is_modified());
-    let text = std::fs::read_to_string(dir.join("scenes/first-light.ron")).unwrap();
+    let text = std::fs::read_to_string(dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
     assert!(text.contains("\"box\""));
     assert_eq!(s.ui.text(name), Some("first-light"));
 
@@ -3984,8 +4043,8 @@ fn a_line_dropped_on_the_scene_line_goes_to_the_top() {
 /// A second scene beside the first, so there is somewhere to go.
 fn second_scene(s: &mut Studio, dir: &std::path::Path) {
     std::fs::copy(
-        dir.join("scenes/first-light.ron"),
-        dir.join("scenes/second.ron"),
+        dir.join("content/valley/maps/first-light.scene.ron"),
+        dir.join("content/valley/maps/second.scene.ron"),
     )
     .unwrap();
     s.refresh();
@@ -3997,34 +4056,34 @@ fn one_column_shows_files_inside_folders_and_is_remembered() {
     second_scene(&mut s, &dir);
     click(&mut s, "project one column");
     s.ui.paint();
-    assert!(s.ui.find("folder line scenes").is_some(), "the folders as lines");
+    assert!(s.ui.find("folder line maps").is_some(), "the folders as lines");
     assert!(s.ui.find("folder tile scenes").is_none(), "no tiles behind it");
     assert!(s.ui.find("asset first-light").is_none(), "shut until opened");
     // Opened by its arrow: its files under it.
-    click(&mut s, "folder line arrow scenes");
+    click(&mut s, "folder line arrow maps");
     assert!(s.ui.find("asset first-light").is_some());
     // A double click on a scene's line opens it.
     double_click(&mut s, "asset second");
-    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    assert!(s.session.scene_path().unwrap().ends_with("second.scene.ron"));
     // Remembered for the next run.
     std::thread::sleep(std::time::Duration::from_millis(600));
     s.frame();
     drop(s);
-    let session = scrap_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
     let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
     again.frame();
     again.ui.paint();
-    assert!(again.ui.find("folder line scenes").is_some(), "one column again");
+    assert!(again.ui.find("folder line maps").is_some(), "one column again");
 }
 
 #[test]
 fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
     let Some((mut s, _dir)) = studio() else { return };
-    click(&mut s, "folder scenes");
+    click(&mut s, "folder maps");
     click(&mut s, "asset first-light");
     let dump = s.ui.dump();
     assert!(
-        dump.contains("\"scenes/\"") && dump.contains("\"first-light.ron\""),
+        dump.contains("\"content/valley/maps/\"") && dump.contains("\"first-light.scene.ron\""),
         "{dump}"
     );
     // The engine's own: under Built-in.
@@ -4043,9 +4102,9 @@ fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
 #[test]
 fn show_asset_goes_to_its_folder_and_chooses_it() {
     let Some((mut s, _dir)) = studio() else { return };
-    assert!(s.show_in_project("scenes/first-light.ron"));
-    assert!(s.ui.find("crumb scenes").is_some(), "in its folder");
-    assert!(s.ui.dump().contains("\"first-light.ron\""), "chosen");
+    assert!(s.show_in_project("content/valley/maps/first-light.scene.ron"));
+    assert!(s.ui.find("crumb maps").is_some(), "in its folder");
+    assert!(s.ui.dump().contains("\"first-light.scene.ron\""), "chosen");
     // By name, in one column: the tree opens down to it.
     click(&mut s, "project one column");
     assert!(s.show_in_project("cube"));
@@ -4058,28 +4117,28 @@ fn show_asset_goes_to_its_folder_and_chooses_it() {
 fn the_arrows_walk_the_project_and_enter_opens() {
     let Some((mut s, dir)) = studio() else { return };
     second_scene(&mut s, &dir);
-    click(&mut s, "folder scenes");
+    click(&mut s, "folder maps");
     click(&mut s, "asset first-light");
     key(&mut s, Key::Right);
-    assert!(s.ui.dump().contains("\"second.ron\""), "the next tile");
+    assert!(s.ui.dump().contains("\"second.scene.ron\""), "the next tile");
     key(&mut s, Key::Enter);
-    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    assert!(s.session.scene_path().unwrap().ends_with("second.scene.ron"));
     // F2 asks for its new name; Delete asks before deleting.
     key(&mut s, Key::F2);
     assert!(s.ui.find("dialog field").is_some(), "renaming");
     click(&mut s, "dialog cancel");
     click(&mut s, "asset first-light");
     key(&mut s, Key::Delete);
-    assert!(s.ui.dump().contains("Delete scenes/first-light.ron"));
-    assert!(dir.join("scenes/first-light.ron").exists(), "only asked");
+    assert!(s.ui.dump().contains("Delete content/valley/maps/first-light.scene.ron"));
+    assert!(dir.join("content/valley/maps/first-light.scene.ron").exists(), "only asked");
     // In one column: right opens a folder, down goes into it.
     key(&mut s, Key::Escape);
     click(&mut s, "project one column");
-    click(&mut s, "folder line prefabs");
+    click(&mut s, "folder line maps");
     key(&mut s, Key::Right);
     key(&mut s, Key::Down);
     let dump = s.ui.dump();
-    assert!(dump.contains("\"prefabs/\""), "a prefab chosen: {dump}");
+    assert!(dump.contains("\"content/valley/maps/\""), "a scene chosen: {dump}");
 }
 
 #[test]
@@ -4179,7 +4238,7 @@ fn a_tab_dropped_on_an_edge_splits_the_stack_which_is_kept_and_folds_when_emptie
     let text = std::fs::read_to_string(dir.join(".scrap/studio.ron")).unwrap();
     assert!(text.contains("left: down("), "{text}");
     drop(s);
-    let session = scrap_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let session = scrap_studio::open(&dir.join("content/valley/maps/first-light.scene.ron")).unwrap();
     let mut s = Studio::new(session, 1440.0, 900.0, 1.0);
     s.frame();
     let top = rect(&mut s, "stack 0a");
@@ -4774,4 +4833,103 @@ fn the_table_sets_a_cell_of_a_tuning_record_and_sorts_by_a_column() {
 
     click(&mut s, "table undo");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
+fn a_materials_shader_properties_are_shown_by_name_and_set_there() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The lava material's shader is a graph with one property, `flow`.
+    find_in_project(&mut s, "lava");
+    s.frame();
+    click(&mut s, "asset lava");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(dump.contains("Shader properties (lava)"), "{dump}");
+    let field = s.ui.find("shader property flow").expect("its field");
+    assert_eq!(s.ui.text(field), Some("0.08"));
+    fill(&mut s, "shader property flow", "0.2");
+    s.frame();
+    let text = std::fs::read_to_string(dir.join("content/valley/lava/lava.scrmat")).unwrap();
+    assert!(text.contains("params: [0.2]"), "{text}");
+    fill(&mut s, "shader property flow", "fast");
+    assert!(
+        s.session.console().iter().any(|l| l.text.contains("number")),
+        "a value that is not a number is refused"
+    );
+}
+
+#[test]
+fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("content/valley/lava/lava.graph.ron");
+    click(&mut s, "tab shadergraph");
+    s.frame();
+    click(&mut s, "shader graphs wide");
+    s.frame();
+    click(&mut s, "graph lava.graph.ron");
+    s.frame();
+    for node in ["drift", "ground", "cracks", "churn", "glow", "surface"] {
+        assert!(s.ui.find(&format!("graph node {node}")).is_some(), "{node}: {}", s.ui.dump());
+    }
+    assert!(s.ui.find("graph edge 0").is_some(), "arrows");
+    assert!(s.ui.dump().contains("Builds."), "{}", s.ui.dump());
+    assert!(s.ui.find("graph preview").is_some(), "the material on a ball");
+
+    // A node chosen: its inputs, its own preview; an input set is one
+    // change in the file, the comment and the other lines as they were.
+    click(&mut s, "graph node churn");
+    s.frame();
+    assert!(s.ui.find("node preview").is_some());
+    let before = std::fs::read_to_string(&file).unwrap();
+    fill(&mut s, "graph input scale", "3.5");
+    s.frame();
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(after.contains(r#""churn": Noise(at: "position", scale: 3.5),"#), "{after}");
+    assert_eq!(before.lines().count(), after.lines().count());
+
+    // Misspelt: said in the compiler's words, and the file keeps it — it is
+    // the person's to fix — with the node marked.
+    fill(&mut s, "graph input at", "\"positon\"");
+    s.frame();
+    assert!(s.ui.dump().contains("did you mean `position`"), "{}", s.ui.dump());
+    fill(&mut s, "graph input at", "\"position\"");
+    s.frame();
+
+    // A node added, and taken out with its line.
+    fill(&mut s, "graph add node", "\"pulse\": Sine(of: \"time\")");
+    s.frame();
+    assert!(std::fs::read_to_string(&file).unwrap().contains(r#""pulse": Sine(of: "time"),"#));
+    assert!(s.ui.find("graph node pulse").is_some());
+    assert!(s.ui.dump().contains("node `pulse` is read by nothing"), "a warning: {}", s.ui.dump());
+    click(&mut s, "graph node pulse");
+    click(&mut s, "graph delete node");
+    s.frame();
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("pulse"));
+
+    // One node read by another: its box dragged onto the other's, and the
+    // input picked — one input in the file, no place kept anywhere.
+    drag_tab(&mut s, "graph node drift", "graph node glow");
+    assert!(s.ui.dump().contains("`glow` reads `drift` as:"), "{}", s.ui.dump());
+    click(&mut s, "graph connect as b");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#""glow": Multiply(a: "heat", b: "drift"),"#), "{text}");
+    // Onto what the graph sets: a field of the surface.
+    drag_tab(&mut s, "graph node churn", "graph node surface");
+    click(&mut s, "graph connect as metallic");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#"smoothness: "rough", metallic: "churn")"#), "{text}");
+
+    // An effect's graph: its three parts are what it sets.
+    click(&mut s, "graph embers.vfx.ron");
+    s.frame();
+    for node in ["spawn", "update", "output", "wind", "hue"] {
+        assert!(s.ui.find(&format!("graph node {node}")).is_some(), "{node}: {}", s.ui.dump());
+    }
+    assert!(s.ui.dump().contains("Builds."));
 }

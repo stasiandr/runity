@@ -771,6 +771,9 @@ pub struct Frame {
     pub distance_field: Option<crate::distance::DistanceField>,
     /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
     pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
+    /// A fullscreen graph over the picture before the post-processing
+    /// ([`crate::fullscreen`]); none by default.
+    pub fullscreen: Option<crate::fullscreen::FullscreenPass>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
     /// how much does, the wind decides.
     pub plumes: Vec<crate::volume::Plume>,
@@ -831,6 +834,7 @@ impl Frame {
             smoke,
             distance_field,
             gpu_particles,
+            fullscreen,
             plumes,
             terrain,
             wind,
@@ -867,6 +871,7 @@ impl Frame {
             smoke: smoke.clone(),
             distance_field: distance_field.clone(),
             gpu_particles: gpu_particles.clone(),
+            fullscreen: fullscreen.clone(),
             plumes: plumes.clone(),
             terrain: terrain.clone(),
             wind: wind.clone(),
@@ -910,6 +915,7 @@ impl Default for Frame {
             smoke: Vec::new(),
             distance_field: None,
             gpu_particles: Vec::new(),
+            fullscreen: None,
             plumes: Vec::new(),
             terrain: None,
             wind: crate::foliage::Wind::default(),
@@ -1509,6 +1515,7 @@ pub struct Renderer {
     bolt: Option<crate::weather::Bolt>,
     /// Particles on the GPU: their pipelines and pools.
     gpu_particles: crate::particles_gpu::GpuParticles,
+    fullscreen: crate::fullscreen::Fullscreen,
     /// Occlusion culling against last frame's depth ([`crate::occlusion`]).
     occlusion: crate::occlusion::Occlusion,
     /// Dense meshes culled a cluster at a time ([`crate::cluster`]).
@@ -1761,21 +1768,39 @@ pub fn has_vertex_stage(shader: &str) -> bool {
     shader.contains("fn vertex(")
 }
 
-/// Every material shader in a folder — `shaders/water.wgsl` for
-/// `shader: "water"`, `shaders/lava.graph.ron` for `shader: "lava"` — and
-/// every particle effect graph — `shaders/sparks.vfx.ron` for an emitter's
-/// `graph: "sparks"` — put into a renderer, and again when one changes.
+/// Every material shader under a folder, wherever it lies — `water.wgsl`
+/// for `shader: "water"`, `lava.graph.ron` for `shader: "lava"` — and every
+/// particle effect graph — `sparks.vfx.ron` for an emitter's `graph:
+/// "sparks"` — put into a renderer, and again when one changes. The folder
+/// is a project's root, usually (docs/layout.md).
 pub struct MaterialShaders {
     dir: std::path::PathBuf,
     stamps: std::collections::HashMap<std::path::PathBuf, Option<std::time::SystemTime>>,
+    /// The shader files last found, and how many polls ago: the project is
+    /// walked again every [`MaterialShaders::WALK_EVERY`] polls, not every
+    /// frame.
+    found: Vec<std::path::PathBuf>,
+    since_walk: Option<u32>,
 }
 
 impl MaterialShaders {
+    /// How many polls a walk of the project is good for: at a frame a poll,
+    /// about a second — how soon a new shader file shows up.
+    pub const WALK_EVERY: u32 = 60;
+
     pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
             dir: dir.into(),
             stamps: Default::default(),
+            found: Vec::new(),
+            since_walk: None,
         }
+    }
+
+    /// Walk the project again at the next poll rather than when the last
+    /// walk runs out: a file just written is found at once.
+    pub fn look_again(&mut self) {
+        self.since_walk = None;
     }
 
     /// Put in whatever is new or changed since the last call: each one's
@@ -1785,16 +1810,35 @@ impl MaterialShaders {
         renderer: &mut Renderer,
         gpu: &Gpu,
     ) -> Vec<(String, Result<(), String>)> {
-        let Ok(entries) = scrap_core::files::read_dir(&self.dir) else {
-            return Vec::new();
-        };
+        if self.since_walk.is_none_or(|n| n >= Self::WALK_EVERY) {
+            self.found = scrap_core::layout::files(&self.dir, scrap_core::layout::Kind::Shader);
+            self.since_walk = Some(0);
+        }
+        self.since_walk = self.since_walk.map(|n| n + 1);
         // What is new or changed, read; then built all together.
         let mut out = Vec::new();
         let mut read = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
+        // A subgraph changed: every graph may call it, and is built again.
+        let mut subgraph_changed = false;
+        for path in &self.found {
+            if path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::subgraph::subgraph_name).is_some() {
+                let stamp = scrap_core::files::modified(path);
+                if self.stamps.get(path) != Some(&stamp) {
+                    self.stamps.insert(path.clone(), stamp);
+                    subgraph_changed = true;
+                }
+            }
+        }
+        if subgraph_changed {
+            self.stamps.retain(|p, _| {
+                let f = p.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+                !(f.ends_with(".graph.ron") || f.ends_with(".vfx.ron") || f.ends_with(".post.ron"))
+            });
+        }
+        for path in self.found.clone() {
             let effect = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::effect_name).map(str::to_string);
-            let Some(name) = material_shader_name(&path).or(effect.clone()) else {
+            let screen = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::fullscreen_name).map(str::to_string);
+            let Some(name) = material_shader_name(&path).or(effect.clone()).or(screen.clone()) else {
                 continue;
             };
             let stamp = scrap_core::files::modified(&path);
@@ -1802,6 +1846,13 @@ impl MaterialShaders {
                 continue;
             }
             self.stamps.insert(path.clone(), stamp);
+            if screen.is_some() {
+                let result = crate::fullscreen::fullscreen_source(&path)
+                    .and_then(|source| renderer.set_fullscreen_graph(gpu, &name, &source))
+                    .map_err(|e| format!("{}:\n{e}", path.display()));
+                out.push((name, result));
+                continue;
+            }
             if effect.is_some() {
                 let result = effect_source(&path)
                     .and_then(|source| renderer.set_effect_graph(gpu, &name, &source))
@@ -1831,8 +1882,8 @@ impl MaterialShaders {
 pub fn effect_source(path: &std::path::Path) -> Result<String, String> {
     let text = scrap_core::files::read_to_string(path).map_err(|e| e.to_string())?;
     let graph = scrap_shadergraph::effect::parse(&text)?;
-    let from = path.file_name().map(|f| format!("shaders/{}", f.to_string_lossy())).unwrap_or_default();
-    scrap_shadergraph::effect::to_wgsl(&graph, &from)
+    let from = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    scrap_shadergraph::effect::to_wgsl_with(&graph, &from, &subgraphs_beside(path))
 }
 
 /// Whether a material's `surface` builds over the standard shader, without
@@ -1841,16 +1892,20 @@ pub fn effect_source(path: &std::path::Path) -> Result<String, String> {
 pub fn check_material_shader(surface: &str) -> Result<(), String> {
     use wgpu::naga;
     let full = with_surface(SHADER, surface)?;
-    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(&full))?;
+    // As bound map by map, and as one array where the GPU has them: a
+    // graph's reads go through either.
+    for on in [false, true] {
+        let full = crate::bindless::prepared(&full, on);
+        let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .map_err(|e| e.emit_to_string(&full))?;
+    }
     Ok(())
 }
 
-/// The shader a file in `shaders/` is, by name: `water.wgsl` and
-/// `lava.graph.ron` (a shader graph) are `water` and `lava`. `None` for
-/// anything else there.
+/// The shader a file is, by name: `water.wgsl` and `lava.graph.ron` (a
+/// shader graph) are `water` and `lava`. `None` for anything else.
 pub fn material_shader_name(path: &std::path::Path) -> Option<String> {
     let file = path.file_name()?.to_str()?;
     if let Some(name) = scrap_shadergraph::shader_name(file) {
@@ -1877,7 +1932,99 @@ pub fn material_shader_source(path: &std::path::Path) -> Result<String, String> 
         ));
     }
     let graph = scrap_shadergraph::surface::parse(&text)?;
-    scrap_shadergraph::surface::to_wgsl(&graph, &format!("shaders/{file}"))
+    scrap_shadergraph::surface::to_wgsl_with(&graph, file, &subgraphs_beside(path))
+}
+
+/// What a property of a material's shader is, for an inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyKind {
+    Number,
+    Vector,
+    Color,
+    Boolean,
+}
+
+/// One property of a material's shader: its name, where its numbers start
+/// in the material's eight `params`, how many, and what it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Property {
+    pub name: String,
+    pub at: usize,
+    pub size: usize,
+    pub kind: PropertyKind,
+}
+
+/// The properties of the material shader called `name` under `dir` (a
+/// project's root: wherever it lies, docs/layout.md): a graph's as it types
+/// them; a hand-written one's from its `// scrap:params` line, `tint.r
+/// tint.g tint.b` read as a colour and `wind.x wind.y` as a vector.
+pub fn material_properties(dir: &std::path::Path, name: &str) -> Vec<Property> {
+    let shaders = scrap_core::layout::files(dir, scrap_core::layout::Kind::Shader);
+    let named = |suffix: &str| {
+        shaders.iter().find(|p| p.file_name().and_then(|f| f.to_str()) == Some(&format!("{name}{suffix}"))).cloned()
+    };
+    let graph = named(".graph.ron").unwrap_or_else(|| dir.join(format!("{name}.graph.ron")));
+    if let Ok(text) = scrap_core::files::read_to_string(&graph) {
+        let Ok(g) = scrap_shadergraph::surface::parse(&text) else {
+            return Vec::new();
+        };
+        return scrap_shadergraph::surface::slots(&g)
+            .into_iter()
+            .map(|(p, at)| {
+                use scrap_shadergraph::Kind;
+                Property {
+                    name: p.name().to_string(),
+                    at,
+                    size: p.kind().size(),
+                    kind: match p.kind() {
+                        Kind::Float => PropertyKind::Number,
+                        Kind::Boolean => PropertyKind::Boolean,
+                        Kind::Color => PropertyKind::Color,
+                        _ => PropertyKind::Vector,
+                    },
+                }
+            })
+            .collect();
+    }
+    let wgsl = named(".wgsl").unwrap_or_else(|| dir.join(format!("{name}.wgsl")));
+    let Ok(text) = scrap_core::files::read_to_string(wgsl) else {
+        return Vec::new();
+    };
+    let Some(line) = text.lines().find_map(|l| l.trim().strip_prefix("// scrap:params")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Property> = Vec::new();
+    for (i, slot) in line.split_whitespace().enumerate() {
+        let (base, part) = slot.split_once('.').unwrap_or((slot, ""));
+        let colour = matches!(part, "r" | "g" | "b" | "a");
+        match out.last_mut() {
+            Some(last) if !part.is_empty() && last.name == base && last.at + last.size == i => {
+                last.size += 1;
+                if colour {
+                    last.kind = PropertyKind::Color;
+                }
+            }
+            _ => out.push(Property {
+                name: base.to_string(),
+                at: i,
+                size: 1,
+                kind: if part.is_empty() {
+                    PropertyKind::Number
+                } else if colour {
+                    PropertyKind::Color
+                } else {
+                    PropertyKind::Vector
+                },
+            }),
+        }
+    }
+    out
+}
+
+/// The subgraphs a graph file calls: `<name>.subgraph.ron` in its folder,
+/// or of that name anywhere in its project (docs/layout.md).
+pub fn subgraphs_beside(path: &std::path::Path) -> scrap_shadergraph::subgraph::InProject {
+    scrap_shadergraph::subgraph::InProject::of(path)
 }
 
 /// A shader source file, reloaded into a renderer when it changes. DNA,
@@ -3173,6 +3320,19 @@ impl Renderer {
         !name.is_empty() && self.gpu_particles.has_effect(name)
     }
 
+    /// Put in fullscreen graph `name` from its function
+    /// ([`scrap_shadergraph::fullscreen::to_wgsl`]): a frame naming it is
+    /// drawn through it from the next. Refused in words when it does not
+    /// build, and the one before goes on.
+    pub fn set_fullscreen_graph(&mut self, gpu: &Gpu, name: &str, code: &str) -> Result<(), String> {
+        self.fullscreen.set(gpu, name, code)
+    }
+
+    /// Whether fullscreen graph `name` is in.
+    pub fn has_fullscreen_graph(&self, name: &str) -> bool {
+        self.fullscreen.has(name)
+    }
+
     pub fn set_material_shader(
         &mut self,
         gpu: &Gpu,
@@ -4097,6 +4257,7 @@ impl Renderer {
             bolt: None,
             occlusion,
             gpu_particles,
+            fullscreen: crate::fullscreen::Fullscreen::new(gpu),
             lods: scrap_core::hash::FastMap::default(),
             lod_meshes: Vec::new(),
             timer: None,
@@ -4582,6 +4743,12 @@ impl Renderer {
         handle
     }
 
+    /// A picture uploaded here answers to asset `id` from now, as one from
+    /// the library would: what a material's map naming it draws.
+    pub fn set_texture_asset(&mut self, id: crate::asset::AssetId, handle: TextureHandle) {
+        self.by_asset.insert(id, handle);
+    }
+
     /// The handle a texture asset was uploaded as, if it was.
     pub fn texture_for(&self, id: crate::asset::AssetId) -> Option<TextureHandle> {
         self.by_asset.get(&id).copied()
@@ -5022,8 +5189,11 @@ impl Renderer {
                     at += 1;
                 }
                 // A dense mesh a cluster at a time: of a mountain range a
-                // kilometre round, what is over this cascade's square.
-                if let (Some(clusters), Some((cascade, texel))) = (mesh.clusters.as_ref(), cascade) {
+                // kilometre round, what is over this cascade's square. Not
+                // one whose material moves its vertices: its clusters'
+                // bounds are where they stood, not where it draws them.
+                let clusters = mesh.clusters.as_ref().filter(|_| mine.is_none());
+                if let (Some(clusters), Some((cascade, texel))) = (clusters, cascade) {
                     for instance in start..at {
                         let Some(model) = list.get((instance - first) as usize).map(|r| Mat4::from_cols_array_2d(&r.model)) else {
                             continue;
@@ -7988,6 +8158,12 @@ impl Renderer {
             graph.pass("lens", Kind::Render, &[picture, "depth"], &["hdr lensed"]);
             picture = "hdr lensed";
         }
+        // A scene's fullscreen graph, when it names one that is in.
+        let fullscreen_on = probe.is_none() && frame.fullscreen.as_ref().is_some_and(|f| self.fullscreen.has(&f.graph));
+        if fullscreen_on {
+            graph.pass("fullscreen", Kind::Render, &[picture, "depth"], &["hdr graphed"]);
+            picture = "hdr graphed";
+        }
         graph.output("post", Kind::Render, &[picture], &["screen"]);
         // A selection's outline tells where it is seen from where it is
         // hidden by the prepass's depth.
@@ -8159,6 +8335,7 @@ impl Renderer {
 
         // Particles on the GPU given off and stepped, for the colour pass.
         if probe.is_none() {
+            let (by_asset, textures) = (&self.by_asset, &self.textures);
             self.gpu_particles.run(
                 gpu,
                 &mut encoder,
@@ -8167,6 +8344,8 @@ impl Renderer {
                 frame.camera.apparent_eye(),
                 if prepass_drawn { &self.ssao.depth } else { &self.blank_depth },
                 prepass_drawn,
+                &|id| by_asset.get(&id).map(|h| textures[h.0 as usize].view.clone()),
+                &textures[TextureHandle::WHITE.0 as usize].view,
             );
         }
         // The prepass's depth is where the scene's starts, when they are
@@ -8230,7 +8409,14 @@ impl Renderer {
                         },
                         // Kept when far clusters were left out of the prepass:
                         // what comes after reads this depth then.
-                        store: if self.split_prepass { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                        // And when a fullscreen graph reads it: by then
+                        // it holds what its own shader moved or cut out,
+                        // which the prepass left out.
+                        store: if self.split_prepass || (fullscreen_on && reuse_depth) {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: None,
                 }),
@@ -8430,6 +8616,27 @@ impl Renderer {
             self.debugger.snapshot(gpu, &mut encoder, lens_mark, crate::frame_debugger::Source::Hdr(lensed));
         }
         let picture = lensed.unwrap_or(picture);
+        let graphed = if fullscreen_on {
+            self.fullscreen.run(
+                gpu,
+                &mut encoder,
+                frame.fullscreen.as_ref(),
+                picture,
+                // Everything solid, drawn: the scene's own depth where it
+                // is one sample a pixel and went on from the prepass's.
+                if reuse_depth { &self.depth } else { after_depth },
+                (width, height),
+                &crate::fullscreen::View {
+                    near: frame.camera.near,
+                    far: frame.camera.far,
+                    orthographic: frame.camera.ortho.is_some(),
+                    time: foliage.wind[3],
+                },
+            )
+        } else {
+            None
+        };
+        let picture = graphed.unwrap_or(picture);
         let picture = if upscale_on {
             self.upscaler.run(
                 gpu,
@@ -9209,6 +9416,23 @@ mod tests {
     }
 
     #[test]
+    fn a_specular_workflow_graph_builds_over_the_standard_shader() {
+        let graph = scrap_shadergraph::surface::parse(
+            r#"(
+                textures: ["_Main"],
+                nodes: {
+                    "sheen": Environment(direction: "normal", roughness: "smoothness"),
+                    "pix": Texture(name: "_Main", filter: Point, wrap: Mirror),
+                },
+                surface: (albedo: "pix.rgb", specular: (0.9, 0.8, 0.5), emission: "sheen"),
+            )"#,
+        )
+        .unwrap();
+        let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/spec.graph.ron").unwrap();
+        check_material_shader(&wgsl).unwrap_or_else(|e| panic!("{e}\n{wgsl}"));
+    }
+
+    #[test]
     fn a_shader_graph_of_every_kind_of_node_builds_over_the_standard_shader() {
         let graph = scrap_shadergraph::surface::parse(
             r#"(
@@ -9310,6 +9534,12 @@ mod tests {
                     "nh": NormalFromHeight(height: "n2"),
                     "nft": NormalFromTexture(name: "_Noise"),
                     "scol": SceneColor(),
+                    "env": Environment(direction: "normal", roughness: 0.3),
+                    "sharp": Texture(name: "_Main", uv: "uv", lod: 2.0, wrap: Clamp, filter: Point),
+                    "mirrored": Texture(name: "_Noise", wrap: Mirror),
+                    "envlit": Add(a: "env", b: "sharp.rgb"),
+                    "envall": Add(a: "envlit", b: "mirrored.rgb"),
+                    "glow_env": Add(a: "glowing_more", b: "envall"),
                     "tri": Triplanar(name: "_Noise"),
                     "fb": Flipbook(columns: 4.0, rows: 4.0, frame: "t"),
                     "pol": PolarCoordinates(),
@@ -9389,15 +9619,16 @@ mod tests {
                     metallic: "le",
                     smoothness: 0.5,
                     normal: "bent",
-                    emission: "glowing_more",
+                    emission: "glow_env",
                     clip: 0.1,
                 ),
             )"#,
         )
         .unwrap();
         let kinds: std::collections::BTreeSet<&str> = graph.nodes.values().map(|n| n.kind()).collect();
-        // All but `Random`, which a surface has nothing to be random for.
-        assert_eq!(kinds.len(), scrap_shadergraph::Node::KINDS.len() - 1, "every kind of node is in the graph: {kinds:?}");
+        // All but `Random`, which a surface has nothing to be random for,
+        // and `Subgraph`, which is put in before this (its own tests).
+        assert_eq!(kinds.len(), scrap_shadergraph::Node::KINDS.len() - 2, "every kind of node is in the graph: {kinds:?}");
         let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/every.graph.ron").unwrap();
         assert!(wgsl.starts_with("// Made from shaders/every.graph.ron"), "{wgsl}");
         assert!(wgsl.contains("// scrap:params speed glow tint_r"), "{wgsl}");

@@ -1,0 +1,21 @@
+// Cel shading: the sun's light on it in three flat bands, a hard rim
+// against the sky, drawn as its own light so the renderer's soft shading
+// does not blur the bands. `base` is its colour, `bands` how many.
+(
+    params: [("base", Color), "bands"],
+    nodes: {
+        "facing": Dot(a: "normal", b: "light_direction"),
+        "lit": Saturate(of: "facing"),
+        "flat": Posterize(of: "lit", steps: "bands"),
+        "floor": Lerp(a: 0.25, b: 1.0, t: "flat"),
+        "sunlit": Multiply(a: "base", b: "floor"),
+        "warm": Multiply(a: "sunlit", b: "light_color"),
+        "rim": Fresnel(power: 4.0),
+        "edge": Step(edge: 0.55, of: "rim"),
+        "line": Multiply(a: "edge", b: 0.8),
+        "shade": Add(a: "warm", b: "line"),
+        "shade_ambient": Multiply(a: "base", b: "ambient"),
+        "total": Add(a: "shade", b: "shade_ambient"),
+    },
+    surface: (albedo: (0.0, 0.0, 0.0), metallic: 0.0, smoothness: 0.0, emission: "total"),
+)

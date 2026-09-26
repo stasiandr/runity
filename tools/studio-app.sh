@@ -3,15 +3,43 @@
 #
 #   tools/studio-app.sh            # release build, then the bundle
 #   tools/studio-app.sh --install  # and copy it to /Applications
+#   tools/studio-app.sh --launcher # ~/Applications/Scrap.app: rebuilds when
+#                                  # the checkout changed, with a progress
+#                                  # window, then opens the editor
 #
 # Started from Finder with no scene, the editor opens the scene it opened
 # last, or asks for one.
 set -eu
 cd "$(dirname "$0")/.."
 
+if [ "${1:-}" = "--launcher" ]; then
+  launcher="$HOME/Applications/Scrap.app"
+  script="$(mktemp -t scrap-launcher).applescript"
+  sed "s|\"REPO\"|\"$(pwd)\"|" tools/studio-launcher.applescript > "$script"
+  rm -rf "$launcher"
+  osacompile -o "$launcher" "$script"
+  rm -f "$script"
+  # The applet's own icon is in Assets.car, found by CFBundleIconName.
+  rm -f "$launcher/Contents/Resources/Assets.car"
+  cp crates/scrap-studio/assets/icon/scrap.icns "$launcher/Contents/Resources/applet.icns"
+  plist="$launcher/Contents/Info.plist"
+  plutil -remove CFBundleIconName "$plist" 2>/dev/null || true
+  plutil -replace CFBundleIdentifier -string dev.scrap.launcher "$plist"
+  plutil -replace CFBundleName -string Scrap "$plist"
+  codesign --force --sign - "$launcher" >/dev/null 2>&1 || true
+  echo "installed $launcher"
+  exit 0
+fi
+
 cargo build --release -p scrap-studio
 
 app=target/release/Scrap.app
+# A build that changed nothing leaves the bundle as it is (its copy is
+# newer than the binary; codesign changes its bytes, so no cmp).
+if [ "${1:-}" != "--install" ] && [ "$app/Contents/MacOS/scrap-studio" -nt target/release/scrap-studio ]; then
+  echo "up to date $app"
+  exit 0
+fi
 version=$(cargo pkgid -p scrap-studio | sed 's/.*[#@]//')
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

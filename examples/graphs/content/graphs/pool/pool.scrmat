@@ -1,0 +1,3 @@
+// The pool's water: shaders/water.graph.ron. `params` are its `deep`
+// colour (linear). See-through, so what is under it is read, not hidden.
+(color: "#ffffff", shader: "water", params: [0.01, 0.09, 0.12], surface: Transparent)

@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/models/campfire.obj",
-    hash: "cf84ada16a4f984ee6e26e966e0bcbad",
-    id: Some("7c121c0b292e2de427487053bcfd55d6"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

@@ -21,6 +21,7 @@
 //! scrap delete FILE                      remove an asset nothing uses
 //! scrap duplicate FROM TO                copy an asset as a new one
 //! scrap add component|system|scene NAME [PROJECT]  a new file where it goes
+//! scrap migrate-layout [PROJECT]        an old project to config/ and content/
 //! scrap import-unity UNITY_PROJECT [PROJECT] [--models] [--models-matching NAME] [--blender PATH] [--shaders DIR]
 //! scrap bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
 //! ```
@@ -110,8 +111,8 @@ scrap git-setup [PROJECT]
 scrap merge BASE OURS THEIRS [PATH]
     The driver git calls; writes the merge over OURS. Exits 1 on conflict.
 scrap rename FROM TO
-    Rename or move an asset source — a model, texture or sound in assets/,
-    a .scrmat, a .prefab — with its .scrimport, and rewrite every scene and
+    Rename or move an asset source — a model, texture or sound, a .scrmat,
+    a .prefab, wherever it lies — with its .scrimport, and rewrite every scene and
     prefab line that named it. Refused when the new name already means
     something.
 scrap uses FILE
@@ -125,13 +126,19 @@ scrap delete FILE
     the lines, while anything names it.
 scrap duplicate FROM TO
     Copy an asset source as a new asset with the same import settings.
-scrap add component NAME [PROJECT]
-    Write src/components/NAME.rs. Scenes then give it by NAME:
-    `components: { \"NAME\": (...) }`; build.rs registers it.
-scrap add system NAME [PROJECT]
-    Write src/systems/NAME.rs and run it last in `tick` in src/main.rs.
+scrap add component [FEATURE/]NAME [PROJECT]
+    Write src/FEATURE/NAME.rs (src/NAME/NAME.rs without a feature). Scenes
+    then give it by NAME: `components: { \"NAME\": (...) }`; build.rs
+    registers it.
+scrap add system [FEATURE/]NAME [PROJECT]
+    Write src/FEATURE/NAME.rs and run it last in `tick` in src/main.rs.
 scrap add scene NAME [PROJECT]
-    Write scenes/NAME.ron: a ground with the metre grid, to build on.
+    Write content/<project>/maps/NAME.scene.ron: a ground with the metre
+    grid, to build on.
+scrap migrate-layout [PROJECT]
+    Move a project laid out before 2026-09-26 (scenes/, prefabs/, assets/
+    at the root) to config/ and content/ (docs/layout.md), sidecars with
+    their files, and list the lines of code that name an old path.
 scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
@@ -327,6 +334,21 @@ fn run() -> Result<ExitCode> {
         "rename" => rename(&rest),
         "uses" => uses(&rest),
         "add" => add(&rest),
+        "migrate-layout" => {
+            let project = find(&rest)?;
+            let done = scrap_cli::migrate::migrate(&project)?;
+            for (from, to) in &done.moved {
+                println!("{from} -> {to}");
+            }
+            println!("moved {} files; run `scrap sync` and commit", done.moved.len());
+            if !done.code.is_empty() {
+                println!("the game's code names paths that moved — update them:");
+                for line in &done.code {
+                    println!("  {line}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         "assets" => {
             let project = find(&rest)?;
             let entries = scrap_import::assets::list(&project)?;
@@ -560,7 +582,7 @@ fn frame_debug(rest: &[String]) -> Result<ExitCode> {
         bail!("which scene? scrap frame-debug SCENE [PROJECT]");
     };
     let project = find(&at[1..])?;
-    let path = project.scenes().join(format!("{scene}.ron"));
+    let path = project.scene(&scene).with_context(|| format!("no scene called `{scene}`"))?;
     let mut shot = scrap::shot::Shot::open(&path, size.0, size.1, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     let warm = shot.warm_frames();
     shot.draw(warm);
@@ -628,7 +650,7 @@ fn perf(rest: &[String]) -> Result<ExitCode> {
         if only.as_ref().is_some_and(|o| *o != name) {
             continue;
         }
-        let path = project.scenes().join(format!("{name}.ron"));
+        let path = project.scene(&name).with_context(|| format!("no scene called `{name}`"))?;
         let (measured, real_gpu) = scrap_cli::perf::measure(&path, budgets.size, frames)
             .with_context(|| format!("drawing {name}"))?;
         let ms = measured.gpu_ms.map_or("-".to_string(), |ms| format!("{ms:.2}"));
@@ -697,8 +719,9 @@ fn add(rest: &[String]) -> Result<ExitCode> {
         "component" => {
             let file = scrap_cli::add::component(&project, name)?;
             println!(
-                "wrote {}\n  a scene gives it as components: {{ \"{name}\": () }}",
-                project.relative(&file).unwrap_or_default()
+                "wrote {}\n  a scene gives it as components: {{ \"{}\": () }}",
+                project.relative(&file).unwrap_or_default(),
+                scrap::layout::name_of(&file)
             );
         }
         "system" => {
@@ -712,7 +735,7 @@ fn add(rest: &[String]) -> Result<ExitCode> {
             } else {
                 println!(
                     "  src/main.rs has no `// systems, in order` list; call it from the step:\n    {}",
-                    scrap_cli::add::system_call(name)
+                    scrap_cli::add::system_call(&added.name)
                 );
             }
         }

@@ -24,6 +24,8 @@ pub use scrap_core::impl_parts;
 pub use scrap_animation::animator;
 #[cfg(feature = "animation")]
 pub use scrap_animation::animgraph;
+#[cfg(feature = "animation")]
+pub use scrap_animation::rules;
 /// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
 #[cfg(feature = "animation")]
 pub use scrap_animation::ik as pose_ik;
@@ -148,6 +150,7 @@ pub use scrap_render::lights;
 pub use scrap_render::lod;
 pub use scrap_render::occlusion;
 pub use scrap_render::particles_gpu;
+pub use scrap_render::fullscreen;
 pub use scrap_render::upscale;
 pub use scrap_render::vsm;
 pub mod live;
@@ -226,6 +229,7 @@ pub use scrap_core::perf;
 pub use scrap_core::player;
 pub use scrap_core::player_prefs;
 pub use scrap_core::prefab;
+pub use scrap_core::layout;
 pub use scrap_core::project;
 #[cfg(feature = "navigation")]
 pub use scrap_navigation::navigation;
@@ -653,6 +657,10 @@ pub use scrap_render::weather;
 pub use scrap_render::world_look;
 #[cfg(feature = "desktop-shell")]
 pub use scrap_shell::shell;
+/// The pad drawn on a touch screen: its layout is `WindowConfig::touch_pad`'s,
+/// which a game sets itself where the shell cannot tell (a phone's browser).
+#[cfg(feature = "desktop-shell")]
+pub use scrap_shell::touch_pad;
 /// The shell on Android: what the game's `android_main` hands the app to.
 #[cfg(all(feature = "desktop-shell", target_os = "android"))]
 pub use scrap_shell::android;

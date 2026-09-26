@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/audio/music.wav",
+    hash: "e527131593c51fc3b7353a6fee100fec",
+    id: Some("43e7551d2aec20abcc677c796aed5bc5"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

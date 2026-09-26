@@ -108,6 +108,35 @@ pub fn uses(roots: &[EntityDesc], what: &AssetRef) -> Vec<Use> {
     out
 }
 
+/// How many places under `roots` name each asset, all at once: what
+/// [`uses`] would find for every name, in one walk rather than a walk a
+/// name — a project's listing asks it of every asset it has.
+pub fn count_uses(roots: &[EntityDesc], counts: &mut std::collections::HashMap<AssetRef, usize>) {
+    for root in roots {
+        visit(root, &mut |desc| {
+            let mut count = |what: AssetRef| *counts.entry(what).or_default() += 1;
+            let model = desc.model();
+            if !model.is_empty() {
+                count(AssetRef::Model(model.to_string()));
+            }
+            if let MaterialRef::Named(link) = desc.material_ref() {
+                count(AssetRef::Material(link.name));
+            }
+            if !desc.prefab.name.is_empty() {
+                count(AssetRef::Prefab(desc.prefab.name.clone()));
+            }
+            for change in desc.overrides.values() {
+                if let Some(model) = change.model() {
+                    count(AssetRef::Model(model.to_string()));
+                }
+                if let Some(MaterialRef::Named(link)) = change.material() {
+                    count(AssetRef::Material(link.name.clone()));
+                }
+            }
+        });
+    }
+}
+
 /// Every place in a scene that names `what`.
 pub fn uses_in_scene(scene: &Scene, what: &AssetRef) -> Vec<Use> {
     uses(&scene.entities, what)
@@ -222,6 +251,23 @@ fn visit_mut(desc: &mut EntityDesc, f: &mut impl FnMut(&mut EntityDesc)) {
 mod tests {
     use super::*;
     use crate::scene::Override;
+
+    #[test]
+    fn counting_every_use_at_once_finds_what_asking_for_each_does() {
+        let scene = scene();
+        let mut counts = std::collections::HashMap::new();
+        count_uses(&scene.entities, &mut counts);
+        for what in [
+            AssetRef::Model("boulder".into()),
+            AssetRef::Material("stone".into()),
+            AssetRef::Material("moss".into()),
+            AssetRef::Prefab("campfire".into()),
+            AssetRef::Model("nothing".into()),
+        ] {
+            let one_by_one = uses_in_scene(&scene, &what).len();
+            assert_eq!(counts.get(&what).copied().unwrap_or(0), one_by_one, "{what:?}");
+        }
+    }
 
     fn scene() -> Scene {
         ron::from_str(

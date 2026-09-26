@@ -48,6 +48,12 @@ to peer. PeerJS's public broker only introduces them. Two browsers behind
 NATs that STUN cannot get through need a TURN relay, and the free one PeerJS
 offers may be down: then joining fails after 20 s with "no kitchen answered".
 
+`web/scrap-net.js` is not the kitchen's alone: another game's page loads it
+as it is and names itself first — `window.scrapNetConfig = { prefix,
+place, title, invite, player }` — so its rooms live under their own PeerJS
+names (Dacha's are `scrap-dacha-…`). `scrapNet.host(code)` takes the
+game's code when it chose one, and `join` takes a code or a pasted link.
+
 The host's tab has to stay in front: a browser stops drawing a hidden page,
 and the kitchen stops with it.
 

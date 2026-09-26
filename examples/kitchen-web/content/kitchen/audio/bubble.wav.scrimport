@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/audio/bubble.wav",
+    hash: "5ab499bba2cf0384ca520ffb3c99f104",
+    id: Some("19376e9039ebe5ac3159c7881c8987e4"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

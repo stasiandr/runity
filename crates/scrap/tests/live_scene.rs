@@ -25,7 +25,7 @@ fn project(name: &str) -> Project {
     let root = std::env::temp_dir().join(format!("scrap-live-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let project = Project::create(&root, name).unwrap();
-    write(&project.scenes().join("main.ron"), SCENE);
+    write(&project.scenes().join("main.scene.ron"), SCENE);
     project
 }
 
@@ -67,7 +67,7 @@ fn a_saved_scene_reaches_the_running_world_and_the_game_keeps_its_state() {
     let target = OffscreenTarget::new(&gpu, 8, 8);
     let mut renderer = Renderer::new(&gpu, &target);
     let project = project("scene");
-    let path = project.scenes().join("main.ron");
+    let path = project.scenes().join("main.scene.ron");
 
     let (mut live, problems) = LiveScene::open(&path).unwrap();
     assert!(problems.is_empty(), "{problems:?}");
@@ -110,7 +110,7 @@ fn a_saved_scene_reaches_the_running_world_and_the_game_keeps_its_state() {
     let done = live.reload(&mut world, &gpu, &mut renderer);
     assert_eq!(done.problems.len(), 1, "{done:?}");
     assert!(
-        done.problems[0].contains("main.ron"),
+        done.problems[0].contains("main.scene.ron"),
         "names the file: {done:?}"
     );
     assert!(world.contains(campfire));
@@ -126,7 +126,7 @@ fn an_asset_imported_while_the_game_runs_is_picked_up_and_replaced() {
     let target = OffscreenTarget::new(&gpu, 8, 8);
     let mut renderer = Renderer::new(&gpu, &target);
     let project = project("asset");
-    let (mut live, _) = LiveScene::open(project.scenes().join("main.ron")).unwrap();
+    let (mut live, _) = LiveScene::open(project.scenes().join("main.scene.ron")).unwrap();
     let mut world = hecs::World::new();
     live.spawn(&mut world, &gpu, &mut renderer);
     let stone = entity(&world, "b2");
@@ -176,7 +176,7 @@ fn a_prefab_spawned_at_run_time_is_whole_and_outlives_a_reload() {
     );
     let mut components = scrap::Components::new();
     components.register::<Warmth>("warmth");
-    let path = project.scenes().join("main.ron");
+    let path = project.scenes().join("main.scene.ron");
     let (live, _) = LiveScene::open(&path).unwrap();
     let mut live = live.with_components(components);
     let mut world = hecs::World::new();
@@ -231,7 +231,7 @@ fn a_link_in_a_prefab_spawned_at_run_time_finds_its_own_instances_part() {
     );
     let mut components = scrap::Components::new();
     components.register::<LitBy>("lit");
-    let (live, _) = LiveScene::open(&project.scenes().join("main.ron")).unwrap();
+    let (live, _) = LiveScene::open(&project.scenes().join("main.scene.ron")).unwrap();
     let mut live = live.with_components(components);
     let mut world = hecs::World::new();
     live.spawn_headless(&mut world);
@@ -259,7 +259,7 @@ fn a_joint_in_a_prefab_spawned_at_run_time_holds_its_parts_together() {
                         collider: Sphere(radius: 0.2), body: Dynamic,
                         joint: Ball(to: "0000000000000b01", anchor: (0.0, 0.5, 0.0)))])"#,
     );
-    let (live, _) = LiveScene::open(&project.scenes().join("main.ron")).unwrap();
+    let (live, _) = LiveScene::open(&project.scenes().join("main.scene.ron")).unwrap();
     let mut live = live;
     let mut world = hecs::World::new();
     live.spawn_headless(&mut world);
@@ -305,10 +305,10 @@ fn a_wire_in_a_prefab_spawned_at_run_time_works_its_own_parts_and_spawns_a_crate
             ])"#,
     );
     write(
-        &project.scenes().join("main.ron"),
+        &project.scenes().join("main.scene.ron"),
         r#"(entities: [(id: "e1", name: "ball", transform: (position: (0.0, 6.0, 0.0)), body: Dynamic, collider: Sphere(radius: 0.25))])"#,
     );
-    let (live, _) = LiveScene::open(project.scenes().join("main.ron")).unwrap();
+    let (live, _) = LiveScene::open(project.scenes().join("main.scene.ron")).unwrap();
     let mut live = live;
     let mut world = hecs::World::new();
     live.spawn_headless(&mut world);
@@ -368,8 +368,8 @@ fn two_scenes_share_a_world_and_each_reloads_and_unloads_only_its_own() {
     let mut renderer = Renderer::new(&gpu, &target);
     let project = project("additive");
     let (village, forest) = (
-        project.scenes().join("village.ron"),
-        project.scenes().join("forest.ron"),
+        project.scenes().join("village.scene.ron"),
+        project.scenes().join("forest.scene.ron"),
     );
     write(
         &village,
@@ -430,7 +430,7 @@ fn after_a_hot_patch_the_world_starts_again_under_new_types_keeping_what_a_save_
     let target = OffscreenTarget::new(&gpu, 8, 8);
     let mut renderer = Renderer::new(&gpu, &target);
     let project = project("reinstance");
-    let path = project.scenes().join("main.ron");
+    let path = project.scenes().join("main.scene.ron");
     write(
         &path,
         r#"(entities: [
@@ -499,10 +499,10 @@ fn a_game_changes_level_keeping_what_it_spawned_itself() {
     let mut renderer = Renderer::new(&gpu, &target);
     let project = project("switch");
     write(
-        &project.scenes().join("cave.ron"),
+        &project.scenes().join("cave.scene.ron"),
         r#"(entities: [(id: "c1", name: "stalagmite", model: "builtin:cone")])"#,
     );
-    let (mut live, _) = LiveScene::open(project.scenes().join("main.ron")).unwrap();
+    let (mut live, _) = LiveScene::open(project.scenes().join("main.scene.ron")).unwrap();
     let mut world = hecs::World::new();
     live.spawn(&mut world, &gpu, &mut renderer);
     let player = world.spawn((Lit(true),));
@@ -526,13 +526,13 @@ fn a_game_changes_level_keeping_what_it_spawned_itself() {
         "main's lines gone, the cave's in"
     );
     assert!(world.contains(player), "the game's own things cross over");
-    assert!(live.path().ends_with("scenes/cave.ron"));
+    assert!(live.path().ends_with("maps/cave.scene.ron"));
 }
 
 #[test]
 fn played_from_here_the_line_marked_player_start_stands_where_the_editor_said() {
     let project = project("start");
-    let path = project.scenes().join("main.ron");
+    let path = project.scenes().join("main.scene.ron");
     write(
         &path,
         r#"(entities: [
