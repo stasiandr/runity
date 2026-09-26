@@ -13,6 +13,11 @@
 //!
 //! Where they go is each machine's own, as with the CPU's: they are for the
 //! eye (DNA, postulate 4).
+//!
+//! Where each is born, how it moves and how it looks is an effect graph's
+//! three functions ([`scrap_shadergraph::effect`]): the emitter's `graph`,
+//! or the empty graph — the emitter's numbers as they are — when it names
+//! none. Each graph is its own pipelines, over the same slots.
 
 use glam::{Mat4, Vec3};
 
@@ -21,6 +26,9 @@ use crate::scene::Emitter;
 
 /// The most one emitter keeps alive at once.
 pub const MOST: u32 = 65_536;
+
+/// Bytes a particle's slot takes: three vec4s.
+const SLOT: u64 = 48;
 
 /// What the GPU needs of an emitter for a frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +72,67 @@ struct Particle {
     at: vec4<f32>,
     // how fast, and its life (0: a free slot)
     velocity: vec4<f32>,
+    // its own random number from 0 to 1, and room
+    extra: vec4<f32>,
 };
+
+// What the effect's functions read of a particle and its emitter.
+struct Effect {
+    time: f32,
+    seed: f32,
+    life: f32,
+    t: f32,
+    age: f32,
+    dt: f32,
+    origin: vec3<f32>,
+    cone: vec3<f32>,
+    position: vec3<f32>,
+    velocity: vec3<f32>,
+};
+
+struct Born {
+    position: vec3<f32>,
+    velocity: vec3<f32>,
+    life: f32,
+};
+
+struct Moved {
+    velocity: vec3<f32>,
+    position: vec3<f32>,
+};
+
+struct Looks {
+    color: vec3<f32>,
+    alpha: f32,
+    size: f32,
+};
+
+// What an emitter with no graph does.
+fn born_default(e: Effect) -> Born {
+    return Born(e.origin, e.cone * params.motion.x, params.motion.w);
+}
+
+fn moved_default(e: Effect) -> Moved {
+    return Moved(e.velocity + vec3<f32>(0.0, params.motion.z, 0.0) * e.dt, e.position);
+}
+
+fn looks_default(e: Effect) -> Looks {
+    let c = mix(params.color, params.end_color, e.t);
+    return Looks(c.rgb, c.a, mix(params.shape.x, params.shape.y, e.t));
+}
+
+fn effect_of(p: Particle) -> Effect {
+    var e: Effect;
+    e.time = params.eye.w;
+    e.seed = p.extra.x;
+    e.life = p.velocity.w;
+    e.age = p.at.w;
+    e.t = clamp(p.at.w / max(p.velocity.w, 1e-6), 0.0, 1.0);
+    e.dt = params.shape.w;
+    e.position = p.at.xyz;
+    e.velocity = p.velocity.xyz;
+    return e;
+}
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
@@ -115,12 +183,20 @@ fn cs_spawn(@builtin(global_invocation_id) id: vec3<u32>) {
         origin = (params.model * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
         dir = normalize((params.model * vec4<f32>(local_dir, 0.0)).xyz);
     }
+    var e: Effect;
+    e.time = params.eye.w;
+    e.seed = hash(n * 5u + 4u);
+    e.dt = params.shape.w;
+    e.origin = origin;
+    e.cone = dir;
+    let b = effect_spawn(e);
     // Given off some time within the step, as far on as it would be.
     let born = hash(n * 3u + 2u) * params.shape.w;
     let pull = vec3<f32>(0.0, params.motion.z, 0.0);
     var p: Particle;
-    p.at = vec4<f32>(origin + dir * params.motion.x * born + pull * (0.5 * born * born), born);
-    p.velocity = vec4<f32>(dir * params.motion.x + pull * born, params.motion.w);
+    p.at = vec4<f32>(b.position + b.velocity * born + pull * (0.5 * born * born), born);
+    p.velocity = vec4<f32>(b.velocity + pull * born, max(b.life, 1e-3));
+    p.extra = vec4<f32>(e.seed, 0.0, 0.0, 0.0);
     particles[slot] = p;
 }
 
@@ -135,8 +211,9 @@ fn cs_step(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let dt = params.shape.w;
-    p.velocity = vec4<f32>(p.velocity.xyz + vec3<f32>(0.0, params.motion.z, 0.0) * dt, p.velocity.w);
-    p.at = vec4<f32>(p.at.xyz + p.velocity.xyz * dt, p.at.w + dt);
+    let m = effect_update(effect_of(p));
+    p.velocity = vec4<f32>(m.velocity, p.velocity.w);
+    p.at = vec4<f32>(m.position, p.at.w + dt);
     // Behind what is drawn, and not far behind: back onto the surface, and
     // bounced off it.
     if params.collide.x > 0.5 {
@@ -186,8 +263,8 @@ fn vs_particle(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -
         out.clip = vec4<f32>(0.0, 0.0, -2.0, 1.0);
         return out;
     }
-    let t = clamp(p.at.w / p.velocity.w, 0.0, 1.0);
-    var size = mix(params.shape.x, params.shape.y, t);
+    let looks = effect_output(effect_of(p));
+    let size = looks.size;
     var at = p.at.xyz;
     var velocity = p.velocity.xyz;
     if params.direction.w > 0.5 {
@@ -212,7 +289,7 @@ fn vs_particle(@builtin(vertex_index) v: u32, @builtin(instance_index) k: u32) -
     let world = at + (across * c.x + along * c.y * long) * size * 0.5;
     out.clip = params.view_projection * vec4<f32>(world, 1.0);
     out.uv = c;
-    out.color = mix(params.color, params.end_color, t);
+    out.color = vec4<f32>(looks.color, looks.alpha);
     return out;
 }
 
@@ -226,7 +303,33 @@ fn fs_particle(in: Varyings) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(in.color.rgb * a, a);
 }
+
+// scrap:effect
 "#;
+
+/// The GPU particles' shader with an effect graph's three functions in
+/// (from [`scrap_shadergraph::effect::to_wgsl`]).
+pub fn with_effect(effect: &str) -> String {
+    SHADER.replace("// scrap:effect\n", effect)
+}
+
+/// Whether an effect graph's functions build into the particles' shader,
+/// without a GPU: parsed and validated as the renderer would. What `scrap
+/// check` asks of every effect.
+pub fn check_effect(effect: &str) -> Result<(), String> {
+    use wgpu::naga;
+    let full = with_effect(effect);
+    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&full))?;
+    Ok(())
+}
+
+/// The empty graph: an emitter's numbers as they are.
+fn plain_effect() -> String {
+    scrap_shadergraph::effect::to_wgsl(&Default::default(), "no graph").expect("the empty graph compiles")
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -258,19 +361,38 @@ struct Pool {
     seen: u64,
 }
 
+/// One effect's pipelines: an emitter's graph, or the plain one ("").
+struct Kind {
+    module: wgpu::ShaderModule,
+    spawn: wgpu::ComputePipeline,
+    step: wgpu::ComputePipeline,
+    draw: wgpu::RenderPipeline,
+}
+
+/// Each effect's draw pipeline for one sampling of the scene: kept by the
+/// renderer to swap back in.
+pub(crate) struct Draws {
+    samples: u32,
+    draws: std::collections::HashMap<String, wgpu::RenderPipeline>,
+}
+
 /// The renderer's particles on the GPU: its pipelines, and a pool of slots
 /// for each emitter.
 pub(crate) struct GpuParticles {
     layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
     depth_layout: wgpu::BindGroupLayout,
-    spawn: wgpu::ComputePipeline,
-    step: wgpu::ComputePipeline,
-    draw: wgpu::RenderPipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    draw_pipeline_layout: wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    depth: wgpu::TextureFormat,
+    samples: u32,
+    /// By graph name; "" is an emitter with none.
+    kinds: std::collections::HashMap<String, Kind>,
     pools: std::collections::HashMap<u64, Pool>,
     frame: u64,
-    /// The pools to draw this frame, in order.
-    drawn: Vec<u64>,
+    /// The pools to draw this frame, in order, with the effect of each.
+    drawn: Vec<(u64, String)>,
 }
 
 fn linear(c: (f32, f32, f32)) -> [f32; 3] {
@@ -280,10 +402,6 @@ fn linear(c: (f32, f32, f32)) -> [f32; 3] {
 
 impl GpuParticles {
     pub(crate) fn new(gpu: &Gpu, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32) -> Self {
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("scrap::gpu particles"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
         let uniform = |stages| wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: stages,
@@ -343,38 +461,73 @@ impl GpuParticles {
             bind_group_layouts: &[Some(&draw_layout)],
             immediate_size: 0,
         });
+        let mut particles = Self {
+            layout,
+            draw_layout,
+            depth_layout,
+            pipeline_layout,
+            draw_pipeline_layout,
+            format,
+            depth,
+            samples,
+            kinds: std::collections::HashMap::new(),
+            pools: std::collections::HashMap::new(),
+            frame: 0,
+            drawn: Vec::new(),
+        };
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scrap::gpu particles"),
+            source: wgpu::ShaderSource::Wgsl(with_effect(&plain_effect()).into()),
+        });
+        let kind = particles.kind(gpu, module);
+        particles.kinds.insert(String::new(), kind);
+        particles
+    }
+
+    /// An effect's pipelines from its module, drawing at the present
+    /// sampling.
+    fn kind(&self, gpu: &Gpu, module: wgpu::ShaderModule) -> Kind {
         let compute = |entry: &str| {
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("scrap::gpu particles"),
-                layout: Some(&pipeline_layout),
+                layout: Some(&self.pipeline_layout),
                 module: &module,
                 entry_point: Some(entry),
                 compilation_options: Default::default(),
                 cache: None,
             })
         };
-        let draw = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        Kind {
+            spawn: compute("cs_spawn"),
+            step: compute("cs_step"),
+            draw: self.draw_pipeline(gpu, &module, self.samples),
+            module,
+        }
+    }
+
+    fn draw_pipeline(&self, gpu: &Gpu, module: &wgpu::ShaderModule, samples: u32) -> wgpu::RenderPipeline {
+        gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scrap::gpu particles"),
-            layout: Some(&draw_pipeline_layout),
+            layout: Some(&self.draw_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &module,
+                module,
                 entry_point: Some("vs_particle"),
                 compilation_options: Default::default(),
                 buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &module,
+                module,
                 entry_point: Some("fs_particle"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: self.format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth,
+                format: self.depth,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
@@ -386,28 +539,63 @@ impl GpuParticles {
             },
             multiview_mask: None,
             cache: None,
+        })
+    }
+
+    /// Put in effect `name` from its graph's functions
+    /// ([`scrap_shadergraph::effect::to_wgsl`]): emitters naming it draw
+    /// with it from the next frame, their particles kept. Refused in words
+    /// when it does not build, and the one before goes on.
+    pub(crate) fn set_effect(&mut self, gpu: &Gpu, name: &str, effect: &str) -> Result<(), String> {
+        check_effect(effect)?;
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scrap::gpu particles effect"),
+            source: wgpu::ShaderSource::Wgsl(with_effect(effect).into()),
         });
-        Self {
-            spawn: compute("cs_spawn"),
-            step: compute("cs_step"),
-            layout,
-            draw_layout,
-            depth_layout,
-            draw,
-            pools: std::collections::HashMap::new(),
-            frame: 0,
-            drawn: Vec::new(),
+        let kind = self.kind(gpu, module);
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("the effect does not fit the particles: {error}"));
+        }
+        self.kinds.insert(name.to_string(), kind);
+        Ok(())
+    }
+
+    /// Whether effect `name` is in.
+    pub(crate) fn has_effect(&self, name: &str) -> bool {
+        self.kinds.contains_key(name)
+    }
+
+    /// Every effect's draw pipeline for a scene of `samples` a pixel.
+    pub(crate) fn make_draw(&self, gpu: &Gpu, samples: u32) -> Draws {
+        Draws {
+            samples,
+            draws: self
+                .kinds
+                .iter()
+                .map(|(name, kind)| (name.clone(), self.draw_pipeline(gpu, &kind.module, samples)))
+                .collect(),
         }
     }
 
-    /// The draw pipeline for a scene of `samples` a pixel.
-    pub(crate) fn make_draw(&self, gpu: &Gpu, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32) -> wgpu::RenderPipeline {
-        Self::new(gpu, format, depth, samples).draw
-    }
-
-    /// Draw with `draw` from now, the pools kept; the one it replaces back.
-    pub(crate) fn swap_draw(&mut self, draw: wgpu::RenderPipeline) -> wgpu::RenderPipeline {
-        std::mem::replace(&mut self.draw, draw)
+    /// Draw with `draws` from now, the pools kept; the ones they replace
+    /// back. An effect put in since they were made is made for them.
+    pub(crate) fn swap_draw(&mut self, gpu: &Gpu, mut draws: Draws) -> Draws {
+        let mut old = Draws {
+            samples: self.samples,
+            draws: std::collections::HashMap::new(),
+        };
+        self.samples = draws.samples;
+        let names: Vec<String> = self.kinds.keys().cloned().collect();
+        for name in names {
+            let draw = match draws.draws.remove(&name) {
+                Some(d) => d,
+                None => self.draw_pipeline(gpu, &self.kinds[&name].module, self.samples),
+            };
+            let kind = self.kinds.get_mut(&name).expect("listed above");
+            old.draws.insert(name, std::mem::replace(&mut kind.draw, draw));
+        }
+        old
     }
 
     /// Give off and step this frame's particles, before the colour pass.
@@ -443,12 +631,12 @@ impl GpuParticles {
             if fresh {
                 let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("gpu particles"),
-                    size: want as u64 * 32,
+                    size: want as u64 * SLOT,
                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
                 // All slots free.
-                gpu.queue.write_buffer(&buffer, 0, &vec![0u8; want as usize * 32]);
+                gpu.queue.write_buffer(&buffer, 0, &vec![0u8; (want as u64 * SLOT) as usize]);
                 let params = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("gpu particles"),
                     size: std::mem::size_of::<Params>() as u64,
@@ -537,16 +725,20 @@ impl GpuParticles {
                 label: Some("scrap::gpu particles"),
                 timestamp_writes: crate::gpu_timer::compute("gpu particles"),
             });
+            // An effect not (yet) in draws as an emitter without one: what
+            // `scrap check` says of a name nothing answers to.
+            let effect = if self.kinds.contains_key(&em.graph) { em.graph.as_str() } else { "" };
+            let kind = &self.kinds[effect];
             pass.set_bind_group(0, &pool.group, &[]);
             pass.set_bind_group(1, &depth_group, &[]);
             if spawn > 0 {
-                pass.set_pipeline(&self.spawn);
+                pass.set_pipeline(&kind.spawn);
                 pass.dispatch_workgroups(spawn.div_ceil(64), 1, 1);
             }
-            pass.set_pipeline(&self.step);
+            pass.set_pipeline(&kind.step);
             pass.dispatch_workgroups(pool.capacity.div_ceil(64), 1, 1);
             drop(pass);
-            self.drawn.push(e.key);
+            self.drawn.push((e.key, effect.to_string()));
         }
         let frame = self.frame;
         self.pools.retain(|_, p| p.seen == frame);
@@ -558,9 +750,9 @@ impl GpuParticles {
         if self.drawn.is_empty() {
             return;
         }
-        pass.set_pipeline(&self.draw);
-        for key in &self.drawn {
-            if let Some(pool) = self.pools.get(key) {
+        for (key, effect) in &self.drawn {
+            if let (Some(pool), Some(kind)) = (self.pools.get(key), self.kinds.get(effect)) {
+                pass.set_pipeline(&kind.draw);
                 pass.set_bind_group(0, &pool.draw_group, &[]);
                 pass.draw(0..6, 0..pool.capacity);
             }
@@ -570,5 +762,38 @@ impl GpuParticles {
     /// How many slots the pools hold.
     pub(crate) fn slots(&self) -> u32 {
         self.pools.values().map(|p| p.capacity).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plain_effect_and_one_of_every_part_build_into_the_particles_shader() {
+        check_effect(&plain_effect()).unwrap_or_else(|e| panic!("{e}"));
+        let graph = scrap_shadergraph::effect::parse(
+            r#"(
+                nodes: {
+                    "ring": Random(low: (-1.0, 0.0, -1.0), high: (1.0, 0.0, 1.0)),
+                    "at": Add(a: "origin", b: "ring"),
+                    "long": Random(low: 1.0, high: 3.0),
+                    "wind": Turbulence(at: "position", scale: 0.7),
+                    "push": Multiply(a: "wind", b: "dt"),
+                    "moved": Add(a: "velocity", b: "push"),
+                    "hue": Random(low: (1.0, 0.3, 0.05), high: (1.0, 0.8, 0.3)),
+                    "fade": OneMinus(of: "t"),
+                    "flicker": Noise(at: "position", scale: 4.0),
+                    "big": Multiply(a: "size", b: "flicker"),
+                },
+                spawn: (position: "at", velocity: "cone", life: "long"),
+                update: (velocity: "moved"),
+                output: (color: "hue", alpha: "fade", size: "big"),
+            )"#,
+        )
+        .unwrap();
+        let wgsl = scrap_shadergraph::effect::to_wgsl(&graph, "shaders/every.vfx.ron").unwrap();
+        check_effect(&wgsl).unwrap_or_else(|e| panic!("{e}\n{wgsl}"));
+        assert!(scrap_shadergraph::effect::problems(&graph).is_empty());
     }
 }

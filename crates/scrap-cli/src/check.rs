@@ -64,6 +64,8 @@ struct Names {
     scenes: HashSet<String>,
     /// The graphs in `animators/`, by name.
     animators: HashSet<String>,
+    /// The effect graphs in `shaders/` (`<name>.vfx.ron`), by name.
+    effects: HashSet<String>,
     /// Each graph's parameters, by its name: what a wire may pull.
     parameters: HashMap<String, std::collections::BTreeSet<String>>,
     /// The game's components, from `src/components/`; `None` when the
@@ -471,8 +473,15 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             Some((name, graph.parameters()))
         })
         .collect();
+    let effects = std::fs::read_dir(project.root().join(scrap::project::SHADERS))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| scrap::shader_graph::effect_name(&e.file_name().to_string_lossy()).map(str::to_string))
+        .collect();
     Names {
         animators,
+        effects,
         parameters,
         models,
         materials,
@@ -609,6 +618,18 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                         ),
                     ));
                 }
+            }
+        }
+        if let Some(emitter) = entity.particles().filter(|e| !e.graph.is_empty()) {
+            if !names.effects.contains(&emitter.graph) {
+                out.push(error(
+                    file,
+                    format!(
+                        "{who}: `particles` names effect graph `{}`, and there is no shaders/{0}.vfx.ron{}",
+                        emitter.graph,
+                        suggest(&emitter.graph, names.effects.iter().map(String::as_str))
+                    ),
+                ));
             }
         }
         if let MaterialRef::Named(link) = &entity.material_ref() {
@@ -1135,8 +1156,9 @@ fn wired_parameters(project: &Project) -> HashSet<String> {
 }
 
 /// Every material shader in `shaders/` — hand-written or a graph — built
-/// over the standard shader as the renderer would, without a GPU; and what
-/// a graph holds that nothing reads.
+/// over the standard shader as the renderer would, without a GPU, and every
+/// particle effect graph over the particles' shader; and what a graph holds
+/// that nothing reads.
 fn shaders(project: &Project, out: &mut Vec<Finding>) {
     let dir = project.root().join(scrap::project::SHADERS);
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1145,10 +1167,27 @@ fn shaders(project: &Project, out: &mut Vec<Finding>) {
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
+        let file = relative(project, &path);
+        if file.ends_with(".vfx.ron") {
+            match scrap::render::effect_source(&path).and_then(|s| scrap::particles_gpu::check_effect(&s)) {
+                Err(e) => out.push(error(&file, e)),
+                Ok(()) => {
+                    if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::effect::parse(&t)) {
+                        for problem in scrap::shader_graph::effect::problems(&graph) {
+                            out.push(Finding {
+                                severity: Severity::Warning,
+                                file: file.clone(),
+                                message: problem,
+                            });
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if scrap::render::material_shader_name(&path).is_none() {
             continue;
         }
-        let file = relative(project, &path);
         let source = match scrap::render::material_shader_source(&path) {
             Ok(source) => source,
             Err(e) => {

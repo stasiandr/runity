@@ -92,7 +92,10 @@ pub struct Value {
 
 impl Value {
     pub fn new(code: impl Into<String>, ty: Ty) -> Self {
-        Value { code: code.into(), ty }
+        Value {
+            code: code.into(),
+            ty,
+        }
     }
 
     /// Spread over `ty` if a number; the same if already `ty`.
@@ -113,40 +116,110 @@ impl Value {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Node {
     // Two in, the same out.
-    Add { a: Input, b: Input },
-    Subtract { a: Input, b: Input },
-    Multiply { a: Input, b: Input },
-    Divide { a: Input, b: Input },
-    Power { a: Input, b: Input },
-    Min { a: Input, b: Input },
-    Max { a: Input, b: Input },
+    Add {
+        a: Input,
+        b: Input,
+    },
+    Subtract {
+        a: Input,
+        b: Input,
+    },
+    Multiply {
+        a: Input,
+        b: Input,
+    },
+    Divide {
+        a: Input,
+        b: Input,
+    },
+    Power {
+        a: Input,
+        b: Input,
+    },
+    Min {
+        a: Input,
+        b: Input,
+    },
+    Max {
+        a: Input,
+        b: Input,
+    },
     /// `a` wrapped into `0..b`, never negative.
-    Modulo { a: Input, b: Input },
+    Modulo {
+        a: Input,
+        b: Input,
+    },
     /// 0 below `edge`, 1 from it.
-    Step { edge: Input, of: Input },
+    Step {
+        edge: Input,
+        of: Input,
+    },
     // Two vectors in, a number out.
-    Dot { a: Input, b: Input },
-    Distance { a: Input, b: Input },
-    Cross { a: Input, b: Input },
+    Dot {
+        a: Input,
+        b: Input,
+    },
+    Distance {
+        a: Input,
+        b: Input,
+    },
+    Cross {
+        a: Input,
+        b: Input,
+    },
     // One in, the same out.
-    Negate { of: Input },
-    OneMinus { of: Input },
-    Abs { of: Input },
-    Floor { of: Input },
-    Ceil { of: Input },
-    Round { of: Input },
-    Fract { of: Input },
-    Sign { of: Input },
-    Sine { of: Input },
-    Cosine { of: Input },
-    Sqrt { of: Input },
-    Exp { of: Input },
+    Negate {
+        of: Input,
+    },
+    OneMinus {
+        of: Input,
+    },
+    Abs {
+        of: Input,
+    },
+    Floor {
+        of: Input,
+    },
+    Ceil {
+        of: Input,
+    },
+    Round {
+        of: Input,
+    },
+    Fract {
+        of: Input,
+    },
+    Sign {
+        of: Input,
+    },
+    Sine {
+        of: Input,
+    },
+    Cosine {
+        of: Input,
+    },
+    Sqrt {
+        of: Input,
+    },
+    Exp {
+        of: Input,
+    },
     /// Clamped to 0..1.
-    Saturate { of: Input },
-    Length { of: Input },
-    Normalize { of: Input },
+    Saturate {
+        of: Input,
+    },
+    Length {
+        of: Input,
+    },
+    Normalize {
+        of: Input,
+    },
     /// Between `a` and `b` by `t` (a number, or one per component).
-    Lerp { a: Input, b: Input, t: Input },
+    Lerp {
+        a: Input,
+        b: Input,
+        t: Input,
+    },
     Clamp {
         of: Input,
         #[serde(default = "zero")]
@@ -154,11 +227,22 @@ pub enum Node {
         #[serde(default = "one")]
         high: Input,
     },
-    Smoothstep { low: Input, high: Input, of: Input },
+    Smoothstep {
+        low: Input,
+        high: Input,
+        of: Input,
+    },
     /// From the range `from` (a vec2: low, high) to the range `to`.
-    Remap { of: Input, from: Input, to: Input },
+    Remap {
+        of: Input,
+        from: Input,
+        to: Input,
+    },
     /// So many even steps between 0 and 1.
-    Posterize { of: Input, steps: Input },
+    Posterize {
+        of: Input,
+        steps: Input,
+    },
     /// A vector of these, in order: two to four numbers.
     Combine {
         x: Input,
@@ -202,6 +286,24 @@ pub enum Node {
         #[serde(default = "one")]
         scale: Input,
     },
+    /// Three noises at once, a vec3 from -1 to 1 that changes smoothly
+    /// with `at` (a vec3): a wind that differs from place to place.
+    Turbulence {
+        #[serde(default = "position")]
+        at: Input,
+        #[serde(default = "one")]
+        scale: Input,
+    },
+    /// A random number from `low` to `high` (numbers or vectors, a random
+    /// for each component) — in a particle's graph, drawn once for each
+    /// particle and kept all its life. Only where the graph has something
+    /// to be random for.
+    Random {
+        #[serde(default = "zero")]
+        low: Input,
+        #[serde(default = "one")]
+        high: Input,
+    },
     /// 0 and 1 in squares, `scale` a unit.
     Checker {
         #[serde(default = "uv")]
@@ -239,8 +341,57 @@ fn half() -> Input {
 fn uv() -> Input {
     Input::Name("uv".to_string())
 }
+fn position() -> Input {
+    Input::Name("position".to_string())
+}
 
 impl Node {
+    /// Every kind, as written.
+    pub const KINDS: &'static [&'static str] = &[
+        "Add",
+        "Subtract",
+        "Multiply",
+        "Divide",
+        "Power",
+        "Min",
+        "Max",
+        "Modulo",
+        "Step",
+        "Dot",
+        "Distance",
+        "Cross",
+        "Negate",
+        "OneMinus",
+        "Abs",
+        "Floor",
+        "Ceil",
+        "Round",
+        "Fract",
+        "Sign",
+        "Sine",
+        "Cosine",
+        "Sqrt",
+        "Exp",
+        "Saturate",
+        "Length",
+        "Normalize",
+        "Lerp",
+        "Clamp",
+        "Smoothstep",
+        "Remap",
+        "Posterize",
+        "Combine",
+        "TilingOffset",
+        "Rotate",
+        "Noise",
+        "Voronoi",
+        "Turbulence",
+        "Random",
+        "Checker",
+        "Fresnel",
+        "Texture",
+    ];
+
     /// The kind, as written.
     pub fn kind(&self) -> &'static str {
         macro_rules! kinds {
@@ -249,10 +400,48 @@ impl Node {
             };
         }
         kinds!(
-            Add, Subtract, Multiply, Divide, Power, Min, Max, Modulo, Step, Dot, Distance, Cross, Negate,
-            OneMinus, Abs, Floor, Ceil, Round, Fract, Sign, Sine, Cosine, Sqrt, Exp, Saturate, Length,
-            Normalize, Lerp, Clamp, Smoothstep, Remap, Posterize, Combine, TilingOffset, Rotate, Noise,
-            Voronoi, Checker, Fresnel, Texture
+            Add,
+            Subtract,
+            Multiply,
+            Divide,
+            Power,
+            Min,
+            Max,
+            Modulo,
+            Step,
+            Dot,
+            Distance,
+            Cross,
+            Negate,
+            OneMinus,
+            Abs,
+            Floor,
+            Ceil,
+            Round,
+            Fract,
+            Sign,
+            Sine,
+            Cosine,
+            Sqrt,
+            Exp,
+            Saturate,
+            Length,
+            Normalize,
+            Lerp,
+            Clamp,
+            Smoothstep,
+            Remap,
+            Posterize,
+            Combine,
+            TilingOffset,
+            Rotate,
+            Noise,
+            Voronoi,
+            Turbulence,
+            Random,
+            Checker,
+            Fresnel,
+            Texture
         )
     }
 
@@ -302,9 +491,14 @@ impl Node {
                 }
                 out
             }
-            TilingOffset { uv, tiling, offset } => vec![("uv", uv), ("tiling", tiling), ("offset", offset)],
+            TilingOffset { uv, tiling, offset } => {
+                vec![("uv", uv), ("tiling", tiling), ("offset", offset)]
+            }
             Rotate { uv, center, angle } => vec![("uv", uv), ("center", center), ("angle", angle)],
-            Noise { at, scale } | Voronoi { at, scale } => vec![("at", at), ("scale", scale)],
+            Noise { at, scale } | Voronoi { at, scale } | Turbulence { at, scale } => {
+                vec![("at", at), ("scale", scale)]
+            }
+            Random { low, high } => vec![("low", low), ("high", high)],
             Checker { uv, scale } => vec![("uv", uv), ("scale", scale)],
             Fresnel { power } => vec![("power", power)],
             Texture { uv, .. } => vec![("uv", uv)],
@@ -328,6 +522,12 @@ pub trait Context {
     fn fresnel(&self, power: &str) -> Result<Value, String> {
         let _ = power;
         Err("this graph knows no eye to face".to_string())
+    }
+    /// `ty`'s worth of random numbers from 0 to 1, told apart from other
+    /// `Random` nodes by `salt`.
+    fn random(&self, salt: u32, ty: Ty) -> Result<Value, String> {
+        let _ = (salt, ty);
+        Err("a surface has nothing to be random for — `Noise` at `position` is a random that stays put".to_string())
     }
 }
 
@@ -377,7 +577,11 @@ pub fn compile(
         state.out.outputs.push(value);
     }
     let used: Vec<String> = state.out.values.keys().cloned().collect();
-    state.out.unused = nodes.keys().filter(|n| !used.contains(n)).cloned().collect();
+    state.out.unused = nodes
+        .keys()
+        .filter(|n| !used.contains(n))
+        .cloned()
+        .collect();
     let mut helpers = std::mem::take(&mut state.helpers);
     helpers.sort();
     helpers.dedup();
@@ -441,15 +645,26 @@ impl State<'_> {
         if let Some(at) = self.walking.iter().position(|n| n == name) {
             let mut round: Vec<&str> = self.walking[at..].iter().map(String::as_str).collect();
             round.push(name);
-            return Err(format!("the nodes go round in a circle: {}", round.join(" → ")));
+            return Err(format!(
+                "the nodes go round in a circle: {}",
+                round.join(" → ")
+            ));
         }
-        let node = self.nodes.get(name).expect("asked for by name only when it exists");
+        let node = self
+            .nodes
+            .get(name)
+            .expect("asked for by name only when it exists");
         self.walking.push(name.to_string());
         let value = self.emit(name, node);
         self.walking.pop();
         let value = value?;
         let id = ident(name);
-        let _ = writeln!(self.out.body, "    let {id}: {} = {};", value.ty.wgsl(), value.code);
+        let _ = writeln!(
+            self.out.body,
+            "    let {id}: {} = {};",
+            value.ty.wgsl(),
+            value.code
+        );
         let named = Value::new(id, value.ty);
         self.out.values.insert(name.to_string(), named.clone());
         Ok(named)
@@ -464,13 +679,23 @@ impl State<'_> {
     fn read(&mut self, label: &str, input: &Input) -> Result<Value, String> {
         let at = || label.to_string();
         match input {
-            Input::Number(n) => Ok(Value::new(number(*n).map_err(|e| format!("{}: {e}", at()))?, Ty::F1)),
+            Input::Number(n) => Ok(Value::new(
+                number(*n).map_err(|e| format!("{}: {e}", at()))?,
+                Ty::F1,
+            )),
             Input::Vector(v) => {
-                let ty = Ty::of(v.len())
-                    .filter(|t| *t != Ty::F1)
-                    .ok_or_else(|| format!("{}: a vector is two to four numbers, not {}", at(), v.len()))?;
-                let parts = v.iter().map(|n| number(*n)).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{}: {e}", at()))?;
-                Ok(Value::new(format!("{}({})", ty.wgsl(), parts.join(", ")), ty))
+                let ty = Ty::of(v.len()).filter(|t| *t != Ty::F1).ok_or_else(|| {
+                    format!("{}: a vector is two to four numbers, not {}", at(), v.len())
+                })?;
+                let parts = v
+                    .iter()
+                    .map(|n| number(*n))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("{}: {e}", at()))?;
+                Ok(Value::new(
+                    format!("{}({})", ty.wgsl(), parts.join(", ")),
+                    ty,
+                ))
             }
             Input::Name(name) => {
                 let (base, swizzle) = split(name);
@@ -481,10 +706,14 @@ impl State<'_> {
                 } else {
                     let mut known: Vec<String> = self.nodes.keys().cloned().collect();
                     known.extend(self.context.builtins());
-                    let hint = scrap_core::spelling::closest(base, known.iter().map(String::as_str))
-                        .map(|n| format!(" — did you mean `{n}`?"))
-                        .unwrap_or_default();
-                    return Err(format!("{}: no node, input or parameter called `{base}`{hint}", at()));
+                    let hint =
+                        scrap_core::spelling::closest(base, known.iter().map(String::as_str))
+                            .map(|n| format!(" — did you mean `{n}`?"))
+                            .unwrap_or_default();
+                    return Err(format!(
+                        "{}: no node, input or parameter called `{base}`{hint}",
+                        at()
+                    ));
                 };
                 match swizzle {
                     None => Ok(value),
@@ -531,7 +760,8 @@ impl State<'_> {
             let (ty, a) = same(args).map_err(at)?;
             Ok(Value::new(format!("({} {o} {})", a[0], a[1]), ty))
         };
-        let one = |f: &str, args: &[Value]| Value::new(format!("{f}({})", args[0].code), args[0].ty);
+        let one =
+            |f: &str, args: &[Value]| Value::new(format!("{f}({})", args[0].code), args[0].ty);
         let v = match node {
             Add { .. } => op("+", &args)?,
             Subtract { .. } => op("-", &args)?,
@@ -548,7 +778,11 @@ impl State<'_> {
             Dot { .. } | Distance { .. } => {
                 let (_, a) = same(&args).map_err(at)?;
                 vector(&args[0], "a").map_err(at)?;
-                let f = if matches!(node, Dot { .. }) { "dot" } else { "distance" };
+                let f = if matches!(node, Dot { .. }) {
+                    "dot"
+                } else {
+                    "distance"
+                };
                 Value::new(format!("{f}({}, {})", a[0], a[1]), Ty::F1)
             }
             Cross { .. } => {
@@ -560,7 +794,14 @@ impl State<'_> {
             Negate { .. } => Value::new(format!("(-{})", args[0].code), args[0].ty),
             OneMinus { .. } => {
                 let ty = args[0].ty;
-                Value::new(format!("({} - {})", Value::new("1.0", Ty::F1).to(ty).unwrap(), args[0].code), ty)
+                Value::new(
+                    format!(
+                        "({} - {})",
+                        Value::new("1.0", Ty::F1).to(ty).unwrap(),
+                        args[0].code
+                    ),
+                    ty,
+                )
             }
             Abs { .. } => one("abs", &args),
             Floor { .. } => one("floor", &args),
@@ -580,7 +821,13 @@ impl State<'_> {
             }
             Lerp { .. } => {
                 let (ty, ab) = same(&args[..2]).map_err(at)?;
-                let t = args[2].to(ty).ok_or_else(|| at(format!("`t` is {} where `a` and `b` are {}", args[2].ty.said(), ty.said())))?;
+                let t = args[2].to(ty).ok_or_else(|| {
+                    at(format!(
+                        "`t` is {} where `a` and `b` are {}",
+                        args[2].ty.said(),
+                        ty.said()
+                    ))
+                })?;
                 Value::new(format!("mix({}, {}, {t})", ab[0], ab[1]), ty)
             }
             Clamp { .. } => {
@@ -594,12 +841,17 @@ impl State<'_> {
             Remap { .. } => {
                 for (i, f) in [(1, "from"), (2, "to")] {
                     if args[i].ty != Ty::F2 {
-                        return Err(at(format!("`{f}` is a range, a vec2 (low, high), not {}", args[i].ty.said())));
+                        return Err(at(format!(
+                            "`{f}` is a range, a vec2 (low, high), not {}",
+                            args[i].ty.said()
+                        )));
                     }
                 }
                 let (of, from, to) = (&args[0].code, &args[1].code, &args[2].code);
                 Value::new(
-                    format!("({to}.x + ({of} - {from}.x) / ({from}.y - {from}.x) * ({to}.y - {to}.x))"),
+                    format!(
+                        "({to}.x + ({of} - {from}.x) / ({from}.y - {from}.x) * ({to}.y - {to}.x))"
+                    ),
                     args[0].ty,
                 )
             }
@@ -610,7 +862,10 @@ impl State<'_> {
             Combine { .. } => {
                 if let Some(a) = args.iter().position(|a| a.ty != Ty::F1) {
                     let f = node.inputs()[a].0;
-                    return Err(at(format!("`{f}` has to be a number, not {}", args[a].ty.said())));
+                    return Err(at(format!(
+                        "`{f}` has to be a number, not {}",
+                        args[a].ty.said()
+                    )));
                 }
                 let ty = Ty::of(args.len()).expect("two to four");
                 let parts: Vec<&str> = args.iter().map(|a| a.code.as_str()).collect();
@@ -618,15 +873,24 @@ impl State<'_> {
             }
             TilingOffset { .. } => {
                 if args[0].ty != Ty::F2 {
-                    return Err(at(format!("`uv` has to be a vec2, not {}", args[0].ty.said())));
+                    return Err(at(format!(
+                        "`uv` has to be a vec2, not {}",
+                        args[0].ty.said()
+                    )));
                 }
-                let tiling = args[1].to(Ty::F2).ok_or_else(|| at("`tiling` is a number or a vec2".into()))?;
-                let offset = args[2].to(Ty::F2).ok_or_else(|| at("`offset` is a number or a vec2".into()))?;
+                let tiling = args[1]
+                    .to(Ty::F2)
+                    .ok_or_else(|| at("`tiling` is a number or a vec2".into()))?;
+                let offset = args[2]
+                    .to(Ty::F2)
+                    .ok_or_else(|| at("`offset` is a number or a vec2".into()))?;
                 Value::new(format!("({} * {tiling} + {offset})", args[0].code), Ty::F2)
             }
             Rotate { .. } => {
                 if args[0].ty != Ty::F2 || args[1].ty != Ty::F2 || args[2].ty != Ty::F1 {
-                    return Err(at("`uv` and `center` are vec2s, `angle` a number of radians".into()));
+                    return Err(at(
+                        "`uv` and `center` are vec2s, `angle` a number of radians".into(),
+                    ));
                 }
                 let (uv, c, a) = (&args[0].code, &args[1].code, &args[2].code);
                 Value::new(
@@ -635,7 +899,9 @@ impl State<'_> {
                 )
             }
             Noise { .. } => {
-                let scale = args[1].to(Ty::F1).ok_or_else(|| at("`scale` is a number".into()))?;
+                let scale = args[1]
+                    .to(Ty::F1)
+                    .ok_or_else(|| at("`scale` is a number".into()))?;
                 match args[0].ty {
                     Ty::F2 => {
                         self.helpers.extend([Helper::Hash, Helper::Noise2]);
@@ -649,30 +915,64 @@ impl State<'_> {
                 }
             }
             Voronoi { .. } => {
-                let scale = args[1].to(Ty::F1).ok_or_else(|| at("`scale` is a number".into()))?;
+                let scale = args[1]
+                    .to(Ty::F1)
+                    .ok_or_else(|| at("`scale` is a number".into()))?;
                 if args[0].ty != Ty::F2 {
                     return Err(at(format!("`at` is a vec2, not {}", args[0].ty.said())));
                 }
                 self.helpers.extend([Helper::Hash, Helper::Voronoi]);
                 Value::new(format!("sg_voronoi({} * {scale})", args[0].code), Ty::F2)
             }
+            Turbulence { .. } => {
+                let scale = args[1]
+                    .to(Ty::F1)
+                    .ok_or_else(|| at("`scale` is a number".into()))?;
+                if args[0].ty != Ty::F3 {
+                    return Err(at(format!("`at` is a vec3, not {}", args[0].ty.said())));
+                }
+                self.helpers.extend([Helper::Hash, Helper::Noise3]);
+                let p = format!("({} * {scale})", args[0].code);
+                Value::new(
+                    format!("(vec3<f32>(sg_noise3({p}), sg_noise3({p} + vec3<f32>(31.7, 11.3, 5.9)), sg_noise3({p} + vec3<f32>(-7.1, 23.9, 41.3))) * 2.0 - 1.0)"),
+                    Ty::F3,
+                )
+            }
+            Random { .. } => {
+                let (ty, a) = same(&args).map_err(at)?;
+                let salt = name.bytes().fold(2_166_136_261u32, |h, b| {
+                    (h ^ b as u32).wrapping_mul(16_777_619)
+                });
+                let r = self.context.random(salt, ty).map_err(at)?;
+                Value::new(format!("mix({}, {}, {})", a[0], a[1], r.code), ty)
+            }
             Checker { .. } => {
                 if args[0].ty != Ty::F2 {
-                    return Err(at(format!("`uv` has to be a vec2, not {}", args[0].ty.said())));
+                    return Err(at(format!(
+                        "`uv` has to be a vec2, not {}",
+                        args[0].ty.said()
+                    )));
                 }
-                let scale = args[1].to(Ty::F2).ok_or_else(|| at("`scale` is a number or a vec2".into()))?;
+                let scale = args[1]
+                    .to(Ty::F2)
+                    .ok_or_else(|| at("`scale` is a number or a vec2".into()))?;
                 Value::new(
                     format!("(floor(({0} * {scale}).x) + floor(({0} * {scale}).y) - 2.0 * floor((floor(({0} * {scale}).x) + floor(({0} * {scale}).y)) * 0.5))", args[0].code),
                     Ty::F1,
                 )
             }
             Fresnel { .. } => {
-                let p = args[0].to(Ty::F1).ok_or_else(|| at("`power` is a number".into()))?;
+                let p = args[0]
+                    .to(Ty::F1)
+                    .ok_or_else(|| at("`power` is a number".into()))?;
                 self.context.fresnel(&p).map_err(at)?
             }
             Texture { name: texture, .. } => {
                 if args[0].ty != Ty::F2 {
-                    return Err(at(format!("`uv` has to be a vec2, not {}", args[0].ty.said())));
+                    return Err(at(format!(
+                        "`uv` has to be a vec2, not {}",
+                        args[0].ty.said()
+                    )));
                 }
                 self.context.texture(texture, &args[0].code).map_err(at)?
             }
@@ -683,7 +983,8 @@ impl State<'_> {
 
 /// A value's components picked by `s` (`xyzw` or `rgba`, one to four).
 fn swizzled(value: &Value, s: &str) -> Result<Value, String> {
-    let ty = Ty::of(s.len()).ok_or_else(|| "a swizzle is one to four of x, y, z, w (or r, g, b, a)".to_string())?;
+    let ty = Ty::of(s.len())
+        .ok_or_else(|| "a swizzle is one to four of x, y, z, w (or r, g, b, a)".to_string())?;
     for c in s.chars() {
         let at = match c {
             'x' | 'r' => 0,
@@ -803,12 +1104,18 @@ mod tests {
 
     #[test]
     fn nodes_come_out_in_the_order_they_are_read_and_only_those_reached() {
-        let n = nodes(r#"{ "b": Add(a: "a", b: 1.0), "a": Multiply(a: "uv", b: "time"), "lost": Sine(of: "time") }"#);
+        let n = nodes(
+            r#"{ "b": Add(a: "a", b: 1.0), "a": Multiply(a: "uv", b: "time"), "lost": Sine(of: "time") }"#,
+        );
         let c = compile(&n, &[("out".into(), &Input::from("b"))], &Plain).unwrap();
         let a = c.body.find("let n_a").unwrap();
         let b = c.body.find("let n_b").unwrap();
         assert!(a < b, "{}", c.body);
-        assert_eq!(c.values["b"].ty, Ty::F2, "a number spreads over the vec2 it meets");
+        assert_eq!(
+            c.values["b"].ty,
+            Ty::F2,
+            "a number spreads over the vec2 it meets"
+        );
         assert!(c.body.contains("vec2<f32>(1.0)"), "{}", c.body);
         assert_eq!(c.unused, vec!["lost".to_string()]);
     }
@@ -833,7 +1140,9 @@ mod tests {
 
     #[test]
     fn swizzles_pick_and_spread_and_are_checked() {
-        let n = nodes(r#"{ "c": Combine(x: "uv.y", y: "time.x", z: 0.5), "s": Add(a: "c.rg", b: "uv.yx") }"#);
+        let n = nodes(
+            r#"{ "c": Combine(x: "uv.y", y: "time.x", z: 0.5), "s": Add(a: "c.rg", b: "uv.yx") }"#,
+        );
         let c = compile(&n, &[("out".into(), &Input::from("s"))], &Plain).unwrap();
         assert_eq!(c.values["c"].ty, Ty::F3);
         assert!(c.body.contains("n_c.xy"), "{}", c.body);
@@ -845,8 +1154,12 @@ mod tests {
     #[test]
     fn a_texture_or_an_eye_where_the_graph_has_none_is_refused() {
         let n = nodes(r#"{ "t": Texture(name: "_Main"), "f": Fresnel() }"#);
-        assert!(compile(&n, &[("out".into(), &Input::from("t"))], &Plain).unwrap_err().contains("no textures"));
-        assert!(compile(&n, &[("out".into(), &Input::from("f"))], &Plain).unwrap_err().contains("no eye"));
+        assert!(compile(&n, &[("out".into(), &Input::from("t"))], &Plain)
+            .unwrap_err()
+            .contains("no textures"));
+        assert!(compile(&n, &[("out".into(), &Input::from("f"))], &Plain)
+            .unwrap_err()
+            .contains("no eye"));
     }
 
     #[test]

@@ -239,7 +239,11 @@
 - [x] Шейдер-граф (docs/shadergraph.md): `shaders/<name>.graph.ron` →
       WGSL `surface`, 40 узлов, горячая перезагрузка, `check` с узлом и
       входом; пример — `valley/scenes/graphs.ron`
-- [ ] Окно шейдер-графа на `graph_view`, граф частиц на том же ядре
+- [x] Граф эффекта (VFX Graph, docs/shadergraph.md):
+      `shaders/<name>.vfx.ron` — `spawn`, `update`, `output` частиц на
+      видеокарте, узлы `Random` и `Turbulence`; пример — угли в
+      `graphs.ron`
+- [ ] Окна шейдер-графа и графа эффекта на `graph_view`
 
 # Инструменты дизайнера
 

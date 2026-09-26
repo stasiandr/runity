@@ -177,7 +177,7 @@ impl Emitting {
 
     fn give_off(&mut self, count: usize, dt: f32) {
         // On the GPU they are only counted: the GPU gives them off.
-        if self.emitter.gpu {
+        if self.on_gpu() {
             self.gpu_born += count as u64;
             return;
         }
@@ -374,10 +374,16 @@ impl Emitting {
 }
 
 impl Emitting {
+    /// On the GPU: said so, or with an effect graph, which only the GPU
+    /// runs.
+    fn on_gpu(&self) -> bool {
+        self.emitter.gpu || !self.emitter.graph.is_empty()
+    }
+
     /// What the GPU needs of an emitter on it this frame: none for one on
     /// the CPU.
     pub fn gpu(&self, key: u64) -> Option<crate::particles_gpu::GpuEmitter> {
-        self.emitter.gpu.then(|| crate::particles_gpu::GpuEmitter {
+        self.on_gpu().then(|| crate::particles_gpu::GpuEmitter {
             key,
             placed: self.placed,
             emitter: self.emitter.clone(),

@@ -95,7 +95,9 @@ impl SurfaceOut {
 /// What a file of this name is called as a shader: `lava.graph.ron` is
 /// `lava`. `None` for any other file.
 pub fn shader_name(file_name: &str) -> Option<&str> {
-    file_name.strip_suffix(".graph.ron").filter(|n| !n.is_empty())
+    file_name
+        .strip_suffix(".graph.ron")
+        .filter(|n| !n.is_empty())
 }
 
 /// Read a graph from its text; the error says where.
@@ -108,7 +110,11 @@ const BUILTINS: [(&str, &str, Ty); 10] = [
     ("time", "in.time", Ty::F1),
     ("position", "in.world_position", Ty::F3),
     ("normal", "in.normal", Ty::F3),
-    ("view", "normalize(frame.camera_position.xyz - in.world_position)", Ty::F3),
+    (
+        "view",
+        "normalize(frame.camera_position.xyz - in.world_position)",
+        Ty::F3,
+    ),
     ("albedo", "out.albedo", Ty::F3),
     ("alpha", "out.alpha", Ty::F1),
     ("metallic", "out.metallic", Ty::F1),
@@ -126,7 +132,10 @@ impl Context for Material<'_> {
             return Some(Value::new(*code, *ty));
         }
         let i = self.graph.params.iter().position(|p| p == name)?;
-        Some(Value::new(format!("in.params[{}].{}", i / 4, ["x", "y", "z", "w"][i % 4]), Ty::F1))
+        Some(Value::new(
+            format!("in.params[{}].{}", i / 4, ["x", "y", "z", "w"][i % 4]),
+            Ty::F1,
+        ))
     }
 
     fn builtins(&self) -> Vec<String> {
@@ -139,10 +148,15 @@ impl Context for Material<'_> {
         match self.graph.textures.iter().position(|t| t == name) {
             Some(slot) => Ok(Value::new(format!("texture_at(in, {slot}u, {uv})"), Ty::F4)),
             None => {
-                let hint = scrap_core::spelling::closest(name, self.graph.textures.iter().map(String::as_str))
-                    .map(|n| format!(" — did you mean `{n}`?"))
-                    .unwrap_or_default();
-                Err(format!("the graph declares no texture `{name}` in `textures`{hint}"))
+                let hint = scrap_core::spelling::closest(
+                    name,
+                    self.graph.textures.iter().map(String::as_str),
+                )
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+                Err(format!(
+                    "the graph declares no texture `{name}` in `textures`{hint}"
+                ))
             }
         }
     }
@@ -164,10 +178,15 @@ pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
     shape(graph)?;
     let context = Material { graph };
     let outputs = graph.surface.fields();
-    let wanted: Vec<(String, &Input)> = outputs.iter().map(|(name, input, _)| (format!("surface `{name}`"), *input)).collect();
+    let wanted: Vec<(String, &Input)> = outputs
+        .iter()
+        .map(|(name, input, _)| (format!("surface `{name}`"), *input))
+        .collect();
     let compiled = expr::compile(&graph.nodes, &wanted, &context)?;
     let mut out = String::new();
-    out.push_str(&format!("// Made from {from} by the shader graph: edit that, not this.\n"));
+    out.push_str(&format!(
+        "// Made from {from} by the shader graph: edit that, not this.\n"
+    ));
     if !graph.params.is_empty() {
         out.push_str(&format!("// scrap:params {}\n", graph.params.join(" ")));
     }
@@ -181,7 +200,9 @@ pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
     for ((name, _, ty), value) in outputs.iter().zip(&compiled.outputs) {
         let code = spread(value, *ty).map_err(|e| format!("surface `{name}` {e}"))?;
         if *name == "clip" {
-            out.push_str(&format!("    if (o.alpha < {code}) {{\n        discard;\n    }}\n"));
+            out.push_str(&format!(
+                "    if (o.alpha < {code}) {{\n        discard;\n    }}\n"
+            ));
         } else {
             out.push_str(&format!("    o.{name} = {code};\n"));
         }
@@ -195,7 +216,10 @@ pub fn to_wgsl(graph: &ShaderGraph, from: &str) -> Result<String, String> {
 pub fn problems(graph: &ShaderGraph) -> Vec<String> {
     let context = Material { graph };
     let outputs = graph.surface.fields();
-    let wanted: Vec<(String, &Input)> = outputs.iter().map(|(name, input, _)| (name.to_string(), *input)).collect();
+    let wanted: Vec<(String, &Input)> = outputs
+        .iter()
+        .map(|(name, input, _)| (name.to_string(), *input))
+        .collect();
     let Ok(compiled) = expr::compile(&graph.nodes, &wanted, &context) else {
         return Vec::new();
     };
@@ -207,9 +231,14 @@ pub fn problems(graph: &ShaderGraph) -> Vec<String> {
     let reads = |name: &str| {
         graph.nodes.iter().any(|(n, node)| {
             !compiled.unused.contains(n)
-                && (node.inputs().iter().any(|(_, i)| matches!(i, Input::Name(s) if expr::split(s).0 == name))
+                && (node
+                    .inputs()
+                    .iter()
+                    .any(|(_, i)| matches!(i, Input::Name(s) if expr::split(s).0 == name))
                     || matches!(node, Node::Texture { name: t, .. } if t == name))
-        }) || outputs.iter().any(|(_, i, _)| matches!(i, Input::Name(s) if expr::split(s).0 == name))
+        }) || outputs
+            .iter()
+            .any(|(_, i, _)| matches!(i, Input::Name(s) if expr::split(s).0 == name))
     };
     for p in &graph.params {
         if !reads(p) {
@@ -227,15 +256,28 @@ pub fn problems(graph: &ShaderGraph) -> Vec<String> {
 /// What the file says that no graph can be, before its nodes are looked at.
 fn shape(graph: &ShaderGraph) -> Result<(), String> {
     if graph.params.len() > PARAMS {
-        return Err(format!("a material hands its shader {PARAMS} numbers, and `params` names {}", graph.params.len()));
+        return Err(format!(
+            "a material hands its shader {PARAMS} numbers, and `params` names {}",
+            graph.params.len()
+        ));
     }
     if graph.textures.len() > TEXTURES {
-        return Err(format!("a material hands its shader {TEXTURES} textures, and `textures` names {}", graph.textures.len()));
+        return Err(format!(
+            "a material hands its shader {TEXTURES} textures, and `textures` names {}",
+            graph.textures.len()
+        ));
     }
     let mut seen: Vec<&str> = Vec::new();
-    for name in graph.params.iter().chain(&graph.textures).map(String::as_str) {
+    for name in graph
+        .params
+        .iter()
+        .chain(&graph.textures)
+        .map(String::as_str)
+    {
         if name.is_empty() || name.contains(['.', ' ']) {
-            return Err(format!("`{name}` cannot name a parameter or texture: no dots or spaces"));
+            return Err(format!(
+                "`{name}` cannot name a parameter or texture: no dots or spaces"
+            ));
         }
         if seen.contains(&name) {
             return Err(format!("`{name}` is declared twice"));
@@ -247,7 +289,9 @@ fn shape(graph: &ShaderGraph) -> Result<(), String> {
             return Err(format!("`{name}` cannot name a node: no dots or spaces"));
         }
         if BUILTINS.iter().any(|(b, _, _)| b == name) || graph.params.contains(name) {
-            return Err(format!("node `{name}` has the name of an input it would hide — call it something else"));
+            return Err(format!(
+                "node `{name}` has the name of an input it would hide — call it something else"
+            ));
         }
     }
     if graph.surface.fields().is_empty() {
@@ -267,7 +311,11 @@ fn spread(value: &Value, ty: Ty) -> Result<String, String> {
             "is {} and has to be {}{}",
             value.ty.said(),
             ty.said(),
-            if ty == Ty::F3 && value.ty == Ty::F4 { " — take `.rgb`" } else { "" }
+            if ty == Ty::F3 && value.ty == Ty::F4 {
+                " — take `.rgb`"
+            } else {
+                ""
+            }
         ))
     }
 }
