@@ -193,7 +193,7 @@ impl Context for Particles {
         let one = |k: usize| {
             format!(
                 "sg_random(e.seed, {}u)",
-                salt.wrapping_add(k as u32 * 0x9e37_79b9)
+                salt.wrapping_add((k as u32).wrapping_mul(0x9e37_79b9))
             )
         };
         let code = match ty {

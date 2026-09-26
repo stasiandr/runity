@@ -3208,8 +3208,7 @@ checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 [[package]]
 name = "ron"
 version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81116b9531d61eabc41aeb228e4b6b2435bcca3233b98cf3b3077d4e6e9debb3"
+source = "git+https://github.com/ron-rs/ron?rev=72134854bb7d3a61b40c48addd69e256e1f7fe18#72134854bb7d3a61b40c48addd69e256e1f7fe18"
 dependencies = [
  "bitflags 2.13.2",
  "once_cell",

@@ -58,14 +58,22 @@ impl Prefabs {
     pub fn open(directory: impl AsRef<Path>) -> std::io::Result<(Self, Vec<(PathBuf, String)>)> {
         let mut prefabs = Self::new();
         let mut problems = Vec::new();
+        let mut paths = Vec::new();
         for entry in crate::files::read_dir(directory.as_ref())? {
             let path = entry?.path();
-            if path.extension().and_then(|e| e.to_str()) != Some(EXTENSION) {
-                continue;
+            if path.extension().and_then(|e| e.to_str()) == Some(EXTENSION) {
+                paths.push(path);
             }
-            match Self::read(&path) {
-                Ok((name, desc)) => {
-                    if let Some(id) = crate::asset::sidecar_id(crate::asset::sidecar_of(&path)) {
+        }
+        // Read and parsed on every core: a game's thousand prefabs are
+        // megabytes of text, and each stands alone.
+        let read = crate::jobs::map(&paths, 8, |path| {
+            Self::read(path).map(|(name, desc)| (name, desc, crate::asset::sidecar_id(crate::asset::sidecar_of(path))))
+        });
+        for (path, read) in paths.into_iter().zip(read) {
+            match read {
+                Ok((name, desc, id)) => {
+                    if let Some(id) = id {
                         prefabs.ids.insert(id, name.clone());
                         prefabs.id_of.insert(name.clone(), id);
                     }
@@ -144,13 +152,15 @@ impl Prefabs {
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(EXTENSION))
             .collect();
         paths.sort();
-        for path in paths {
+        paths.retain(|path| path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<crate::AssetId>().ok()).is_some());
+        let read = crate::jobs::map(&paths, 4, |path| Self::read(path));
+        for (path, read) in paths.into_iter().zip(read) {
             let id = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .and_then(|s| s.parse::<crate::AssetId>().ok());
             let Some(id) = id else { continue };
-            match Self::read(&path) {
+            match read {
                 Ok((_, desc)) => {
                     let name = desc.name.clone();
                     if self.by_name.contains_key(&name) {
