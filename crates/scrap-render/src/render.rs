@@ -1489,6 +1489,15 @@ pub struct Renderer {
     /// workers while it goes without: a renderer that draws pictures
     /// (tests, tools) rather than a game's window.
     wait_for_pipelines: bool,
+    /// Dense meshes being cut into clusters on a worker (a game's window
+    /// does not wait for it: until they are in, the mesh is drawn whole),
+    /// and what is done, for the next frame to put in.
+    clustering: Option<(
+        std::sync::mpsc::Sender<ClusterJob>,
+        std::sync::mpsc::Receiver<(MeshHandle, wgpu::Buffer, Option<(Vec<u32>, Vec<crate::cluster::ClusterRaw>)>)>,
+    )>,
+    /// How many meshes are being cut.
+    clusters_waiting: usize,
     /// Far clusters left out of the prepass (`SCRAP_FAR_PREPASS=1` keeps
     /// them), and whether this frame's were: then the lit pass's depth is
     /// the whole one, and what comes after it reads that.
@@ -3802,6 +3811,8 @@ impl Renderer {
             full: crate::lean::Lean::always(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8)),
             known: lit_keys(Look::all()),
             wait_for_pipelines: wait,
+            clustering: None,
+            clusters_waiting: 0,
             mesh_names: Default::default(),
             texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
@@ -3975,6 +3986,7 @@ impl Renderer {
     ) -> MeshHandle {
         let mesh = self.gpu_mesh(gpu, vertices, colors, indices, true, false);
         let handle = self.take_slot(mesh);
+        self.cluster_later(handle, vertices, indices);
         self.make_lods(gpu, handle, vertices, colors, indices);
         handle
     }
@@ -4070,7 +4082,9 @@ impl Renderer {
             };
             let mesh = self.gpu_mesh(gpu, &v, &c, &i, false, false);
             self.lod_meshes.push(mesh);
-            levels.push((MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1)), below));
+            let lod = MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1));
+            self.cluster_later(lod, &v, &i);
+            levels.push((lod, below));
         }
         if !levels.is_empty() {
             self.lods.insert(handle.0, levels);
@@ -4114,10 +4128,11 @@ impl Renderer {
         };
         // Dense: cut into clusters, its triangles in their order, its
         // buffers readable by the vertex shader that pulls from them.
-        let clustered = (self.clusters.can && !live)
-            .then(|| crate::cluster::build(vertices, indices))
-            .flatten();
-        if clustered.is_some() {
+        // Cut here where frames wait for what they draw; else by the worker
+        // (`cluster_later`), the mesh drawn whole meanwhile.
+        let dense = self.clusters.can && !live && indices.len() / 3 >= crate::cluster::FROM_TRIANGLES && !vertices.is_empty();
+        let clustered = if dense && self.wait_for_pipelines { crate::cluster::build(vertices, indices) } else { None };
+        if dense {
             usage |= wgpu::BufferUsages::STORAGE;
         }
         // The mesh itself is the first part of a clustered one's indices;
@@ -4166,6 +4181,66 @@ impl Renderer {
     }
 
     /// A mesh by its handle, a coarser level's too.
+    /// A dense mesh just uploaded, not yet cut into clusters: cut on the
+    /// worker, put in by a later frame (`take_clusters`).
+    fn cluster_later(&mut self, handle: MeshHandle, vertices: &[crate::asset::Vertex], indices: &[u32]) {
+        let Some(mesh) = self.mesh(handle) else { return };
+        if self.wait_for_pipelines
+            || mesh.clusters.is_some()
+            || !self.clusters.can
+            || indices.len() / 3 < crate::cluster::FROM_TRIANGLES
+            || vertices.is_empty()
+        {
+            return;
+        }
+        let which = mesh.vertices.clone();
+        if self.clustering.is_none() {
+            let (jobs, inbox) = std::sync::mpsc::channel::<ClusterJob>();
+            let (outbox, done) = std::sync::mpsc::channel();
+            let started = std::thread::Builder::new().name("scrap-clusters".into()).spawn(move || {
+                for (handle, which, vertices, indices) in inbox {
+                    if outbox.send((handle, which, crate::cluster::build(&vertices, &indices))).is_err() {
+                        break;
+                    }
+                }
+            });
+            if started.is_err() {
+                return;
+            }
+            self.clustering = Some((jobs, done));
+        }
+        if let Some((jobs, _)) = &self.clustering {
+            if jobs.send((handle, which, vertices.to_vec(), indices.to_vec())).is_ok() {
+                self.clusters_waiting += 1;
+            }
+        }
+    }
+
+    /// Put in the clusters the worker has cut: each mesh's indices in
+    /// their order, its coarser levels after — if it is still the mesh
+    /// they were cut for.
+    fn take_clusters(&mut self, gpu: &Gpu) {
+        let Some((_, done)) = &self.clustering else { return };
+        let finished: Vec<_> = done.try_iter().collect();
+        for (handle, which, cut) in finished {
+            self.clusters_waiting -= 1;
+            let Some((sorted, clusters)) = cut else { continue };
+            let slot = if handle.0 & LOD_HANDLE != 0 {
+                self.lod_meshes.get_mut((handle.0 & !LOD_HANDLE) as usize)
+            } else {
+                self.meshes.get_mut(handle.0 as usize)
+            };
+            let Some(mesh) = slot.filter(|m| m.vertices == which) else { continue };
+            use wgpu::util::DeviceExt;
+            mesh.indices = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("indices"),
+                contents: bytemuck::cast_slice(&sorted),
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+            });
+            mesh.clusters = Some(crate::cluster::MeshClusters::new(gpu, &clusters));
+        }
+    }
+
     fn mesh(&self, handle: MeshHandle) -> Option<&GpuMesh> {
         if handle.0 & LOD_HANDLE != 0 {
             self.lod_meshes.get((handle.0 & !LOD_HANDLE) as usize)
@@ -5248,7 +5323,7 @@ impl Renderer {
     /// How many pipelines the frames drawn so far asked for are still being
     /// built (what they draw is not drawn meanwhile).
     pub fn pipelines_building(&self) -> usize {
-        self.full.waiting() + if self.lean.on { self.lean.waiting() } else { 0 }
+        self.full.waiting() + self.clusters_waiting + if self.lean.on { self.lean.waiting() } else { 0 }
     }
 
     /// Whether a frame waits for the pipelines of what it draws (what a
@@ -6654,6 +6729,7 @@ impl Renderer {
         // Lean, when nothing the lean shader leaves out is asked for.
         self.lean.collect();
         self.full.collect();
+        self.take_clusters(gpu);
         self.lean.on = self.lean.enabled && lean_allowed(&uniform, frame, decals.is_empty());
 
         if fine_terrain.is_some() && self.terrain_mesh_group.is_some() {
@@ -8072,6 +8148,10 @@ impl Renderer {
         self.batch_pool = pool;
     }
 }
+
+/// A mesh for the cluster worker: which, its vertex buffer (to know it is
+/// still that mesh), its vertices and indices.
+type ClusterJob = (MeshHandle, wgpu::Buffer, Vec<crate::asset::Vertex>, Vec<u32>);
 
 /// Draws grouped by what they share, each group's instances in order.
 type Batches = Vec<(BatchKey, Vec<InstanceRaw>)>;
