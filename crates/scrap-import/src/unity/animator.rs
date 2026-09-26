@@ -244,7 +244,7 @@ fn condition(c: &Yaml, kinds: &HashMap<String, i64>) -> Option<Condition> {
 }
 
 /// A controller as the text of an animator graph.
-pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
+pub fn convert(unity: &Unity, path: &Path, report: &mut super::Report) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let docs = yaml::documents(&text);
     let by_id = yaml::by_id(&docs);
@@ -411,6 +411,23 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
         }
     }
     transitions.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
+    // What a flat graph of the base layer has no place for, said rather
+    // than dropped without a word (docs/animation.md: no nested machines).
+    for _ in 1..controller.body.list("m_AnimatorLayers").len() {
+        report.skip("an animator layer past the base one");
+    }
+    for doc in &docs {
+        match doc.kind.as_str() {
+            "AnimatorStateMachine" if doc.file_id != machine_id => {
+                report.skip("an animator's sub-state machine")
+            }
+            "AnimatorState" if !names.contains_key(&doc.file_id) => {
+                report.skip("an animator state inside a sub-state machine or a later layer")
+            }
+            "MonoBehaviour" => report.skip("a StateMachineBehaviour (state callbacks are game code)"),
+            _ => {}
+        }
+    }
     let graph = Graph {
         start,
         states,
@@ -606,7 +623,7 @@ AnimatorStateTransition:
                 .collect(),
             names: Default::default(),
         };
-        let text = convert(&unity, &path).unwrap();
+        let text = convert(&unity, &path, &mut Default::default()).unwrap();
         let graph: Graph = ron::from_str(
             &text
                 .lines()

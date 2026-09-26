@@ -72,6 +72,14 @@ struct Mirror {
 /// The most windows that play together from the editor, as in Unity.
 pub const MAX_PLAYERS: u32 = 4;
 
+/// What makes Play build the game's own code optimized
+/// ([`Session::fast_game`](crate::Session::fast_game)): cargo's own
+/// override of the dev profile.
+pub const FAST_GAME_VAR: &str = "CARGO_PROFILE_DEV_OPT_LEVEL";
+/// The level it builds at: most of what optimizing gives, at a fraction of
+/// the build time of 3.
+pub const FAST_GAME_LEVEL: &str = "1";
+
 /// A game started from the editor.
 pub(crate) struct Running {
     child: Child,

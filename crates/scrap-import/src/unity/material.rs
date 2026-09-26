@@ -178,7 +178,10 @@ pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
                     if matches!(field, "base_map" | "emission_map") {
                         colour.insert(guid.clone());
                     }
-                    base |= field == "base_map";
+                    // A base map whose texture is gone from the project
+                    // is no base map: the shader's own picture stands in.
+                    base |= field == "base_map"
+                        && matches!(unity.named(&guid), Some(("texture", _)));
                     used.insert(guid);
                 }
             }
