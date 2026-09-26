@@ -4957,3 +4957,114 @@ fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
     }
     assert!(s.ui.dump().contains("Builds."));
 }
+
+/// File › Projects: the list over the editor, with the project open now
+/// marked, a gone one saying so, a pin that moves a line to the top, a
+/// search, and a click that opens a project's start scene.
+#[test]
+fn the_projects_screen_lists_pins_forgets_and_opens() {
+    let Some((mut s, dir)) = studio() else { return };
+    let config = scrap_studio::appearance::config_dir().unwrap();
+    // A second project of its own, and one whose folder is gone.
+    let other = dir.with_file_name(format!("{}-other", dir.file_name().unwrap().to_string_lossy()));
+    copy_dir(&dir, &other);
+    std::fs::write(
+        other.join("scrap.ron"),
+        std::fs::read_to_string(other.join("scrap.ron"))
+            .unwrap()
+            .replace("name: \"valley\"", "name: \"meadow\""),
+    )
+    .unwrap();
+    let gone = dir.with_file_name("scrap-hub-test-gone");
+    // The list is shared by every test in this process: this test's lines
+    // only, and each checked by its path.
+    scrap_cli::hub::update(&config, |k| {
+        k.add(&gone);
+        k.add(&other);
+        k.opened(&dir);
+    })
+    .unwrap();
+
+    s.run(scrap_studio::menu::Action::Projects);
+    s.frame();
+    let line = |s: &mut Studio, path: &std::path::Path| {
+        let path = path.canonicalize().unwrap_or(path.to_path_buf());
+        s.hub()
+            .unwrap()
+            .entries()
+            .iter()
+            .position(|e| e.path == path)
+            .unwrap_or_else(|| panic!("{} is not listed", path.display()))
+    };
+    let this = line(&mut s, &dir);
+    let meadow = line(&mut s, &other);
+    let missing = line(&mut s, &gone);
+    s.frame();
+    {
+        let entries = s.hub().unwrap().entries();
+        assert_eq!(entries[this].name, "valley");
+        assert_eq!(entries[meadow].name, "meadow");
+        assert_eq!(entries[missing].problem.as_deref(), Some("the folder is gone"));
+        assert!(this < meadow, "the one opened comes before one never opened");
+    }
+    assert!(s.ui.find("projects overlay").is_some());
+
+    // Pinned, meadow goes above the one opened.
+    let other_path = other.canonicalize().unwrap();
+    click(&mut s, &format!("pin {}", other_path.display()));
+    s.frame();
+    assert!(line(&mut s, &other) < line(&mut s, &dir), "pinned first");
+
+    // Forgotten, the gone one leaves the list; its folder was never there.
+    click(&mut s, &format!("forget {}", gone.display()));
+    s.frame();
+    let gone_listed = s
+        .hub()
+        .unwrap()
+        .entries()
+        .iter()
+        .any(|e| e.path == gone);
+    assert!(!gone_listed);
+
+    // Typed, only what matches is drawn.
+    click(&mut s, "projects field");
+    type_text(&mut s, "meadow");
+    s.frame();
+    let row = |s: &Studio, p: &std::path::Path| s.ui.find(&format!("project {}", p.display())).is_some();
+    assert!(row(&s, &other_path));
+    assert!(!row(&s, &dir.canonicalize().unwrap()));
+
+    // A click opens its start scene, in this window, and the screen goes.
+    click(&mut s, &format!("project {}", other_path.display()));
+    s.frame();
+    assert!(s.ui.find("projects overlay").is_none(), "the screen closes");
+    assert_eq!(
+        s.session.project().map(|p| p.root().canonicalize().unwrap()),
+        Some(other_path.clone()),
+        "meadow is open"
+    );
+    let opened = scrap_cli::hub::Known::load(&config)
+        .unwrap()
+        .projects
+        .into_iter()
+        .find(|k| k.path == other_path)
+        .unwrap()
+        .opened;
+    assert!(opened > 0, "opening it counts as opened");
+
+    // Esc closes it without opening anything.
+    s.run(scrap_studio::menu::Action::Projects);
+    s.frame();
+    assert!(s.ui.find("projects overlay").is_some());
+    click(&mut s, "projects field");
+    key(&mut s, Key::Escape);
+    assert!(s.ui.find("projects overlay").is_none());
+
+    scrap_cli::hub::update(&config, |k| {
+        k.forget(&dir);
+        k.forget(&other);
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&other);
+    let _ = std::fs::remove_dir_all(&dir);
+}

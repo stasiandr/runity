@@ -20,6 +20,8 @@ pub enum Action {
     Editor(&'static str),
     NewScene,
     OpenScene(PathBuf),
+    /// The Projects screen: every project, its branch and engine.
+    Projects,
     /// Ask for a scene file and open it.
     OpenSceneDialog,
     /// Ask where, and save the scene there.
@@ -255,6 +257,8 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
         (
             "File",
             vec![
+                item("Projects…", Action::Projects),
+                MenuItem::separator(),
                 item("New Scene", Action::NewScene),
                 item("Open Scene…", Action::OpenSceneDialog),
                 editor("save_scene"),

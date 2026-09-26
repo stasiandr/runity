@@ -3589,6 +3589,7 @@ dependencies = [
  "scrap-engine",
  "scrap-import",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
