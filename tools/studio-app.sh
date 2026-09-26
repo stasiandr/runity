@@ -3,9 +3,9 @@
 #
 #   tools/studio-app.sh            # release build, then the bundle
 #   tools/studio-app.sh --install  # and copy it to /Applications
-#   tools/studio-app.sh --launcher # ~/Applications/Scrap.app that runs
-#                                  # tools/studio-open.sh: rebuilds when the
-#                                  # checkout changed, then opens the editor
+#   tools/studio-app.sh --launcher # ~/Applications/Scrap.app: rebuilds when
+#                                  # the checkout changed, with a progress
+#                                  # window, then opens the editor
 #
 # Started from Finder with no scene, the editor opens the scene it opened
 # last, or asks for one.
@@ -14,26 +14,18 @@ cd "$(dirname "$0")/.."
 
 if [ "${1:-}" = "--launcher" ]; then
   launcher="$HOME/Applications/Scrap.app"
+  script="$(mktemp -t scrap-launcher).applescript"
+  sed "s|\"REPO\"|\"$(pwd)\"|" tools/studio-launcher.applescript > "$script"
   rm -rf "$launcher"
-  mkdir -p "$launcher/Contents/MacOS" "$launcher/Contents/Resources"
-  cp crates/scrap-studio/assets/icon/scrap.icns "$launcher/Contents/Resources/scrap.icns"
-  printf '#!/bin/sh\nexec "%s/tools/studio-open.sh" "$@"\n' "$(pwd)" > "$launcher/Contents/MacOS/scrap-launcher"
-  chmod +x "$launcher/Contents/MacOS/scrap-launcher"
-  cat > "$launcher/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>Scrap</string>
-  <key>CFBundleDisplayName</key><string>Scrap</string>
-  <key>CFBundleIdentifier</key><string>dev.scrap.launcher</string>
-  <key>CFBundleExecutable</key><string>scrap-launcher</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleIconFile</key><string>scrap</string>
-  <key>LSUIElement</key><true/>
-</dict>
-</plist>
-PLIST
+  osacompile -o "$launcher" "$script"
+  rm -f "$script"
+  # The applet's own icon is in Assets.car, found by CFBundleIconName.
+  rm -f "$launcher/Contents/Resources/Assets.car"
+  cp crates/scrap-studio/assets/icon/scrap.icns "$launcher/Contents/Resources/applet.icns"
+  plist="$launcher/Contents/Info.plist"
+  plutil -remove CFBundleIconName "$plist" 2>/dev/null || true
+  plutil -replace CFBundleIdentifier -string dev.scrap.launcher "$plist"
+  plutil -replace CFBundleName -string Scrap "$plist"
   codesign --force --sign - "$launcher" >/dev/null 2>&1 || true
   echo "installed $launcher"
   exit 0
