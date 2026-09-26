@@ -264,7 +264,17 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
     subsecond::register_handler(Arc::new(|| {
         PATCHED.store(true, std::sync::atomic::Ordering::Release)
     }));
-    let event_loop = EventLoop::<Running>::with_user_event().build()?;
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut builder = EventLoop::<Running>::with_user_event();
+    // On Android the loop is the Activity's: made on the app the game was
+    // handed (`android::start`).
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        let app = crate::android::app().ok_or_else(|| anyhow::anyhow!("scrap::shell::android::start was not called"))?;
+        builder.with_android_app(app);
+    }
+    let event_loop = builder.build()?;
     // Poll rather than Wait: a game draws continuously, and waiting for an
     // event means the world only advances when the mouse moves.
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -292,6 +302,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         },
         captured: false,
         touch_pad: None,
+        #[cfg(target_os = "android")]
+        suspended: false,
     };
     shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
     #[cfg(target_os = "ios")]
@@ -416,6 +428,10 @@ struct Shell<G: Game> {
     captured: bool,
     /// The pad on the screen, where there is one.
     touch_pad: Option<crate::touch_pad::TouchPad>,
+    /// On Android, between the Activity going to the background and
+    /// coming back: its window is gone, and nothing is drawn.
+    #[cfg(target_os = "android")]
+    suspended: bool,
 }
 
 impl<G: Game> Shell<G> {
@@ -546,6 +562,10 @@ impl<G: Game> Shell<G> {
     /// steps are owed, draw once — with a render thread, the next frame's
     /// steps beside the drawing.
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        if self.suspended {
+            return;
+        }
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -787,6 +807,18 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Called again after the window is destroyed and recreated, which on
         // Android happens whenever the app comes back to the foreground.
+        // Android's is a new window under the same `Window`: the surface
+        // is made again on it, the device and the game kept.
+        #[cfg(target_os = "android")]
+        if let (true, Some(state)) = (std::mem::take(&mut self.suspended), self.state.as_mut()) {
+            if let Some(d) = state.drawing.as_mut() {
+                match Surface::from_window(&state.gpu, state.window.clone()) {
+                    Ok(surface) => d.surface = surface,
+                    Err(e) => eprintln!("no surface on the window come back: {e}"),
+                }
+            }
+            return;
+        }
         if self.state.is_some() || self.proxy.is_none() {
             return;
         }
@@ -872,6 +904,13 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
         }
     }
 
+    /// Android's Activity went to the background and took its window with
+    /// it: nothing is drawn until [`Self::resumed`] brings one back.
+    #[cfg(target_os = "android")]
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.suspended = self.state.is_some();
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -937,6 +976,10 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
         }
         // Asking for a redraw here rather than drawing here is what keeps the
         // frame on the compositor's schedule instead of ahead of it.
+        #[cfg(target_os = "android")]
+        if self.suspended {
+            return;
+        }
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }

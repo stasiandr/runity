@@ -7,8 +7,12 @@
 struct Foliage {
     // level wind direction x and z, strength, time in seconds
     wind: vec4<f32>,
-    // position and radius of each; radius 0 bends nothing
-    benders: array<vec4<f32>, 8>,
+    // position and radius of each; radius 0 bends nothing. Eight
+    // columns of two matrices rather than an array of eight: the struct is
+    // handed to functions by value, and a copied array is what the
+    // Android emulator's MoltenVK (an old SPIRV-Cross) cannot translate.
+    benders: mat4x4<f32>,
+    benders_more: mat4x4<f32>,
     // the trample map's middle x and z, its size, 1 when there is one
     trample: vec4<f32>,
 };
@@ -889,7 +893,7 @@ fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<
 
     // Pushed out of the way, and down, by what walks through it.
     for (var i = 0u; i < 8u; i = i + 1u) {
-        let b = f.benders[i];
+        let b = select(f.benders_more[i & 3u], f.benders[i & 3u], i < 4u);
         if b.w <= 0.0 {
             continue;
         }

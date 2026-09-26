@@ -7,6 +7,9 @@
 pub mod shell;
 /// Sticks and buttons drawn on a touch screen, fed in as a pad's.
 pub mod touch_pad;
+/// The Activity's app, the data unpacked from the APK, logcat.
+#[cfg(target_os = "android")]
+pub mod android;
 /// The scene delegate UIKit asks for, holding winit's window.
 #[cfg(target_os = "ios")]
 mod ios;
