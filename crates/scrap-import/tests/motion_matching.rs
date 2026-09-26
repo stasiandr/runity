@@ -218,6 +218,10 @@ fn a_character_stops_at_a_wall_and_climbs_stairs_on_its_feet() {
             held[side] = if down[side] { held[side] + dt } else { 0.0 };
             // Held a tenth of a second: it has come down onto the step.
             if held[side] > 0.1 {
+                if a.min(t) > 0.15 && std::env::var_os("MM_DBG").is_some() {
+                    eprintln!("over {:.2}/{:.2} side {side} held {:.2}s foot {foot:.2?} toe {toe:.2?} root {:.2?} spring {:.2?} committed {}", a, t, held[side], matcher.root.0, matcher.spring.0, matcher.committed());
+                    matcher.debug = true;
+                }
                 worst_over = worst_over.max(a.min(t));
             }
         }
