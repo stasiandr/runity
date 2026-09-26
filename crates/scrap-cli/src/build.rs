@@ -16,6 +16,11 @@
 //! Sources — `assets/`, `materials/`, the `.scrimport` sidecars — stay home:
 //! a player needs the `.scrasset`s, not the `.png`s they came from. The game
 //! finds `data/` through [`scrap::project::data_file`].
+//!
+//! The library is cooked for the platform on the way ([`Platform`]): its
+//! textures in the GPU blocks that platform samples — BC7 for a desktop,
+//! ASTC for a phone — each encoded once and kept in the project's
+//! `.scrap/cook/` (`scrap_import::cook`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +30,43 @@ use scrap::project::{
     ANIMATORS, CONFIGS, DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES, SHADERS, UI,
 };
 use scrap::Project;
+
+/// What a build's textures are cooked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// As the library has them: RGBA8.
+    Raw,
+    /// Windows, macOS, Linux: BC7.
+    Desktop,
+    /// iOS, Android: ASTC 4x4.
+    Mobile,
+}
+
+impl Platform {
+    pub fn parse(name: &str) -> Result<Self> {
+        Ok(match name {
+            "none" | "raw" => Platform::Raw,
+            "desktop" => Platform::Desktop,
+            "mobile" | "ios" | "android" => Platform::Mobile,
+            other => bail!("no platform {other}: desktop, mobile or none"),
+        })
+    }
+
+    fn coding(self) -> Option<scrap::asset::TextureCoding> {
+        match self {
+            Platform::Raw => None,
+            Platform::Desktop => Some(scrap_import::cook::Platform::Desktop.coding()),
+            Platform::Mobile => Some(scrap_import::cook::Platform::Mobile.coding()),
+        }
+    }
+}
+
+/// `project`'s library into `out`, its textures cooked into `coding`'s
+/// blocks, what was encoded before taken from the project's cache.
+pub fn cook(project: &Project, out: &Path, coding: scrap::asset::TextureCoding, zstd: bool) -> Result<scrap_import::cook::Cooked> {
+    let cache = project.root().join(".scrap").join("cook");
+    scrap_import::cook::cook_library(&project.root().join(LIBRARY), out, coding, zstd, &cache)
+}
 
 /// How a game is compiled (DNA, "Два профиля сборки игры"): for speed,
 /// the default — what a player plays — or for size, when the download is
@@ -92,6 +134,12 @@ pub fn build(project: &Project, out: &Path, release: bool) -> Result<Built> {
 
 /// Build `project` into `out` with a profile.
 pub fn build_with(project: &Project, out: &Path, profile: Profile) -> Result<Built> {
+    build_for(project, out, profile, Platform::Desktop)
+}
+
+/// Build `project` into `out` with a profile, its textures cooked for a
+/// platform.
+pub fn build_for(project: &Project, out: &Path, profile: Profile, platform: Platform) -> Result<Built> {
     let stale: Vec<String> = scrap_import::sync(project)
         .into_iter()
         .filter_map(|r| {
@@ -119,7 +167,7 @@ pub fn build_with(project: &Project, out: &Path, profile: Profile) -> Result<Bui
         );
     }
     let executable = find_in(project, profile.folder())?;
-    let executable = package(project, &executable, out)?;
+    let executable = package_for(project, &executable, out, platform)?;
     Ok(Built {
         folder: out.to_path_buf(),
         executable,
@@ -160,6 +208,11 @@ fn crate_name(project: &Project) -> Result<String> {
 /// from the project does not linger in the build. Returns where the
 /// executable went.
 pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathBuf> {
+    package_for(project, executable, out, Platform::Raw)
+}
+
+/// [`package`], the library cooked for `platform`.
+pub fn package_for(project: &Project, executable: &Path, out: &Path, platform: Platform) -> Result<PathBuf> {
     if out.exists() {
         std::fs::remove_dir_all(out).with_context(|| format!("clearing {}", out.display()))?;
     }
@@ -171,10 +224,17 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
             std::fs::copy(project.root().join(file), data.join(file))?;
         }
     }
+    match platform.coding() {
+        Some(coding) => {
+            // A phone's storage and download are what zstd saves; a
+            // desktop's load is quicker without it.
+            cook(project, &data.join(LIBRARY), coding, platform == Platform::Mobile)?;
+        }
+        None => copy_tree(&project.root().join(LIBRARY), &data.join(LIBRARY))?,
+    }
     for dir in [
         SCENES,
         PREFABS,
-        LIBRARY,
         CONFIGS,
         UI,
         ANIMATORS,

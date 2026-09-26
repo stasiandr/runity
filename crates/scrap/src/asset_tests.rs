@@ -34,6 +34,25 @@ mod tests {
     }
 
     #[test]
+    fn a_compressed_asset_is_read_back_as_it_was_and_only_through_read() {
+        let mesh = cube();
+        let bytes = to_bytes(&mesh, crate::asset::MESH).unwrap();
+        let packed = compressed(&bytes, |body| ruzstd::encoding::compress_to_vec(body, ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
+        assert_ne!(packed, bytes);
+        assert!(split_header(&packed).is_err(), "its body is not rkyv's until unpacked");
+        assert_eq!(head_of(&packed).unwrap().1, mesh.id, "its header says what it is all the same");
+        let dir = std::env::temp_dir().join(format!("scrap-zstd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cube.scrasset");
+        std::fs::write(&path, &packed).unwrap();
+        assert!(is_current(&path));
+        let read = read(&path).unwrap();
+        assert_eq!(read, bytes, "unpacked on the way in");
+        assert_eq!(view::<MeshAsset>(&read).unwrap().indices.len(), 12);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn an_asset_is_read_back_without_being_decoded() {
         let mesh = cube();
         let bytes = to_bytes(&mesh, crate::asset::MESH).unwrap();

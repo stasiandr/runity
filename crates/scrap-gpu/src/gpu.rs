@@ -207,6 +207,14 @@ impl Gpu {
         if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             required_features |= wgpu::Features::TIMESTAMP_QUERY;
         }
+        // Block-compressed textures, as a build for a platform cooks them
+        // (BC7 on a desktop, ASTC on a phone or an Apple GPU): sampled as
+        // they are where the device can, unpacked on load where it cannot.
+        for compressed in [wgpu::Features::TEXTURE_COMPRESSION_BC, wgpu::Features::TEXTURE_COMPRESSION_ASTC] {
+            if adapter.features().contains(compressed) {
+                required_features |= compressed;
+            }
+        }
         if ray_tracing {
             required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }

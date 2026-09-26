@@ -275,6 +275,7 @@ pub fn build(
             mips: build_mips(image.width, image.height, &image.rgba, srgb),
             pixels: image.rgba.clone(),
             srgb,
+            coding: Default::default(),
         };
         written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?));
         textures.insert((index, srgb), id);
@@ -543,6 +544,7 @@ fn mask(
         mips: build_mips(width, height, &pixels, false),
         pixels,
         srgb: false,
+        coding: Default::default(),
     })
 }
 
