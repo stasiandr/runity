@@ -944,6 +944,22 @@ fn resolver<'a>(
         if let Some(handle) = meshes.get(&key) {
             return Some(*handle);
         }
+        // A run of a model (`model#1`), drawn with its own material.
+        if let Some((whole, run)) = link.name.rsplit_once('#').and_then(|(w, r)| Some((w, r.parse::<usize>().ok()?))) {
+            let whole = crate::AssetLink { name: whole.to_string(), id: link.id };
+            let whole_key = whole.id.map(|id| id.to_string()).unwrap_or_else(|| whole.to_string());
+            let whole = match meshes.get(&whole_key) {
+                Some(handle) => *handle,
+                None => {
+                    let handle = renderer.upload_mesh(gpu, library?.mesh_link(&whole)?);
+                    meshes.insert(whole_key, handle);
+                    handle
+                }
+            };
+            let handle = renderer.mesh_part(gpu, whole, run)?;
+            meshes.insert(key, handle);
+            return Some(handle);
+        }
         let handle = match builtin::by_name(link) {
             Some(mesh) => renderer.upload_mesh_owned(gpu, &mesh),
             None => renderer.upload_mesh(gpu, library?.mesh_link(link)?),

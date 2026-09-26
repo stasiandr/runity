@@ -20,6 +20,11 @@ pub struct Model(pub MeshHandle);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Surface(pub Material);
 
+/// A model of more than one run drawn a run at a time, each with its own
+/// material (a line's `more_materials`): the first run takes [`Surface`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceParts(pub Vec<(MeshHandle, Option<Material>)>);
+
 pub use crate::animation::Posed;
 
 /// The image on an entity's surface, already uploaded.
@@ -434,6 +439,13 @@ pub fn upload_material_maps(
         .flat_map(|surface| surface.0.maps().collect::<Vec<_>>())
         .chain(
             world
+                .query::<&SurfaceParts>()
+                .iter()
+                .flat_map(|parts| parts.0.iter().filter_map(|(_, m)| *m).flat_map(|m| m.maps().collect::<Vec<_>>()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        )
+        .chain(
+            world
                 .query::<&Pressing>()
                 .iter()
                 .flat_map(|p| p.1.maps().collect::<Vec<_>>())
@@ -708,12 +720,13 @@ fn build_frame_seen(
         Option<&Textured>,
         Option<&Posed>,
         Option<&SceneId>,
+        Option<&SurfaceParts>,
     )>();
     let drawn = drawn.iter();
     // A draw is a few hundred bytes: grown by doubling, a level's worth is
     // copied over and over before the frame is built.
     let mut draws = Vec::with_capacity(drawn.len());
-    for (entity, placed, shown, model, surface, textured, posed, line) in drawn {
+    for (entity, placed, shown, model, surface, textured, posed, line, parts) in drawn {
         if !on(entity) || !keep(line.map(|l| l.0)) {
             continue;
         }
@@ -721,13 +734,21 @@ fn build_frame_seen(
             poses.push(crate::render::Pose(p.0.clone()));
             poses.len() as u32 - 1
         });
-        draws.push(Draw {
+        let draw = Draw {
             mesh: model.0,
             transform: crate::world::drawn_at(placed, shown),
             texture: textured.map(|t| t.0).unwrap_or(TextureHandle::WHITE),
             material: surface.0,
             pose,
-        });
+        };
+        match parts {
+            Some(parts) => draws.extend(parts.0.iter().map(|(mesh, material)| Draw {
+                mesh: *mesh,
+                material: material.unwrap_or(surface.0),
+                ..draw
+            })),
+            None => draws.push(draw),
+        }
     }
     // Copies of one mesh: the renderer draws them as instances.
     for (entity, copies, surface, line) in world

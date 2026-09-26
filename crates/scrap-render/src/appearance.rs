@@ -40,6 +40,7 @@ impl Dress for LookDress<'_> {
         &[
             "model",
             "material",
+            "more_materials",
             "decal",
             "terrain",
             "particles",
@@ -65,7 +66,7 @@ impl Dress for LookDress<'_> {
         changed: Changed,
         missing: &mut Vec<Unresolved>,
     ) {
-        if changed.any(&["model", "material", "decal", "terrain", "cloth", "rope", "heap"]) {
+        if changed.any(&["model", "material", "more_materials", "decal", "terrain", "cloth", "rope", "heap"]) {
             dress_look(line, entity, world, &mut *self.resolve, self.palette, missing);
         }
         if changed.has("particles") {
@@ -173,6 +174,31 @@ fn emitting(
     Some(out)
 }
 
+/// A model's runs each with its material, when its line names materials
+/// past the first: a run is found by its model's link with `#` and its
+/// number. `None` when the line names none, or its runs are not found (a
+/// model of one run, or no GPU yet) — drawn whole with its material.
+fn surface_parts(
+    desc: &EntityDesc,
+    model: &crate::AssetLink,
+    mesh: MeshHandle,
+    resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
+) -> Option<crate::world::SurfaceParts> {
+    let more = desc.part::<crate::scene::MoreMaterials>().filter(|m| !m.0.is_empty())?;
+    if mesh == MeshHandle::TEST {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for run in 0usize.. {
+        let link = crate::AssetLink { name: format!("{}#{run}", model.name), id: model.id };
+        let Some(part) = resolve(&link) else { break };
+        let material = run.checked_sub(1).and_then(|i| more.0.get(i)).map(|m| m.material_from(palette));
+        parts.push((part, material));
+    }
+    (!parts.is_empty()).then_some(crate::world::SurfaceParts(parts))
+}
+
 /// A model spawned without a GPU, drawn with a stand-in until its mesh is
 /// uploaded: the link it names.
 #[derive(Debug, Clone, PartialEq)]
@@ -221,12 +247,14 @@ pub fn dress_look(
     if model.is_empty() {
         scrap_core::world::take_off::<Model>(world, entity);
         scrap_core::world::take_off::<Surface>(world, entity);
+        scrap_core::world::take_off::<crate::world::SurfaceParts>(world, entity);
         return;
     }
     match resolve(&model) {
         Some(mesh) => {
             let surface = Surface(desc.material_from(palette));
             let _ = world.insert(entity, (Model(mesh), surface));
+            put(world, entity, surface_parts(desc, &model, mesh, resolve, palette));
             // Spawned where there is no GPU (a game's fixed step, with the
             // renderer on its own thread): its mesh comes with the next
             // frame (`LiveScene::upload_pending`).
@@ -238,6 +266,7 @@ pub fn dress_look(
         }
         None => {
             let _ = world.remove::<(Model, Surface)>(entity);
+            scrap_core::world::take_off::<crate::world::SurfaceParts>(world, entity);
             missing.push(Unresolved {
                 entity_name: desc.name.clone(),
                 model: model.to_string(),

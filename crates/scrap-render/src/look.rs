@@ -866,6 +866,12 @@ pub struct VirtualShadows(pub bool);
 #[serde(transparent)]
 pub struct BendsGrass(pub f32);
 
+/// `more_materials: ["Body", "Head"]` — the materials of a model's runs
+/// after its first (its submeshes, in order), as a Unity renderer lists
+/// them after `material`. A run not named here is drawn with `material`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MoreMaterials(pub Vec<MaterialRef>);
 
 crate::impl_parts! {
     // By name, or spelled out: serde's untagged enum, which a trace of
@@ -878,6 +884,13 @@ crate::impl_parts! {
         ])
     };
     BendsGrass => "bends_grass", default if |b| b.0 == 0.0;
+    MoreMaterials => "more_materials", default if |m| m.0.is_empty(), shape || {
+        use scrap_core::shape::{self, Shape};
+        Shape::List(Box::new(Shape::OneOf(vec![
+            Shape::Asset("material".into()),
+            shape::with_fractions(shape::of::<Material>(), crate::material::FRACTIONS),
+        ])))
+    };
     Lens => "camera";
     Light => "light";
     Emitter => "particles", fractions ["alpha", "end_alpha", "dampen"];
@@ -949,7 +962,14 @@ pub trait LookLine {
     /// a typo should still open, showing plain grey where the mistake is,
     /// which is more useful than an error and no scene at all.
     fn material_from(&self, lookup: impl Fn(&crate::AssetLink) -> Option<Material>) -> Material {
-        match &self.material_ref() {
+        self.material_ref().material_from(lookup)
+    }
+}
+
+impl MaterialRef {
+    /// The material it names, as [`LookLine::material_from`] finds it.
+    pub fn material_from(&self, lookup: impl Fn(&crate::AssetLink) -> Option<Material>) -> Material {
+        match self {
             MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
                 Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),
                 None => lookup(name)

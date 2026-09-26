@@ -21,7 +21,8 @@
   зеркалим ось Z (позиция `(x, y, −z)`, поворот `(−x, −y, z, w)`).
 * **Что на GameObject** → поля строки: `MeshFilter`+`MeshRenderer` →
   модель и материал (ссылки, docs/refs.md; встроенные меши Unity →
-  `builtin:`), коллайдеры, `Rigidbody`, свет, камера, `AudioSource` →
+  `builtin:`; второй материал рендерера и дальше → `more_materials`, по
+  сабмешу каждый), коллайдеры, `Rigidbody`, свет, камера, `AudioSource` →
   `sound:` (клип, громкость, высота, петля, играть при старте, 2D/3D по
   Spatial Blend, дистанции, группа микшера по имени). Выключенный
   GameObject (`m_IsActive: 0`) → `inactive: true`. Экземпляр префаба →

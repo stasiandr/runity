@@ -1457,8 +1457,17 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     }
                 }
             }
-            if materials.len() > 1 {
-                report.skip("a renderer's second and later materials (one per entity)");
+            // The rest, a run (submesh) each after the first.
+            let named = |m: &yaml_rust2::Yaml| {
+                let r = yaml::reference(m)?;
+                match r.guid.as_deref().and_then(|g| refs.unity.named(g))? {
+                    ("material", name) => Some(MaterialRef::Named(AssetLink::named(name))),
+                    _ => None,
+                }
+            };
+            let more: Vec<MaterialRef> = materials.iter().skip(1).map(|m| named(m).unwrap_or_default()).collect();
+            if !more.is_empty() {
+                desc.set_part(&scrap::scene::MoreMaterials(more));
             }
         }
         "BoxCollider" => {

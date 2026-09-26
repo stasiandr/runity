@@ -50,6 +50,10 @@ impl TextureHandle {
     /// A normal map that bends nothing: straight up in tangent space. What
     /// a surface without one samples.
     pub const FLAT_NORMAL: TextureHandle = TextureHandle(1);
+
+    /// Black, opaque: what a material shader's slot declared `=black`
+    /// samples when its material has no texture there (Unity's "black").
+    pub const BLACK: TextureHandle = TextureHandle(2);
 }
 
 /// A surface's maps, as bound: base, normal, mask, emission, then the
@@ -64,13 +68,24 @@ pub const MATERIAL_TEXTURES: usize = 4;
 /// order: the names its material's textures go by (Unity's property
 /// names), at most [`MATERIAL_TEXTURES`] of them.
 pub fn declared_textures(shader: &str) -> Vec<String> {
+    declared_slots(shader).into_iter().map(|(name, _)| name).collect()
+}
+
+/// [`declared_textures`] with what each slot samples when its material
+/// has no texture of that name: white, or black for a name written
+/// `_Emission=black` (as a Unity property says `"black" {}`).
+pub fn declared_slots(shader: &str) -> Vec<(String, TextureHandle)> {
     shader
         .lines()
         .find_map(|l| l.trim().strip_prefix("// scrap:textures"))
         .map(|rest| {
             rest.split_whitespace()
                 .take(MATERIAL_TEXTURES)
-                .map(str::to_string)
+                .map(|slot| match slot.split_once('=') {
+                    Some((name, "black")) => (name.to_string(), TextureHandle::BLACK),
+                    Some((name, _)) => (name.to_string(), TextureHandle::WHITE),
+                    None => (slot.to_string(), TextureHandle::WHITE),
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1352,7 +1367,7 @@ pub struct Renderer {
     material_shadows: scrap_core::hash::FastMap<crate::asset::AssetId, [wgpu::RenderPipeline; 4]>,
     /// What each of those reads through `texture_at`, by its
     /// `// scrap:textures` line: the names of its slots.
-    shader_textures: scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
+    shader_textures: scrap_core::hash::FastMap<crate::asset::AssetId, Vec<(String, TextureHandle)>>,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -1586,6 +1601,9 @@ pub struct Renderer {
     /// Meshes' and textures' names from their assets, for the debugger to
     /// call a draw by.
     mesh_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
+    /// A mesh of more than one run (a submesh a material): each run's
+    /// indices, for the parts drawn each with its own ([`Self::mesh_part`]).
+    mesh_runs: std::collections::HashMap<u32, Vec<Vec<u32>>>,
     texture_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
     timing: bool,
     /// The physical sky's table and aerial grid.
@@ -3382,7 +3400,7 @@ impl Renderer {
                 };
                 self.lean_modules.insert(Some(id), module);
                 self.material_shaders.insert(id, surface.clone());
-                self.shader_textures.insert(id, declared_textures(surface));
+                self.shader_textures.insert(id, declared_slots(surface));
                 // Not the `fs_unlit` looks: its shade() returns early for
                 // unlit, and the standard shader's draw them.
                 let looks = Look::all().into_iter().filter(|look| !look.unlit).map(|look| Look { shader: Some(id), ..look });
@@ -4279,6 +4297,7 @@ impl Renderer {
             clustering: None,
             clusters_waiting: 0,
             mesh_names: Default::default(),
+            mesh_runs: Default::default(),
             texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
             atmosphere,
@@ -4314,6 +4333,8 @@ impl Renderer {
         renderer.upload_texture_rgba(gpu, 1, 1, &[255, 255, 255, 255], true);
         // Handle 1 the flat normal, for the same reason.
         renderer.upload_texture_rgba(gpu, 1, 1, &[128, 128, 255, 255], false);
+        // Handle 2 black.
+        renderer.upload_texture_rgba(gpu, 1, 1, &[0, 0, 0, 255], true);
         renderer
     }
 
@@ -4398,6 +4419,17 @@ impl Renderer {
         let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
         let handle = self.upload(gpu, vertex_slice(mesh), mesh.colors.as_slice(), &indices);
         self.mesh_names.insert(handle.0, mesh.name.as_str().into());
+        if mesh.submeshes.len() > 1 {
+            let runs = mesh
+                .submeshes
+                .iter()
+                .map(|run| {
+                    let first = run.first_index.to_native() as usize;
+                    indices[first..first + run.index_count.to_native() as usize].to_vec()
+                })
+                .collect();
+            self.mesh_runs.insert(handle.0, runs);
+        }
         if let Some(skin) = mesh.skin.as_ref() {
             let bindings: Vec<SkinVertex> = skin
                 .joints
@@ -4440,6 +4472,37 @@ impl Renderer {
         if let Some(mesh) = self.meshes.get_mut(handle.0 as usize) {
             mesh.skin = Some(buffer);
         }
+    }
+
+    /// One run of a mesh uploaded with more than one, as a mesh of its
+    /// own: its vertices (and skin) the whole's, its indices the run's —
+    /// drawn with the material a line gives that run. `None` for a mesh of
+    /// one run, or a run it does not have.
+    pub fn mesh_part(&mut self, gpu: &Gpu, whole: MeshHandle, part: usize) -> Option<MeshHandle> {
+        use wgpu::util::DeviceExt;
+        let run = self.mesh_runs.get(&whole.0)?.get(part)?;
+        let mesh = self.meshes.get(whole.0 as usize)?;
+        let indices = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh part"),
+            contents: bytemuck::cast_slice(run),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let piece = GpuMesh {
+            vertices: mesh.vertices.clone(),
+            colors: mesh.colors.clone(),
+            skin: mesh.skin.clone(),
+            indices,
+            index_count: run.len() as u32,
+            bounds: mesh.bounds,
+            blas: None,
+            clusters: None,
+        };
+        let name = self.mesh_names.get(&whole.0).map(|n| format!("{n}#{part}"));
+        let handle = self.take_slot(piece);
+        if let Some(name) = name {
+            self.mesh_names.insert(handle.0, name.into());
+        }
+        Some(handle)
     }
 
     fn upload(
@@ -8765,7 +8828,7 @@ struct DrawLookup<'a> {
     lods: &'a scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
     looks: &'a scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
     by_asset: &'a scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
-    shader_textures: &'a scrap_core::hash::FastMap<crate::asset::AssetId, Vec<String>>,
+    shader_textures: &'a scrap_core::hash::FastMap<crate::asset::AssetId, Vec<(String, TextureHandle)>>,
     /// The material shaders that move their vertices: drawn whole, never a
     /// coarser level — a flag simplified to two triangles cannot wave.
     moving: &'a scrap_core::hash::FastMap<crate::asset::AssetId, [wgpu::RenderPipeline; 4]>,
@@ -8776,8 +8839,8 @@ impl DrawLookup<'_> {
     /// the draw's own texture for the colour and neutral ones for the rest
     /// — a missing map leaves a plain surface, not a hole. Then its own
     /// shader's slots: slot `i` the material's texture named by the
-    /// shader's `i`th `// scrap:textures` name, white where it has none
-    /// or it is not uploaded.
+    /// shader's `i`th `// scrap:textures` name, white (or the black it
+    /// declares) where it has none or it is not uploaded.
     fn maps_of(&self, draw: &Draw) -> Maps {
         let m = &draw.material;
         let find = |id: Option<crate::asset::AssetId>| id.and_then(|id| self.by_asset.get(&id).copied());
@@ -8787,16 +8850,13 @@ impl DrawLookup<'_> {
             _ => draw.texture,
         };
         let mut slots = [TextureHandle::WHITE; MATERIAL_TEXTURES];
-        // Only a material with textures and a shader that reads some
-        // looks its set up; every other draw is done here.
-        if let (false, Some(names)) = (
-            m.textures.is_empty(),
-            m.shader.and_then(|s| self.shader_textures.get(&s)),
-        ) {
+        // Only a material with a shader that reads some looks its set up;
+        // every other draw is done here.
+        if let Some(names) = m.shader.and_then(|s| self.shader_textures.get(&s)) {
             let entries = m.textures.entries();
-            for (slot, name) in slots.iter_mut().zip(names) {
+            for (slot, (name, missing)) in slots.iter_mut().zip(names) {
                 let id = entries.iter().find(|e| e.name == *name).map(|e| e.texture);
-                *slot = find(id).unwrap_or(TextureHandle::WHITE);
+                *slot = find(id).unwrap_or(*missing);
             }
         }
         [
@@ -9672,6 +9732,13 @@ mod tests {
         let shader = "// Road.\n// scrap:params _Speed\n  // scrap:textures _Road _Noise _A _B _Past\nfn surface() {}";
         assert_eq!(declared_textures(shader), ["_Road", "_Noise", "_A", "_B"], "four at most");
         assert!(declared_textures("fn surface() {}").is_empty());
+    }
+
+    #[test]
+    fn a_shader_slot_may_say_it_is_black_when_missing() {
+        let slots = declared_slots("// scrap:textures _MainTex _Emission=black");
+        assert_eq!(slots, [("_MainTex".to_string(), TextureHandle::WHITE), ("_Emission".to_string(), TextureHandle::BLACK)]);
+        assert_eq!(declared_textures("// scrap:textures _MainTex _Emission=black"), ["_MainTex", "_Emission"]);
     }
 
     #[test]
