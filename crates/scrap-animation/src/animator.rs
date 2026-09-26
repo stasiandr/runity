@@ -247,6 +247,19 @@ impl Animator {
         self.current
     }
 
+    /// The clip a graph names `name`: the one of that name, or else one
+    /// whose name ends `|name` — Blender writes a model's takes as
+    /// `<armature>|<take>`, where Unity names them by the take alone.
+    pub fn clip_named(&self, name: &str) -> Option<usize> {
+        self.clips.iter().position(|c| c.name == name).or_else(|| {
+            self.clips.iter().position(|c| {
+                c.name
+                    .strip_suffix(name)
+                    .is_some_and(|head| head.ends_with('|'))
+            })
+        })
+    }
+
     /// Start a clip, fading from whatever was playing.
     ///
     /// Asking for the clip that is already playing does nothing: a game that
@@ -507,10 +520,10 @@ pub struct SkinOf(pub crate::AssetLink);
 /// where the bone stood when it was bound — the pose the model was made in.
 #[derive(Debug, Clone)]
 pub struct BoundSkin {
-    bones: Vec<Option<hecs::Entity>>,
+    pub bones: Vec<Option<hecs::Entity>>,
     /// Per joint: the bone's place when bound, undone, then the model's
     /// own place then (its vertices are in its own frame).
-    unbind: Vec<Mat4>,
+    pub unbind: Vec<Mat4>,
 }
 
 /// Bind every skinned model not yet bound and not played by an animator
@@ -749,6 +762,36 @@ mod tests {
 
     fn height(pose: &[PoseTransform]) -> f32 {
         pose[0].translation[1]
+    }
+
+    /// A graph names a model's take as Unity does, by the take; Blender
+    /// wrote it with its armature before it: the same clip.
+    #[test]
+    fn a_clip_is_found_by_its_take_under_blenders_armature_prefix() {
+        let mut named = (*clips()).clone();
+        named[1].name = "Armature|Armature|Grab|BaseLayer".into();
+        let a = Animator::new(skeleton(), Arc::new(named));
+        assert_eq!(a.clip_named("low"), Some(0));
+        assert_eq!(a.clip_named("Armature|Grab|BaseLayer"), Some(1));
+        assert_eq!(a.clip_named("Grab|BaseLayer"), Some(1));
+        assert_eq!(a.clip_named("rab|BaseLayer"), None, "whole names only");
+        assert_eq!(a.clip_named("Point"), None);
+    }
+
+    /// Stopped — Unity's base layer going to a state with no motion — the
+    /// pose is held through the fade and then is the rest pose, as Unity's
+    /// hand holds its grip through the 0.25 s to its empty Idle and then
+    /// opens (HandsAnimOracle); what plays next is there at once.
+    #[test]
+    fn stopped_the_pose_is_held_through_the_fade_then_rests() {
+        let mut a = animator();
+        a.play_once(1, 0.0);
+        assert_eq!(height(&a.advance(0.1)), 20.0);
+        a.stop(0.25);
+        assert_eq!(height(&a.advance(0.2)), 20.0, "held while fading");
+        assert_eq!(height(&a.advance(0.1)), 0.0, "then at rest");
+        a.play(0, 0.25);
+        assert_eq!(height(&a.advance(0.05)), 10.0, "from nothing, at once");
     }
 
     #[test]

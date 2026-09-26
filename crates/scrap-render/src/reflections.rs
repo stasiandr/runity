@@ -82,6 +82,7 @@ pub(crate) fn face_camera(probe: &ReflectionProbe, face: usize) -> crate::render
         near: PROBE_NEAR,
         far: PROBE_FAR,
         ortho: None,
+        clip: None,
     }
 }
 

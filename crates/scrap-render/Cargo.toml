@@ -35,7 +35,8 @@ naga = { version = "30", features = ["wgsl-in"] }
 
 # MetalFX, Apple's upscaler (`upscale`): reached through wgpu's Metal
 # handles, so only on Apple's systems, and only with the `metalfx` feature.
-[target.'cfg(target_vendor = "apple")'.dependencies]
+# Not in the iOS Simulator, whose SDK has no MetalFX to link.
+[target.'cfg(all(target_vendor = "apple", not(target_abi = "sim")))'.dependencies]
 objc2 = { version = "0.6", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 objc2-metal-fx = { version = "0.3.2", features = ["MTLFXSpatialScaler", "MTLFXTemporalScaler"], optional = true }

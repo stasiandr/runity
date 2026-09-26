@@ -474,7 +474,7 @@ fn cs_clouds(@builtin(global_invocation_id) id: vec3<u32>) {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let a = cloud.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
     let b = cloud.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
-    let d = normalize(b.xyz / b.w - a.xyz / a.w);
+    let d = normalize(b.xyz * a.w - a.xyz * b.w);
     let eye = cloud.eye.xyz;
 
     // How far the ray may go: to what the scene has there, if anything.
