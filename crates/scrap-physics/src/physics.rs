@@ -2391,8 +2391,13 @@ impl PhysicsWorld {
                 }
             }
         }
+        // A step of no time: rapier's controller would carry the shape on a
+        // moving kinematic body under it by that body's speed — but only on
+        // the steps its cast happens to hit the body, so now and then.
+        // Unity's CharacterController carries nothing; what rides a
+        // platform is the game's to move (a lift's rising floor is below).
         let moved = controller.move_shape(
-            self.parameters.dt,
+            0.0,
             &self.queries(filter),
             collider.shape(),
             &at,
@@ -4677,6 +4682,34 @@ mod tests {
         assert!(highest > 0.95, "up the 0.2 m step: {highest}");
         assert!(at.x < 7.5 && at.x > 7.0, "stopped at the wall: {at}");
         assert!(grounded, "on the floor");
+    }
+
+    /// A platform sliding sideways under a character leaves it where it
+    /// stands, as Unity's CharacterController does: riding is the game's.
+    #[test]
+    fn a_character_is_not_dragged_by_a_platform_sliding_under_it() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "platform", model: "m", body: Kinematic,
+                 collider: Box(half: (5.0, 0.25, 5.0)), transform: (position: (0.0, -0.25, 0.0))),
+                (id: "00000000000000f4", name: "ellen", model: "m", body: Kinematic,
+                 collider: Capsule(half_height: 0.5, radius: 0.3), transform: (position: (0.0, 0.82, 0.0))),
+            ])"#,
+        );
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let platform = by_id(&world, "00000000000000f1".parse().unwrap());
+        let ellen = by_id(&world, "00000000000000f4".parse().unwrap());
+        for _ in 0..60 {
+            world.get::<&mut Transform>(platform).unwrap().position.x += 0.05;
+            crate::world::apply_hierarchy(&mut world);
+            physics.run(&mut world);
+            let (moved, _) = physics.move_character(&world, ellen, Vec3::new(0.0, -0.05, 0.0), 0.3, 45.0).unwrap();
+            world.get::<&mut Transform>(ellen).unwrap().position += moved;
+            crate::world::apply_hierarchy(&mut world);
+        }
+        let x = world.get::<&Transform>(ellen).unwrap().position.x;
+        assert!(x.abs() < 0.01, "not dragged along: {x}");
     }
 
     /// A lift going up carries who stands on it (Level2's to the second

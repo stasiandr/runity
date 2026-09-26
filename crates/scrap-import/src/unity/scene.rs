@@ -1379,6 +1379,51 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         report.skip("a switched-off collider");
         return;
     }
+    // A second collider on one GameObject (a moving platform's solid box
+    // and the trigger that notices who stands on it): a line holds one, so
+    // the other is a part under it, moving with its body. The solid one
+    // keeps the line — its body is what stands in the way.
+    if collider && desc.collider() != Collider::None {
+        let trigger = b.i64("m_IsTrigger") == Some(1);
+        let mut part = EntityDesc {
+            id: entity_id(c.file_id),
+            name: format!("{} ({})", desc.name, if trigger { "trigger" } else { "collider" }),
+            ..EntityDesc::default()
+        };
+        if trigger || desc.body() != Body::Trigger {
+            // This one to the part.
+            component(&mut part, c, refs, report);
+            let body = if part.body() == Body::Trigger { Body::TriggerPart } else { Body::Part };
+            part.set_part(&body);
+        } else {
+            // The line's trigger to the part; this solid one on the line,
+            // its body again what its Rigidbody made it.
+            part.name = format!("{} (trigger)", desc.name);
+            part.set_part(&desc.collider());
+            part.set_part(&Body::TriggerPart);
+            let kinematic = desc.part::<BodyProps>().is_some_and(|p| p.notices_still);
+            desc.set_part(&if kinematic { Body::Kinematic } else { Body::None });
+            if let Some(mut props) = desc.part::<BodyProps>() {
+                props.notices_still = false;
+                desc.set_part(&props);
+            }
+            desc.clear_part::<Collider>();
+            component(desc, c, refs, report);
+        }
+        // On its GameObject's layer, as the collider is in Unity.
+        if let Some(layer) = desc.part::<scrap::scene::LayerName>() {
+            part.set_part(&layer);
+        }
+        // A trigger on a moving body meets what moves by its own hand too
+        // (the player's controller): who stands on the platform.
+        if part.body() == Body::TriggerPart {
+            let mut props = part.part::<BodyProps>().unwrap_or_default();
+            props.notices_still = true;
+            part.set_part(&props);
+        }
+        desc.children.push(part);
+        return;
+    }
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(r) = b.reference("m_Mesh") {
@@ -3276,6 +3321,49 @@ PlayableDirector:
         let d = ship.components.get("playable_director").map(|v| v.get_ron().to_string()).unwrap_or_default();
         assert!(d.contains("length: 15.0") && d.contains("from: 5.0") && d.contains("after: 0"), "{d}");
         assert!(d.contains(&format!("EntityRef(\"{exit}\")")), "switches the exit on: {d}");
+    }
+
+    /// Game Kit's moving platform: one GameObject, a solid box to stand on
+    /// and a taller trigger that notices who does. The solid one is the
+    /// line's; the trigger is a part on the same layer.
+    #[test]
+    fn a_solid_box_and_a_trigger_on_one_object_are_a_body_and_its_trigger_part() {
+        let scene = "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Platform
+  m_Layer: 16
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!54 &102
+Rigidbody:
+  m_GameObject: {fileID: 100}
+  m_IsKinematic: 1
+--- !u!65 &103
+BoxCollider:
+  m_GameObject: {fileID: 100}
+  m_IsTrigger: 1
+  m_Enabled: 1
+  m_Size: {x: 4, y: 2.3, z: 8}
+  m_Center: {x: 0, y: 1.15, z: 0}
+--- !u!65 &104
+BoxCollider:
+  m_GameObject: {fileID: 100}
+  m_IsTrigger: 0
+  m_Enabled: 1
+  m_Size: {x: 4, y: 2, z: 8}
+  m_Center: {x: 0, y: 1, z: 0}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), scene, &mut report);
+        let p = &roots[0];
+        assert_eq!(p.body(), Body::Kinematic, "the platform's own body");
+        assert!(matches!(p.collider(), Collider::Box { half, .. } if (half.y - 1.0).abs() < 1e-4), "the solid box: {:?}", p.collider());
+        let t = p.children.iter().find(|c| c.body() == Body::TriggerPart).expect("its trigger, a part");
+        assert!(matches!(t.collider(), Collider::Box { half, .. } if (half.y - 1.15).abs() < 1e-4), "the taller trigger");
+        assert_eq!(t.part::<scrap::scene::LayerName>(), p.part::<scrap::scene::LayerName>(), "on the same layer");
     }
 
     #[test]
