@@ -755,6 +755,8 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
 fn an_instances_tag_opens_its_prefab_and_its_parts_select() {
     let Some((mut s, _dir)) = studio() else { return };
     let fire = s.session.add_instance(None, "campfire").unwrap();
+    // A name of its own: the scene has a campfire already, not an instance.
+    s.session.rename(fire, "fire instance").unwrap();
     s.session.set_open(fire, true);
     s.refresh();
     s.frame();
@@ -1441,32 +1443,18 @@ fn the_hierarchy_collapses_and_expands_every_line_at_once() {
 }
 
 #[test]
-fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
+fn a_line_has_no_eye_or_lock_and_hides_from_its_menu() {
     let Some((mut s, _dir)) = studio() else { return };
     s.ui.paint();
-    // Line → [arrow, icon, name, tag, tools[eye, lock], dot, open].
-    let tools = |s: &Studio, name: &str| -> (f32, f32) {
-        let line = s.ui.find(name).unwrap();
-        let tools = s.ui.children(s.ui.children(line)[4]);
-        (
-            s.ui.style(tools[0]).look.opacity,
-            s.ui.style(tools[1]).look.opacity,
-        )
-    };
-    assert_eq!(tools(&s, "line crate"), (0.0, 0.0), "quiet");
-    let (x, y) = s.ui.rect(s.ui.find("line crate").unwrap()).center();
-    s.handle(&InputEvent::MouseMoved { x, y });
-    s.frame();
-    assert_eq!(tools(&s, "line crate"), (1.0, 1.0), "under the pointer");
-    assert_eq!(tools(&s, "line boulder"), (0.0, 0.0));
-    // Hidden: its eye stays when the pointer leaves.
+    // Line → [arrow, icon, name, dot, prefab tag]: hiding and locking are
+    // the context menu's and the Scene view's, not buttons on every line.
+    let line = s.ui.find("line crate").unwrap();
+    assert_eq!(s.ui.children(line).len(), 5);
+    assert!(s.ui.find("eye crate").is_none());
     let crate_id = s.session.find("crate").unwrap();
-    s.session.set_hidden(&[crate_id], true).unwrap();
-    s.refresh();
-    let (x, y) = s.ui.rect(s.ui.find("line boulder").unwrap()).center();
-    s.handle(&InputEvent::MouseMoved { x, y });
-    s.frame();
-    assert_eq!(tools(&s, "line crate"), (1.0, 0.0), "the eye of what is hidden");
+    press(&mut s, "line crate", MouseButton::Right);
+    click(&mut s, "menu Hide");
+    assert_eq!(s.session.hidden(), [crate_id], "hidden from the line's menu");
 }
 
 #[test]
@@ -3976,21 +3964,17 @@ fn the_scene_is_the_first_line_and_its_menu_saves_and_reloads() {
 }
 
 #[test]
-fn an_instance_opens_its_prefab_by_the_arrow_at_its_end() {
+fn an_instance_opens_its_prefab_by_the_tag_at_its_end() {
     let Some((mut s, _dir)) = studio() else { return };
     let fire = s.session.add_instance(None, "campfire").unwrap();
     s.session.rename(fire, "fire instance").unwrap();
     s.refresh();
     s.frame();
     s.ui.paint();
-    let open = s.ui.find("open fire instance").unwrap();
-    assert_eq!(s.ui.style(open).look.opacity, 0.0, "quiet until hovered");
     let plain = s.ui.find("open crate").unwrap();
-    assert_eq!(s.ui.rect(plain).width, 0.0, "a plain line has none");
-    let (x, y) = s.ui.rect(s.ui.find("line fire instance").unwrap()).center();
-    s.handle(&InputEvent::MouseMoved { x, y });
-    s.frame();
-    assert_eq!(s.ui.style(open).look.opacity, 1.0, "under the pointer");
+    assert_eq!(s.ui.rect(plain).width, 0.0, "a plain line has no tag");
+    let open = s.ui.find("open fire instance").unwrap();
+    assert!(s.ui.rect(open).width > 0.0, "an instance's shows, always");
     click(&mut s, "open fire instance");
     assert!(s.session.is_prefab(), "prefab mode");
     // The first line is the prefab now.
