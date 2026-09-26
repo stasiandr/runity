@@ -1272,7 +1272,10 @@ fn vsm_sunlight(p: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0, sum / 9.0, fade);
 }
 
-fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+/// The sun's light at a point: its cascade's map, filtered; `plane`, the
+/// surface's own (geometric) normal there or zero, tilts the filter's taps
+/// along it (see `receiver_slope`).
+fn sunlight(world_position: vec3<f32>, normal: vec3<f32>, plane: vec3<f32>) -> f32 {
     if frame.vsm[3].x > 0.5 && !LEAN {
         return vsm_sunlight(world_position, normal);
     }
@@ -1305,7 +1308,7 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
         return 1.0;
     }
-    let lit = shadow_filtered(uv, ndc.z, i32(cascade));
+    let lit = shadow_filtered(uv, ndc.z, i32(cascade), receiver_slope(frame.light_view_projection[cascade], plane));
 
     // Fading out towards the shadow distance, as URP's
     // GetMainLightShadowFade: linear in the squared distance from the eye,
@@ -1319,7 +1322,7 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
 /// soft shadows (Core RP's ShadowSamplingTent) — one bilinear comparison
 /// hard, four half a texel out Low, a 5x5 tent in nine Medium, a 7x7 in
 /// sixteen High.
-fn shadow_filtered(uv: vec2<f32>, reference: f32, layer: i32) -> f32 {
+fn shadow_filtered(uv: vec2<f32>, reference: f32, layer: i32, slope: vec2<f32>) -> f32 {
     let size = 1.0 / frame.shadow_params.z;
     let texel = frame.shadow_params.z;
     let quality = u32(frame.shadow_params.x + 0.5);
@@ -1362,9 +1365,16 @@ fn shadow_filtered(uv: vec2<f32>, reference: f32, layer: i32) -> f32 {
         vec2<f32>(u.offsets[0], v.offsets[3]),
         vec2<f32>(u.offsets[3], v.offsets[3]),
     );
+    // Each tap compared with the surface's own depth where the tap is,
+    // not the depth where the pixel is: under a low sun a flat receiver
+    // falls away across the kernel's eight texels by more than the
+    // caster's bias, and its far taps would find it shadowing itself —
+    // dimming it a little, and sending nearly every pixel of it down the
+    // sixteen taps below for what is no edge at all.
     var corners = vec4<f32>(0.0);
     for (var c = 0u; c < 4u; c = c + 1u) {
-        corners[c] = textureSampleCompareLevel(shadow_map, shadow_sampler, (origin + corner[c]) * texel, layer, reference);
+        let at = (origin + corner[c]) * texel;
+        corners[c] = textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference + dot(slope, at - uv));
     }
     let middle = textureSampleCompareLevel(shadow_map, shadow_sampler, uv, layer, reference);
     let seen = corners.x + corners.y + corners.z + corners.w + middle;
@@ -1384,10 +1394,28 @@ fn shadow_filtered(uv: vec2<f32>, reference: f32, layer: i32) -> f32 {
                 continue;
             }
             let at = (origin + vec2<f32>(u.offsets[i], v.offsets[j])) * texel;
-            sum += w * textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference);
+            sum += w * textureSampleCompareLevel(shadow_map, shadow_sampler, at, layer, reference + dot(slope, at - uv));
         }
     }
     return sum;
+}
+
+/// How a surface's depth in a cascade changes across its map, per unit of
+/// uv: the plane of `normal` (world) through the cascade's view, whose
+/// rows are the light's axes each times its scale. Zero for no normal, or
+/// a surface nearly edge-on to the sun — which the sun barely lights.
+fn receiver_slope(light: mat4x4<f32>, normal: vec3<f32>) -> vec2<f32> {
+    let x = vec3<f32>(light[0].x, light[1].x, light[2].x);
+    let y = vec3<f32>(light[0].y, light[1].y, light[2].y);
+    let z = vec3<f32>(light[0].z, light[1].z, light[2].z);
+    // The normal in the map's space: a normal goes by the inverse
+    // transpose, which for axes times scales is each axis over its scale².
+    let n = vec3<f32>(dot(x, normal) / dot(x, x), dot(y, normal) / dot(y, y), dot(z, normal) / dot(z, z));
+    if abs(n.z) < 0.1 * length(n) {
+        return vec2<f32>(0.0);
+    }
+    // u is half of x; v is half of y the other way.
+    return vec2<f32>(-2.0 * n.x / n.z, 2.0 * n.y / n.z);
 }
 
 /// Core RP's SampleShadow_GetTexelAreas_Tent_3x3: the area of a tent 1.5
@@ -1669,7 +1697,7 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         sun_seen = sun_seen / 3.0;
     } else {
-        sun_seen = sunlight(p, vec3<f32>(0.0));
+        sun_seen = sunlight(p, vec3<f32>(0.0), vec3<f32>(0.0));
     }
     // The dust wall's mass between the air and the sun.
     sun_seen *= dust_wall_shadow(p, to_sun);
@@ -2989,7 +3017,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         if frame.ray.x > 0.5 && !LEAN {
             shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
         } else {
-            shadow = sunlight(in.world_position, normal);
+            shadow = sunlight(in.world_position, normal, geometric);
             if frame.ambient_occlusion.z > 0.0 && shadow > 0.0 {
                 shadow *= contact_shadow(in.world_position, geometric, to_sun, in.clip_position.xy);
             }
@@ -3556,7 +3584,7 @@ fn fs_water(slimmed: VertexSlim) -> @location(0) vec4<f32> {
     let murk = 1.0 - exp(-below / clarity);
 
     let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, to_eye), 0.0), 5.0);
-    let shadow = sunlight(p, vec3<f32>(0.0, 1.0, 0.0));
+    let shadow = sunlight(p, vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0));
     let body = in.base_color * (frame.sky_color.rgb + frame.sun_color.rgb * max(to_sun.y, 0.0) * 0.35 * shadow);
     let mirrored = reflected(p, reflect(-to_eye, n), 0.03);
     let glint = pow(max(dot(n, normalize(to_sun + to_eye)), 0.0), 600.0) * 30.0 * frame.sun_color.rgb * shadow;
