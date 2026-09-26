@@ -735,7 +735,7 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     click(&mut s, "prefab back");
     assert!(!s.session.is_prefab());
     assert_eq!(s.session.scene_path(), Some(scene.as_path()));
-    let prefab = std::fs::read_to_string(dir.join("prefabs/campfire.prefab")).unwrap();
+    let prefab = std::fs::read_to_string(dir.join("content/valley/camp/campfire/campfire.prefab")).unwrap();
     assert!(
         !prefab.contains("\"ember\""),
         "the prefab was saved without its ember"
@@ -1404,7 +1404,7 @@ fn the_project_shows_pictures_of_scenes_and_materials_by_default() {
     assert_eq!(s.bottom_pictures_pending(), 0, "every picture drawn");
     assert!(s.ui.dump().contains("thumb scene:"), "a scene's picture");
     click(&mut s, "crumb Project");
-    click(&mut s, "folder trees");
+    click(&mut s, "folder water");
     draw_pictures(&mut s);
     assert!(s.ui.dump().contains("thumb material:"), "a material's picture");
 }
@@ -1712,7 +1712,7 @@ fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
         .unwrap();
     let read = || std::fs::read_to_string(&file).unwrap();
     click(&mut s, "tab configs");
-    click(&mut s, "configs materials.ron");
+    click(&mut s, "configs content/valley/crafting/materials.ron");
 
     // Typed: the cell's text, all of it, then a number and Enter.
     click(&mut s, "configs cell  Палка hard");
@@ -1901,7 +1901,7 @@ fn the_animation_tab_plays_a_clip_in_the_view() {
     let Some((mut s, dir)) = studio() else { return };
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../scrap-import/tests/fixtures/skinned_banner.gltf");
-    std::fs::copy(&fixture, dir.join("assets/banner.gltf")).unwrap();
+    std::fs::copy(&fixture, dir.join("content/valley/banner.gltf")).unwrap();
     menu(&mut s, "Assets", "Refresh");
     let banner = s.session.add(None, "banner").unwrap();
     s.session.select(Some(banner)).unwrap();
@@ -1985,7 +1985,7 @@ fn silence() -> Vec<u8> {
 #[test]
 fn a_sound_is_listed_in_the_project_to_listen_to() {
     let Some((mut s, dir)) = studio() else { return };
-    std::fs::write(dir.join("assets/beep.wav"), silence()).unwrap();
+    std::fs::write(dir.join("content/valley/beep.wav"), silence()).unwrap();
     menu(&mut s, "Assets", "Refresh");
     assert!(s.session.sound("beep").is_some(), "imported");
     click(&mut s, "project search");
@@ -3786,7 +3786,7 @@ fn a_bone_is_picked_from_the_parents_skeleton() {
     let Some((mut s, dir)) = studio() else {
         return;
     };
-    let assets = dir.join("assets");
+    let assets = dir.join("content/valley");
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../scrap-import/tests/fixtures/skinned_banner.gltf"),
@@ -4007,7 +4007,7 @@ fn one_column_shows_files_inside_folders_and_is_remembered() {
     assert!(s.ui.find("asset first-light").is_some());
     // A double click on a scene's line opens it.
     double_click(&mut s, "asset second");
-    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    assert!(s.session.scene_path().unwrap().ends_with("second.scene.ron"));
     // Remembered for the next run.
     std::thread::sleep(std::time::Duration::from_millis(600));
     s.frame();
@@ -4026,7 +4026,7 @@ fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
     click(&mut s, "asset first-light");
     let dump = s.ui.dump();
     assert!(
-        dump.contains("\"maps/\"") && dump.contains("\"first-light.scene.ron\""),
+        dump.contains("\"content/valley/maps/\"") && dump.contains("\"first-light.scene.ron\""),
         "{dump}"
     );
     // The engine's own: under Built-in.
@@ -4047,7 +4047,7 @@ fn show_asset_goes_to_its_folder_and_chooses_it() {
     let Some((mut s, _dir)) = studio() else { return };
     assert!(s.show_in_project("content/valley/maps/first-light.scene.ron"));
     assert!(s.ui.find("crumb maps").is_some(), "in its folder");
-    assert!(s.ui.dump().contains("\"first-light.ron\""), "chosen");
+    assert!(s.ui.dump().contains("\"first-light.scene.ron\""), "chosen");
     // By name, in one column: the tree opens down to it.
     click(&mut s, "project one column");
     assert!(s.show_in_project("cube"));
@@ -4063,9 +4063,9 @@ fn the_arrows_walk_the_project_and_enter_opens() {
     click(&mut s, "folder maps");
     click(&mut s, "asset first-light");
     key(&mut s, Key::Right);
-    assert!(s.ui.dump().contains("\"second.ron\""), "the next tile");
+    assert!(s.ui.dump().contains("\"second.scene.ron\""), "the next tile");
     key(&mut s, Key::Enter);
-    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    assert!(s.session.scene_path().unwrap().ends_with("second.scene.ron"));
     // F2 asks for its new name; Delete asks before deleting.
     key(&mut s, Key::F2);
     assert!(s.ui.find("dialog field").is_some(), "renaming");
@@ -4077,11 +4077,11 @@ fn the_arrows_walk_the_project_and_enter_opens() {
     // In one column: right opens a folder, down goes into it.
     key(&mut s, Key::Escape);
     click(&mut s, "project one column");
-    click(&mut s, "folder line prefabs");
+    click(&mut s, "folder line maps");
     key(&mut s, Key::Right);
     key(&mut s, Key::Down);
     let dump = s.ui.dump();
-    assert!(dump.contains("\"prefabs/\""), "a prefab chosen: {dump}");
+    assert!(dump.contains("\"content/valley/maps/\""), "a scene chosen: {dump}");
 }
 
 #[test]

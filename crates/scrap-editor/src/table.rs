@@ -124,8 +124,15 @@ impl Session {
         let source = source.trim();
         // A data file, by its path in the project, `.ron` or not:
         // `configs/enemies`, `content/game/core/world.ron` (docs/layout.md).
-        let file = self.project().map(|p| p.root().join(format!("{}.ron", source.trim_end_matches(".ron"))));
-        if !source.contains(':') && (source.ends_with(".ron") || source.contains('/') || file.as_ref().is_some_and(|f| f.is_file())) {
+        let file = self.project().map(|p| {
+            p.root()
+                .join(format!("{}.ron", source.trim_end_matches(".ron")))
+        });
+        if !source.contains(':')
+            && (source.ends_with(".ron")
+                || source.contains('/')
+                || file.as_ref().is_some_and(|f| f.is_file()))
+        {
             let project = self.project().ok_or(EditError::NotInProject)?;
             let source = format!("{}.ron", source.trim_end_matches(".ron"));
             let source = source.as_str();

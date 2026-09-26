@@ -60,12 +60,22 @@ fn a_build_carries_the_data_the_game_reads_and_leaves_the_sources_home() {
 
     // A second build replaces the first: a scene deleted from the project
     // does not linger in the next build.
-    write_all(out.join("data/content/shipping/maps/old.scene.ron"), "(entities: [])").unwrap();
+    write_all(
+        out.join("data/content/shipping/maps/old.scene.ron"),
+        "(entities: [])",
+    )
+    .unwrap();
     scrap_cli::build::package(&project, &exe, &out).unwrap();
-    assert!(!out.join("data/content/shipping/maps/old.scene.ron").exists());
+    assert!(!out
+        .join("data/content/shipping/maps/old.scene.ron")
+        .exists());
 
     // A sandbox is not the game: developers/ stays home.
-    write_all(root.join("content/developers/ann/try.scene.ron"), "(entities: [])").unwrap();
+    write_all(
+        root.join("content/developers/ann/try.scene.ron"),
+        "(entities: [])",
+    )
+    .unwrap();
     scrap_cli::build::package(&project, &exe, &out).unwrap();
     assert!(!out.join("data/content/developers").exists());
 }

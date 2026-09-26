@@ -82,6 +82,10 @@ pub struct Bottom {
     folder: String,
     /// Folders opened in the tree.
     open_folders: std::collections::HashSet<String>,
+    /// Whether the project's own folder has been opened in the tree yet:
+    /// `content/` and `content/<name>/` start open, so its features show at
+    /// once (docs/layout.md).
+    opened_content: bool,
     /// Each tree row's folder, and whether the click was on its arrow.
     folder_rows: HashMap<NodeId, (String, bool)>,
     /// Each folder tile in the grid.
@@ -407,6 +411,7 @@ impl Bottom {
             crumbs,
             folder: String::new(),
             open_folders: Default::default(),
+            opened_content: false,
             folder_rows: HashMap::new(),
             folder_tiles: HashMap::new(),
             crumb_nodes: HashMap::new(),
@@ -1469,6 +1474,16 @@ impl Bottom {
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        if !self.opened_content {
+            if let Some(project) = session.project() {
+                self.opened_content = true;
+                if !project.is_legacy() {
+                    let own = scrap::layout::relative(project.root(), &project.content());
+                    self.open_folders.insert(scrap::project::CONTENT.to_string());
+                    self.open_folders.insert(own);
+                }
+            }
+        }
         self.update_project(ui, session);
 
         // Console

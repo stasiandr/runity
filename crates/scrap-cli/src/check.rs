@@ -421,7 +421,8 @@ fn expansion(project: &Project, out: &mut Vec<Finding>) {
 fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
     let mut models: HashMap<String, Vec<String>> = HashMap::new();
     let mut materials: HashMap<String, Vec<String>> = HashMap::new();
-    for root in [project.root().to_path_buf()] {
+    {
+        let root = project.root().to_path_buf();
         scrap_import::walk(&root, &mut |path| {
             let (Some(stem), Some(extension)) = (
                 path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -894,7 +895,8 @@ fn check_material(name: &str, who: &str, file: &str, names: &Names, out: &mut Ve
 /// next `scrap sync` writes one, and a clone that did not run it builds
 /// something else.
 fn check_sidecars(project: &Project, out: &mut Vec<Finding>) {
-    for root in [project.root().to_path_buf()] {
+    {
+        let root = project.root().to_path_buf();
         scrap_import::walk(&root, &mut |source| {
             if !scrap_import::importable(source) {
                 return;

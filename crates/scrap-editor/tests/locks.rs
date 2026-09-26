@@ -54,7 +54,9 @@ fn the_editor_lists_locks_and_takes_and_gives_them_back() {
             return;
         }
     };
-    session.open_scene(scrap::Project::open(&root).unwrap().scene("main").unwrap()).unwrap();
+    session
+        .open_scene(scrap::Project::open(&root).unwrap().scene("main").unwrap())
+        .unwrap();
     let locks = session.locks().unwrap();
     assert_eq!(locks.len(), 1);
     assert_eq!(locks[0].path, "assets/rock.png");

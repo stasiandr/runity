@@ -130,7 +130,12 @@ fn a_draft_takes_the_greybox_place_in_one_undo_step() {
     );
 
     // The file and what made it, where a release will look for drafts.
-    assert!(session.project().unwrap().assets().join("drafts/well.glb").exists());
+    assert!(session
+        .project()
+        .unwrap()
+        .assets()
+        .join("drafts/well.glb")
+        .exists());
     let found = drafts(session.project().unwrap());
     assert_eq!(found.len(), 1);
     let record = found[0]

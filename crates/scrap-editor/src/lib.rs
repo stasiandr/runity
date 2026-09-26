@@ -2372,12 +2372,15 @@ impl Session {
         };
         self.say(
             console::Level::Info,
-            format!("playing scenes/{name}.ron in the game"),
+            format!(
+                "playing {} in the game",
+                project.relative(&path).unwrap_or_else(|| name.clone())
+            ),
         );
         Ok(command)
     }
 
-    /// File → New Scene: make `scenes/NAME.ron` in the open project — a
+    /// File → New Scene: make the scene NAME in the open project's `maps/` — a
     /// ground to stand on — and open it. What was open is not saved first;
     /// save it before, as Unity asks.
     pub fn new_scene(&mut self, name: &str) -> EditResult<PathBuf> {
