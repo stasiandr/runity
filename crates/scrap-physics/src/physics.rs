@@ -1548,9 +1548,11 @@ impl PhysicsWorld {
     /// A thing just hinged or slid on the world — a door, a handle — stops
     /// colliding with the still things it was put into: a door set flush
     /// in the sand would otherwise grind against it, and a stiff solver
-    /// hold it shut by that friction. What it only comes to touch later (a
-    /// wall it swings into) it still meets. Once, after the first step its
-    /// contacts are known.
+    /// hold it shut by that friction. Still is fixed or kinematic: a padlock
+    /// the scene set into a door's leaf would push the leaf past its stop,
+    /// to tremble there awake for good. What it only comes to touch later
+    /// (a wall it swings into, the lock's bar it rests on) it still meets.
+    /// Once, after the first step its contacts are known.
     fn free_hinged(&mut self, world: &mut World) {
         let fresh: Vec<(hecs::Entity, RigidBodyHandle)> = world
             .query::<(hecs::Entity, &JointBuilt)>()
@@ -1571,7 +1573,7 @@ impl PhysicsWorld {
                         .get(other)
                         .and_then(|c| c.parent())
                         .and_then(|h| self.bodies.get(h))
-                        .is_none_or(|b| b.is_fixed());
+                        .is_none_or(|b| b.is_fixed() || b.is_kinematic());
                     let deep = pair
                         .manifolds()
                         .iter()
@@ -1849,6 +1851,14 @@ impl PhysicsWorld {
     /// The rapier body behind an entity, once it has been built.
     fn body_of(&self, world: &World, entity: hecs::Entity) -> Option<RigidBodyHandle> {
         world.get::<&BodyHandle>(entity).ok().map(|h| h.0)
+    }
+
+    /// Whether an entity's body is asleep — still long enough that the
+    /// solver leaves it until something touches it: Unity's
+    /// `Rigidbody.IsSleeping`. `None` for an entity with no body.
+    pub fn asleep(&self, world: &World, entity: hecs::Entity) -> Option<bool> {
+        let handle = world.get::<&BodyHandle>(entity).ok()?.0;
+        Some(self.bodies.get(handle)?.is_sleeping())
     }
 
     /// How fast an entity's body moves, metres per second. `None` before
@@ -2757,6 +2767,37 @@ mod tests {
         }
         let angle = physics.hinge_angle(&world, door).unwrap();
         assert!((angle.abs() - 40.0).abs() < 3.0, "at its limit: {angle}");
+    }
+
+    /// A door hung with a kinematic lock set into its leaf — a padlock the
+    /// scene placed a few centimetres into it — stays where it was hung and
+    /// goes to sleep, whichever side the lock is on: pushed out of the lock
+    /// against its own stop, it would tremble there awake for good.
+    #[test]
+    fn a_door_hung_into_a_kinematic_lock_rests_where_it_was_hung() {
+        for side in [1.0f32, -1.0] {
+            let text = format!(
+                r#"(entities: [
+                (id: "0000000000000001", name: "door", model: "builtin:cube", body: Dynamic,
+                 transform: (position: (0.6, 1.0, 0.0)),
+                 collider: Box(half: (0.5, 1.0, 0.05)), physics: (mass: Some(20.0), gravity: 0.0),
+                 joint: Hinge(anchor: (-0.6, 0.0, 0.0), axis: (0.0, -1.0, 0.0), limits_deg: (0.0, 90.0))),
+                (id: "0000000000000002", name: "lock", model: "builtin:cube", body: Kinematic,
+                 transform: (position: (1.0, 1.0, {z})),
+                 collider: Box(half: (0.1, 0.1, 0.06))),
+            ])"#,
+                z = side * 0.08
+            );
+            let scene: Scene = ron::from_str(&text).unwrap();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            let mut physics = PhysicsWorld::new(1.0 / 30.0);
+            let door = the(&world, Body::Dynamic);
+            run_for(&mut physics, &mut world, 150);
+            let angle = physics.hinge_angle(&world, door).unwrap();
+            assert!(angle.abs() < 2.0, "lock on side {side}: where it was hung, not pushed to {angle}°");
+            assert_eq!(physics.asleep(&world, door), Some(true), "lock on side {side}: asleep");
+        }
     }
 
     /// A crop tethered to its bed by a spring that breaks at 250 N: pulled
