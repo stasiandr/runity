@@ -1872,12 +1872,26 @@ fn scene_pipelines(
                 cache: None,
             })
     };
-    let scene = looks.iter().map(|&look| (look, scene_pipeline(look, false))).collect();
-    let prepassed = looks
-        .iter()
-        .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
-        .map(|&look| (look, scene_pipeline(look, true)))
-        .collect();
+    // Each pipeline is the driver compiling the whole shader once more:
+    // dozens of them, the most of a renderer's start. They do not depend
+    // on each other and the device takes them from any thread, so they are
+    // compiled across the cores (one after another on the web).
+    let mut wanted: Vec<(Look, bool)> = looks.iter().map(|&look| (look, false)).collect();
+    wanted.extend(
+        looks
+            .iter()
+            .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
+            .map(|&look| (look, true)),
+    );
+    let built = scrap_core::jobs::map(&wanted, 1, |&(look, prepassed)| scene_pipeline(look, prepassed));
+    let (mut scene, mut prepassed) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+    for ((look, pre), pipeline) in wanted.into_iter().zip(built) {
+        if pre {
+            prepassed.insert(look, pipeline);
+        } else {
+            scene.insert(look, pipeline);
+        }
+    }
     (scene, prepassed)
 }
 
