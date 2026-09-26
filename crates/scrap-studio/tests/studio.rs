@@ -4800,3 +4800,62 @@ fn a_materials_shader_properties_are_shown_by_name_and_set_there() {
         "a value that is not a number is refused"
     );
 }
+
+#[test]
+fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("shaders/lava.graph.ron");
+    click(&mut s, "tab shadergraph");
+    s.frame();
+    click(&mut s, "shader graphs wide");
+    s.frame();
+    click(&mut s, "graph lava.graph.ron");
+    s.frame();
+    for node in ["drift", "ground", "cracks", "churn", "glow", "surface"] {
+        assert!(s.ui.find(&format!("graph node {node}")).is_some(), "{node}: {}", s.ui.dump());
+    }
+    assert!(s.ui.find("graph edge 0").is_some(), "arrows");
+    assert!(s.ui.dump().contains("Builds."), "{}", s.ui.dump());
+    assert!(s.ui.find("graph preview").is_some(), "the material on a ball");
+
+    // A node chosen: its inputs, its own preview; an input set is one
+    // change in the file, the comment and the other lines as they were.
+    click(&mut s, "graph node churn");
+    s.frame();
+    assert!(s.ui.find("node preview").is_some());
+    let before = std::fs::read_to_string(&file).unwrap();
+    fill(&mut s, "graph input scale", "3.5");
+    s.frame();
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(after.contains(r#""churn": Noise(at: "position", scale: 3.5),"#), "{after}");
+    assert_eq!(before.lines().count(), after.lines().count());
+
+    // Misspelt: said in the compiler's words, and the file keeps it — it is
+    // the person's to fix — with the node marked.
+    fill(&mut s, "graph input at", "\"positon\"");
+    s.frame();
+    assert!(s.ui.dump().contains("did you mean `position`"), "{}", s.ui.dump());
+    fill(&mut s, "graph input at", "\"position\"");
+    s.frame();
+
+    // A node added, and taken out with its line.
+    fill(&mut s, "graph add node", "\"pulse\": Sine(of: \"time\")");
+    s.frame();
+    assert!(std::fs::read_to_string(&file).unwrap().contains(r#""pulse": Sine(of: "time"),"#));
+    assert!(s.ui.find("graph node pulse").is_some());
+    assert!(s.ui.dump().contains("node `pulse` is read by nothing"), "a warning: {}", s.ui.dump());
+    click(&mut s, "graph node pulse");
+    click(&mut s, "graph delete node");
+    s.frame();
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("pulse"));
+
+    // An effect's graph: its three parts are what it sets.
+    click(&mut s, "graph embers.vfx.ron");
+    s.frame();
+    for node in ["spawn", "update", "output", "wind", "hue"] {
+        assert!(s.ui.find(&format!("graph node {node}")).is_some(), "{node}: {}", s.ui.dump());
+    }
+    assert!(s.ui.dump().contains("Builds."));
+}

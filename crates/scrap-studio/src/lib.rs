@@ -23,6 +23,7 @@ mod bottom;
 mod clipboard;
 mod configs;
 mod dialogues;
+mod shader_graphs;
 mod dock;
 mod git_marks;
 mod git_tab;

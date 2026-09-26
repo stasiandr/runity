@@ -41,6 +41,8 @@ pub enum Panel {
     Screens,
     Animator,
     Dialogues,
+    /// Shader and effect graphs: `crate::shader_graphs`.
+    ShaderGraph,
     /// Records of one kind as rows, their fields as columns.
     Table,
     /// The person's own settings, in every project: a window of its own
@@ -49,7 +51,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 15] = [
+    pub const ALL: [Panel; 16] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -63,6 +65,7 @@ impl Panel {
         Panel::Screens,
         Panel::Animator,
         Panel::Dialogues,
+        Panel::ShaderGraph,
         Panel::Table,
         Panel::Preferences,
     ];
@@ -84,6 +87,7 @@ impl Panel {
             Panel::Screens => "screens",
             Panel::Animator => "animator",
             Panel::Dialogues => "dialogues",
+            Panel::ShaderGraph => "shadergraph",
             Panel::Table => "table",
             Panel::Preferences => "preferences",
         }
@@ -104,6 +108,7 @@ impl Panel {
             Panel::Screens => "UI Builder",
             Panel::Animator => "Animator",
             Panel::Dialogues => "Dialogues",
+            Panel::ShaderGraph => "Shader Graph",
             Panel::Table => "Table",
             Panel::Preferences => "Preferences",
         }
@@ -124,6 +129,7 @@ impl Panel {
             Panel::Screens => "layout-dashboard",
             Panel::Animator => "route",
             Panel::Dialogues => "type",
+            Panel::ShaderGraph => "palette",
             Panel::Table => "grid-3x3",
             Panel::Preferences => "sliders-horizontal",
         }
@@ -406,6 +412,7 @@ impl Arrangement {
                     Panel::Animation,
                     Panel::Animator,
                     Panel::Dialogues,
+                    Panel::ShaderGraph,
                     Panel::Table,
                     Panel::Screens,
                     Panel::Settings,
@@ -436,6 +443,7 @@ impl Arrangement {
                     Panel::Animation,
                     Panel::Animator,
                     Panel::Dialogues,
+                    Panel::ShaderGraph,
                     Panel::Table,
                     Panel::Screens,
                     Panel::Settings,

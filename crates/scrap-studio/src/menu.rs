@@ -397,6 +397,7 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Animation", Action::ShowPanel(crate::dock::Panel::Animation)),
                 item("Animator", Action::ShowPanel(crate::dock::Panel::Animator)),
                 item("Dialogues", Action::ShowPanel(crate::dock::Panel::Dialogues)),
+                item("Shader Graph", Action::ShowPanel(crate::dock::Panel::ShaderGraph)),
                 item("Table", Action::ShowPanel(crate::dock::Panel::Table)),
                 item("UI Builder", Action::ShowPanel(crate::dock::Panel::Screens)),
                 item(

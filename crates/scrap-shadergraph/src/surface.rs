@@ -495,6 +495,56 @@ pub fn to_wgsl_with(
     Ok(out)
 }
 
+/// The graph made to show one of its nodes: black, glowing with the
+/// node's value — a number as grey, a vec2 as red and green, a vec4's
+/// colour — its vertex stage as it is. What an editor's node preview draws.
+pub fn preview_of(
+    graph: &ShaderGraph,
+    node: &str,
+    library: &dyn crate::subgraph::Library,
+) -> Result<ShaderGraph, String> {
+    if !graph.nodes.contains_key(node) {
+        return Err(format!("no node `{node}` to show"));
+    }
+    // Read as the graph reads it: a subgraph call's one output.
+    let mut read = Input::from(node);
+    let mut expanded = graph.clone();
+    expanded.nodes = crate::subgraph::expand(&graph.nodes, &mut [&mut read], library)?;
+    let compiled = expr::compile(
+        &expanded.nodes,
+        &[(format!("node `{node}`"), &read)],
+        &Material { graph: &expanded },
+    )?;
+    let node = match &read {
+        Input::Name(n) => n.as_str(),
+        _ => node,
+    };
+    let ty = compiled.outputs[0].ty;
+    let mut out = graph.clone();
+    let shown = match ty {
+        Ty::F1 | Ty::F3 => Input::from(node),
+        Ty::F4 => Input::Name(format!("{node}.rgb")),
+        Ty::F2 => {
+            out.nodes.insert(
+                "__shown".to_string(),
+                Node::Combine {
+                    x: Input::Name(format!("{node}.x")),
+                    y: Input::Name(format!("{node}.y")),
+                    z: Some(Input::Number(0.0)),
+                    w: None,
+                },
+            );
+            Input::from("__shown")
+        }
+    };
+    out.surface = SurfaceOut {
+        albedo: Some(Input::Vector(vec![0.0, 0.0, 0.0])),
+        emission: Some(shown),
+        ..Default::default()
+    };
+    Ok(out)
+}
+
 /// What a graph is fine with but is likely a mistake: nodes nothing reads,
 /// parameters and textures declared and not read.
 pub fn problems(graph: &ShaderGraph) -> Vec<String> {
