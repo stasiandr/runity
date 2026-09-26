@@ -17,6 +17,16 @@ use std::path::{Path, PathBuf};
 use scrap::{asset, Library, MeshAsset, Project};
 use scrap_import::{import_into, sidecar_for, sync, Change, ImportSettings};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const SQUARE: &str = "\
 v -1.0 0.0 -1.0
 v  1.0 0.0 -1.0
@@ -40,7 +50,7 @@ fn project(name: &str) -> (Project, PathBuf) {
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
+    write_all(path, text).unwrap();
 }
 
 /// File timestamps have a resolution, and a test that writes twice in a
@@ -372,6 +382,7 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
         image.save(root.join("assets/ramp.png")).unwrap();
         touch_forward(&root.join("assets/ramp.png"));
     };
+    std::fs::create_dir_all(root.join("assets")).unwrap();
     paint(255);
     let source = root.join("assets/field.scrterrain");
     write(

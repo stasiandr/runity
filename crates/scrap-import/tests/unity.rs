@@ -5,9 +5,19 @@
 use scrap::prelude::*;
 use std::path::Path;
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
+    write_all(path, text).unwrap();
 }
 
 fn meta(path: &Path, guid: &str) {
@@ -111,7 +121,7 @@ PrefabInstance:
     scrap_import::sync(&project);
 
     // The scene opens with the prefab expanded and the material resolved.
-    let porch = scrap::Scene::load(project.scenes().join("Porch.ron")).unwrap();
+    let porch = scrap::Scene::load(project.scenes().join("Porch.scene.ron")).unwrap();
     let (prefabs, problems) = scrap::Prefabs::of(&project);
     assert!(problems.is_empty(), "{problems:?}");
     let expanded = scrap::instantiate(&porch, &prefabs);
@@ -141,6 +151,6 @@ PrefabInstance:
 /// crate: every model a line names is a builtin here.
 fn scrap_cli_free_check(project: &scrap::Project) -> bool {
     let (prefabs, _) = scrap::Prefabs::of(project);
-    let porch = scrap::Scene::load(project.scenes().join("Porch.ron")).unwrap();
+    let porch = scrap::Scene::load(project.scenes().join("Porch.scene.ron")).unwrap();
     scrap::instantiate(&porch, &prefabs).problems.is_empty()
 }

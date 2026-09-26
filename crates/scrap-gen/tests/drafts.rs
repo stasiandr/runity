@@ -11,6 +11,16 @@ use scrap::scene::MaterialRef;
 use scrap_editor::Session;
 use scrap_gen::{drafts, Generator, Input, Output, Provider, Request};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 /// A box 1 × 2 × 1 m, nowhere near the origin, in one colour: what a
 /// network sends back, minus the network.
 struct Boxes;
@@ -61,8 +71,8 @@ fn project(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("scrap-gen-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     scrap::Project::create(&root, name).unwrap();
-    let path = root.join("scenes/scene.ron");
-    std::fs::write(&path, SCENE).unwrap();
+    let path = root.join("maps/scene.scene.ron");
+    write_all(&path, SCENE).unwrap();
     path
 }
 
@@ -78,7 +88,7 @@ fn session(name: &str) -> (Session, PathBuf) {
 
 #[test]
 fn a_draft_takes_the_greybox_place_in_one_undo_step() {
-    let (mut session, root) = session("fit");
+    let (mut session, _root) = session("fit");
     let block = session.find("block").unwrap();
     let mut generator = Generator::new(Boxes);
 
@@ -120,7 +130,7 @@ fn a_draft_takes_the_greybox_place_in_one_undo_step() {
     );
 
     // The file and what made it, where a release will look for drafts.
-    assert!(root.join("assets/drafts/well.glb").exists());
+    assert!(session.project().unwrap().assets().join("drafts/well.glb").exists());
     let found = drafts(session.project().unwrap());
     assert_eq!(found.len(), 1);
     let record = found[0]
@@ -140,7 +150,7 @@ fn a_draft_takes_the_greybox_place_in_one_undo_step() {
 fn a_name_a_real_model_has_is_refused_before_anything_is_paid_for() {
     let (mut session, root) = session("taken");
     std::fs::create_dir_all(root.join("assets/models")).unwrap();
-    std::fs::write(root.join("assets/models/well.obj"), "v 0 0 0\n").unwrap();
+    write_all(root.join("assets/models/well.obj"), "v 0 0 0\n").unwrap();
     let mut generator = Generator::new(Boxes);
     let error = generator
         .start(&mut session, Request::text("well", "a well"))

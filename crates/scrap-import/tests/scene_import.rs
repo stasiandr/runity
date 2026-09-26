@@ -12,6 +12,16 @@ use scrap::scene::MaterialRef;
 use scrap::{EntityDesc, Library, Prefabs, Project, Scene};
 use scrap_import::{sidecar_for, sync, ImportSettings};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn project(name: &str) -> (Project, PathBuf) {
     let root = std::env::temp_dir().join(format!("scrap-scene-import-{name}"));
     let _ = std::fs::remove_dir_all(&root);
@@ -33,7 +43,7 @@ fn forest(dir: &Path, stump_x: f32) -> PathBuf {
         bin.extend(i.to_le_bytes());
     }
     std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(dir.join("forest.bin"), &bin).unwrap();
+    write_all(dir.join("forest.bin"), &bin).unwrap();
 
     let mut nodes: Vec<String> = (0..100)
         .map(|i| {
@@ -85,7 +95,7 @@ fn forest(dir: &Path, stump_x: f32) -> PathBuf {
         len = bin.len(),
     );
     let path = dir.join("forest.gltf");
-    std::fs::write(&path, gltf).unwrap();
+    write_all(&path, gltf).unwrap();
     path
 }
 
@@ -265,7 +275,7 @@ fn a_scenes_maps_become_textures_and_metal_roughness_packs_into_the_mask() {
   "buffers""#,
         1,
     );
-    std::fs::write(&source, text).unwrap();
+    write_all(&source, text).unwrap();
     scrap_import::import_into(&project, &source, None).unwrap();
 
     let (library, _) = Library::open(project.library()).unwrap();

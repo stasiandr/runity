@@ -588,9 +588,9 @@ impl Session {
         if is_prefab(Some(&target)) {
             // Everything placed from here on — and every instance in the
             // next scene opened — is what was just saved.
-            if let Some(name) = target.file_stem() {
+            if target.file_stem().is_some() {
                 self.prefabs.insert(
-                    name.to_string_lossy().into_owned(),
+                    scrap::layout::name_of(&target),
                     self.history.scene().entities[0].clone(),
                 );
             }
@@ -2338,10 +2338,7 @@ impl Session {
         if self.is_modified() {
             self.save_scene(None)?;
         }
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = scrap::layout::name_of(&path);
         // What the game watches is the editor's document as it stands, not
         // the saved file: an edit shows in the running game without a save
         // (see `game::Mirror`). One person's, so under `.scrap/`.

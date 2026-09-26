@@ -16,6 +16,16 @@ use scrap::{Library, Prefabs, Project, Scene};
 use scrap_import::assets::{rename, usages, usages_of};
 use scrap_import::{sidecar_for, sync, ImportSettings};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {
@@ -179,7 +189,7 @@ fn renaming_a_model_renames_the_lines_that_draw_it() {
         "name: \"tree near\",   model: \"builtin:cone\"",
         "name: \"tree near\",   model: \"axe\"",
     );
-    std::fs::write(&scene, &text).unwrap();
+    write_all(&scene, &text).unwrap();
     rename(
         &project,
         Path::new("content/valley/camp/axe.obj"),
@@ -230,7 +240,7 @@ fn a_rename_that_would_change_what_a_line_means_is_refused_and_moves_nothing() {
     // Onto a name lines already use, with no file behind it yet.
     let scene = root.join("content/valley/maps/first-light.scene.ron");
     let text = read(&scene).replacen("material: \"needle\"", "material: \"sand\"", 1);
-    std::fs::write(&scene, &text).unwrap();
+    write_all(&scene, &text).unwrap();
     let e = rename(
         &project,
         Path::new("content/valley/nature/rocks/stone.scrmat"),
@@ -271,7 +281,7 @@ fn moving_a_heightmap_points_its_terrain_at_the_new_place() {
         .save(root.join("content/valley/terrain/ramp.png"))
         .unwrap();
     let terrain = root.join("content/valley/terrain/field.scrterrain");
-    std::fs::write(
+    write_all(
         &terrain,
         "(\n    // painted by hand\n    size: (30.0, 30.0), resolution: 8, height: 6.0,\n    heightmap: \"ramp.png\",\n)\n",
     )
@@ -401,7 +411,7 @@ fn two_sources_with_one_name_in_two_folders_are_two_assets() {
     for (folder, text) in [("rocks", square), ("cliffs", bigger)] {
         let dir = root.join("assets").join(folder);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("rock.obj"), text).unwrap();
+        write_all(dir.join("rock.obj"), text).unwrap();
     }
     scrap_import::sync(&project);
     let a =
@@ -412,7 +422,7 @@ fn two_sources_with_one_name_in_two_folders_are_two_assets() {
     assert!(a.is_file() && b.is_file(), "neither wrote over the other");
 
     // A library from before assets were named by ID is rebuilt by ID.
-    std::fs::write(project.library().join("rock.obj.scrasset"), b"old").unwrap();
+    write_all(project.library().join("rock.obj.scrasset"), b"old").unwrap();
     scrap_import::sync(&project);
     assert!(!project.library().join("rock.obj.scrasset").exists());
     let _ = std::fs::remove_dir_all(&root);
@@ -423,15 +433,15 @@ fn prefabs_scenes_graphs_and_screens_get_an_id_that_follows_a_move() {
     let root = std::env::temp_dir().join(format!("scrap-identify-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let project = scrap::Project::create(&root, "identify").unwrap();
-    std::fs::write(root.join("prefabs/door.prefab"), "(name: \"door\")").unwrap();
+    write_all(root.join("prefabs/door.prefab"), "(name: \"door\")").unwrap();
     std::fs::create_dir_all(root.join("animators")).unwrap();
-    std::fs::write(
-        root.join("animators/hero.ron"),
+    write_all(
+        root.join("animators/hero.animator.ron"),
         "(start: \"idle\", states: {}, transitions: [])",
     )
     .unwrap();
     std::fs::create_dir_all(root.join("ui")).unwrap();
-    std::fs::write(root.join("ui/menu.ron"), "(elements: [])").unwrap();
+    write_all(root.join("ui/menu.screen.ron"), "(elements: [])").unwrap();
 
     let made = scrap_import::identify(&project);
     assert!(made.len() >= 3, "{made:?}");

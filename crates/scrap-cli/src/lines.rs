@@ -1,8 +1,8 @@
 //! `scrap lines`: everything the project's dialogues say, as a sheet per
 //! language — for recording voices and for translators. A row a line or
 //! an answer: its stable name (`<dialogue>/<line>`, what the recording is
-//! called), who says it, the `strings/` key, and the words in that
-//! language. The sheets are made, not kept: `strings/` stays the truth.
+//! called), who says it, the `content/localization/` key, and the words in that
+//! language. The sheets are made, not kept: `content/localization/` stays the truth.
 
 use std::path::{Path, PathBuf};
 
@@ -72,7 +72,7 @@ pub fn sheet(dialogues: &[Dialogue], table: Option<&scrap::strings::Table>) -> S
     out
 }
 
-/// Write a sheet per language of `strings/` into `out` (`<language>.csv`),
+/// Write a sheet per language of `content/localization/` into `out` (`<language>.csv`),
 /// or one `lines.csv` of the texts as written when there are none. What
 /// was written.
 pub fn export(project: &Project, out: &Path) -> Result<Vec<PathBuf>, String> {
@@ -133,11 +133,17 @@ mod tests {
              kitchen/chef/ask/1,,yes,Yes\n"
         );
         assert_eq!(
+            name(Path::new("/p"), Path::new("/p/dialogues/kitchen/chef.ron")),
+            "kitchen/chef",
+            "in the old dialogues/, its path there"
+        );
+        assert_eq!(
             name(
-                Path::new("/p/dialogues"),
-                Path::new("/p/dialogues/kitchen/chef.ron")
+                Path::new("/p"),
+                Path::new("/p/content/game/kitchen/chef.dialogue.ron")
             ),
-            "kitchen/chef"
+            "chef",
+            "anywhere else, its file's name"
         );
     }
 }

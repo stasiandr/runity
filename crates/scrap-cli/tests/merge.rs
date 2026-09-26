@@ -11,6 +11,16 @@ use std::process::Command;
 
 use scrap::{Project, Scene};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const SCENE: &str = "\
 (
     entities: [
@@ -48,8 +58,8 @@ fn repository(name: &str) -> Option<(PathBuf, PathBuf)> {
     let root = std::env::temp_dir().join(format!("scrap-merge-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let project = Project::create(&root, name).unwrap();
-    let scene = project.scenes().join("main.ron");
-    std::fs::write(&scene, SCENE).unwrap();
+    let scene = project.scenes().join("main.scene.ron");
+    write_all(&scene, SCENE).unwrap();
 
     ok(&root, &["init", "-q", "-b", "main"]);
     ok(&root, &["config", "user.email", "test@scrap"]);
@@ -66,7 +76,7 @@ fn edit(root: &Path, scene: &Path, branch: &str, from: &str, to: &str) {
     ok(root, &["checkout", "-q", branch]);
     let text = std::fs::read_to_string(scene).unwrap();
     assert!(text.contains(from), "{from} in {text}");
-    std::fs::write(scene, text.replacen(from, to, 1)).unwrap();
+    write_all(scene, text.replacen(from, to, 1)).unwrap();
     ok(root, &["commit", "-q", "-am", branch]);
 }
 
@@ -165,9 +175,9 @@ fn git_setup_turns_the_driver_on_in_a_clone() {
         3,
         "not added twice"
     );
-    // A project from before configs merged gets only that line.
-    let old = attributes.replace("configs/**/*.ron merge=scrap\n", "");
-    std::fs::write(root.join(".gitattributes"), &old).unwrap();
+    // A project without the data's line gets only that line.
+    let old = attributes.replace("\n*.ron merge=scrap\n", "\n");
+    write_all(root.join(".gitattributes"), &old).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_scrap"))
         .args(["git-setup"])
         .arg(&root)
@@ -176,7 +186,7 @@ fn git_setup_turns_the_driver_on_in_a_clone() {
     assert!(out.status.success());
     let attributes = std::fs::read_to_string(root.join(".gitattributes")).unwrap();
     assert_eq!(attributes.matches("merge=scrap").count(), 3, "{attributes}");
-    assert!(attributes.ends_with("configs/**/*.ron merge=scrap\n"), "{attributes}");
+    assert!(attributes.ends_with("\n*.ron merge=scrap\n"), "{attributes}");
 }
 
 #[test]
@@ -185,7 +195,7 @@ fn two_branches_editing_a_table_merge_by_record_and_field() {
         return;
     };
     let table = root.join("configs/materials.ron");
-    std::fs::write(
+    write_all(
         &table,
         "{\n    \"Палка\": (id: \"1\", hard: 1, burns: 2),\n    \"Доска\": (id: \"2\", hard: 2, burns: 2),\n}\n",
     )

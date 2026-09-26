@@ -49,10 +49,7 @@ impl Asset {
 
     pub fn label(&self) -> String {
         match self {
-            Asset::Scene(p) => p
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            Asset::Scene(p) => scrap::layout::name_of(p),
             Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) | Asset::Sound(n, _) => {
                 n.strip_prefix("builtin:").unwrap_or(n).to_string()
             }
