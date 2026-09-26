@@ -161,6 +161,10 @@ pub struct MpmState {
     rest: scrap_soft::rest::Rest,
     /// Where the grains are, for [`scrap_soft::rest::Rest::asleep`].
     at: Vec<Vec3>,
+    /// What the surface was last made from: where the block stood, its
+    /// cell, and every grain's place — compared, not counted, since the
+    /// grains are anyone's to move.
+    drawn: Option<(Mat4, f32, Vec<Vec3>)>,
 }
 
 impl MpmState {
@@ -180,6 +184,7 @@ impl MpmState {
             owed: 0.0,
             rest: Default::default(),
             at: Vec::new(),
+            drawn: None,
         }
     }
 
@@ -476,6 +481,29 @@ impl MpmState {
     }
 
     /// Its surface, in the space of `placed`: how water and jelly are drawn.
+    /// [`MpmState::surface`], or `None` when it would be the one last
+    /// made here: every grain where it was, the block where it stood. A
+    /// screen faster than the steps asks for the same snow several times,
+    /// and meshing it is most of a frame's work for it. `again` makes it
+    /// anyway: what showed the last one is gone.
+    pub fn surface_if_moved(
+        &mut self,
+        placed: Mat4,
+        again: bool,
+    ) -> Option<(Vec<scrap_geometry::mesh_asset::Vertex>, Vec<u32>)> {
+        let same = matches!(&self.drawn, Some((at, dx, grains))
+            if *at == placed && *dx == self.dx && grains.len() == self.grains.len()
+                && grains.iter().zip(&self.grains).all(|(was, g)| *was == g.x));
+        if same && !again {
+            return None;
+        }
+        let mut grains = self.drawn.take().map(|(_, _, g)| g).unwrap_or_default();
+        grains.clear();
+        grains.extend(self.grains.iter().map(|g| g.x));
+        self.drawn = Some((placed, self.dx, grains));
+        Some(self.surface(placed))
+    }
+
     pub fn surface(&self, placed: Mat4) -> (Vec<scrap_geometry::mesh_asset::Vertex>, Vec<u32>) {
         if self.grains.is_empty() {
             return (Vec::new(), Vec::new());
@@ -736,6 +764,19 @@ mod tests {
     fn spread(state: &MpmState) -> f32 {
         let (lo, hi) = state.points().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
         hi - lo
+    }
+
+    #[test]
+    fn the_surface_is_made_again_only_when_a_grain_or_the_block_moved() {
+        let mut state = drop(MpmMaterial::Sand, Transfer::Apic, 0.1);
+        let at = Mat4::IDENTITY;
+        let first = state.surface_if_moved(at, false).expect("never made");
+        assert_eq!(first, state.surface(at), "the same as made plainly");
+        assert!(state.surface_if_moved(at, false).is_none(), "nothing moved");
+        assert!(state.surface_if_moved(at, true).is_some(), "asked for again");
+        assert!(state.surface_if_moved(Mat4::from_translation(Vec3::X), false).is_some(), "the block moved");
+        state.grains[0].x.y += 0.01;
+        assert!(state.surface_if_moved(Mat4::from_translation(Vec3::X), false).is_some(), "a grain moved");
     }
 
     #[test]

@@ -161,16 +161,19 @@ pub fn float(world: &World, physics: &mut crate::PhysicsWorld) {
 /// What each fluid looks like now, into what the render draws.
 pub fn show(world: &mut World, _seconds: f32) {
     for (state, placed, live, copies) in
-        world.query_mut::<(&MpmState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
+        world.query_mut::<(&mut MpmState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
     {
         match (live, copies) {
             // Asleep, it looks as it did: nothing to make again.
             (_, Some(copies)) if state.asleep() && !copies.placed.is_empty() => {}
             (Some(live), None) if state.asleep() && !live.is_empty() => {}
             (_, Some(copies)) => copies.placed = state.grains_placed(),
+            // As it was when its surface was last made (and that is still
+            // what is shown): not made — nor uploaded — again.
             (Some(live), None) => {
-                let (vertices, indices) = state.surface(placed.0);
-                live.set(vertices, indices);
+                if let Some((vertices, indices)) = state.surface_if_moved(placed.0, live.is_empty()) {
+                    live.set(vertices, indices);
+                }
             }
             _ => {}
         }
