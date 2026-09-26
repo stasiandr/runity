@@ -207,7 +207,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         .collect();
     let refs = Refs {
         unity,
-        entity_of: docs
+        entity_of: std::borrow::Cow::Owned(docs
             .iter()
             .filter_map(|d| match d.class {
                 // A placeholder for an object inside a prefab instance: in
@@ -226,7 +226,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     .reference("m_GameObject")
                     .map(|g| (d.file_id, g.file_id)),
             })
-            .collect(),
+            .collect()),
         body_object,
         scoped: HashMap::new(),
     };
@@ -242,6 +242,24 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         })
         .collect();
     let part_of_stripped = |id: i64| stripped_source.get(&id).cloned();
+    // A stripped GameObject is a part of its instance, and what this file
+    // adds to it is on that part: a link to either is to the part's line
+    // (the instance itself for the prefab's root) — a Grenadier's weak spot
+    // sending its death to the level's counter.
+    let mut refs = refs;
+    for d in docs.iter().filter(|d| d.class == GAME_OBJECT && d.stripped) {
+        let (Some(instance), Some((fid, guid))) = (d.body.reference("m_PrefabInstance"), part_of_stripped(d.file_id)) else {
+            continue;
+        };
+        let of = parts.of(unity, &guid, 0);
+        let Some(key) = of.keys.get(&fid).copied() else { continue };
+        let base = entity_id(instance.file_id);
+        let id = if Some(key) == of.root { base } else { base.within(key) };
+        refs.scoped.insert(d.file_id, id);
+        for c in components.get(&d.file_id).into_iter().flatten() {
+            refs.scoped.insert(c.file_id, id);
+        }
+    }
     // What hangs on a part of an instance rather than on the instance.
     let mut on_part: HashMap<i64, (i64, String)> = HashMap::new();
     // Every entity, and its parent entity.
@@ -335,7 +353,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
             }
             PREFAB_INSTANCE => {
                 let Some((desc, into)) =
-                    instance(d, &mut parts, &entity_of_transform, unity, report)
+                    instance(d, &mut parts, &entity_of_transform, &refs.entity_of, &refs.scoped, unity, report)
                 else {
                     continue;
                 };
@@ -525,7 +543,7 @@ fn parts_under_bodies(lines: &mut [EntityDesc], under_body: bool) {
 struct Refs<'a> {
     unity: &'a Unity,
     /// Any object of the file → the entity it is on.
-    entity_of: HashMap<i64, i64>,
+    entity_of: std::borrow::Cow<'a, HashMap<i64, i64>>,
     body_object: HashMap<i64, i64>,
     /// Objects of another file (a prefab whose component an instance
     /// changes) → the id its part has here, looked up first.
@@ -599,6 +617,11 @@ fn instance(
     d: &Doc,
     parts: &mut Parts,
     entity_of_transform: &impl Fn(i64) -> Option<i64>,
+    // This file's objects → their entities: what a change the instance
+    // makes names in this file (a crate's event calling Ellen's heal).
+    scene_objects: &HashMap<i64, i64>,
+    // This file's parts of instances by their stripped objects' ids.
+    scene_parts: &HashMap<i64, EntityId>,
     unity: &Unity,
     report: &mut Report,
 ) -> Option<(EntityDesc, Option<i64>)> {
@@ -853,14 +876,16 @@ fn instance(
     for b in behaviours.into_values() {
         let refs = Refs {
             unity,
-            entity_of: HashMap::new(),
+            // The prefab's own objects are looked up first (`scoped`); an
+            // object the instance's changes name is of this file.
+            entity_of: std::borrow::Cow::Borrowed(scene_objects),
             body_object: HashMap::new(),
             // A link to the prefab's root is to the instance itself, as
             // the engine has it (its root takes the instance's id).
-            scoped: b
-                .links
+            scoped: scene_parts
                 .iter()
-                .map(|(k, e)| (*k, if Some(*e) == root_key { desc.id } else { desc.id.within(*e) }))
+                .map(|(k, v)| (*k, *v))
+                .chain(b.links.iter().map(|(k, e)| (*k, if Some(*e) == root_key { desc.id } else { desc.id.within(*e) })))
                 .collect(),
         };
         let value = mono_behaviour(&b.body, &refs);
@@ -883,7 +908,7 @@ fn instance(
     for (b, fields) in builtins.into_values() {
         let refs = Refs {
             unity,
-            entity_of: HashMap::new(),
+            entity_of: Default::default(),
             body_object: HashMap::new(),
             scoped: HashMap::new(),
         };
@@ -1703,7 +1728,87 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             desc.set_part(&emitter);
             bind_custom(desc, refs.unity);
         }
+        "PlayableDirector" => playable_director(desc, b, refs, report),
         other => report.skip(other.to_string()),
+    }
+}
+
+/// Timeline's ActivationTrack, by its script (`fileID` in Unity's
+/// Timeline package).
+const ACTIVATION_TRACK: i64 = 46519060;
+
+/// A PlayableDirector as a `playable_director` component: its timeline's
+/// name and length, whether it plays on its own, how it ends (Unity's
+/// DirectorWrapMode: 0 hold, 1 loop, 2 none), and what each of its
+/// activation tracks switches on — its object, from when to when, and
+/// what the object is after the timeline (0 active, 1 inactive, 2 as it
+/// was, 3 left as it is). The game plays it; the rest of a timeline (its
+/// animation, its camera) is not brought yet.
+fn playable_director(desc: &mut EntityDesc, b: &Yaml, refs: &Refs, report: &mut Report) {
+    let Some(asset) = b.reference("m_PlayableAsset").filter(|r| !r.is_none()) else {
+        report.skip("a PlayableDirector with no timeline");
+        return;
+    };
+    let Some(path) = asset.guid.as_deref().and_then(|g| refs.unity.guids.get(g)) else {
+        report.skip("a PlayableDirector whose timeline is not in the project");
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        report.skip("a PlayableDirector whose timeline did not read");
+        return;
+    };
+    let docs = yaml::documents(&text);
+    // The timeline itself: the asset's main object.
+    let root = docs.iter().find(|d| d.file_id == 11400000);
+    // Its length: fixed, or where its last clip ends.
+    let mut length = 0.0f32;
+    let mut tracks: HashMap<i64, (f32, f32, i64)> = HashMap::new();
+    for d in &docs {
+        let clips = d.body.list("m_Clips");
+        for c in clips {
+            let start = c.f32("m_Start").unwrap_or(0.0);
+            length = length.max(start + c.f32("m_Duration").unwrap_or(0.0));
+        }
+        if d.body.reference("m_Script").is_some_and(|r| r.file_id == ACTIVATION_TRACK) {
+            let (from, to) = clips.iter().fold((f32::MAX, 0.0f32), |(a, z), c| {
+                let start = c.f32("m_Start").unwrap_or(0.0);
+                (a.min(start), z.max(start + c.f32("m_Duration").unwrap_or(0.0)))
+            });
+            if from < f32::MAX {
+                tracks.insert(d.file_id, (from, to, d.body.i64("m_PostPlaybackState").unwrap_or(3)));
+            }
+        }
+        // A recorded track's clip of its own.
+        if let Some(stop) = d.body.f32("m_StopTime") {
+            length = length.max(stop);
+        }
+    }
+    if let Some(r) = root.filter(|r| r.body.i64("m_DurationMode") == Some(1)) {
+        length = r.body.f32("m_FixedDuration").unwrap_or(length);
+    }
+    // Which object each track drives, as the scene binds it.
+    let mut activations = Vec::new();
+    for binding in b.list("m_SceneBindings") {
+        let (Some(key), Some(value)) = (yaml::reference(&binding["key"]), yaml::reference(&binding["value"])) else { continue };
+        let Some((from, to, post)) = tracks.get(&key.file_id) else { continue };
+        let Some(target) = link(&value, refs) else { continue };
+        activations.push(format!("(target: {target}, from: {from:?}, to: {to:?}, after: {post})"));
+    }
+    let name = refs.unity.named(asset.guid.as_deref().unwrap_or("")).map(|(_, n)| n.to_string()).unwrap_or_else(|| {
+        path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    });
+    let value = format!(
+        "(timeline: {name:?}, length: {length:?}, play_on_awake: {}, wrap: {}, activations: [{}])",
+        b.i64("m_InitialState").unwrap_or(0) != 0,
+        b.i64("m_WrapMode").unwrap_or(0),
+        activations.join(", "),
+    );
+    match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
+        Ok(raw) => {
+            desc.components.insert("playable_director".into(), raw);
+            report.skip("a timeline's tracks but its activations (its animation, camera, audio)");
+        }
+        Err(_) => report.skip("a PlayableDirector whose fields did not make RON"),
     }
 }
 
@@ -2442,7 +2547,7 @@ pub fn data_asset(unity: &Unity, text: &str) -> Option<(String, String)> {
         .map(|p| super::stem(p))?;
     let refs = Refs {
         unity,
-        entity_of: HashMap::new(),
+        entity_of: Default::default(),
         body_object: HashMap::new(),
         scoped: HashMap::new(),
     };
@@ -2503,6 +2608,11 @@ fn ron_of(v: &Yaml, refs: &Refs, depth: usize) -> Option<String> {
             }
         }
         Yaml::Boolean(b) => b.to_string(),
+        // Unity writes a float too big for words as C# prints it (a
+        // curve's step: an infinite slope), which YAML reads as a word.
+        Yaml::String(s) if s == "Infinity" => "inf".into(),
+        Yaml::String(s) if s == "-Infinity" => "-inf".into(),
+        Yaml::String(s) if s == "NaN" => "NaN".into(),
         Yaml::String(s) => format!("{s:?}"),
         Yaml::Null => return None,
         Yaml::Array(items) => {
@@ -2580,6 +2690,17 @@ fn link(r: &Ref, refs: &Refs) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unitys_infinity_is_a_float() {
+        let doc = super::yaml::documents("--- !u!114 &1\nX:\n  inSlope: Infinity\n  outSlope: -Infinity\n");
+        let refs = super::Refs { unity: &unity(), entity_of: Default::default(), body_object: Default::default(), scoped: Default::default() };
+        let inf = super::ron_of(&doc[0].body["inSlope"], &refs, 0).unwrap();
+        let minus = super::ron_of(&doc[0].body["outSlope"], &refs, 0).unwrap();
+        let v: f32 = scrap::ron::from_str(&inf).unwrap();
+        let w: f32 = scrap::ron::from_str(&minus).unwrap();
+        assert!(v.is_infinite() && v > 0.0 && w.is_infinite() && w < 0.0, "{inf} {minus}");
+    }
+
     #[test]
     fn a_rate_that_swells_and_dies_away_comes_over_as_its_average() {
         let hump = super::yaml::documents(
@@ -2952,6 +3073,209 @@ MonoBehaviour:
         let roots = convert_file(&unity, scene, &mut report);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(roots[0].components.get("door").is_none(), "the prefab's own door counts: {:?}", roots[0].components);
+    }
+
+    /// Level2's health crates: each instance's event calls Ellen's heal,
+    /// Ellen being another instance of this scene — a reference the
+    /// prefab's own objects cannot resolve.
+    #[test]
+    fn an_instances_change_names_an_object_of_the_scene() {
+        let dir = std::env::temp_dir().join(format!("scrap-scene-ref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heap = dir.join("Heap.prefab");
+        std::fs::write(
+            &heap,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Heap
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!114 &102
+MonoBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 2
+  owner: {fileID: 0}
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("hhh".into(), heap);
+        unity.names.insert("hhh".into(), "Heap".into());
+        let scene = "%YAML 1.1
+--- !u!1 &500
+GameObject:
+  m_Name: Ellen
+--- !u!4 &501
+Transform:
+  m_GameObject: {fileID: 500}
+  m_Father: {fileID: 0}
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 102, guid: hhh, type: 3}
+      propertyPath: owner
+      value: 
+      objectReference: {fileID: 500}
+  m_SourcePrefab: {fileID: 100100000, guid: hhh, type: 3}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let ellen = roots.iter().find(|r| r.name == "Ellen").unwrap().id;
+        let heap = roots.iter().find(|r| r.name == "Heap").unwrap();
+        let text = format!("{:?}", heap.overrides);
+        assert!(text.contains(&format!("EntityRef(\"{ellen}\")")), "the change names Ellen ({ellen}): {text}");
+    }
+
+    /// Level2's Grenadiers: the scene adds a sender to a part of each
+    /// instance (its weak spot) and the part's death calls it — a link to
+    /// what the scene added on a part is to that part's line.
+    #[test]
+    fn a_link_to_a_component_added_on_an_instances_part_is_to_the_part() {
+        let dir = std::env::temp_dir().join(format!("scrap-part-ref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heap = dir.join("Heap.prefab");
+        std::fs::write(
+            &heap,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Heap
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+  m_Children:
+  - {fileID: 111}
+--- !u!1 &110
+GameObject:
+  m_Name: Spot
+--- !u!4 &111
+Transform:
+  m_GameObject: {fileID: 110}
+  m_Father: {fileID: 101}
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("hhh".into(), heap);
+        unity.names.insert("hhh".into(), "Heap".into());
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications: []
+  m_SourcePrefab: {fileID: 100100000, guid: hhh, type: 3}
+--- !u!1 &910 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 110, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &911
+MonoBehaviour:
+  m_GameObject: {fileID: 910}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 1
+--- !u!1 &500
+GameObject:
+  m_Name: Caller
+--- !u!4 &501
+Transform:
+  m_GameObject: {fileID: 500}
+  m_Father: {fileID: 0}
+--- !u!114 &502
+MonoBehaviour:
+  m_GameObject: {fileID: 500}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 2
+  owner: {fileID: 911}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let heap = roots.iter().find(|r| r.name == "Heap").unwrap();
+        let spot = heap.overrides.keys().next().copied().expect("the part the scene added to");
+        let caller = roots.iter().find(|r| r.name == "Caller").unwrap();
+        let door = caller.components.get("door").map(|v| v.get_ron().to_string()).unwrap_or_default();
+        assert!(door.contains(&format!("EntityRef(\"{}\")", heap.id.within(spot))), "to the part: {door}");
+    }
+
+    /// The dropship's landing: a PlayableDirector's activation track, the
+    /// object it switches on, when, and that it stays on after.
+    #[test]
+    fn a_directors_activation_tracks_come_over() {
+        let dir = std::env::temp_dir().join(format!("scrap-timeline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let timeline = dir.join("Landing.playable");
+        std::fs::write(
+            &timeline,
+            "%YAML 1.1
+--- !u!114 &11400000
+MonoBehaviour:
+  m_Name: Landing
+  m_Tracks:
+  - {fileID: 20}
+  m_FixedDuration: 0
+  m_DurationMode: 0
+--- !u!114 &20
+MonoBehaviour:
+  m_Script: {fileID: 46519060, guid: ttt, type: 3}
+  m_Name: Activation Track
+  m_Clips:
+  - m_Start: 5
+    m_Duration: 10
+  m_PostPlaybackState: 0
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("lll".into(), timeline);
+        let scene = "%YAML 1.1
+--- !u!1 &500
+GameObject:
+  m_Name: Exit
+--- !u!4 &501
+Transform:
+  m_GameObject: {fileID: 500}
+  m_Father: {fileID: 0}
+--- !u!1 &600
+GameObject:
+  m_Name: Dropship
+--- !u!4 &601
+Transform:
+  m_GameObject: {fileID: 600}
+  m_Father: {fileID: 0}
+--- !u!320 &602
+PlayableDirector:
+  m_GameObject: {fileID: 600}
+  m_PlayableAsset: {fileID: 11400000, guid: lll, type: 2}
+  m_InitialState: 0
+  m_WrapMode: 2
+  m_SceneBindings:
+  - key: {fileID: 20, guid: lll, type: 2}
+    value: {fileID: 500}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let exit = roots.iter().find(|r| r.name == "Exit").unwrap().id;
+        let ship = roots.iter().find(|r| r.name == "Dropship").unwrap();
+        let d = ship.components.get("playable_director").map(|v| v.get_ron().to_string()).unwrap_or_default();
+        assert!(d.contains("length: 15.0") && d.contains("from: 5.0") && d.contains("after: 0"), "{d}");
+        assert!(d.contains(&format!("EntityRef(\"{exit}\")")), "switches the exit on: {d}");
     }
 
     #[test]

@@ -2359,10 +2359,38 @@ impl PhysicsWorld {
                 Pose::from_parts(rv(t), rapier3d::math::Rotation::from_xyzw(r.x, r.y, r.z, r.w))
             })
             .unwrap_or(*body.position());
-        let at = match collider.position_wrt_parent() {
+        let mut at = match collider.position_wrt_parent() {
             Some(local) => placed * *local,
             None => *collider.position(),
         };
+        // Ground that rose into the shape since the last step (a lift going
+        // up) carries it up with it, as a CharacterController's recovery
+        // from overlap does: the shape cast down from a little above lands
+        // on the floor's top, where it then stands.
+        let mut lifted = 0.0;
+        if desired.y <= 0.0 {
+            const REACH: f32 = 0.5;
+            let mut above = at;
+            above.translation.y += REACH;
+            let hit = self.queries(filter).cast_shape(
+                &above,
+                rv(Vec3::NEG_Y),
+                collider.shape(),
+                rapier3d::parry::query::ShapeCastOptions {
+                    max_time_of_impact: REACH,
+                    stop_at_penetration: true,
+                    ..Default::default()
+                },
+            );
+            if let Some((_, h)) = hit {
+                let rise = REACH - h.time_of_impact;
+                let floor = gv(h.normal1).y >= slope_deg.to_radians().cos() - 1e-3;
+                if h.time_of_impact > 0.0 && rise > 0.03 && floor {
+                    lifted = rise;
+                    at.translation.y += rise;
+                }
+            }
+        }
         let moved = controller.move_shape(
             self.parameters.dt,
             &self.queries(filter),
@@ -2396,7 +2424,7 @@ impl PhysicsWorld {
                 n.y >= slope_deg.to_radians().cos() - 1e-3 || gv(hit.normal2).y <= -(slope_deg.to_radians().cos() - 1e-3)
             });
         }
-        Some((Vec3::new(t.x, t.y, t.z), grounded))
+        Some((Vec3::new(t.x, t.y + lifted, t.z), grounded || lifted > 0.0))
     }
 
     /// Bring ray queries up to date with the bodies, without a step: after
@@ -4649,6 +4677,34 @@ mod tests {
         assert!(highest > 0.95, "up the 0.2 m step: {highest}");
         assert!(at.x < 7.5 && at.x > 7.0, "stopped at the wall: {at}");
         assert!(grounded, "on the floor");
+    }
+
+    /// A lift going up carries who stands on it (Level2's to the second
+    /// pad): the floor rising into the shape puts the shape on top.
+    #[test]
+    fn a_character_on_a_rising_lift_goes_up_with_it() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "lift", model: "m", body: Kinematic,
+                 collider: Box(half: (1.5, 0.25, 1.5)), transform: (position: (0.0, -0.25, 0.0))),
+                (id: "00000000000000f4", name: "ellen", model: "m", body: Kinematic,
+                 collider: Capsule(half_height: 0.5, radius: 0.3), transform: (position: (0.0, 0.82, 0.0))),
+            ])"#,
+        );
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let lift = by_id(&world, "00000000000000f1".parse().unwrap());
+        let ellen = by_id(&world, "00000000000000f4".parse().unwrap());
+        for _ in 0..100 {
+            world.get::<&mut Transform>(lift).unwrap().position.y += 0.02;
+            crate::world::apply_hierarchy(&mut world);
+            physics.run(&mut world);
+            let (moved, _) = physics.move_character(&world, ellen, Vec3::new(0.0, -0.05, 0.0), 0.3, 45.0).unwrap();
+            world.get::<&mut Transform>(ellen).unwrap().position += moved;
+            crate::world::apply_hierarchy(&mut world);
+        }
+        let y = world.get::<&Transform>(ellen).unwrap().position.y;
+        assert!(y > 2.5, "up two metres with the lift: {y}");
     }
 
     /// A jump beside a slope leaves the ground: moving up is never landing.
