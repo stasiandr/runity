@@ -1395,7 +1395,6 @@ impl Studio {
             }
         }
         self.update_tooltip();
-        self.hierarchy.hover(&mut self.ui);
         if self.git.poll(&self.session) {
             self.hierarchy.set_marks(&mut self.ui, &self.git.entities);
             let mut files = self.git.files.clone();
@@ -1699,6 +1698,15 @@ impl Studio {
     /// Turn the compass to the camera: each axis where it points on screen,
     /// the ones pointing away drawn faint.
     fn turn_compass(&mut self) {
+        // The Scene view's: neither the Game view nor play has it.
+        let off = self.session.is_playing() || self.session.is_game_view();
+        if self.compass.off != off {
+            self.compass.off = off;
+            self.ui.restyle(self.compass.holder, |s| if off { s.hidden() } else { s.shown() });
+        }
+        if off {
+            return;
+        }
         let camera = self.session.camera();
         let key = (camera.position, camera.target, camera.ortho.is_some());
         if self.compass.seen == Some(key) {
@@ -5309,6 +5317,9 @@ fn tooltip_key(name: &str) -> Option<&'static str> {
 const COMPASS: f32 = 84.0;
 
 struct Compass {
+    /// The corner the compass stands in: hidden while playing.
+    holder: NodeId,
+    off: bool,
     /// +X, +Y, +Z, −X, −Y, −Z, and the side each looks from.
     axes: Vec<(NodeId, scrap_editor::Side)>,
     /// The dial the axes stand on: what they are put in, back to front.
@@ -5426,6 +5437,8 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
         axes.push((dot, side));
     }
     Compass {
+        holder,
+        off: false,
         axes,
         dial,
         beads,

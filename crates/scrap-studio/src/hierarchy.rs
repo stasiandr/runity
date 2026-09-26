@@ -5,10 +5,11 @@
 //! node per line, matched to the lines by entity id so that a change to
 //! one line changes one node, and turns what happens to the nodes into the
 //! calls an agent makes: a click selects (Shift or Cmd adds), a double
-//! click frames it, the arrow opens it (with Alt, all under it), the eye hides it, the lock keeps
-//! the Scene view's clicks off it, a line dropped on another becomes its
-//! child, a right click opens the context menu, F2 renames, the `>` of an
-//! instance opens its prefab.
+//! click frames it, the arrow opens it (with Alt, all under it), a line
+//! dropped on another becomes its child, a right click opens the context
+//! menu, F2 renames, and an instance's prefab tag, at the line's right end,
+//! opens its prefab. Hiding and locking are the context menu's and the
+//! Scene view's for now: the eye and the lock are off the lines.
 //!
 //! Above the lines stands the document itself, as Unity has it: the scene's
 //! (or the prefab's) line, bold, always open, with its ⋮ menu — save,
@@ -32,14 +33,15 @@ use crate::theme::*;
 enum Part {
     Line(EntityId),
     Arrow(EntityId),
-    Eye(EntityId),
-    Lock(EntityId),
     Rename(EntityId),
-    /// The `>` of an instance: open its prefab.
+    /// An instance's prefab tag: open its prefab.
     Open(EntityId),
 }
 
 const INDENT: f32 = 14.0;
+/// A line's children: the arrow, the icon, the name, then these.
+const MARK: usize = 3;
+const TAG: usize = 4;
 const LINE: f32 = 24.0;
 /// How much of an inactive line shows.
 const INACTIVE: f32 = 0.4;
@@ -82,8 +84,6 @@ pub struct Hierarchy {
     indicator: NodeId,
     /// Entities not as the last commit has them: a dot at their line's end.
     marks: HashSet<EntityId>,
-    /// The line under the pointer: its eye and lock show.
-    hovered: Option<EntityId>,
 }
 
 /// Where a dragged line lands, relative to the line under the pointer.
@@ -167,7 +167,6 @@ impl Hierarchy {
             renaming: None,
             followed: None,
             marks: HashSet::new(),
-            hovered: None,
         }
     }
 
@@ -204,12 +203,9 @@ impl Hierarchy {
         );
         for (id, line) in made {
             let kids = ui.children(line);
-            let tools = ui.children(kids[4]);
             self.parts.insert(line, Part::Line(id));
             self.parts.insert(kids[0], Part::Arrow(id));
-            self.parts.insert(tools[0], Part::Eye(id));
-            self.parts.insert(tools[1], Part::Lock(id));
-            self.parts.insert(kids[6], Part::Open(id));
+            self.parts.insert(kids[TAG], Part::Open(id));
             self.lines.insert(id, line);
         }
         // Lines whose rows went: forget their parts.
@@ -236,7 +232,6 @@ impl Hierarchy {
             let same = before.get(&row.id).is_some_and(|b| *b == row) && renaming.is_none();
             if !same {
                 update_line(ui, line, row, renaming);
-                show_tools(ui, line, row, self.hovered == Some(row.id));
                 show_mark(ui, line, self.marks.contains(&row.id));
             }
         }
@@ -283,31 +278,6 @@ impl Hierarchy {
             }
         }
         self.marks = marks.clone();
-    }
-
-    /// Show the eye and the lock of the line under the pointer, and put the
-    /// last one's away unless they are set: Unity's quiet Hierarchy, where
-    /// what is hidden or locked stands out because nothing else shows.
-    pub fn hover(&mut self, ui: &mut Ui) {
-        let mut at = ui.hovered();
-        let mut over = None;
-        while let Some(node) = at {
-            if let Some(Part::Line(id)) = self.parts.get(&node) {
-                over = Some(*id);
-                break;
-            }
-            at = ui.parent(node);
-        }
-        if over == self.hovered {
-            return;
-        }
-        for (id, on) in [(self.hovered, false), (over, true)] {
-            let Some(id) = id else { continue };
-            if let (Some(line), Some(row)) = (self.line_of(id), self.row(id).cloned()) {
-                show_tools(ui, line, &row, on);
-            }
-        }
-        self.hovered = over;
     }
 
     /// Start renaming a line: its label becomes a field.
@@ -447,16 +417,6 @@ impl Hierarchy {
                 if let Some(prefab) = self.row(id).and_then(|r| r.prefab.clone()) {
                     requests.action = Some(crate::menu::Action::OpenPrefab(prefab));
                 }
-            }
-            (Some(Part::Eye(id)), Event::Click { .. }) => {
-                let hidden = self.row(id).is_some_and(|r| r.hidden);
-                let _ = session.set_hidden(&[id], !hidden);
-                requests.refresh = true;
-            }
-            (Some(Part::Lock(id)), Event::Click { .. }) => {
-                let locked = self.row(id).is_some_and(|r| r.locked);
-                let _ = session.set_pickable(&[id], locked);
-                requests.refresh = true;
             }
             (Some(Part::Line(id)), Event::Click { button, count }) => {
                 use scrap::input::MouseButton;
@@ -815,22 +775,7 @@ fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
     icon(ui, line, "box", MUTED);
     // 2: its name
     ui.add_text(line, text().fill(), &row.name);
-    // 3: the prefab tag's slot
-    ui.add(line, Style::row().fixed());
-    // 4: eye and lock, shown on hover or when set
-    let tools = ui.add(line, Style::row().fixed().center_items());
-    // 5: the dot of what is not committed, after them
-    for glyph in ["eye", "lock-open"] {
-        let b = ui.add(
-            tools,
-            Style::row()
-                .size(20.0, 20.0)
-                .center()
-                .radius(RADIUS_SM)
-                .hover(HOVER),
-        );
-        icon(ui, b, glyph, TEXT.alpha(30));
-    }
+    // 3: the dot of what is not committed
     let dot = ui.add(
         line,
         Style::row()
@@ -841,50 +786,23 @@ fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
             .opacity(0.0),
     );
     ui.set_name(dot, format!("mark {}", row.name));
-    // 6: an instance's `>`, on hover: its prefab, opened
-    let open = ui.add(
+    // 4: an instance's prefab, as a tag at the right end: a click opens it
+    let slot = ui.add(
         line,
         Style::row()
-            .size(20.0, 20.0)
             .fixed()
-            .center()
-            .radius(RADIUS_SM)
-            .hover(HOVER)
-            .opacity(0.0)
-            .hidden(),
+            .radius(6.0)
+            .hover_border(ACCENT_300)
+            .clickable(),
     );
-    ui.set_name(open, format!("open {}", row.name));
-    icon(ui, open, "chevron-right", LABEL);
+    ui.set_name(slot, format!("open {}", row.name));
     line
-}
-
-/// The eye and the lock of a line: each shown when it is set — hidden,
-/// locked — or while the pointer is on the line; the rest of the time
-/// nothing, so the lines that are hidden or locked are the ones that show.
-fn show_tools(ui: &mut Ui, line: NodeId, row: &Row, hovered: bool) {
-    let kids = ui.children(line);
-    let tools = ui.children(kids[4]);
-    let eye = hovered || row.hidden;
-    let lock = hovered || row.locked;
-    ui.restyle(tools[0], |s| s.opacity(if eye { 1.0 } else { 0.0 }));
-    ui.restyle(tools[1], |s| s.opacity(if lock { 1.0 } else { 0.0 }));
-    // An instance's `>` holds its place and shows only under the pointer,
-    // as Unity's; other lines have none.
-    let instance = row.prefab.is_some();
-    ui.restyle(kids[6], |s| {
-        let s = s.opacity(if hovered { 1.0 } else { 0.0 });
-        if instance {
-            s.shown()
-        } else {
-            s.hidden()
-        }
-    });
 }
 
 /// The dot at a line's end: its entity is not as the last commit has it.
 fn show_mark(ui: &mut Ui, line: NodeId, marked: bool) {
     let kids = ui.children(line);
-    if let Some(dot) = kids.get(5) {
+    if let Some(dot) = kids.get(MARK) {
         ui.restyle(*dot, |s| s.opacity(if marked { 1.0 } else { 0.0 }));
     }
 }
@@ -896,8 +814,7 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
     let mut style = ui
         .style(line)
         .clone()
-        .padding_left(4.0 + (row.depth + 1) as f32 * INDENT)
-        .padding_x(0.0)
+        .padding_x(SPACE_1)
         .padding_left(4.0 + (row.depth + 1) as f32 * INDENT);
     style = if row.selected {
         style.background(ACCENT_900).border(1.0, ACCENT.alpha(40))
@@ -969,30 +886,22 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
             s.shown()
         }
     });
-    // The prefab's name as a tag.
-    let slot = kids[3];
+    // The prefab's name as a tag, the line's last thing.
+    let slot = kids[TAG];
     ui.restyle(slot, |s| s.opacity(fade));
-    let has_tag = !ui.children(slot).is_empty();
-    match (&row.prefab, has_tag) {
-        (Some(p), false) => {
+    let shown = ui
+        .children(slot)
+        .first()
+        .and_then(|t| ui.children(*t).first().copied())
+        .and_then(|label| ui.text(label));
+    if shown.as_deref() != row.prefab.as_deref() {
+        ui.clear(slot);
+        if let Some(p) = &row.prefab {
             tag(ui, slot, p, ACCENT_900, ACCENT_300);
         }
-        (None, true) => ui.clear(slot),
-        _ => {}
     }
-    // Eye and lock: strong when set, faint while only hovered.
-    let tools = ui.children(kids[4]);
-    let eye = ui.children(tools[0])[0];
-    let lock = ui.children(tools[1])[0];
-    ui.set_icon(eye, if row.hidden { "eye-off" } else { "eye" });
-    ui.restyle(eye, |s| {
-        s.text_color(if row.hidden { LABEL } else { TEXT.alpha(22) })
-    });
-    if let Some(dot) = kids.get(5) {
+    ui.set_name(slot, format!("open {}", row.name));
+    if let Some(dot) = kids.get(MARK) {
         ui.set_name(*dot, format!("mark {}", row.name));
     }
-    ui.set_icon(lock, if row.locked { "lock" } else { "lock-open" });
-    ui.restyle(lock, |s| {
-        s.text_color(if row.locked { LABEL } else { TEXT.alpha(22) })
-    });
 }

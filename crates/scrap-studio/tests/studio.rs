@@ -751,6 +751,30 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     );
 }
 
+#[test]
+fn an_instances_tag_opens_its_prefab_and_its_parts_select() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    s.session.set_open(fire, true);
+    s.refresh();
+    s.frame();
+    // No eye and no lock on the lines, for now: the arrow, the icon, the
+    // name, the uncommitted dot and the prefab's tag, last.
+    let name = s.session.entity_name(fire).unwrap();
+    let line = s.ui.find(&format!("line {name}")).unwrap();
+    let kids = s.ui.children(line);
+    assert_eq!(kids.len(), 5);
+    assert_eq!(s.ui.find(&format!("open {name}")), kids.last().copied());
+    // A part of the instance selects, as Unity's Hierarchy has it.
+    click(&mut s, "line stone n");
+    let stone = s.session.selected().expect("the part is selected");
+    assert_ne!(stone, fire);
+    assert_eq!(s.session.instanced_owner(stone), fire);
+    // The prefab's tag at the line's end opens it.
+    click(&mut s, &format!("open {name}"));
+    assert!(s.session.is_prefab(), "the tag opened the prefab");
+}
+
 /// Time this thread has spent on a core: what the editor itself costs,
 /// however busy the machine is. The wall's time where there is no such
 /// clock.

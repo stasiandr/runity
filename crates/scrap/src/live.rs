@@ -281,6 +281,7 @@ impl LiveScene {
         let mut report = crate::save::capture(world, &self.components, &self.current);
         let mut diagnostics = self.noted.clone();
         diagnostics.net = crate::save::net_lines(world);
+        diagnostics.scene = crate::layout::name_of(&self.path);
         diagnostics.animators = crate::save::animator_trails(world);
         report.diagnostics = Some(diagnostics);
         report.write(path)
