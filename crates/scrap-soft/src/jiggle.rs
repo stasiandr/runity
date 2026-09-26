@@ -199,7 +199,7 @@ impl scrap_core::world::Dress for JiggleDress {
                 let _ = world.insert_one(entity, JiggleState::new(jiggle));
             }
             None => {
-                let _ = world.remove_one::<JiggleState>(entity);
+                scrap_core::world::take_off::<JiggleState>(world, entity);
             }
         }
     }

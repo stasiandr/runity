@@ -64,7 +64,7 @@ pub fn tick_timers(world: &mut hecs::World, dt: f32) -> Vec<(hecs::Entity, Strin
         }
     }
     for entity in done {
-        let _ = world.remove_one::<Timer>(entity);
+        crate::world::take_off::<Timer>(world, entity);
     }
     fired
 }

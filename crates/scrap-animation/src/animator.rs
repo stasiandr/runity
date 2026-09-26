@@ -572,7 +572,7 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
         bound.push((entity, BoundSkin { bones, unbind }));
     }
     for entity in gone {
-        let _ = world.remove_one::<SkinOf>(entity);
+        scrap_core::world::take_off::<SkinOf>(world, entity);
     }
     for (entity, skin) in bound {
         let _ = world.insert_one(entity, skin);
@@ -696,7 +696,7 @@ pub fn hold_on_bones(world: &mut World) {
                 let _ = world.insert_one(entity, Between(bone));
             }
             None => {
-                let _ = world.remove_one::<Between>(entity);
+                scrap_core::world::take_off::<Between>(world, entity);
             }
         }
     }

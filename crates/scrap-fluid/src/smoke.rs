@@ -567,7 +567,7 @@ impl scrap_core::world::Dress for SmokeDress {
                 let _ = world.insert_one(entity, SmokeState::new(s));
             }
             None => {
-                let _ = world.remove_one::<SmokeState>(entity);
+                scrap_core::world::take_off::<SmokeState>(world, entity);
             }
         }
     }

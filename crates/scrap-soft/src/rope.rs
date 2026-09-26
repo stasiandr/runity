@@ -829,7 +829,7 @@ pub fn run_ropes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
         state.advance(start, end, &wind, &near, seconds);
     }
     for entity in taken {
-        let _ = world.remove_one::<crate::net::PresentedParticles>(entity);
+        scrap_core::world::take_off::<crate::net::PresentedParticles>(world, entity);
     }
     for (entity, presented) in seeded {
         let _ = world.insert_one(entity, presented);
@@ -903,13 +903,13 @@ impl scrap_core::world::Dress for RopeDress {
                         let _ = world.insert_one(entity, scrap_core::netsim::Tied(vec![id]));
                     }
                     None => {
-                        let _ = world.remove_one::<scrap_core::netsim::Tied>(entity);
+                        scrap_core::world::take_off::<scrap_core::netsim::Tied>(world, entity);
                     }
                 }
             }
             None => {
-                let _ = world.remove_one::<RopeState>(entity);
-                let _ = world.remove_one::<scrap_core::netsim::Tied>(entity);
+                scrap_core::world::take_off::<RopeState>(world, entity);
+                scrap_core::world::take_off::<scrap_core::netsim::Tied>(world, entity);
             }
         }
     }

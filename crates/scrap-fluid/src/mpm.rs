@@ -734,7 +734,7 @@ impl scrap_core::world::Dress for MpmDress {
                 let _ = world.insert_one(entity, MpmState::new(mpm));
             }
             None => {
-                let _ = world.remove_one::<MpmState>(entity);
+                scrap_core::world::take_off::<MpmState>(world, entity);
             }
         }
     }

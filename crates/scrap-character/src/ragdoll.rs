@@ -369,7 +369,7 @@ impl scrap_core::world::Dress for RagdollDress {
                 let _ = world.insert_one(entity, RagdollState::new(r));
             }
             None => {
-                let _ = world.remove_one::<RagdollState>(entity);
+                scrap_core::world::take_off::<RagdollState>(world, entity);
             }
         }
     }
@@ -397,7 +397,7 @@ impl scrap_core::world::Dress for CrawlerDress {
                 let _ = world.insert_one(entity, CrawlerState::new(c));
             }
             None => {
-                let _ = world.remove_one::<CrawlerState>(entity);
+                scrap_core::world::take_off::<CrawlerState>(world, entity);
             }
         }
     }

@@ -530,7 +530,7 @@ impl scrap_core::world::Dress for FluidDress {
                 let _ = world.insert_one(entity, FluidState::new(fluid));
             }
             None => {
-                let _ = world.remove_one::<FluidState>(entity);
+                scrap_core::world::take_off::<FluidState>(world, entity);
             }
         }
     }

@@ -221,7 +221,7 @@ impl Sync {
             }
         }
         for entity in own {
-            let _ = world.remove_one::<Replica>(entity);
+            scrap_core::world::take_off::<Replica>(world, entity);
             // Taken over: from where the old owner has it now, not from
             // the picture of a moment ago — or everything handed over in
             // motion steps back by the delay.
@@ -236,8 +236,8 @@ impl Sync {
             let _ = world.insert_one(entity, Owned);
         }
         for entity in replicate {
-            let _ = world.remove_one::<Owned>(entity);
-            let _ = world.remove_one::<OwnershipPending>(entity);
+            scrap_core::world::take_off::<Owned>(world, entity);
+            scrap_core::world::take_off::<OwnershipPending>(world, entity);
             let _ = world.insert_one(entity, Replica);
         }
     }
@@ -254,7 +254,7 @@ impl Sync {
             asked = Self::together(world, asked);
         }
         for entity in asked {
-            let _ = world.remove_one::<RequestOwnership>(entity);
+            scrap_core::world::take_off::<RequestOwnership>(world, entity);
             let Some(id) = super::network_id(world, entity) else {
                 continue;
             };
@@ -563,7 +563,7 @@ impl Sync {
                     return noticed;
                 };
                 let was_pending = world.get::<&OwnershipPending>(entity).is_ok();
-                let _ = world.remove_one::<OwnershipPending>(entity);
+                scrap_core::world::take_off::<OwnershipPending>(world, entity);
                 let _ = world.insert_one(entity, Owner(owner));
                 // A new owner is a new clock.
                 self.gates.remove(&id);
@@ -722,7 +722,7 @@ impl Sync {
                 if record.owner != self.me {
                     if let Some(transform) = transform_of(&record.blobs) {
                         let _ = world.insert_one(entity, transform);
-                        let _ = world.remove_one::<Presented>(entity);
+                        scrap_core::world::take_off::<Presented>(world, entity);
                     }
                     write_components(world, components, entity, &record.blobs, record.owner, 0);
                 }

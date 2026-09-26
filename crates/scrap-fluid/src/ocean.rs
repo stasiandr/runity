@@ -357,7 +357,7 @@ impl scrap_core::world::Dress for OceanDress {
                 let _ = world.insert_one(entity, OceanState::new(o));
             }
             None => {
-                let _ = world.remove_one::<OceanState>(entity);
+                scrap_core::world::take_off::<OceanState>(world, entity);
             }
         }
     }

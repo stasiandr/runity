@@ -335,15 +335,15 @@ impl Dress for SoftLookDress<'_> {
         }
         if let Some(fluid) = fluid {
             // Water is its surface or its drops, not the model it names.
-            let _ = world.remove_one::<crate::world::Model>(entity);
+            scrap_core::world::take_off::<crate::world::Model>(world, entity);
             let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
             if fluid.look == FluidLook::Drops {
-                let _ = world.remove_one::<LiveMesh>(entity);
+                scrap_core::world::take_off::<LiveMesh>(world, entity);
                 if let Some(mesh) = self.sphere {
                     let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
                 }
             } else {
-                let _ = world.remove_one::<Copies>(entity);
+                scrap_core::world::take_off::<Copies>(world, entity);
                 if world.get::<&LiveMesh>(entity).is_err() {
                     let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
                 }
@@ -352,7 +352,7 @@ impl Dress for SoftLookDress<'_> {
         }
         if body.is_some() {
             // The model itself is soft: drawn deformed, not as it is.
-            let _ = world.remove_one::<crate::world::Model>(entity);
+            scrap_core::world::take_off::<crate::world::Model>(world, entity);
         }
         if rope.is_none() && cloth.is_none() && hair.is_none() && body.is_none() {
             if world.remove_one::<RopeLook>(entity).is_ok() {
@@ -365,7 +365,7 @@ impl Dress for SoftLookDress<'_> {
         // the head are each their own colour.
         let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
         if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() && hair.is_none() && body.is_none() {
-            let _ = world.remove_one::<LiveMesh>(entity);
+            scrap_core::world::take_off::<LiveMesh>(world, entity);
             // The line's model is its link, drawn at each link and not
             // once at the entity.
             let own = world.remove_one::<crate::world::Model>(entity).ok().map(|m| m.0);
@@ -375,11 +375,11 @@ impl Dress for SoftLookDress<'_> {
                     let _ = world.insert_one(entity, Copies { mesh, placed });
                 }
                 None => {
-                    let _ = world.remove_one::<Copies>(entity);
+                    scrap_core::world::take_off::<Copies>(world, entity);
                 }
             }
         } else {
-            let _ = world.remove_one::<Copies>(entity);
+            scrap_core::world::take_off::<Copies>(world, entity);
             if world.get::<&LiveMesh>(entity).is_err() {
                 let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
             }

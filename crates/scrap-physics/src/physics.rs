@@ -369,7 +369,7 @@ pub fn attach_collision_meshes<'a>(
                 let _ = world.insert_one(entity, mesh);
             }
             None => {
-                let _ = world.remove_one::<CollisionMesh>(entity);
+                scrap_core::world::take_off::<CollisionMesh>(world, entity);
             }
         }
     }
@@ -879,7 +879,7 @@ impl PhysicsWorld {
                 body.set_linvel(vector![v.x, v.y, v.z], true);
                 body.set_angvel(vector![w.x, w.y, w.z], true);
             }
-            let _ = world.remove_one::<crate::world::Takeover>(entity);
+            scrap_core::world::take_off::<crate::world::Takeover>(world, entity);
         }
         self.sync_joints(world);
     }
@@ -3913,7 +3913,7 @@ impl crate::world::Dress for PhysicsDress {
         if changed.has("physics") {
             let props = line.physics();
             if props.is_default() {
-                let _ = world.remove_one::<Props>(entity);
+                scrap_core::world::take_off::<Props>(world, entity);
             } else {
                 let _ = world.insert_one(entity, Props(props));
             }
@@ -3921,12 +3921,12 @@ impl crate::world::Dress for PhysicsDress {
         if changed.has("joint") {
             let joint = line.joint();
             if joint.is_none() {
-                let _ = world.remove_one::<Jointed>(entity);
+                scrap_core::world::take_off::<Jointed>(world, entity);
             } else {
                 let _ = world.insert_one(entity, Jointed(joint));
             }
             // A joint set anew is whole again.
-            let _ = world.remove_one::<JointBroken>(entity);
+            scrap_core::world::take_off::<JointBroken>(world, entity);
         }
         if changed.has("joint_break") {
             match line.joint_break() {
@@ -3934,7 +3934,7 @@ impl crate::world::Dress for PhysicsDress {
                     let _ = world.insert_one(entity, JointBreak(force));
                 }
                 None => {
-                    let _ = world.remove_one::<JointBreak>(entity);
+                    scrap_core::world::take_off::<JointBreak>(world, entity);
                 }
             }
         }

@@ -233,16 +233,16 @@ impl Dress for FluidLookDress<'_> {
             }
             return;
         }
-        let _ = world.remove_one::<crate::world::Model>(entity);
+        scrap_core::world::take_off::<crate::world::Model>(world, entity);
         let _ = world.insert(entity, (FluidLook, Surface(line.material_from(self.palette))));
         let grains = mpm.is_some_and(|m| matches!(m.material, MpmMaterial::Snow | MpmMaterial::Sand));
         if grains {
-            let _ = world.remove_one::<LiveMesh>(entity);
+            scrap_core::world::take_off::<LiveMesh>(world, entity);
             if let Some(mesh) = self.cube {
                 let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
             }
         } else {
-            let _ = world.remove_one::<Copies>(entity);
+            scrap_core::world::take_off::<Copies>(world, entity);
             if world.get::<&LiveMesh>(entity).is_err() {
                 let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
             }

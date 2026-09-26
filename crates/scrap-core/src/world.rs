@@ -105,7 +105,7 @@ pub fn interpolate(world: &mut World, alpha: f32) {
         }
     }
     for entity in stale {
-        let _ = world.remove_one::<Shown>(entity);
+        crate::world::take_off::<Shown>(world, entity);
     }
     for (entity, (at, _)) in shown {
         let _ = world.insert_one(entity, Shown(at));
@@ -149,10 +149,21 @@ pub struct LineName(pub String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inactive;
 
+/// Take `T` off an entity if it has one: `remove_one`, for a caller that
+/// does not want it back. Asked first, because a dresser takes off what a
+/// line does not ask for, and on a line just spawned that is nearly every
+/// part it knows — where `remove_one` on a missing component still flushes
+/// the world and looks through the entity's archetype for it.
+pub fn take_off<T: hecs::Component>(world: &mut World, entity: hecs::Entity) {
+    if world.satisfies::<&T>(entity) {
+        let _ = world.remove_one::<T>(entity);
+    }
+}
+
 /// Switch an entity on or off, and so everything under it.
 pub fn set_active(world: &mut World, entity: hecs::Entity, active: bool) {
     if active {
-        let _ = world.remove_one::<Inactive>(entity);
+        crate::world::take_off::<Inactive>(world, entity);
     } else {
         let _ = world.insert_one(entity, Inactive);
     }
@@ -481,7 +492,7 @@ impl Patch<'_> {
                     let _ = world.insert_one(entity, Parent(parent));
                 }
                 None => {
-                    let _ = world.remove_one::<Parent>(entity);
+                    crate::world::take_off::<Parent>(world, entity);
                 }
             }
             changed = true;
@@ -674,7 +685,7 @@ pub fn spawn_owned_dressed<'a>(
     ) {
         let matrix = parent_matrix * desc.transform.matrix();
         let entity = spawn_one(desc, parent, matrix, world, dressers, &mut out.1);
-        let _ = world.remove_one::<SceneId>(entity);
+        crate::world::take_off::<SceneId>(world, entity);
         out.0.push((entity, desc));
         for child in &desc.children {
             walk(child, Some(entity), matrix, world, dressers, out);
@@ -692,7 +703,7 @@ pub fn spawn_owned_dressed<'a>(
 fn dress_layer(desc: &EntityDesc, entity: hecs::Entity, world: &mut World) {
     let layer = desc.layer();
     if layer.is_empty() {
-        let _ = world.remove_one::<Layer>(entity);
+        crate::world::take_off::<Layer>(world, entity);
     } else {
         let _ = world.insert_one(entity, Layer(layer));
     }

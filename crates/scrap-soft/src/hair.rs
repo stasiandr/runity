@@ -469,7 +469,7 @@ impl scrap_core::world::Dress for HairDress {
                 let _ = world.insert_one(entity, HairState::new(hair));
             }
             None => {
-                let _ = world.remove_one::<HairState>(entity);
+                scrap_core::world::take_off::<HairState>(world, entity);
             }
         }
     }

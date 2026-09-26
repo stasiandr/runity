@@ -304,7 +304,7 @@ impl scrap_core::world::Dress for FractureDress {
                 let _ = world.insert_one(entity, Breakable::new(fracture, solid));
             }
             None => {
-                let _ = world.remove_one::<Breakable>(entity);
+                scrap_core::world::take_off::<Breakable>(world, entity);
             }
         }
     }
