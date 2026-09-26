@@ -678,10 +678,34 @@ impl<G: Game> Shell<G> {
             self.loop_times.record(name, took);
         }
         match drawn {
-            Drawn::Shown => quit |= startup_frame(),
+            Drawn::Shown => {
+                quit |= startup_frame();
+                if STARTUP.is_some() {
+                    use std::sync::atomic::{AtomicU8, Ordering};
+                    // 0 nothing yet, 1 building, 2 all in once.
+                    static BUILT: AtomicU8 = AtomicU8::new(0);
+                    let building = state.drawing.as_ref().map_or(0, |d| d.renderer.pipelines_building());
+                    match (BUILT.load(Ordering::Relaxed), building) {
+                        (0, n) if n > 0 => BUILT.store(1, Ordering::Relaxed),
+                        (1, 0) => {
+                            BUILT.store(2, Ordering::Relaxed);
+                            startup("every pipeline the frames asked for is in");
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // Routine: the window is being dragged or is minimised. Rebuild
             // the swapchain and let the next frame have it.
             Drawn::Outdated => {
+                {
+                    use std::sync::atomic::{AtomicU32, Ordering};
+                    static OUTDATED: AtomicU32 = AtomicU32::new(0);
+                    let n = OUTDATED.fetch_add(1, Ordering::Relaxed);
+                    if n.is_power_of_two() || n == 0 {
+                        startup(&format!("frame not shown: the surface is outdated ({} times; the window {size:?}, occluded {:?}, visible {:?})", n + 1, state.window.is_minimized(), state.window.is_visible()));
+                    }
+                }
                 if let Some(d) = state.drawing.as_ref() {
                     d.surface.reconfigure(&state.gpu);
                 }

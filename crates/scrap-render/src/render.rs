@@ -1474,6 +1474,21 @@ pub struct Renderer {
     /// ([`crate::lean`]), and the shader modules they are built from: the
     /// standard one's (`None`) and each material shader's.
     lean: crate::lean::Lean<LeanKey>,
+    /// The lit pipelines as they are (not lean): like the lean ones, each
+    /// built the first time a frame draws its look, on workers of their
+    /// own — a game starts drawing (its menu, say) with none of them made,
+    /// and never builds the looks nothing draws: of Dacha's material
+    /// shaders' seventeen hundred, a few dozen. Until one is in, what it
+    /// draws is not drawn — Unity's asynchronous shader compilation.
+    full: crate::lean::Lean<LeanKey>,
+    /// The lit looks there are, each over the prepass's depth or not:
+    /// what `full` builds when asked, the standard shader's and each
+    /// material shader's.
+    known: std::collections::HashSet<(Look, bool)>,
+    /// Build what a frame draws before drawing it, rather than on the
+    /// workers while it goes without: a renderer that draws pictures
+    /// (tests, tools) rather than a game's window.
+    wait_for_pipelines: bool,
     /// Far clusters left out of the prepass (`SCRAP_FAR_PREPASS=1` keeps
     /// them), and whether this frame's were: then the lit pass's depth is
     /// the whole one, and what comes after it reads that.
@@ -1893,10 +1908,6 @@ struct SamplePipelines {
 /// Every pipeline the renderer draws with.
 #[derive(Clone)]
 struct Pipelines {
-    scene: std::collections::HashMap<Look, wgpu::RenderPipeline>,
-    /// The solid looks again, for a scene pass that starts from the
-    /// prepass's depth: equal to it, and with nothing to discard.
-    prepassed: std::collections::HashMap<Look, wgpu::RenderPipeline>,
     shadow: wgpu::RenderPipeline,
     /// The same, back faces culled: the sun's cascades' one-sided casters.
     shadow_front: wgpu::RenderPipeline,
@@ -2030,77 +2041,17 @@ fn blend_state(blend: Blend) -> wgpu::BlendState {
     }
 }
 
-/// The scene's pipelines for these looks, from one shader module: the
-/// standard shader's at start, a material's own when it is set.
-fn scene_pipelines(
-    gpu: &Gpu,
-    shader: &wgpu::ShaderModule,
-    samples: u32,
-    layouts: &Layouts,
-    looks: Vec<Look>,
-) -> (
-    std::collections::HashMap<Look, wgpu::RenderPipeline>,
-    std::collections::HashMap<Look, wgpu::RenderPipeline>,
-    Option<wgpu::Error>,
-) {
-    let scene_pipeline = |look: Look, prepassed: bool| {
-        crate::lean::scene_pipeline(
-            &gpu.device,
-            shader,
-            if look.skinned { layouts.skinned } else { layouts.main },
-            look.describe(prepassed, samples),
-            false,
-        )
-    };
-    // Each pipeline is the driver compiling the whole shader once more:
-    // dozens of them, the most of a renderer's start. They do not depend
-    // on each other and the device takes them from any thread, so they are
-    // compiled across the cores (one after another on the web).
-    let mut wanted: Vec<(Look, bool)> = looks.iter().map(|&look| (look, false)).collect();
-    wanted.extend(
-        looks
-            .iter()
-            .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
-            .map(|&look| (look, true)),
-    );
-    let (built, error) = compiled(gpu, &wanted, |&(look, prepassed)| scene_pipeline(look, prepassed));
-    let (mut scene, mut prepassed) = (std::collections::HashMap::new(), std::collections::HashMap::new());
-    for ((look, pre), pipeline) in wanted.into_iter().zip(built) {
-        if pre {
-            prepassed.insert(look, pipeline);
-        } else {
-            scene.insert(look, pipeline);
-        }
-    }
-    (scene, prepassed, error)
-}
-
-/// What a material shader is built on: the standard shader and how the
-/// renderer's pipelines are laid out.
+/// What a material shader is built on: the standard shader, and how the
+/// renderer's is prepared.
 struct MaterialBase<'a> {
     shader: &'a str,
     traced: bool,
     bindless: bool,
-    samples: u32,
-    layouts: &'a Layouts<'a>,
 }
 
-/// A material shader's module and its pipelines: the standard shader with
-/// `surface` put in, checked, and built for every lit look.
-#[allow(clippy::type_complexity)]
-fn material_pipelines(
-    gpu: &Gpu,
-    base: &MaterialBase,
-    id: crate::asset::AssetId,
-    surface: &str,
-) -> Result<
-    (
-        wgpu::ShaderModule,
-        std::collections::HashMap<Look, wgpu::RenderPipeline>,
-        std::collections::HashMap<Look, wgpu::RenderPipeline>,
-    ),
-    String,
-> {
+/// A material shader's module: the standard shader with `surface` put in
+/// and checked. Its pipelines are built as frames draw its looks.
+fn material_module(gpu: &Gpu, base: &MaterialBase, surface: &str) -> Result<wgpu::ShaderModule, String> {
     let composed = with_surface(base.shader, surface)?;
     let source = crate::bindless::prepared(
         &if base.traced {
@@ -2115,26 +2066,29 @@ fn material_pipelines(
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
         .validate(&module)
         .map_err(|e| e.emit_to_string(&source))?;
-    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("scrap::material shader"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
+    let (shader, error) = scoped(gpu, || {
+        gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scrap::material shader"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        })
     });
-    if let Some(error) = pollster::block_on(scope.pop()) {
-        return Err(format!("the shader does not fit the renderer: {error}"));
+    match error {
+        Some(error) => Err(format!("the shader does not fit the renderer: {error}")),
+        None => Ok(shader),
     }
-    // Not the `fs_unlit` looks: each is another pipeline to compile for
-    // every material shader, for the few see-through unlit ones.
-    let looks: Vec<Look> = Look::all()
-        .into_iter()
-        .filter(|look| !look.unlit)
-        .map(|look| Look { shader: Some(id), ..look })
-        .collect();
-    let (scene, prepassed, error) = scene_pipelines(gpu, &shader, base.samples, base.layouts, looks);
-    if let Some(error) = error {
-        return Err(format!("the shader does not fit the renderer: {error}"));
+}
+
+/// Each look, as it would be drawn, over the prepass's depth where a solid
+/// one can be.
+fn lit_keys(looks: impl IntoIterator<Item = Look>) -> std::collections::HashSet<(Look, bool)> {
+    let mut keys = std::collections::HashSet::new();
+    for look in looks {
+        keys.insert((look, false));
+        if look.blend.is_none() && !look.water && !look.on_top {
+            keys.insert((look, true));
+        }
     }
-    Ok((shader, scene, prepassed))
+    keys
 }
 
 /// `make` over `items` on the workers, each under an error scope of its
@@ -2312,7 +2266,9 @@ fn build_pipelines(
         count: samples,
         ..Default::default()
     };
-    let (scene, prepassed, error) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
+    // The lit looks are not among them: each is built the first time a
+    // frame draws it (`Renderer::ask_scene`).
+    let error = None;
     let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
@@ -2612,8 +2568,6 @@ fn build_pipelines(
             })
     };
     let pipelines = Pipelines {
-        scene,
-        prepassed,
         shadow,
         shadow_front,
         shadow_clip,
@@ -2636,7 +2590,7 @@ pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 impl Renderer {
     /// Build a renderer for an offscreen target.
     pub fn new(gpu: &Gpu, target: &OffscreenTarget) -> Self {
-        Self::with_format(gpu, target.format, target.width, target.height)
+        Self::with_format(gpu, target.format, target.width, target.height, true)
     }
 
     /// Draw with another shader from now on: `source` is WGSL with the
@@ -2708,6 +2662,7 @@ impl Renderer {
         self.pipelines = pipelines;
         self.lean_modules.insert(None, shader.clone());
         self.lean.forget();
+        self.full.forget();
         self.clusters.pipelines = cluster_pipelines;
         (self.ddgi.trace, self.ddgi.update) = ddgi_pipelines;
         (self.restir.initial, self.restir.spatial) = restir_pipelines;
@@ -2768,6 +2723,7 @@ impl Renderer {
         self.other_samples = Some(kept);
         self.depth_size = (0, 0);
         self.lean.forget();
+        self.full.forget();
     }
 
     /// The pipeline for a look: a material's own shader's, or the standard
@@ -2781,8 +2737,7 @@ impl Renderer {
                 return Some(lean);
             }
         }
-        let map = if prepassed { &self.pipelines.prepassed } else { &self.pipelines.scene };
-        map.get(&key)
+        self.full.ready.get(&LeanKey::Scene(key, prepassed))
     }
 
     /// Which pipeline draws a look: the look it is filed under (a
@@ -2791,29 +2746,65 @@ impl Renderer {
     /// standard shader's), and whether over the prepass's depth.
     fn scene_key(&self, look: Look) -> Option<(Look, bool)> {
         let prepassed = self.depth_prepassed && look.blend.is_none() && !self.cuts(look);
-        let map = if prepassed { &self.pipelines.prepassed } else { &self.pipelines.scene };
         [look, Look { unlit: false, ..look }, Look { shader: None, ..look }]
             .into_iter()
-            .find(|l| map.contains_key(l))
+            .find(|l| self.known.contains(&(*l, prepassed)))
             .map(|l| (l, prepassed))
     }
 
-    /// Ask for the lean pipelines of the looks this frame draws, both over
-    /// the prepass's depth and not, where they would be drawn so.
-    fn ask_lean(&mut self, gpu: &Gpu, looks: impl Iterator<Item = Look>) {
+    /// Ask for the pipelines of the looks this frame draws, both over the
+    /// prepass's depth and not, where they would be drawn so: as they are
+    /// (built here and now for a renderer that waits for them), and lean
+    /// when the frame may be drawn lean.
+    fn ask_scene(&mut self, gpu: &Gpu, looks: impl Iterator<Item = Look>, wait: bool) {
         let was = self.depth_prepassed;
-        let mut wanted = Vec::new();
+        let mut keys = Vec::new();
         for look in looks {
             for prepassed in [false, true] {
                 self.depth_prepassed = prepassed;
                 if let Some(key) = self.scene_key(look) {
-                    if !self.lean.asked(&LeanKey::Scene(key.0, key.1)) && !wanted.contains(&key) {
-                        wanted.push(key);
+                    if !keys.contains(&key) {
+                        keys.push(key);
                     }
                 }
             }
         }
         self.depth_prepassed = was;
+        let full: Vec<(Look, bool, wgpu::ShaderModule)> = keys
+            .iter()
+            .filter(|(look, prepassed)| !self.full.asked(&LeanKey::Scene(*look, *prepassed)))
+            .filter_map(|&(look, prepassed)| Some((look, prepassed, self.lean_modules.get(&look.shader)?.clone())))
+            .collect();
+        let samples = self.samples;
+        if wait {
+            let (skinned, main) = (&self.skinned_layout, &self.pipeline_layout);
+            let (built, error) = compiled(gpu, &full, |(look, prepassed, module)| {
+                let layout = if look.skinned { skinned } else { main };
+                crate::lean::scene_pipeline(&gpu.device, module, layout, look.describe(*prepassed, samples), false)
+            });
+            if let Some(error) = error {
+                eprintln!("a lit pipeline does not build: {error}");
+            }
+            for ((look, prepassed, _), pipeline) in full.into_iter().zip(built) {
+                self.full.put(LeanKey::Scene(look, prepassed), pipeline);
+            }
+        } else {
+            for (look, prepassed, module) in full {
+                let layout = if look.skinned { self.skinned_layout.clone() } else { self.pipeline_layout.clone() };
+                let describe = look.describe(prepassed, samples);
+                let build: crate::lean::Build = Box::new(move |device: &wgpu::Device| {
+                    crate::lean::scene_pipeline(device, &module, &layout, describe, false)
+                });
+                self.full.ask(&gpu.device, LeanKey::Scene(look, prepassed), build);
+            }
+        }
+        if !self.lean.on {
+            return;
+        }
+        let wanted: Vec<(Look, bool)> = keys
+            .into_iter()
+            .filter(|(look, prepassed)| !self.lean.asked(&LeanKey::Scene(*look, *prepassed)))
+            .collect();
         for (look, prepassed) in wanted {
             let Some(module) = self.lean_modules.get(&look.shader).cloned() else {
                 continue;
@@ -2873,43 +2864,35 @@ impl Renderer {
         shaders: &[(crate::asset::AssetId, String)],
     ) -> Vec<Result<(), String>> {
         self.other_samples = None;
-        let layouts = Layouts {
-            main: &self.pipeline_layout,
-            shadow: &self.shadow_pipeline_layout,
-            shadow_clip: &self.shadow_clip_layout,
-            skinned: &self.skinned_layout,
-            sky: &self.sky_layout,
-            fog_inject: &self.fog_inject_layout,
-            fog_integrate: &self.fog_integrate_layout,
-            terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
-        };
         let base = MaterialBase {
             shader: &self.base_shader,
             traced: self.ray.is_some(),
             bindless: self.bindless.is_some(),
-            samples: self.samples,
-            layouts: &layouts,
         };
-        let built = scrap_core::jobs::map(shaders, 1, |(id, surface)| material_pipelines(gpu, &base, *id, surface));
+        let built = scrap_core::jobs::map(shaders, 1, |(_, surface)| material_module(gpu, &base, surface));
         let mut out = Vec::with_capacity(shaders.len());
         for ((id, surface), built) in shaders.iter().zip(built) {
-            out.push(built.map(|(shader, scene, prepassed)| {
-                self.pipelines.scene.extend(scene);
-                self.pipelines.prepassed.extend(prepassed);
-                self.lean_modules.insert(Some(*id), shader);
-                self.material_shaders.insert(*id, surface.clone());
-                self.shader_textures.insert(*id, declared_textures(surface));
+            out.push(built.map(|module| {
+                let id = *id;
+                self.lean_modules.insert(Some(id), module);
+                self.material_shaders.insert(id, surface.clone());
+                self.shader_textures.insert(id, declared_textures(surface));
+                // Not the `fs_unlit` looks: its shade() returns early for
+                // unlit, and the standard shader's draw them.
+                let looks = Look::all().into_iter().filter(|look| !look.unlit).map(|look| Look { shader: Some(id), ..look });
+                self.known.extend(lit_keys(looks));
+                // What was built on its last source is stale; the rest is not.
+                let stale = |k: &LeanKey| matches!(k, LeanKey::Scene(look, _) if look.shader == Some(id));
+                self.lean.forget_where(stale);
+                self.full.forget_where(stale);
             }));
-        }
-        if out.iter().any(|r| r.is_ok()) {
-            self.lean.forget();
         }
         out
     }
 
     /// Build a renderer for a window's surface.
     pub fn for_surface(gpu: &Gpu, surface: &crate::surface::Surface) -> Self {
-        Self::with_format(gpu, surface.format(), surface.width(), surface.height())
+        Self::with_format(gpu, surface.format(), surface.width(), surface.height(), false)
     }
 
     pub(crate) fn with_format(
@@ -2917,6 +2900,7 @@ impl Renderer {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        wait: bool,
     ) -> Self {
         let shader = gpu
             .device
@@ -3760,6 +3744,9 @@ impl Renderer {
             shadow_turn: false,
             shadow_stagger: std::env::var("SCRAP_SHADOW_STAGGER").map_or(true, |v| v != "0"),
             lean_modules: [(None, shader.clone())].into_iter().collect(),
+            full: crate::lean::Lean::always(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8)),
+            known: lit_keys(Look::all()),
+            wait_for_pipelines: wait,
             mesh_names: Default::default(),
             texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
@@ -4482,14 +4469,18 @@ impl Renderer {
                     } else {
                         self.scene_pipeline(*look)
                     };
-                    if let Some(pipeline) = pipeline {
-                        pass.set_pipeline(pipeline);
-                        pass.set_bind_group(
-                            0,
-                            if occluded { self.kept_group_for(prepass) } else { self.frame_group_for(prepass) },
-                            &[],
-                        );
-                    }
+                    // Its pipeline not built yet: not drawn this frame.
+                    let Some(pipeline) = pipeline else {
+                        current = None;
+                        first += count;
+                        continue;
+                    };
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(
+                        0,
+                        if occluded { self.kept_group_for(prepass) } else { self.frame_group_for(prepass) },
+                        &[],
+                    );
                     current = Some(*look);
                 }
             }
@@ -5199,6 +5190,19 @@ impl Renderer {
 
     /// How many of the last frame's lit pipelines were lean ones in: 0 when
     /// it was not drawn lean, or none was built yet. For tests and tools.
+    /// How many pipelines the frames drawn so far asked for are still being
+    /// built (what they draw is not drawn meanwhile).
+    pub fn pipelines_building(&self) -> usize {
+        self.full.waiting() + if self.lean.on { self.lean.waiting() } else { 0 }
+    }
+
+    /// Whether a frame waits for the pipelines of what it draws (what a
+    /// renderer drawing pictures does: [`Renderer::new`]) or draws what is
+    /// in while the rest are built (a game's window: [`Renderer::for_surface`]).
+    pub fn set_wait_for_pipelines(&mut self, wait: bool) {
+        self.wait_for_pipelines = wait;
+    }
+
     pub fn lean_pipelines(&self) -> usize {
         if self.lean.on {
             self.lean.ready.len()
@@ -6594,6 +6598,7 @@ impl Renderer {
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
         // Lean, when nothing the lean shader leaves out is asked for.
         self.lean.collect();
+        self.full.collect();
         self.lean.on = self.lean.enabled && lean_allowed(&uniform, frame, decals.is_empty());
 
         if fine_terrain.is_some() && self.terrain_mesh_group.is_some() {
@@ -6799,14 +6804,16 @@ impl Renderer {
             .map(|(count, mesh)| self.mesh(mesh).map_or(0, |m| m.index_count as u64 / 3) * count as u64)
             .sum();
         self.stats = stats;
+        let looks: Vec<Look> = batches
+            .iter()
+            .filter_map(|((look, _, _), _)| *look)
+            .chain(singles.iter().map(|s| s.0))
+            .chain(transparent.iter().map(|t| t.1))
+            .collect();
+        // A probe's face or a picture is drawn once and kept: it waits.
+        let wait = self.wait_for_pipelines || probe.is_some() || self.picturing;
+        self.ask_scene(gpu, looks.into_iter(), wait);
         if self.lean.on {
-            let looks: Vec<Look> = batches
-                .iter()
-                .filter_map(|((look, _, _), _)| *look)
-                .chain(singles.iter().map(|s| s.0))
-                .chain(transparent.iter().map(|t| t.1))
-                .collect();
-            self.ask_lean(gpu, looks.into_iter());
             let faces: Vec<(RenderFace, bool)> = batches
                 .iter()
                 .filter_map(|((look, handle, _), _)| {
