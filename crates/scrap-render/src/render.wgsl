@@ -2789,7 +2789,64 @@ struct SurfaceIn {
     // COLOR_0, Unity's Vertex Color), between them; white where the mesh
     // has none. The standard shader does not use it, as URP Lit does not.
     vertex_color: vec4<f32>,
+    // The pixel it is drawn at, from the top left.
+    screen: vec2<f32>,
+    // 1 on the side the surface faces, 0 seen from behind.
+    front: f32,
 };
+
+// What a material's shader can ask of where it is drawn — the shader
+// graph's `screen`, `scene_depth`, `SceneColor`, `tangent`… — beside what
+// SurfaceIn has.
+
+/// Where it is on the screen, 0 to 1 from the top left.
+fn surface_screen(in: SurfaceIn) -> vec2<f32> {
+    return in.screen / frame.cluster_depth.zw;
+}
+
+/// How deep it is along the view, in metres.
+fn surface_depth(in: SurfaceIn) -> f32 {
+    return -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0));
+}
+
+/// How deep the solid scene behind it is along the view, in metres: from
+/// the prepass, so what is see-through sees what is under it.
+fn surface_scene_depth(in: SurfaceIn) -> f32 {
+    let size = vec2<i32>(frame.cluster_depth.zw);
+    return scene_view_depth(clamp(vec2<i32>(in.screen), vec2<i32>(0), size - vec2<i32>(1)));
+}
+
+/// What was drawn at `at` on the screen (0 to 1): the last frame's picture.
+fn surface_scene_color(at: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(last_frame, fog_sampler, at, 0.0).rgb;
+}
+
+/// The way the texture's u runs across the surface, in the world: from how
+/// the position and the UVs change from pixel to pixel.
+fn surface_tangent(in: SurfaceIn) -> vec3<f32> {
+    let dp1 = dpdx(in.world_position);
+    let dp2 = dpdy(in.world_position);
+    let duv1 = dpdx(in.uv);
+    let duv2 = dpdy(in.uv);
+    let t = -(cross(dp2, in.normal) * duv1.x + cross(in.normal, dp1) * duv2.x);
+    let size = dot(t, t);
+    if size < 1e-12 {
+        return normalize(cross(in.normal, vec3<f32>(0.0, 0.0, 1.0)) + vec3<f32>(1e-4, 0.0, 0.0));
+    }
+    return t * inverseSqrt(size);
+}
+
+/// The normal bent as if `height` metres raised the surface: bump mapping
+/// from how the height changes from pixel to pixel (Mikkelsen).
+fn surface_normal_from_height(in: SurfaceIn, height: f32, strength: f32) -> vec3<f32> {
+    let dp1 = dpdx(in.world_position);
+    let dp2 = dpdy(in.world_position);
+    let r1 = cross(dp2, in.normal);
+    let r2 = cross(in.normal, dp1);
+    let det = dot(dp1, r1);
+    let grad = sign(det) * (dpdx(height) * r1 + dpdy(height) * r2);
+    return normalize(abs(det) * in.normal - strength * grad);
+}
 
 // What the standard shader worked out for the fragment, before the light:
 // what a material's shader changes.
@@ -2859,7 +2916,7 @@ fn fs_unlit(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @locatio
         discard;
     }
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color, in.clip_position.xy, select(0.0, 1.0, seen_front(in, front))),
         Surface(in.base_color * sampled.rgb, alpha, in.surface.x, in.surface.y, geometric, in.emission.rgb * emitted),
     );
     return unlit_seen(shaped.albedo + shaped.emission, shaped.alpha, in, screen_flags);
@@ -2989,7 +3046,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 
     // The material's own shader has its say, before the light.
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color, in.clip_position.xy, select(0.0, 1.0, seen_front(in, front))),
         Surface(albedo, alpha, in.surface.x * mask.r * weather.metal, smoothness, normal, in.emission.rgb * emitted),
     );
     albedo = shaped.albedo;

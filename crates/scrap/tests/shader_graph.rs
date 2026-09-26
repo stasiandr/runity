@@ -128,3 +128,78 @@ fn a_shader_graph_in_the_projects_shaders_draws_reloads_and_is_refused_in_words(
     assert!(graph.1.as_ref().unwrap_err().contains("one shader, one file"), "{put:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What a graph reads of the scene — the depth behind it, last frame's
+/// picture, where it is on the screen, which side is seen, the tangent —
+/// builds and draws on an opaque surface as on a see-through one.
+#[test]
+fn a_graph_reading_the_scene_draws() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("scrap-shader-graph-scene-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write(
+        &dir.join("seen.graph.ron"),
+        r#"(
+            nodes: {
+                "behind": SceneColor(),
+                "deep": Subtract(a: "scene_depth", b: "depth"),
+                "edge": Saturate(of: "deep"),
+                "lit": Multiply(a: "behind", b: "edge"),
+                "side": Multiply(a: "tangent", b: "front"),
+                "at": Combine(x: "screen.x", y: "screen.y", z: 0.0),
+                "sum": Add(a: "lit", b: "side"),
+                "all": Add(a: "sum", b: "at"),
+                "red": Combine(x: 1.0, y: 0.0, z: 0.0),
+                "paint": Lerp(a: "red", b: "all", t: 0.001),
+            },
+            surface: (albedo: "paint"),
+        )"#,
+        0,
+    );
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(2.0));
+    let mut shaders = MaterialShaders::new(&dir);
+    for (name, result) in shaders.poll(&mut renderer, &gpu) {
+        result.unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    for (shading, alpha) in [(Shading::Unlit, 1.0), (Shading::Lit, 1.0), (Shading::Lit, 0.5), (Shading::Unlit, 0.5)] {
+        let frame = Frame {
+            camera: Camera {
+                position: Vec3::new(0.0, 0.0, 4.0),
+                target: Vec3::ZERO,
+                ..Camera::default()
+            },
+            sky: scrap::render::Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            clear_color: Vec3::ZERO,
+            post: scrap::post::PostProcess::OFF,
+            ambient_occlusion: scrap::ssao::AmbientOcclusion::OFF,
+            draws: vec![Draw {
+                mesh: cube,
+                transform: Mat4::IDENTITY,
+                texture: TextureHandle::WHITE,
+                material: Material {
+                    shading,
+                    shader: Some(scrap::asset::shader_id("seen")),
+                    alpha,
+                    ..Material::new(1.0, 1.0, 1.0)
+                },
+                pose: None,
+            }],
+            ..Frame::default()
+        };
+        // Twice: the second frame has a last frame to read.
+        renderer.render(&gpu, &target, &frame);
+        renderer.render(&gpu, &target, &frame);
+        let middle = OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2);
+        assert!(middle[0] > 20 && middle[0] > middle[2], "drawn, red ({shading:?}, alpha {alpha}): {middle:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

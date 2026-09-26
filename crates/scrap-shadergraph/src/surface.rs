@@ -105,7 +105,7 @@ pub fn parse(text: &str) -> Result<ShaderGraph, String> {
     expr::from_ron(text).map_err(|e| e.to_string())
 }
 
-const BUILTINS: [(&str, &str, Ty); 10] = [
+const BUILTINS: &[(&str, &str, Ty)] = &[
     ("uv", "in.uv", Ty::F2),
     ("time", "in.time", Ty::F1),
     ("position", "in.world_position", Ty::F3),
@@ -120,6 +120,23 @@ const BUILTINS: [(&str, &str, Ty); 10] = [
     ("metallic", "out.metallic", Ty::F1),
     ("smoothness", "out.smoothness", Ty::F1),
     ("emission", "out.emission", Ty::F3),
+    // Where it is drawn.
+    ("screen", "surface_screen(in)", Ty::F2),
+    ("depth", "surface_depth(in)", Ty::F1),
+    ("scene_depth", "surface_scene_depth(in)", Ty::F1),
+    ("front", "in.front", Ty::F1),
+    ("vertex_color", "in.vertex_color", Ty::F4),
+    ("tangent", "surface_tangent(in)", Ty::F3),
+    ("bitangent", "cross(in.normal, surface_tangent(in))", Ty::F3),
+    ("camera", "frame.camera_position.xyz", Ty::F3),
+    // The sun, toward it, and its colour; the sky's light from all round.
+    (
+        "light_direction",
+        "-normalize(frame.sun_direction.xyz)",
+        Ty::F3,
+    ),
+    ("light_color", "frame.sun_color.rgb", Ty::F3),
+    ("ambient", "frame.sky_color.rgb", Ty::F3),
 ];
 
 struct Material<'a> {
@@ -159,6 +176,32 @@ impl Context for Material<'_> {
                 ))
             }
         }
+    }
+
+    fn derivatives(&self) -> bool {
+        true
+    }
+
+    fn normal_from_height(&self, height: &str, strength: &str) -> Result<Value, String> {
+        Ok(Value::new(
+            format!("surface_normal_from_height(in, {height}, {strength})"),
+            Ty::F3,
+        ))
+    }
+
+    fn normal_from_texture(&self, name: &str, uv: &str, strength: &str) -> Result<Value, String> {
+        let texel = self.texture(name, uv)?;
+        Ok(Value::new(
+            format!(
+                "mapped_normal(in.normal, in.world_position, {uv}, ({}).xyz, {strength})",
+                texel.code
+            ),
+            Ty::F3,
+        ))
+    }
+
+    fn scene_color(&self, at: &str) -> Result<Value, String> {
+        Ok(Value::new(format!("surface_scene_color({at})"), Ty::F3))
     }
 
     fn fresnel(&self, power: &str) -> Result<Value, String> {
@@ -317,5 +360,44 @@ fn spread(value: &Value, ty: Ty) -> Result<String, String> {
                 ""
             }
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wgsl(text: &str) -> Result<String, String> {
+        to_wgsl(&parse(text).unwrap(), "x")
+    }
+
+    #[test]
+    fn the_newer_nodes_say_what_is_wrong() {
+        let e = wgsl(r#"(nodes: { "b": Branch(when: (1.0, 0.0), yes: (1.0, 0.0, 0.0), no: 0.0) }, surface: (albedo: "b"))"#).unwrap_err();
+        assert!(
+            e.contains("`when` is a vec2 where `yes` and `no` are a vec3"),
+            "{e}"
+        );
+        let e = wgsl(r#"(nodes: { "g": Gradient(t: "uv.x", keys: []) }, surface: (albedo: "g"))"#)
+            .unwrap_err();
+        assert!(e.contains("`keys` is empty"), "{e}");
+        let e = wgsl(
+            r#"(nodes: { "h": Hue(of: "vertex_color", offset: 0.1) }, surface: (albedo: "h"))"#,
+        )
+        .unwrap_err();
+        assert!(e.contains("take `.rgb`"), "{e}");
+        let e = wgsl(r#"(nodes: { "t": Triplanar(name: "_Rock") }, surface: (albedo: "t.rgb"))"#)
+            .unwrap_err();
+        assert!(e.contains("no texture `_Rock`"), "{e}");
+    }
+
+    #[test]
+    fn a_gradient_is_straight_between_its_keys_in_their_order() {
+        let w = wgsl(r#"(nodes: { "g": Gradient(t: "uv.x", keys: [(1.0, (1.0, 1.0, 1.0)), (0.0, (0.0, 0.0, 0.0))]) }, surface: (albedo: "g"))"#).unwrap();
+        // Sorted: black first, mixed toward white.
+        assert!(
+            w.contains("mix(vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0)"),
+            "{w}"
+        );
     }
 }

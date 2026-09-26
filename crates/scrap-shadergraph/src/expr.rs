@@ -15,6 +15,9 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+#[path = "more.rs"]
+mod more;
+
 /// Where a node's input comes from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -324,6 +327,358 @@ pub enum Node {
         #[serde(default = "uv")]
         uv: Input,
     },
+    /// 1 / `of`.
+    Reciprocal {
+        of: Input,
+    },
+    /// The natural logarithm.
+    Log {
+        of: Input,
+    },
+    /// Toward zero: the whole part.
+    Truncate {
+        of: Input,
+    },
+    /// The tangent of `of`, radians.
+    Tangent {
+        of: Input,
+    },
+    /// Radians.
+    Arcsin {
+        of: Input,
+    },
+    /// Radians.
+    Arccos {
+        of: Input,
+    },
+    /// Radians.
+    Arctan {
+        of: Input,
+    },
+    /// The angle of (`x`, `y`), radians, −π to π.
+    Arctan2 {
+        y: Input,
+        x: Input,
+    },
+    /// Degrees to radians.
+    Radians {
+        of: Input,
+    },
+    /// Radians to degrees.
+    Degrees {
+        of: Input,
+    },
+    /// Where `of` is between `a` and `b`: 0 at `a`, 1 at `b`.
+    InverseLerp {
+        a: Input,
+        b: Input,
+        of: Input,
+    },
+    /// A number from `low` to `high` that `seed` picks: the same seed, the same number.
+    RandomRange {
+        seed: Input,
+        #[serde(default = "zero")]
+        low: Input,
+        #[serde(default = "one")]
+        high: Input,
+    },
+    /// 1 where `a op b` holds, 0 where not (each component).
+    Comparison {
+        a: Input,
+        b: Input,
+        op: Compare,
+    },
+    /// `yes` where `when` is over a half, `no` where not.
+    Branch {
+        when: Input,
+        yes: Input,
+        no: Input,
+    },
+    /// 1 where both are over a half.
+    And {
+        a: Input,
+        b: Input,
+    },
+    /// 1 where either is over a half.
+    Or {
+        a: Input,
+        b: Input,
+    },
+    /// 1 where `of` is under a half.
+    Not {
+        of: Input,
+    },
+    /// How much `of` changes to the next pixel across. Only where there are pixels.
+    Ddx {
+        of: Input,
+    },
+    /// How much `of` changes to the next pixel down.
+    Ddy {
+        of: Input,
+    },
+    /// How much `of` changes to the next pixel, across and down together.
+    Fwidth {
+        of: Input,
+    },
+    /// `incident` turned back off a surface of `normal`.
+    Reflect {
+        incident: Input,
+        #[serde(default = "normal_in")]
+        normal: Input,
+    },
+    /// `incident` bent through a surface of `normal`, `ratio` the one index over the other.
+    Refract {
+        incident: Input,
+        #[serde(default = "normal_in")]
+        normal: Input,
+        ratio: Input,
+    },
+    /// The part of `of` along `onto`.
+    Project {
+        of: Input,
+        onto: Input,
+    },
+    /// The part of `of` across `onto`.
+    Reject {
+        of: Input,
+        onto: Input,
+    },
+    /// `of` (a vec3) turned `angle` radians round `axis`.
+    RotateAboutAxis {
+        of: Input,
+        #[serde(default = "up")]
+        axis: Input,
+        angle: Input,
+    },
+    /// 1 within `radius` of `center`, falling to 0 past it; `hardness` 1 a hard edge.
+    SphereMask {
+        at: Input,
+        center: Input,
+        #[serde(default = "half_number")]
+        radius: Input,
+        #[serde(default = "point_eight")]
+        hardness: Input,
+    },
+    /// How bright a colour looks: a number.
+    Luminance {
+        of: Input,
+    },
+    /// `blend` laid over `base` as a paint program's layer mode, by `opacity`.
+    Blend {
+        base: Input,
+        blend: Input,
+        #[serde(default = "one")]
+        opacity: Input,
+        #[serde(default)]
+        mode: BlendMode,
+    },
+    /// A colour's hue turned by `offset`, in turns (1 all the way round).
+    Hue {
+        of: Input,
+        offset: Input,
+    },
+    /// A colour made greyer (below 1) or stronger (above 1).
+    Saturation {
+        of: Input,
+        #[serde(default = "one")]
+        amount: Input,
+    },
+    /// A colour's contrast, 1 as it is.
+    Contrast {
+        of: Input,
+        #[serde(default = "one")]
+        amount: Input,
+    },
+    /// 1 − the colour; alpha kept.
+    Invert {
+        of: Input,
+    },
+    /// Each channel out as a mix of red, green and blue in.
+    ChannelMixer {
+        of: Input,
+        #[serde(default = "red")]
+        red: Input,
+        #[serde(default = "green")]
+        green: Input,
+        #[serde(default = "blue")]
+        blue: Input,
+    },
+    /// Colours within `range` of `from` made `to`, softly over `fuzziness`.
+    ReplaceColor {
+        of: Input,
+        from: Input,
+        to: Input,
+        #[serde(default = "zero")]
+        range: Input,
+        #[serde(default = "zero")]
+        fuzziness: Input,
+    },
+    /// A colour as hue, saturation, value.
+    RgbToHsv {
+        of: Input,
+    },
+    /// Hue, saturation, value as a colour.
+    HsvToRgb {
+        of: Input,
+    },
+    /// A linear colour as the screen's sRGB numbers.
+    LinearToSrgb {
+        of: Input,
+    },
+    /// sRGB numbers — a picker's — as a linear colour.
+    SrgbToLinear {
+        of: Input,
+    },
+    /// A colour along `t`: `keys` are (where, colour), straight between them.
+    Gradient {
+        t: Input,
+        keys: Vec<(f32, (f32, f32, f32))>,
+    },
+    /// A normal's bend from `base` times `strength`: 0 flat, 1 as it is.
+    NormalStrength {
+        of: Input,
+        #[serde(default = "one")]
+        strength: Input,
+        #[serde(default = "normal_in")]
+        base: Input,
+    },
+    /// Two normals' bends from `base`, together.
+    NormalBlend {
+        a: Input,
+        b: Input,
+        #[serde(default = "normal_in")]
+        base: Input,
+    },
+    /// The surface's normal bent as if `height` (metres) raised it. Only where there are pixels.
+    NormalFromHeight {
+        height: Input,
+        #[serde(default = "one")]
+        strength: Input,
+    },
+    /// A normal map the graph declares, at `uv`, as a normal in the world.
+    NormalFromTexture {
+        name: String,
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "one")]
+        strength: Input,
+    },
+    /// A texture the graph declares, laid on from three sides by `normal`: no UVs needed.
+    Triplanar {
+        name: String,
+        #[serde(default = "position")]
+        at: Input,
+        #[serde(default = "normal_in")]
+        normal: Input,
+        #[serde(default = "one")]
+        scale: Input,
+        #[serde(default = "four")]
+        sharpness: Input,
+    },
+    /// `uv` onto frame `frame` of a sheet `columns` across and `rows` down, the first top left.
+    Flipbook {
+        #[serde(default = "uv")]
+        uv: Input,
+        columns: Input,
+        rows: Input,
+        frame: Input,
+    },
+    /// `uv` as distance from `center` and angle round it.
+    PolarCoordinates {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half")]
+        center: Input,
+        #[serde(default = "one")]
+        radial_scale: Input,
+        #[serde(default = "one")]
+        length_scale: Input,
+    },
+    /// `uv` swirled round `center`.
+    Twirl {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half")]
+        center: Input,
+        #[serde(default = "ten")]
+        strength: Input,
+        #[serde(default = "zero")]
+        offset: Input,
+    },
+    /// `uv` bulged out from `center`, a fish eye.
+    Spherize {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half")]
+        center: Input,
+        #[serde(default = "ten")]
+        strength: Input,
+        #[serde(default = "zero")]
+        offset: Input,
+    },
+    /// `uv` sheared round `center`.
+    RadialShear {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half")]
+        center: Input,
+        #[serde(default = "ten")]
+        strength: Input,
+        #[serde(default = "zero")]
+        offset: Input,
+    },
+    /// 1 inside an ellipse over `uv`, `width` and `height` of the square. Only where there are pixels.
+    Ellipse {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half_number")]
+        width: Input,
+        #[serde(default = "half_number")]
+        height: Input,
+    },
+    /// 1 inside a rectangle over `uv`.
+    Rectangle {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half_number")]
+        width: Input,
+        #[serde(default = "half_number")]
+        height: Input,
+    },
+    /// 1 inside a rectangle with corners rounded by `radius`.
+    RoundedRectangle {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "half_number")]
+        width: Input,
+        #[serde(default = "half_number")]
+        height: Input,
+        #[serde(default = "point_one")]
+        radius: Input,
+    },
+    /// 1 inside a polygon of `sides` sides.
+    Polygon {
+        #[serde(default = "uv")]
+        uv: Input,
+        #[serde(default = "six")]
+        sides: Input,
+        #[serde(default = "half_number")]
+        width: Input,
+        #[serde(default = "half_number")]
+        height: Input,
+    },
+    /// Value noise in three octaves, 0 to 1, Unity's Simple Noise: `scale` cells across a unit.
+    SimpleNoise {
+        #[serde(default = "uv")]
+        at: Input,
+        #[serde(default = "five_hundred")]
+        scale: Input,
+    },
+    /// What is drawn behind, at `at` on the screen (0 to 1): last frame's picture. Only in a material's graph.
+    SceneColor {
+        #[serde(default = "screen")]
+        at: Input,
+    },
 }
 
 fn zero() -> Input {
@@ -343,6 +698,79 @@ fn uv() -> Input {
 }
 fn position() -> Input {
     Input::Name("position".to_string())
+}
+fn normal_in() -> Input {
+    Input::Name("normal".to_string())
+}
+fn screen() -> Input {
+    Input::Name("screen".to_string())
+}
+fn up() -> Input {
+    Input::Vector(vec![0.0, 1.0, 0.0])
+}
+fn red() -> Input {
+    Input::Vector(vec![1.0, 0.0, 0.0])
+}
+fn green() -> Input {
+    Input::Vector(vec![0.0, 1.0, 0.0])
+}
+fn blue() -> Input {
+    Input::Vector(vec![0.0, 0.0, 1.0])
+}
+fn half_number() -> Input {
+    Input::Number(0.5)
+}
+fn point_one() -> Input {
+    Input::Number(0.1)
+}
+fn point_eight() -> Input {
+    Input::Number(0.8)
+}
+fn four() -> Input {
+    Input::Number(4.0)
+}
+fn six() -> Input {
+    Input::Number(6.0)
+}
+fn ten() -> Input {
+    Input::Number(10.0)
+}
+fn five_hundred() -> Input {
+    Input::Number(500.0)
+}
+
+/// How [`Node::Comparison`] compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Compare {
+    Less,
+    LessOrEqual,
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterOrEqual,
+}
+
+/// How [`Node::Blend`] lays one colour over another: a paint program's
+/// layer modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BlendMode {
+    Burn,
+    Darken,
+    Difference,
+    Dodge,
+    Divide,
+    Exclusion,
+    HardLight,
+    Lighten,
+    LinearBurn,
+    LinearDodge,
+    Multiply,
+    #[default]
+    Overlay,
+    Screen,
+    SoftLight,
+    Subtract,
+    Overwrite,
 }
 
 impl Node {
@@ -390,12 +818,67 @@ impl Node {
         "Checker",
         "Fresnel",
         "Texture",
+        "Reciprocal",
+        "Log",
+        "Truncate",
+        "Tangent",
+        "Arcsin",
+        "Arccos",
+        "Arctan",
+        "Arctan2",
+        "Radians",
+        "Degrees",
+        "InverseLerp",
+        "RandomRange",
+        "Comparison",
+        "Branch",
+        "And",
+        "Or",
+        "Not",
+        "Ddx",
+        "Ddy",
+        "Fwidth",
+        "Reflect",
+        "Refract",
+        "Project",
+        "Reject",
+        "RotateAboutAxis",
+        "SphereMask",
+        "Luminance",
+        "Blend",
+        "Hue",
+        "Saturation",
+        "Contrast",
+        "Invert",
+        "ChannelMixer",
+        "ReplaceColor",
+        "RgbToHsv",
+        "HsvToRgb",
+        "LinearToSrgb",
+        "SrgbToLinear",
+        "Gradient",
+        "NormalStrength",
+        "NormalBlend",
+        "NormalFromHeight",
+        "NormalFromTexture",
+        "Triplanar",
+        "Flipbook",
+        "PolarCoordinates",
+        "Twirl",
+        "Spherize",
+        "RadialShear",
+        "Ellipse",
+        "Rectangle",
+        "RoundedRectangle",
+        "Polygon",
+        "SimpleNoise",
+        "SceneColor",
     ];
 
     /// The kind, as written.
     pub fn kind(&self) -> &'static str {
         macro_rules! kinds {
-            ($($k:ident),*) => {
+            ($($k:ident),* $(,)?) => {
                 match self { $(Node::$k { .. } => stringify!($k),)* }
             };
         }
@@ -441,7 +924,62 @@ impl Node {
             Random,
             Checker,
             Fresnel,
-            Texture
+            Texture,
+            Reciprocal,
+            Log,
+            Truncate,
+            Tangent,
+            Arcsin,
+            Arccos,
+            Arctan,
+            Arctan2,
+            Radians,
+            Degrees,
+            InverseLerp,
+            RandomRange,
+            Comparison,
+            Branch,
+            And,
+            Or,
+            Not,
+            Ddx,
+            Ddy,
+            Fwidth,
+            Reflect,
+            Refract,
+            Project,
+            Reject,
+            RotateAboutAxis,
+            SphereMask,
+            Luminance,
+            Blend,
+            Hue,
+            Saturation,
+            Contrast,
+            Invert,
+            ChannelMixer,
+            ReplaceColor,
+            RgbToHsv,
+            HsvToRgb,
+            LinearToSrgb,
+            SrgbToLinear,
+            Gradient,
+            NormalStrength,
+            NormalBlend,
+            NormalFromHeight,
+            NormalFromTexture,
+            Triplanar,
+            Flipbook,
+            PolarCoordinates,
+            Twirl,
+            Spherize,
+            RadialShear,
+            Ellipse,
+            Rectangle,
+            RoundedRectangle,
+            Polygon,
+            SimpleNoise,
+            SceneColor,
         )
     }
 
@@ -502,6 +1040,186 @@ impl Node {
             Checker { uv, scale } => vec![("uv", uv), ("scale", scale)],
             Fresnel { power } => vec![("power", power)],
             Texture { uv, .. } => vec![("uv", uv)],
+            Reciprocal { of } => vec![("of", of)],
+            Log { of } => vec![("of", of)],
+            Truncate { of } => vec![("of", of)],
+            Tangent { of } => vec![("of", of)],
+            Arcsin { of } => vec![("of", of)],
+            Arccos { of } => vec![("of", of)],
+            Arctan { of } => vec![("of", of)],
+            Arctan2 { y, x } => vec![("y", y), ("x", x)],
+            Radians { of } => vec![("of", of)],
+            Degrees { of } => vec![("of", of)],
+            InverseLerp { a, b, of } => vec![("a", a), ("b", b), ("of", of)],
+            RandomRange { seed, low, high } => vec![("seed", seed), ("low", low), ("high", high)],
+            Comparison { a, b, .. } => vec![("a", a), ("b", b)],
+            Branch { when, yes, no } => vec![("when", when), ("yes", yes), ("no", no)],
+            And { a, b } => vec![("a", a), ("b", b)],
+            Or { a, b } => vec![("a", a), ("b", b)],
+            Not { of } => vec![("of", of)],
+            Ddx { of } => vec![("of", of)],
+            Ddy { of } => vec![("of", of)],
+            Fwidth { of } => vec![("of", of)],
+            Reflect { incident, normal } => vec![("incident", incident), ("normal", normal)],
+            Refract {
+                incident,
+                normal,
+                ratio,
+            } => vec![("incident", incident), ("normal", normal), ("ratio", ratio)],
+            Project { of, onto } => vec![("of", of), ("onto", onto)],
+            Reject { of, onto } => vec![("of", of), ("onto", onto)],
+            RotateAboutAxis { of, axis, angle } => {
+                vec![("of", of), ("axis", axis), ("angle", angle)]
+            }
+            SphereMask {
+                at,
+                center,
+                radius,
+                hardness,
+            } => vec![
+                ("at", at),
+                ("center", center),
+                ("radius", radius),
+                ("hardness", hardness),
+            ],
+            Luminance { of } => vec![("of", of)],
+            Blend {
+                base,
+                blend,
+                opacity,
+                ..
+            } => vec![("base", base), ("blend", blend), ("opacity", opacity)],
+            Hue { of, offset } => vec![("of", of), ("offset", offset)],
+            Saturation { of, amount } => vec![("of", of), ("amount", amount)],
+            Contrast { of, amount } => vec![("of", of), ("amount", amount)],
+            Invert { of } => vec![("of", of)],
+            ChannelMixer {
+                of,
+                red,
+                green,
+                blue,
+            } => vec![("of", of), ("red", red), ("green", green), ("blue", blue)],
+            ReplaceColor {
+                of,
+                from,
+                to,
+                range,
+                fuzziness,
+            } => vec![
+                ("of", of),
+                ("from", from),
+                ("to", to),
+                ("range", range),
+                ("fuzziness", fuzziness),
+            ],
+            RgbToHsv { of } => vec![("of", of)],
+            HsvToRgb { of } => vec![("of", of)],
+            LinearToSrgb { of } => vec![("of", of)],
+            SrgbToLinear { of } => vec![("of", of)],
+            Gradient { t, .. } => vec![("t", t)],
+            NormalStrength { of, strength, base } => {
+                vec![("of", of), ("strength", strength), ("base", base)]
+            }
+            NormalBlend { a, b, base } => vec![("a", a), ("b", b), ("base", base)],
+            NormalFromHeight { height, strength } => {
+                vec![("height", height), ("strength", strength)]
+            }
+            NormalFromTexture { uv, strength, .. } => vec![("uv", uv), ("strength", strength)],
+            Triplanar {
+                at,
+                normal,
+                scale,
+                sharpness,
+                ..
+            } => vec![
+                ("at", at),
+                ("normal", normal),
+                ("scale", scale),
+                ("sharpness", sharpness),
+            ],
+            Flipbook {
+                uv,
+                columns,
+                rows,
+                frame,
+            } => vec![
+                ("uv", uv),
+                ("columns", columns),
+                ("rows", rows),
+                ("frame", frame),
+            ],
+            PolarCoordinates {
+                uv,
+                center,
+                radial_scale,
+                length_scale,
+            } => vec![
+                ("uv", uv),
+                ("center", center),
+                ("radial_scale", radial_scale),
+                ("length_scale", length_scale),
+            ],
+            Twirl {
+                uv,
+                center,
+                strength,
+                offset,
+            } => vec![
+                ("uv", uv),
+                ("center", center),
+                ("strength", strength),
+                ("offset", offset),
+            ],
+            Spherize {
+                uv,
+                center,
+                strength,
+                offset,
+            } => vec![
+                ("uv", uv),
+                ("center", center),
+                ("strength", strength),
+                ("offset", offset),
+            ],
+            RadialShear {
+                uv,
+                center,
+                strength,
+                offset,
+            } => vec![
+                ("uv", uv),
+                ("center", center),
+                ("strength", strength),
+                ("offset", offset),
+            ],
+            Ellipse { uv, width, height } => vec![("uv", uv), ("width", width), ("height", height)],
+            Rectangle { uv, width, height } => {
+                vec![("uv", uv), ("width", width), ("height", height)]
+            }
+            RoundedRectangle {
+                uv,
+                width,
+                height,
+                radius,
+            } => vec![
+                ("uv", uv),
+                ("width", width),
+                ("height", height),
+                ("radius", radius),
+            ],
+            Polygon {
+                uv,
+                sides,
+                width,
+                height,
+            } => vec![
+                ("uv", uv),
+                ("sides", sides),
+                ("width", width),
+                ("height", height),
+            ],
+            SimpleNoise { at, scale } => vec![("at", at), ("scale", scale)],
+            SceneColor { at } => vec![("at", at)],
         }
     }
 }
@@ -529,6 +1247,26 @@ pub trait Context {
         let _ = (salt, ty);
         Err("a surface has nothing to be random for — `Noise` at `position` is a random that stays put".to_string())
     }
+    /// Whether the graph runs where there are pixels, so that how a value
+    /// changes to the next one can be asked (`Ddx`, shapes' soft edges).
+    fn derivatives(&self) -> bool {
+        false
+    }
+    /// The surface's normal bent as if `height` (metres) raised it.
+    fn normal_from_height(&self, height: &str, strength: &str) -> Result<Value, String> {
+        let _ = (height, strength);
+        Err("this graph has no surface to bend".to_string())
+    }
+    /// A normal map the graph declares, at `uv`, as a normal in the world.
+    fn normal_from_texture(&self, name: &str, uv: &str, strength: &str) -> Result<Value, String> {
+        let _ = (name, uv, strength);
+        Err("this graph has no textures".to_string())
+    }
+    /// What is drawn behind, at `at` on the screen.
+    fn scene_color(&self, at: &str) -> Result<Value, String> {
+        let _ = at;
+        Err("this graph sees no screen".to_string())
+    }
 }
 
 /// Helper functions a node needs, emitted once above the code that uses
@@ -540,6 +1278,11 @@ enum Helper {
     Noise2,
     Noise3,
     Voronoi,
+    Hsv,
+    Srgb,
+    Rotate,
+    Polygon,
+    ValueNoise,
 }
 
 /// Nodes turned into WGSL: `let` lines in order, and the helpers they need.
@@ -976,6 +1719,7 @@ impl State<'_> {
                 }
                 self.context.texture(texture, &args[0].code).map_err(at)?
             }
+            _ => self.more(name, node, &args)?,
         };
         Ok(v)
     }
@@ -1077,6 +1821,11 @@ fn helper_code(helper: Helper) -> &'static str {
 }
 "
         }
+        Helper::Hsv => more::HSV,
+        Helper::Srgb => more::SRGB,
+        Helper::Rotate => more::ROTATE,
+        Helper::Polygon => more::POLYGON,
+        Helper::ValueNoise => more::VALUE_NOISE,
     }
 }
 
