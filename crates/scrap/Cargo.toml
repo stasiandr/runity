@@ -17,6 +17,7 @@ scrap-audio = { path = "../scrap-audio", default-features = false }
 scrap-core = { path = "../scrap-core" }
 scrap-shell = { path = "../scrap-shell", optional = true }
 scrap-render = { path = "../scrap-render", default-features = false }
+scrap-shadergraph = { path = "../scrap-shadergraph" }
 scrap-steam = { path = "../scrap-steam", optional = true }
 scrap-net = { path = "../scrap-net", optional = true }
 scrap-navigation = { path = "../scrap-navigation", optional = true }

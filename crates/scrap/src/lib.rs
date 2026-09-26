@@ -34,6 +34,9 @@ pub use scrap_geometry::mesh_asset;
 #[cfg(feature = "input")]
 pub use scrap_input::actions;
 pub use scrap_render::appearance;
+/// Content graphs of numbers: a material's shader graph, compiled to WGSL
+/// without a GPU.
+pub use scrap_shadergraph as shader_graph;
 mod asset_tests;
 
 /// Assets: the core's archive and IDs, and every module's formats, under

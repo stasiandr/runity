@@ -233,6 +233,22 @@ impl Shot {
         self.frame = frame;
     }
 
+    /// The scene's particles given off and moved for `seconds`, a frame
+    /// drawn every thirtieth — those on the GPU move only as they are
+    /// drawn — and the frame built again: a picture of a fire has its
+    /// sparks. Nothing when the scene gives none off.
+    pub fn run_particles(&mut self, seconds: f32) {
+        if self.world.query::<&crate::particles::Emitting>().iter().next().is_none() {
+            return;
+        }
+        let dt = 1.0 / 30.0;
+        for _ in 0..(seconds / dt).ceil() as u32 {
+            crate::particles::run_particles(&mut self.world, dt);
+            self.build();
+            self.draw(1);
+        }
+    }
+
     /// Frames to draw before the picture settles: what builds a history
     /// over frames — probes, pages, reservoirs, an upscaler's — needs them.
     pub fn warm_frames(&self) -> u32 {

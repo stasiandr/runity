@@ -422,6 +422,12 @@ pub struct Emitter {
     /// pass through.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collide: bool,
+    /// On the GPU, an effect graph (`shaders/<name>.vfx.ron`, see
+    /// [`scrap_shadergraph::effect`]) says where each is born, how it moves
+    /// and how it looks, instead of the numbers above alone — which it
+    /// still reads. Unity's VFX Graph.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub graph: String,
 }
 
 /// One of an emitter's streams of numbers to its particles' shader: from

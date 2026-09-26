@@ -236,8 +236,14 @@
 - [x] Диалоги на том же виджете: `scrap::dialogue` (реплики, выборы с
       условиями на флаги, события игре, `Conversation`), `dialogues/*.ron`,
       проверки и ключи строк в `check`, окно Dialogues (чтение)
-- [ ] Шейдер-граф, граф частиц на том же виджете — ждут: графикой сейчас
-      занят другой заход (2026-09-23)
+- [x] Шейдер-граф (docs/shadergraph.md): `shaders/<name>.graph.ron` →
+      WGSL `surface`, 40 узлов, горячая перезагрузка, `check` с узлом и
+      входом; пример — `valley/scenes/graphs.ron`
+- [x] Граф эффекта (VFX Graph, docs/shadergraph.md):
+      `shaders/<name>.vfx.ron` — `spawn`, `update`, `output` частиц на
+      видеокарте, узлы `Random` и `Turbulence`; пример — угли в
+      `graphs.ron`
+- [ ] Окна шейдер-графа и графа эффекта на `graph_view`
 
 # Инструменты дизайнера
 
