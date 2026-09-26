@@ -9,7 +9,7 @@ use glam::{Mat4, Quat, Vec3};
 use scrap_geometry::sdf::Sdf;
 
 /// A solid shape, in the world.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Obstacle {
     /// Everything below the plane through `point` facing `normal` is
     /// solid: the ground.
@@ -26,6 +26,27 @@ pub enum Obstacle {
     /// A cloth as it is this step, its triangles `thick` either side, as
     /// what else is soft meets it within its steps ([`crate::unified`]).
     Sheet(Arc<Sheet>),
+}
+
+/// Equal as the derive would say, but a field or a sheet that is the very
+/// same one is equal without a look inside: each soft thing asks every
+/// step whether what is round it changed, and the scene's baked field —
+/// shared, unchanged — was compared cell by cell each time.
+impl PartialEq for Obstacle {
+    fn eq(&self, other: &Self) -> bool {
+        use Obstacle::*;
+        match (self, other) {
+            (Plane { point: a, normal: b }, Plane { point: c, normal: d }) => a == c && b == d,
+            (Sphere { center: a, radius: b }, Sphere { center: c, radius: d }) => a == c && b == d,
+            (Capsule { a, b, radius: r }, Capsule { a: c, b: d, radius: s }) => a == c && b == d && r == s,
+            (Box { center: a, rotation: b, half: c }, Box { center: d, rotation: e, half: f }) => {
+                a == d && b == e && c == f
+            }
+            (Field(a), Field(b)) => Arc::ptr_eq(a, b) || **a == **b,
+            (Sheet(a), Sheet(b)) => Arc::ptr_eq(a, b) || **a == **b,
+            _ => false,
+        }
+    }
 }
 
 /// Triangles sorted into a grid, so that a point tries only those near it.

@@ -154,28 +154,45 @@ impl Atmosphere {
     /// `intensity`, at `altitude`: the sun's colour after the air, and the
     /// light from all round on a surface facing up and one facing down.
     pub fn lighting(&self, altitude: f32, to_sun: Vec3, intensity: f32) -> (Vec3, Vec3, Vec3) {
-        let sun = self.transmittance(altitude, to_sun) * intensity;
-        // The sky's average over the upper half, from a handful of ways.
-        let mut sky = Vec3::ZERO;
-        let mut weight = 0.0;
-        for elevation in [8.0f32, 25.0, 50.0, 80.0] {
-            for azimuth in 0..8 {
-                let (e, a) = (
-                    elevation.to_radians(),
-                    azimuth as f32 * std::f32::consts::FRAC_PI_4,
-                );
-                let d = Vec3::new(e.cos() * a.cos(), e.sin(), e.cos() * a.sin());
-                let w = e.sin();
-                sky += self.sky(altitude, d, to_sun) * w;
-                weight += w;
-            }
-        }
-        let sky = sky / weight * intensity;
+        let (sun, sky) = self.light_of_one(altitude, to_sun);
+        let (sun, sky) = (sun * intensity, sky * intensity);
         // What the ground sends back up: the sun and sky on it, times its
         // colour.
         let ground =
             (sun * to_sun.y.max(0.0) + sky) * self.ground_albedo / std::f32::consts::PI * 2.0;
         (sun, sky, ground)
+    }
+}
+
+impl Atmosphere {
+    /// The sun's light through the air and the sky's average over the
+    /// upper half, for a sun of strength one: what [`Atmosphere::lighting`]
+    /// scales. Some thirty thousand steps through the air — the sky from a
+    /// handful of ways, each way's steps lit through their own column — so
+    /// the ways are found across the cores and summed in order after, the
+    /// same bits as one after another.
+    pub fn light_of_one(&self, altitude: f32, to_sun: Vec3) -> (Vec3, Vec3) {
+        let sun = self.transmittance(altitude, to_sun);
+        let ways: Vec<(f32, u32)> = [8.0f32, 25.0, 50.0, 80.0]
+            .into_iter()
+            .flat_map(|elevation| (0..8).map(move |azimuth| (elevation, azimuth)))
+            .collect();
+        let seen = scrap_core::jobs::map(&ways, 4, |&(elevation, azimuth)| {
+            let (e, a) = (
+                elevation.to_radians(),
+                azimuth as f32 * std::f32::consts::FRAC_PI_4,
+            );
+            let d = Vec3::new(e.cos() * a.cos(), e.sin(), e.cos() * a.sin());
+            let w = e.sin();
+            (self.sky(altitude, d, to_sun) * w, w)
+        });
+        let mut sky = Vec3::ZERO;
+        let mut weight = 0.0;
+        for (light, w) in seen {
+            sky += light;
+            weight += w;
+        }
+        (sun, sky / weight)
     }
 }
 

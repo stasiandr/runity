@@ -176,7 +176,7 @@ impl crate::world::Dress for WireDress {
     ) {
         let wires = line.wires();
         if wires.is_empty() {
-            let _ = world.remove_one::<Wired>(entity);
+            scrap_core::world::take_off::<Wired>(world, entity);
             return;
         }
         let mut wired = Wired::new(wires);

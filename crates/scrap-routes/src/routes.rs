@@ -256,7 +256,7 @@ impl crate::world::Dress for RouteDress {
                 let _ = world.insert_one(entity, Travelling::new(route, line.transform.position));
             }
             None => {
-                let _ = world.remove_one::<Travelling>(entity);
+                scrap_core::world::take_off::<Travelling>(world, entity);
             }
         }
     }

@@ -105,6 +105,13 @@ impl Passes {
     /// The frame as these passes draw it: what is off, taken out of it.
     pub fn apply(&self, frame: &Frame) -> Frame {
         let mut frame = frame.clone();
+        self.apply_to(&mut frame);
+        frame
+    }
+
+    /// [`Passes::apply`] on a frame already copied: what the renderer
+    /// does, so that a preset and the passes cost one copy between them.
+    pub fn apply_to(&self, frame: &mut Frame) {
         if !self.lighting {
             for draw in &mut frame.draws {
                 draw.material = draw.material.unlit();
@@ -162,7 +169,6 @@ impl Passes {
         if !self.ray_tracing {
             frame.ray_tracing = crate::ray::RayTracing::default();
         }
-        frame
     }
 }
 

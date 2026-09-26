@@ -118,6 +118,12 @@ pub struct FluidState {
     sleep: crate::rest::Rest,
     /// What was solid round it last step.
     obstacles: Vec<Obstacle>,
+    /// Bumped whenever the particles may have moved: a step, a fill, a
+    /// push from outside ([`FluidState::particles_mut`]).
+    moved: u64,
+    /// What the surface was last made for: `moved` then, where, and at
+    /// what spacing (the one setting the surface reads).
+    drawn: Option<(u64, Mat4, f32)>,
 }
 
 /// Metres a second nine in ten of a fluid's particles stay under at rest:
@@ -143,6 +149,7 @@ fn spiky_gradient(d: Vec3, h: f32) -> Vec3 {
 
 impl FluidState {
     pub(crate) fn particles_mut(&mut self) -> &mut Particles {
+        self.moved += 1;
         &mut self.particles
     }
 
@@ -173,6 +180,8 @@ impl FluidState {
             owed: 0.0,
             sleep: Default::default(),
             obstacles: Vec::new(),
+            moved: 0,
+            drawn: None,
         }
     }
 
@@ -221,6 +230,7 @@ impl FluidState {
     pub fn advance(&mut self, placed: Mat4, obstacles: &[Obstacle], seconds: f32) {
         if !self.placed {
             self.fill(placed);
+            self.moved += 1;
         }
         self.owed = (self.owed + seconds.max(0.0)).min(0.1);
         let mut changed = self.obstacles.as_slice() != obstacles;
@@ -238,6 +248,7 @@ impl FluidState {
                 FluidMethod::Pbf => self.step_pbf(obstacles),
                 FluidMethod::Sph => self.step_sph(obstacles),
             }
+            self.moved += 1;
             // A fluid at rest simmers — each pass of its constraints nudges
             // what is already where it should be — so it sleeps when nine in
             // ten of it are slow, not every one.
@@ -457,6 +468,20 @@ impl FluidState {
         (vertices, indices)
     }
 
+    /// [`FluidState::surface`], or `None` when nothing has moved since
+    /// the last one was made here: a screen faster than the steps asks for
+    /// the same water several times, and meshing it is most of a frame's
+    /// work for a fluid. `again` makes it anyway: what showed the last one
+    /// is gone.
+    pub fn surface_if_moved(&mut self, placed: Mat4, again: bool) -> Option<(Vec<Vertex>, Vec<u32>)> {
+        let now = Some((self.moved, placed, self.fluid.spacing));
+        if !again && self.drawn == now {
+            return None;
+        }
+        self.drawn = now;
+        Some(self.surface(placed))
+    }
+
     /// A ball at each particle, in the world, for `builtin:sphere`.
     pub fn drops(&self) -> Vec<Mat4> {
         let size = self.fluid.spacing * 1.1;
@@ -505,7 +530,7 @@ impl scrap_core::world::Dress for FluidDress {
                 let _ = world.insert_one(entity, FluidState::new(fluid));
             }
             None => {
-                let _ = world.remove_one::<FluidState>(entity);
+                scrap_core::world::take_off::<FluidState>(world, entity);
             }
         }
     }
@@ -532,6 +557,23 @@ mod tests {
             state.advance(placed, &tank, 1.0 / 60.0);
         }
         state
+    }
+
+    #[test]
+    fn the_surface_is_made_again_only_when_the_water_moved() {
+        let mut state = dam(FluidMethod::Pbf, 0.1);
+        let placed = Mat4::IDENTITY;
+        let first = state.surface_if_moved(placed, false).expect("never made");
+        assert!(!first.0.is_empty());
+        assert_eq!(first, state.surface(placed), "the same as made plainly");
+        assert!(state.surface_if_moved(placed, false).is_none(), "nothing moved");
+        assert!(state.surface_if_moved(placed, true).is_some(), "asked for again");
+        assert!(state.surface_if_moved(Mat4::from_translation(Vec3::X), false).is_some(), "moved as a whole");
+        let tank = [Obstacle::ground(0.0)];
+        state.advance(Mat4::from_translation(Vec3::X), &tank, 1.0 / 60.0);
+        assert!(state.surface_if_moved(Mat4::from_translation(Vec3::X), false).is_some(), "a step");
+        let _ = state.particles_mut();
+        assert!(state.surface_if_moved(Mat4::from_translation(Vec3::X), false).is_some(), "pushed from outside");
     }
 
     #[test]

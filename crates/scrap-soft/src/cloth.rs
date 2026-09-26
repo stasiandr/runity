@@ -554,7 +554,7 @@ impl scrap_core::world::Dress for ClothDress {
                 let _ = world.insert_one(entity, ClothState::new(cloth));
             }
             None => {
-                let _ = world.remove_one::<ClothState>(entity);
+                scrap_core::world::take_off::<ClothState>(world, entity);
             }
         }
     }

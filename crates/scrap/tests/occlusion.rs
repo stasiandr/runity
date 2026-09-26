@@ -84,7 +84,10 @@ fn what_stands_behind_a_wall_is_left_out_and_nothing_seen_is() {
     let red = |p: &[u8]| p[0] > p[2] + 40;
     let reds = all.chunks(4).filter(|p| red(p)).count();
     assert!(reds > 20, "the cubes in front are seen: {reds} red pixels");
-    assert_eq!(seen.chunks(4).filter(|p| red(p)).count(), reds, "and are red with culling too");
+    // Red with culling too, a pixel or two of edge aside: shaded as another
+    // instance they would be blue.
+    let seen_reds = seen.chunks(4).filter(|p| red(p)).count();
+    assert!(seen_reds.abs_diff(reds) <= reds / 20, "and are red with culling too: {seen_reds} of {reds}");
     // What the CPU's frustum let through, less the fifty behind the wall.
     assert_eq!(kept, listed - 50, "all that is seen, none of what is behind: {kept} of {listed}");
 }

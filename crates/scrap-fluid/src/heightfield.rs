@@ -719,7 +719,7 @@ impl scrap_core::world::Dress for HeightfieldDress {
                 let _ = world.insert_one(entity, ShallowState::new(w));
             }
             None => {
-                let _ = world.remove_one::<ShallowState>(entity);
+                scrap_core::world::take_off::<ShallowState>(world, entity);
             }
         }
         match line.ripples() {
@@ -727,7 +727,7 @@ impl scrap_core::world::Dress for HeightfieldDress {
                 let _ = world.insert_one(entity, RipplesState::new(r));
             }
             None => {
-                let _ = world.remove_one::<RipplesState>(entity);
+                scrap_core::world::take_off::<RipplesState>(world, entity);
             }
         }
         match line.snow_cover() {
@@ -735,7 +735,7 @@ impl scrap_core::world::Dress for HeightfieldDress {
                 let _ = world.insert_one(entity, SnowState::new(c));
             }
             None => {
-                let _ = world.remove_one::<SnowState>(entity);
+                scrap_core::world::take_off::<SnowState>(world, entity);
             }
         }
     }
