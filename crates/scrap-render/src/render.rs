@@ -1585,7 +1585,9 @@ impl MaterialShaders {
         let Ok(entries) = scrap_core::files::read_dir(&self.dir) else {
             return Vec::new();
         };
+        // What is new or changed, read; then built all together.
         let mut out = Vec::new();
+        let mut read = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "wgsl") {
@@ -1600,13 +1602,16 @@ impl MaterialShaders {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let result = scrap_core::files::read_to_string(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|source| {
-                    renderer.set_material_shader(gpu, crate::asset::shader_id(&name), &source)
-                })
-                .map_err(|e| format!("{}:\n{e}", path.display()));
-            out.push((name, result));
+            match scrap_core::files::read_to_string(&path) {
+                Ok(source) => read.push((name, path, source)),
+                Err(e) => out.push((name, Err(format!("{}:\n{e}", path.display())))),
+            }
+        }
+        let shaders: Vec<(crate::asset::AssetId, String)> =
+            read.iter().map(|(name, _, source)| (crate::asset::shader_id(name), source.clone())).collect();
+        let built = renderer.set_material_shaders(gpu, &shaders);
+        for ((name, path, _), result) in read.into_iter().zip(built) {
+            out.push((name, result.map_err(|e| format!("{}:\n{e}", path.display()))));
         }
         out
     }
@@ -1940,23 +1945,108 @@ fn scene_pipelines(
 ) -> (
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
     std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    Option<String>,
 ) {
+    // An error scope is the thread's own: each pipeline, built on
+    // whichever worker, is checked where it is made.
     let scene_pipeline = |look: Look, prepassed: bool| {
-        crate::lean::scene_pipeline(
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipeline = crate::lean::scene_pipeline(
             &gpu.device,
             shader,
             if look.skinned { layouts.skinned } else { layouts.main },
             look.describe(prepassed, samples),
             false,
-        )
+        );
+        (pipeline, pollster::block_on(scope.pop()).map(|e| e.to_string()))
     };
-    let scene = looks.iter().map(|&look| (look, scene_pipeline(look, false))).collect();
-    let prepassed = looks
-        .iter()
-        .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
-        .map(|&look| (look, scene_pipeline(look, true)))
+    // Each pipeline is the shader translated for the device again, most of
+    // a millisecond of one core's work: built on every core, a material
+    // shader's sixty-odd are ready in a tenth of the time.
+    let mut wanted: Vec<(Look, bool)> = looks.iter().map(|&look| (look, false)).collect();
+    wanted.extend(
+        looks
+            .iter()
+            .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
+            .map(|&look| (look, true)),
+    );
+    let built = scrap_core::jobs::map(&wanted, 1, |&(look, prepassed)| scene_pipeline(look, prepassed));
+    let mut scene = std::collections::HashMap::new();
+    let mut prepassed = std::collections::HashMap::new();
+    let mut first_error = None;
+    for ((look, pre), (pipeline, error)) in wanted.into_iter().zip(built) {
+        if first_error.is_none() {
+            first_error = error;
+        }
+        if pre {
+            prepassed.insert(look, pipeline);
+        } else {
+            scene.insert(look, pipeline);
+        }
+    }
+    (scene, prepassed, first_error)
+}
+
+/// What a material shader is built on: the standard shader and how the
+/// renderer's pipelines are laid out.
+struct MaterialBase<'a> {
+    shader: &'a str,
+    traced: bool,
+    bindless: bool,
+    samples: u32,
+    layouts: &'a Layouts<'a>,
+}
+
+/// A material shader's module and its pipelines: the standard shader with
+/// `surface` put in, checked, and built for every lit look.
+#[allow(clippy::type_complexity)]
+fn material_pipelines(
+    gpu: &Gpu,
+    base: &MaterialBase,
+    id: crate::asset::AssetId,
+    surface: &str,
+) -> Result<
+    (
+        wgpu::ShaderModule,
+        std::collections::HashMap<Look, wgpu::RenderPipeline>,
+        std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    ),
+    String,
+> {
+    let composed = with_surface(base.shader, surface)?;
+    let source = crate::bindless::prepared(
+        &if base.traced {
+            crate::ray::traced(&composed)
+        } else {
+            composed
+        },
+        base.bindless,
+    );
+    use wgpu::naga;
+    let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&source))?;
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("scrap::material shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        return Err(format!("the shader does not fit the renderer: {error}"));
+    }
+    // Not the `fs_unlit` looks: each is another pipeline to compile for
+    // every material shader, for the few see-through unlit ones.
+    let looks: Vec<Look> = Look::all()
+        .into_iter()
+        .filter(|look| !look.unlit)
+        .map(|look| Look { shader: Some(id), ..look })
         .collect();
-    (scene, prepassed)
+    let (scene, prepassed, error) = scene_pipelines(gpu, &shader, base.samples, base.layouts, looks);
+    if let Some(error) = error {
+        return Err(format!("the shader does not fit the renderer: {error}"));
+    }
+    Ok((shader, scene, prepassed))
 }
 
 /// Every pipeline the renderer draws with, from one shader module: at
@@ -2098,13 +2188,13 @@ fn build_pipelines(
     output: wgpu::TextureFormat,
     samples: u32,
     layouts: &Layouts,
-) -> Pipelines {
+) -> (Pipelines, Option<String>) {
     let format = crate::post::HDR_FORMAT;
     let multisample = wgpu::MultisampleState {
         count: samples,
         ..Default::default()
     };
-    let (scene, prepassed) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
+    let (scene, prepassed, scene_error) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
     let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
@@ -2403,7 +2493,7 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    Pipelines {
+    (Pipelines {
         scene,
         prepassed,
         shadow,
@@ -2419,7 +2509,7 @@ fn build_pipelines(
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
         fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
         terrain_mesh: terrain_mesh_pipelines(gpu, source, samples, layouts),
-    }
+    }, scene_error)
 }
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -2473,7 +2563,7 @@ impl Renderer {
                 label: Some("scrap::render (reloaded)"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-        let pipelines = build_pipelines(
+        let (pipelines, scene_error) = build_pipelines(
             gpu,
             &shader,
             source,
@@ -2493,7 +2583,7 @@ impl Renderer {
         let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
         let ddgi_pipelines = self.ddgi.make_pipelines(gpu, &shader, self.ray.is_some());
         let restir_pipelines = self.restir.make_pipelines(gpu, &shader, self.ray.is_some());
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = pollster::block_on(scope.pop()).map(|e| e.to_string()).or(scene_error) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
@@ -2510,10 +2600,8 @@ impl Renderer {
             .iter()
             .map(|(id, s)| (*id, s.clone()))
             .collect();
-        for (id, surface) in own {
-            if let Err(e) = self.set_material_shader(gpu, id, &surface) {
-                eprintln!("a material's shader no longer builds on the reloaded one: {e}");
-            }
+        for e in self.set_material_shaders(gpu, &own).into_iter().filter_map(Result::err) {
+            eprintln!("a material's shader no longer builds on the reloaded one: {e}");
         }
         Ok(())
     }
@@ -2654,68 +2742,50 @@ impl Renderer {
         id: crate::asset::AssetId,
         surface: &str,
     ) -> Result<(), String> {
+        self.set_material_shaders(gpu, &[(id, surface.to_string())]).remove(0)
+    }
+
+    /// [`Renderer::set_material_shader`] for several at once, built side
+    /// by side on every core: a game's shaders at its start. Each one's
+    /// result, in their order.
+    pub fn set_material_shaders(
+        &mut self,
+        gpu: &Gpu,
+        shaders: &[(crate::asset::AssetId, String)],
+    ) -> Vec<Result<(), String>> {
         self.other_samples = None;
-        let composed = with_surface(&self.base_shader, surface)?;
-        let source = crate::bindless::prepared(
-            &if self.ray.is_some() {
-                crate::ray::traced(&composed)
-            } else {
-                composed
-            },
-            self.bindless.is_some(),
-        );
-        use wgpu::naga;
-        let module =
-            naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(&source))?;
-        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("scrap::material shader"),
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            });
-        // Not the `fs_unlit` looks: each is another pipeline to compile
-        // for every material shader, for the few see-through unlit ones.
-        let looks: Vec<Look> = Look::all()
-            .into_iter()
-            .filter(|look| !look.unlit)
-            .map(|look| Look {
-                shader: Some(id),
-                ..look
-            })
-            .collect();
-        let built = scene_pipelines(
-            gpu,
-            &shader,
-            self.samples,
-            &Layouts {
-                main: &self.pipeline_layout,
-                shadow: &self.shadow_pipeline_layout,
-                shadow_clip: &self.shadow_clip_layout,
-                skinned: &self.skinned_layout,
-                sky: &self.sky_layout,
-                fog_inject: &self.fog_inject_layout,
-                fog_integrate: &self.fog_integrate_layout,
-                terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
-            },
-            looks,
-        );
-        if let Some(error) = pollster::block_on(scope.pop()) {
-            return Err(format!("the shader does not fit the renderer: {error}"));
+        let layouts = Layouts {
+            main: &self.pipeline_layout,
+            shadow: &self.shadow_pipeline_layout,
+            shadow_clip: &self.shadow_clip_layout,
+            skinned: &self.skinned_layout,
+            sky: &self.sky_layout,
+            fog_inject: &self.fog_inject_layout,
+            fog_integrate: &self.fog_integrate_layout,
+            terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
+        };
+        let base = MaterialBase {
+            shader: &self.base_shader,
+            traced: self.ray.is_some(),
+            bindless: self.bindless.is_some(),
+            samples: self.samples,
+            layouts: &layouts,
+        };
+        let built = scrap_core::jobs::map(shaders, 1, |(id, surface)| material_pipelines(gpu, &base, *id, surface));
+        let mut out = Vec::with_capacity(shaders.len());
+        for ((id, surface), built) in shaders.iter().zip(built) {
+            out.push(built.map(|(shader, scene, prepassed)| {
+                self.pipelines.scene.extend(scene);
+                self.pipelines.prepassed.extend(prepassed);
+                self.lean_modules.insert(Some(*id), shader);
+                self.material_shaders.insert(*id, surface.clone());
+                self.shader_textures.insert(*id, declared_textures(surface));
+            }));
         }
-        self.pipelines.scene.extend(built.0);
-        self.lean_modules.insert(Some(id), shader.clone());
-        self.lean.forget();
-        self.pipelines.prepassed.extend(built.1);
-        self.material_shaders.insert(id, surface.to_string());
-        self.shader_textures.insert(id, declared_textures(surface));
-        Ok(())
+        if out.iter().any(|r| r.is_ok()) {
+            self.lean.forget();
+        }
+        out
     }
 
     /// Build a renderer for a window's surface.
@@ -3409,7 +3479,7 @@ impl Renderer {
             },
             bindless_on,
         );
-        let pipelines = build_pipelines(
+        let (pipelines, scene_error) = build_pipelines(
             gpu,
             &shader,
             &shader_source,
@@ -3427,6 +3497,10 @@ impl Renderer {
             },
         );
 
+        // The standard shader not fitting its own renderer is a bug here.
+        if let Some(error) = scene_error {
+            panic!("the renderer's shader does not fit it: {error}");
+        }
 
         let white_capacity = 4096;
         let white_colors = white_buffer(gpu, white_capacity);
