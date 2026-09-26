@@ -106,6 +106,10 @@ pub struct Database {
     open: Vec<bool>,
     /// Frames a search looks at: open, and not at the end of a take.
     searchable: Vec<bool>,
+    /// Frames that start getting onto or down off something higher than a
+    /// step within two thirds of a second: looked through on their own
+    /// when a ledge is ahead.
+    climb_starts: Vec<(usize, f32)>,
     /// Runs of frames with the least and most of each feature over them,
     /// sixteen frames and sixty-four: a run whose nearest corner is
     /// further than what is found already is passed over whole.
@@ -130,6 +134,20 @@ pub struct Database {
     /// How high an ankle is over the floor it stands on, and a toe.
     ankle: f32,
     toe: f32,
+}
+
+/// A climb or a drop, checked against the world: its rise times `warp`
+/// is the world's, it tops out at frame `end` at height `top`, and its walk
+/// to the edge (reached at frame `edge`) times `stretch` meets the edge.
+#[derive(Debug, Clone, Copy)]
+struct Plan {
+    warp: f32,
+    end: usize,
+    top: f32,
+    stretch: f32,
+    edge: usize,
+    /// The run-up could not be made to fit: a last resort.
+    poor: bool,
 }
 
 /// A run of frames and the box its features lie in.
@@ -167,6 +185,9 @@ impl Bounds {
         cost
     }
 }
+
+/// What a mirrored clip's name ends with.
+const MIRRORED: &str = " (mirrored)";
 
 /// The joint on the other side: `LeftArm` for `RightArm`, itself for the
 /// spine.
@@ -233,7 +254,7 @@ fn mirror(skeleton: &Skeleton, clip: &Clip, rate: f32) -> Option<Clip> {
     for (j, values) in rotations.into_iter().enumerate() {
         channels.push(Channel { joint: j as u16, path: Path::Rotation, times: times.clone(), values });
     }
-    Some(Clip { name: format!("{} (mirrored)", clip.name), duration: times.last().copied().unwrap_or(0.0), channels })
+    Some(Clip { name: format!("{}{MIRRORED}", clip.name), duration: times.last().copied().unwrap_or(0.0), channels })
 }
 
 /// Which way a character stands: its forward on the ground, from the
@@ -536,6 +557,25 @@ impl Database {
                 searchable[f] = open[f];
             }
         }
+        let climb_starts: Vec<(usize, f32)> = ranges
+            .iter()
+            .flat_map(|(_, r)| {
+                let end = r.end.saturating_sub(tail).max(r.start + 1);
+                let support = &support;
+                (r.start..end).filter_map(move |f| {
+                    let here = support[f];
+                    if !(f..r.end.min(f + 30)).any(|g| (support[g] - here).abs() > 0.35) {
+                        return None;
+                    }
+                    // How far up (or down) it goes within two seconds.
+                    let rise = (f..r.end.min(f + 60))
+                        .map(|g| support[g] - here)
+                        .fold(0.0f32, |a, d| if d.abs() > a.abs() { d } else { a });
+                    Some((f, rise))
+                })
+            })
+            .filter(|&(f, _)| searchable[f])
+            .collect();
         let mut small = Vec::new();
         let mut large = Vec::new();
         for (_, r) in &ranges {
@@ -560,6 +600,7 @@ impl Database {
             support,
             open,
             searchable,
+            climb_starts,
             small,
             large,
             features,
@@ -592,6 +633,15 @@ impl Database {
     /// The clip a frame is in, by index.
     pub fn clip_of(&self, frame: usize) -> usize {
         self.clips.iter().position(|(_, r)| r.contains(&frame)).unwrap_or(0)
+    }
+
+    /// Which take a frame is of — a clip and its mirror image are one take
+    /// — and how far into it.
+    pub fn take_of(&self, frame: usize) -> (usize, usize) {
+        let clip = self.clip_of(frame);
+        let originals = self.clips.iter().filter(|(n, _)| !n.ends_with(MIRRORED)).count();
+        let take = if clip >= originals { clip - originals } else { clip };
+        (take, frame - self.clips[clip].1.start)
     }
 
     /// Whether a frame is the last of its clip.
@@ -834,6 +884,9 @@ pub struct Feel {
     pub pose_weight: f32,
     /// How far a joint may turn in a jump for nothing, radians.
     pub pose_free: f32,
+    /// What a climb's warping costs against the features: the squared
+    /// logarithms of its rise's and its run-up's scale, times this.
+    pub fit_weight: f32,
     /// How fast a jump's difference fades.
     pub blend_halflife: f32,
     /// How fast the animation's root is pulled to the spring, and how far
@@ -867,6 +920,7 @@ impl Default for Feel {
             switch_margin: 0.0,
             pose_weight: 10.0,
             pose_free: 0.5,
+            fit_weight: 30.0,
             blend_halflife: 0.1,
             hold_halflife: 0.2,
             leash: 0.15,
@@ -945,6 +999,10 @@ struct FootLock {
     lift: Option<f32>,
     /// Where it was put last step.
     shown: Option<Vec3>,
+    /// Let go out of reach: not held again until it lifts.
+    waiting: bool,
+    /// How far it is kept out of what is solid, eased.
+    push: Vec3,
     fading: (Vec3, Vec3),
     last: Option<Vec3>,
 }
@@ -1152,32 +1210,40 @@ impl Matcher {
         // Committed: the frame playing gets onto something or down off it,
         // higher than a step, soon. The animation leads until it has, the
         // capsule following it up as far as it climbs.
-        let over = |(rise, drop): (f32, f32)| rise.max(drop) > self.feel.body.step + 0.05;
+        let over = |(rise, drop): (f32, f32)| rise.max(drop) > self.feel.body.step;
         // Held to the climb that was checked: up to the frame it tops out
         // at, and no further along the take without checking again.
         let rising = self.plan_top > self.plan_base;
         // Up: done once at the top. And while it stands on something, not
         // held against a stick that points elsewhere.
-        let topped = rising && self.root.0.y >= self.plan_top - 0.05;
+        // Topped out once the capsule stands up there too, not when the
+        // hips have got that high with the body still before the face.
+        let on_top = self.spring.0.y >= self.plan_top - 0.1;
+        let topped = rising && self.root.0.y >= self.plan_top - 0.05 && on_top;
         let steady = self.grounded && (self.root.0.y - self.spring.0.y).abs() < 0.1;
         let heading = self.root.1 * Vec3::Z;
         let turned_away = flat(ask.velocity).length() > 0.2 && flat(ask.velocity).normalize().dot(heading) < 0.5;
+        let over_time = if rising && !on_top { 45 } else { 0 };
         let holding = self.climbing_on
-            && self.frame <= self.plan_end
+            && self.frame <= self.plan_end + over_time
             && db.clip_of(self.frame) == db.clip_of(self.plan_end)
             && !topped
             && !(steady && turned_away);
-        let wants = holding || over(self.climbing(db, 20));
+        let wants = holding || over(self.climbing(db, 30));
         let committed = wants
             && (holding || {
                 // Only a climb the world has: where the take gets to, and
                 // how high, set against the ground there.
-                match self.plan(db, ask, world) {
-                    Some((warp, end, top, stretch, edge)) => {
-                        self.warp = warp;
-                        self.stretch = (stretch, edge);
-                        self.plan_end = end;
-                        self.plan_top = top;
+                let plan = self.plan_at(db, self.frame, ask, world);
+                if self.debug {
+                    eprintln!("  commit? frame {} rise/drop {:?} plan {plan:?}", self.frame, self.climbing(db, 30));
+                }
+                match plan {
+                    Some(plan) => {
+                        self.warp = plan.warp;
+                        self.stretch = (plan.stretch, plan.edge);
+                        self.plan_end = plan.end;
+                        self.plan_top = plan.top;
                         self.plan_base = self.spring.0.y;
                         true
                     }
@@ -1187,8 +1253,7 @@ impl Matcher {
         self.climbing_on = committed;
         // As high as the checked climb goes over the ground the capsule
         // stands on now.
-        let (rise, _) = self.climbing(db, 20);
-        let reach = if committed { self.plan_top - self.spring.0.y } else { rise };
+        let reach = if committed { self.plan_top - self.spring.0.y } else { 0.0 };
         let body = Capsule { step: self.feel.body.step.max((reach + 0.15).min(self.feel.climb)), ..self.feel.body };
         if !committed {
             let (x, v, a) = self.spring;
@@ -1197,10 +1262,17 @@ impl Matcher {
             let (feet, grounded) = world.walk(x, want - Vec3::Y * self.fall * dt, &body, dt);
             self.grounded = grounded;
             let moved = flat(feet - x);
+            // What a climber could do: something to get onto is in the way,
+            // not a wall.
+            let climber = Capsule { step: self.feel.climb, ..self.feel.body };
+            let (over, _) = world.walk(x, want, &climber, dt);
+            let climbable = flat(over - x).length() + 1e-4 >= want.length() * 0.5;
             // Held back by a wall: the spring goes as fast as it went, or it
             // would wind up against it and shoot off when let go. A step up
-            // holds it back a little, and that is not a wall.
-            self.spring = if moved.length() + 1e-4 < want.length() * 0.5 {
+            // holds it back a little, and that is not a wall; nor is a ledge
+            // to climb — the path asked for goes on over it, and the search
+            // finds the climb that starts from here.
+            self.spring = if moved.length() + 1e-4 < want.length() * 0.5 && !climbable {
                 (feet, moved / dt.max(1e-4), Vec3::ZERO)
             } else {
                 (feet, v_to, a_to)
@@ -1225,22 +1297,75 @@ impl Matcher {
         if forced || (!committed && self.since_search >= self.feel.search_every) {
             self.since_search = 0.0;
             let query = self.query(db, ask, world);
-            // Played on into a frame that is not walking: away from it.
-            let current = if forced || !db.open[self.frame] { f32::INFINITY } else { db.cost(self.frame, &query) };
+            // Played on into a frame that is not walking, or into a climb
+            // this world does not have here: away from it.
+            let steps_over = |f: usize| {
+                let (up, down) = Self::climbing_at(db, f, 30);
+                up.max(down) > self.feel.body.step
+            };
+            let misfit = !committed && steps_over(self.frame) && self.plan_at(db, self.frame, ask, world).is_none();
+            let current = if forced || misfit || !db.open[self.frame] { f32::INFINITY } else { db.cost(self.frame, &query) };
             // The nearest few by features, then weighed by how far each
             // whole pose is from the one shown: a jump to a pose far off is
             // a blend through poses nobody made — a leg swung up, an arm
             // through the body.
             let shown = self.blended(db);
-            let clip = db.clip_of(self.frame);
-            let best = db
-                .search_best(&query, 16)
+            let here = db.take_of(self.frame);
+            // A ledge or a drop ahead: the frames that start a climb looked
+            // through on their own, so the one whose run-up fits from here is
+            // among those weighed.
+            let mut pool = db.search_best(&query, 16);
+            let ahead: [f32; 3] = std::array::from_fn(|k| query[27 + k] * db.scale[27 + k] + db.offset[27 + k]);
+            let ledge = ahead.iter().copied().fold(0.0f32, |a, h| if h.abs() > a.abs() { h } else { a });
+            if self.debug {
+                eprintln!("  ahead {ahead:.2?}");
+            }
+            if ledge.abs() > self.feel.body.step + 0.05 {
+                // Only climbs as high as this one, within a quarter: the
+                // nearest poses are no use going up the wrong height.
+                let mut climbs: Vec<(usize, f32)> = db
+                    .climb_starts
+                    .iter()
+                    .filter(|&&(_, rise)| rise.signum() == ledge.signum() && (rise / ledge - 1.0).abs() < 0.25)
+                    .map(|&(f, _)| (f, db.cost(f, &query)))
+                    .collect();
+                if self.debug {
+                    eprintln!("  ledge {ledge:.2} ahead {ahead:.2?}: {} climbs of that height", climbs.len());
+                }
+                let k = climbs.len().min(32);
+                if k > 0 {
+                    climbs.select_nth_unstable_by(k - 1, |a, b| a.1.total_cmp(&b.1));
+                    climbs.truncate(k);
+                    pool.extend(climbs);
+                }
+            }
+            let best = pool
                 .into_iter()
                 // Not to a frame of the same take within half a second either
                 // way: back a few frames is a stutter, and round again a loop.
-                .filter(|&(f, _)| !(db.clip_of(f) == clip && f.abs_diff(self.frame) <= 15))
+                // A take's mirror image is the same take: back and forth
+                // between the two is the same loop.
+                .filter(|&(f, _)| {
+                    let (take, at) = db.take_of(f);
+                    !(take == here.0 && at.abs_diff(here.1) <= 15)
+                })
                 .map(|(f, cost)| (f, cost + self.feel.pose_weight * pose_distance(&shown, db.pose(f), self.feel.pose_free)))
+                // A frame that starts a climb or a drop: only one that fits
+                // the ledge in front, when it is in front — the run-up the
+                // take had, from where the character is — and the better it
+                // fits, the cheaper.
+                .filter_map(|(f, score)| {
+                    if !steps_over(f) {
+                        return Some((f, score));
+                    }
+                    let plan = self.plan_at(db, f, ask, world)?;
+                    let misfit = plan.warp.ln().powi(2) + plan.stretch.ln().powi(2) + if plan.poor { 10.0 } else { 0.0 };
+                    Some((f, score + self.feel.fit_weight * misfit))
+                })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
+            if self.debug {
+                eprintln!("  search: forced {forced} misfit {misfit} open {} current {current:.1} best {best:?} at_end {}", db.open[self.frame], db.at_end(self.frame));
+            }
             if let Some((best, score)) = best {
                 if score < current * (1.0 - self.feel.switch_margin) {
                     self.jump(db, best);
@@ -1317,11 +1442,21 @@ impl Matcher {
     /// next `frames` of its take. Two thirds of a second is soon enough
     /// that it is the edge in front of it, not one further along the take.
     fn climbing(&self, db: &Database, frames: usize) -> (f32, f32) {
-        let clip = &db.clips[db.clip_of(self.frame)].1;
-        let here = db.support[self.frame];
-        (self.frame..clip.end.min(self.frame + frames))
+        Self::climbing_at(db, self.frame, frames)
+    }
+
+    fn climbing_at(db: &Database, frame: usize, frames: usize) -> (f32, f32) {
+        let clip = &db.clips[db.clip_of(frame)].1;
+        let here = db.support[frame];
+        (frame..clip.end.min(frame + frames))
             .map(|f| db.support[f] - here)
             .fold((0.0f32, 0.0f32), |(up, down), d| (up.max(d), down.max(-d)))
+    }
+
+    /// The climb committed to, if any: how much its rise is warped, and
+    /// how much the walk to the ledge's face is stretched.
+    pub fn climb(&self) -> Option<(f32, f32)> {
+        self.climbing_on.then_some((self.warp, self.stretch.0))
     }
 
     /// Which feet are held where they were put down (heel or toe), left
@@ -1343,19 +1478,30 @@ impl Matcher {
     /// higher, and how high the ground is there. What to multiply the
     /// take's rise by to make the world's, and the frame it tops out at;
     /// `None` when it is not the same climb to within 30 cm.
-    fn plan(&self, db: &Database, ask: &Ask, world: &dyn Surroundings) -> Option<(f32, usize, f32, f32, usize)> {
-        let clip = &db.clips[db.clip_of(self.frame)].1;
-        let here = db.support[self.frame];
-        let end = clip.end.min(self.frame + 60);
-        let peak = (self.frame..end).max_by(|&a, &b| {
-            (db.support[a] - here).abs().total_cmp(&(db.support[b] - here).abs())
-        })?;
+    fn plan_at(&self, db: &Database, frame: usize, ask: &Ask, world: &dyn Surroundings) -> Option<Plan> {
+        let clip = &db.clips[db.clip_of(frame)].1;
+        let here = db.support[frame];
+        let end = clip.end.min(frame + 60);
+        let peak = (frame..end).max_by(|&a, &b| (db.support[a] - here).abs().total_cmp(&(db.support[b] - here).abs()))?;
         let take = db.support[peak] - here;
-        // Where the root will be: the take's steps, turned as it turns.
+        if take.abs() < 0.1 {
+            return None;
+        }
+        // Where it has got up (or down): the first frame most of the way,
+        // not the highest point of a long platform somewhere past its edge.
+        let peak = (frame..=peak).find(|&f| (db.support[f] - here) / take > 0.9).unwrap_or(peak);
+        // The take's steps from here, turned as it turns: where it gets to
+        // by the top (or bottom), and how far it walks before it is half way.
+        let edge = (frame..=peak).find(|&f| (db.support[f] - here).abs() > take.abs() / 2.0).unwrap_or(peak);
         let (mut at, mut turn) = (self.root.0, self.root.1);
-        for f in self.frame..=peak {
+        let mut walked = Vec3::ZERO;
+        for f in frame..=peak {
             let (v, spin) = db.motion[f];
-            at += turn * flat(v) / db.setup.rate;
+            let step = turn * flat(v) / db.setup.rate;
+            at += step;
+            if f < edge {
+                walked += step;
+            }
             turn *= Quat::from_rotation_y(spin / db.setup.rate);
         }
         // Where the stick points: a climb that goes elsewhere — the take's
@@ -1363,37 +1509,104 @@ impl Matcher {
         let wanted = flat(ask.velocity);
         let goes = flat(at - self.root.0);
         if wanted.length() < 0.2 || goes.length() < 0.1 || goes.normalize().dot(wanted.normalize()) < 0.7 {
+            if self.debug {
+                eprintln!("plan f{frame} take {take:.2}: goes {goes:.2?} not along {wanted:.2?}");
+            }
             return None;
         }
         let climb = self.feel.climb;
         let base = self.spring.0.y;
         let (hit, _) = world.ground(Vec3::new(at.x, base + climb, at.z), climb * 2.0)?;
         let real = hit.y - base;
-        if (real - take).abs() >= 0.3 {
+        let warp = real / take;
+        // The same climb within a quarter: more than that and the hands, the
+        // knees, the timing are all somebody else's.
+        if !(0.8..=1.25).contains(&warp) || walked.length() < 0.1 {
+            if self.debug {
+                eprintln!("plan f{frame} take {take:.2} real {real:.2} walked {:.2}: warp; lands {at:.2?} root {:.2?} base {base:.2} hit {hit:.2?}", walked.length(), self.root.0);
+            }
             return None;
         }
-        // Up a ledge: how far the take walks before it is half way up — to
-        // the ledge's face, near enough — against how far this one's face
-        // is. The walk there is stretched or squeezed to meet it, so the
-        // body climbs at the face and not through it.
-        let mut reach = (1.0, self.frame);
-        if take > 0.0 {
-            let edge = (self.frame..=peak).find(|&f| db.support[f] - here > take / 2.0).unwrap_or(peak);
-            let mut walked = Vec3::ZERO;
-            let mut turn = self.root.1;
-            for f in self.frame..edge {
+        // Where the edge is: up, the ledge's face, found by a ray at half
+        // its height; down, where the ground under the path falls away.
+        let dir = walked.normalize();
+        let edge_at = if take > 0.0 {
+            let from = Vec3::new(self.root.0.x, base + real.min(take) * 0.5, self.root.0.z);
+            world.ray(from, dir, 3.0)?
+        } else {
+            let fall = self.feel.body.step * 0.5;
+            (1..=60)
+                .map(|k| k as f32 * 0.05)
+                .find(|&d| {
+                    let p = self.root.0 + dir * d;
+                    world.ground(Vec3::new(p.x, base + 0.3, p.z), climb * 2.0).is_none_or(|(g, _)| g.y < base - fall)
+                })?
+        };
+        // Up: where the take's edge was — its first foot down on top is a
+        // hand's width past it — and when; so this climb's first foot on top
+        // lands as far past this face, not half a body short of it with the
+        // knees in the face. Down: the frame half way down, at the edge.
+        // Only the walk up to where the climb starts is stretched: the climb
+        // itself goes as far as the take's did, or it never gets over.
+        let (stretch, edge) = if take > 0.0 {
+            let (mut root_at, mut turn) = (Vec3::ZERO, Quat::IDENTITY);
+            let mut landing = None;
+            let mut rising: Option<(f32, usize)> = None;
+            let mut last: Option<[Vec3; 2]> = None;
+            for f in frame..=peak {
+                if rising.is_none() && (db.support[f] - here) / take > 0.1 {
+                    rising = Some((root_at.z, f));
+                }
+                // Each foot where the take has it, from where it started:
+                // on top once it is most of the way up and has stopped.
+                let pose = db.skeleton.world_matrices(db.pose(f));
+                let lift = db.support[f] - here;
+                let feet: [Vec3; 2] = std::array::from_fn(|s| {
+                    let p = pose[db.legs[s].0].w_axis.truncate();
+                    root_at + turn * Vec3::new(p.x, p.y + lift, p.z)
+                });
+                if let Some(last) = last {
+                    if let Some(s) = (0..2).find(|&s| {
+                        feet[s].y - db.ankle > take * 0.8 && flat(feet[s] - last[s]).length() * db.setup.rate < 0.5
+                    }) {
+                        landing = Some(feet[s].z - 0.12);
+                        break;
+                    }
+                }
+                last = Some(feet);
                 let (v, spin) = db.motion[f];
-                walked += turn * flat(v) / db.setup.rate;
+                root_at += turn * flat(v) / db.setup.rate;
                 turn *= Quat::from_rotation_y(spin / db.setup.rate);
             }
-            if walked.length() > 0.1 {
-                let from = Vec3::new(self.root.0.x, base + real.min(take) * 0.5, self.root.0.z);
-                if let Some(face) = world.ray(from, walked.normalize(), 3.0) {
-                    reach = ((face / walked.length()).clamp(0.5, 2.0), edge);
+            // In the take's own space, facing +z where the plan starts: how
+            // far ahead its edge was, and how far it walked before rising.
+            let (Some(edge_z), Some((approach, rise))) = (landing, rising) else {
+                if self.debug {
+                    eprintln!("plan f{frame} take {take:.2} real {real:.2}: no foot lands on top");
                 }
+                return None;
+            };
+            let climbing = edge_z - approach;
+            let wanted = edge_at - climbing;
+            if self.debug {
+                eprintln!("plan f{frame} take {take:.2} real {real:.2} face {edge_at:.2} approach {approach:.2} climbing {climbing:.2}");
             }
+            let stretch = if approach > 0.05 { wanted / approach } else if wanted.abs() < 0.1 { 1.0 } else { 0.0 };
+            (stretch, rise)
+        } else {
+            (edge_at / walked.length(), edge)
+        };
+        if self.debug {
+            eprintln!("plan f{frame} take {take:.2} real {real:.2} face {edge_at:.2} stretch {stretch:.2}");
         }
-        Some(((real / take).clamp(0.5, 1.5), peak, hit.y, reach.0, reach.1))
+        // A low box is stepped onto from where one stands; a ledge wants
+        // its run-up. Out of that, the run-up is squeezed or stretched as
+        // far as it will go and the plan is marked a poor fit: taken only
+        // when nothing fits, rather than standing at the face for ever.
+        let squeeze = if real.abs() <= 0.6 { 0.35 } else { 0.7 };
+        let poor = !(squeeze..=1.43).contains(&stretch);
+        let stretch = stretch.clamp(squeeze, 1.43);
+        Some(Plan { warp, end: peak, top: hit.y, stretch, edge, poor })
     }
 
     /// Keep each foot that is down where it went down: the leg bent to it,
@@ -1429,7 +1642,10 @@ impl Matcher {
             // A ray that starts inside something found a wall, not ground.
             let under = |p: Vec3| {
                 let from = Vec3::new(p.x, floor + reach * 0.5, p.z);
-                surroundings.ground(from, reach).map(|(hit, _)| hit.y).filter(|&y| y < from.y - 1e-3)
+                surroundings
+                    .ground(from, reach)
+                    .map(|(hit, _)| hit.y)
+                    .filter(|&y| y < from.y - 1e-3)
             };
             let toe = db.toes[side].map(|t| world[t].w_axis.truncate());
             let ground = [Some(a), toe].into_iter().flatten().filter_map(under).reduce(f32::max);
@@ -1459,12 +1675,12 @@ impl Matcher {
                     foot.toe_at = None;
                 }
             }
+            if !down[side] {
+                foot.waiting = false;
+            }
+            let reachable = |at: Vec3| at.distance(world[leg.2].w_axis.truncate()) < leg_length[side] * 1.02;
             foot.at = match foot.at {
-                Some(at)
-                    if down[side]
-                        && flat(at - free).length() <= self.feel.lock_reach
-                        && at.distance(world[leg.2].w_axis.truncate()) < leg_length[side] * 1.02 =>
-                {
+                Some(at) if down[side] && flat(at - free).length() <= self.feel.lock_reach && reachable(at) => {
                     // Held, but creeping after the animation: a stance the
                     // animation has moved a foot of — another take's idle, a
                     // shift of weight — is taken up slowly rather than held
@@ -1479,21 +1695,31 @@ impl Matcher {
                     // step.
                     // A planted foot stands on the ground, whatever height
                     // the take had it at over its own floor.
+                    // On the step its middle is over: a toe a finger past a
+                    // riser does not stand it on the step above.
                     let toe_offset = toe.map_or(Vec3::ZERO, |t| t - a);
-                    let floor_y = [held, held + toe_offset]
-                        .into_iter()
-                        .filter_map(under)
-                        .reduce(f32::max)
-                        .map_or(free.y, |y| y + db.ankle);
-                    held.y += (floor_y - held.y) * (1.0 - (-std::f32::consts::LN_2 * dt / 0.025).exp());
+                    let floor_y = under(held + toe_offset * 0.5).map_or(free.y, |y| y + db.ankle);
+                    // Down no faster than three metres a second: settling, not a
+                    // drop. Up at once: a foot in a step is in it.
+                    // More than a step up is a face, not a floor: the foot
+                    // stays against it.
+                    if floor_y - held.y <= self.feel.body.step {
+                        let settle = (floor_y - held.y) * (1.0 - (-std::f32::consts::LN_2 * dt / 0.025).exp());
+                        held.y += settle.max(-3.0 * dt);
+                    }
                     Some(held)
                 }
                 Some(at) => {
                     // Let go: from where it was held, fading to the animation.
+                    // Out of reach climbing, it is not put down again until
+                    // it has lifted: held and let go every step is a foot
+                    // flickering. Walking, the trailing leg stretches out of
+                    // reach every stride and is put down again at once.
+                    foot.waiting = !reachable(at) && self.climbing_on;
                     foot.fading = (at - free, -velocity);
                     None
                 }
-                None if foot.toe_at.is_some() => None,
+                None if foot.toe_at.is_some() || foot.waiting => None,
                 None if down[side] => {
                     // Put down where it is shown: the foot does not jump to
                     // be held. It settles onto the ground below.
@@ -1505,17 +1731,52 @@ impl Matcher {
             let mut target = foot.at.or(rolled).unwrap_or(free + foot.fading.0);
             // Never lower than standing on what is under it: a foot fading
             // from one step to the next goes over the edge, not through it.
+            // A held foot's toe is its own business: it may be a finger past
+            // a riser.
+            let swinging = foot.at.is_none() && foot.toe_at.is_none();
             if let Some(y) = under(target) {
                 target.y = target.y.max(y + db.ankle - 0.01);
             }
             if let Some(toe) = toe {
                 // The toe as the foot is turned now, clear of the ground
-                // under it: a pointed toe goes over the next riser.
+                // under it: a pointed toe goes over the next riser. A held
+                // foot's toe only out of the ground its heel stands on.
                 let toe_at = target + (toe - a);
-                if let Some(y) = under(toe_at) {
+                let heel_ground = under(target);
+                let toe_ground = under(toe_at).map(|y| if swinging { y } else { heel_ground.map_or(y, |h| y.min(h)) });
+                if let Some(y) = toe_ground {
                     target.y = target.y.max(y + db.toe + (a.y - toe.y) - 0.01);
                 }
             }
+            // Not inside anything solid: a foot swung into a box just below
+            // its top goes onto it, and further down is kept back from the
+            // face.
+            let toe_offset = toe.map_or(Vec3::ZERO, |t| t - a);
+            let top = |p: Vec3| {
+                let from = Vec3::new(p.x, floor + self.feel.climb + 0.2, p.z);
+                surroundings.ground(from, self.feel.climb * 2.0 + 0.4).map(|(hit, _)| hit.y)
+            };
+            let inside = |t: Vec3| [t, t + toe_offset].into_iter().any(|p| top(p).is_some_and(|y| p.y < y - 0.03));
+            let mut out = target;
+            if swinging && inside(out) {
+                let highest = [out, out + toe_offset].into_iter().filter_map(top).fold(f32::MIN, f32::max);
+                // Just below the top: onto it. Further down it is a face.
+                if highest - out.y.min(out.y + toe_offset.y) <= 0.25 + db.ankle {
+                    out.y = out.y.max(highest + db.ankle).max(highest + db.toe - toe_offset.y);
+                } else {
+                    let back = -flat(forward).normalize_or_zero();
+                    for _ in 0..12 {
+                        if !inside(out) {
+                            break;
+                        }
+                        out += back * 0.03;
+                    }
+                }
+            }
+            // Eased in and out: a foot does not jump off a face.
+            let ease = 1.0 - (-std::f32::consts::LN_2 * dt / 0.04).exp();
+            foot.push += (out - target - foot.push) * ease;
+            target += foot.push;
             if foot.at.is_some() || foot.toe_at.is_some() {
                 foot.lift = Some(target.y - a.y);
             } else {

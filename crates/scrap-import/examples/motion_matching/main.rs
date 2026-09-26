@@ -176,6 +176,7 @@ impl Walker {
                     "switch_margin" => feel.switch_margin = v,
                     "pose_weight" => feel.pose_weight = v,
                     "pose_free" => feel.pose_free = v,
+                    "fit_weight" => feel.fit_weight = v,
                     "lock_reach" => feel.lock_reach = v,
                     "lock_creep" => feel.lock_creep = v,
                     "blend_halflife" => feel.blend_halflife = v,
@@ -356,7 +357,9 @@ fn video(db: std::sync::Arc<Database>, course: &str, out: &str, from: f32, to: O
         // The camera swings slowly round behind the direction of travel.
         let v = walker.matcher.spring.1;
         if v.length() > 0.3 {
-            let want = v.x.atan2(v.z) + 0.6;
+            // `MM_CAM=1.4` looks from the side.
+            let side: f32 = std::env::var("MM_CAM").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6);
+            let want = v.x.atan2(v.z) + side;
             let gap = (want - yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
             yaw += gap * 0.02;
         }

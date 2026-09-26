@@ -214,8 +214,10 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
             last_ask = ask;
             since_change += dt;
             let jumps = walker.matcher.jumps;
+            let was_climbing = walker.matcher.climb().is_some();
             if let Some((name, at)) = std::env::var("MM_AT").ok().and_then(|v| v.split_once(':').map(|(a, b)| (a.to_string(), b.parse::<f32>().unwrap_or(0.0)))) {
-                walker.matcher.debug = name == course.name && (t - at).abs() < 0.06;
+                let window: f32 = std::env::var("MM_WIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.06);
+                walker.matcher.debug = name == course.name && (t - at).abs() < window;
                 if walker.matcher.debug {
                     eprintln!("{t:.3}s frame {} root {:.3?} spring {:.3?} grounded {} committed {}", walker.matcher.frame, walker.matcher.root.0, walker.matcher.spring.0, walker.matcher.grounded, walker.matcher.committed());
                 }
@@ -223,6 +225,11 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
             let started = std::time::Instant::now();
             walker.step(ask, dt);
             clock += started.elapsed();
+            if let (false, Some((warp, stretch))) = (was_climbing, walker.matcher.climb()) {
+                if std::env::var_os("MM_CLIMBS").is_some() {
+                    println!("    {:8} {t:6.2}s climb: rise ×{warp:.2}, walk to the face ×{stretch:.2}", course.name);
+                }
+            }
             if walker.matcher.jumps > jumps {
                 score.jumps += 1;
                 if let Some((off, from, to)) = walker.matcher.last_jump {
@@ -372,7 +379,7 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
         }
         if verbose {
             score.moments.sort_by(|a, b| b.1.total_cmp(&a.1));
-            for (t, _, what) in score.moments.iter().take(8) {
+            for (t, _, what) in score.moments.iter().take(60) {
                 println!("    {t:6.2}s  {what}");
             }
         }
