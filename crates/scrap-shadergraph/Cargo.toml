@@ -1,0 +1,13 @@
+[package]
+name = "scrap-shadergraph"
+description = "scrap's content graphs of numbers: a material's shader graph and a particle effect's graph, as text, compiled to WGSL without a GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.12.2"

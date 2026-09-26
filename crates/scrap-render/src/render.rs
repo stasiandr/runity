@@ -1499,20 +1499,15 @@ impl MaterialShaders {
         let mut out = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_none_or(|e| e != "wgsl") {
+            let Some(name) = material_shader_name(&path) else {
                 continue;
-            }
+            };
             let stamp = scrap_core::files::modified(&path);
             if self.stamps.get(&path) == Some(&stamp) {
                 continue;
             }
             self.stamps.insert(path.clone(), stamp);
-            let name = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let result = scrap_core::files::read_to_string(&path)
-                .map_err(|e| e.to_string())
+            let result = material_shader_source(&path)
                 .and_then(|source| {
                     renderer.set_material_shader(gpu, crate::asset::shader_id(&name), &source)
                 })
@@ -1521,6 +1516,51 @@ impl MaterialShaders {
         }
         out
     }
+}
+
+/// Whether a material's `surface` builds over the standard shader, without
+/// a GPU: spliced in, parsed and validated as the renderer would, the
+/// error with its line and column. What `scrap check` asks of every shader.
+pub fn check_material_shader(surface: &str) -> Result<(), String> {
+    use wgpu::naga;
+    let full = with_surface(SHADER, surface)?;
+    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&full))?;
+    Ok(())
+}
+
+/// The shader a file in `shaders/` is, by name: `water.wgsl` and
+/// `lava.graph.ron` (a shader graph) are `water` and `lava`. `None` for
+/// anything else there.
+pub fn material_shader_name(path: &std::path::Path) -> Option<String> {
+    let file = path.file_name()?.to_str()?;
+    if let Some(name) = scrap_shadergraph::shader_name(file) {
+        return Some(name.to_string());
+    }
+    (path.extension()? == "wgsl").then(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))?
+}
+
+/// A material shader's `surface` source from its file: the file itself for
+/// `.wgsl`, the compiled graph for `.graph.ron`. A graph with a `.wgsl` of
+/// its name beside it is refused: one shader, one file.
+pub fn material_shader_source(path: &std::path::Path) -> Result<String, String> {
+    let text = scrap_core::files::read_to_string(path).map_err(|e| e.to_string())?;
+    let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
+        return Ok(text);
+    };
+    let Some(name) = scrap_shadergraph::shader_name(file) else {
+        return Ok(text);
+    };
+    let twin = path.with_file_name(format!("{name}.wgsl"));
+    if scrap_core::files::read_to_string(&twin).is_ok() {
+        return Err(format!(
+            "`{name}.wgsl` beside it is shader `{name}` too: one shader, one file — keep the graph or the WGSL"
+        ));
+    }
+    let graph = scrap_shadergraph::surface::parse(&text)?;
+    scrap_shadergraph::surface::to_wgsl(&graph, &format!("shaders/{file}"))
 }
 
 /// A shader source file, reloaded into a renderer when it changes. DNA,
@@ -7483,6 +7523,80 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shader_graph_of_every_kind_of_node_builds_over_the_standard_shader() {
+        let graph = scrap_shadergraph::surface::parse(
+            r#"(
+                params: ["speed", "glow", "tint_r"],
+                textures: ["_Main", "_Noise"],
+                nodes: {
+                    "t": Multiply(a: "time", b: "speed"),
+                    "moved": TilingOffset(tiling: (2.0, 3.0), offset: "t"),
+                    "turned": Rotate(uv: "moved", angle: "t"),
+                    "main": Texture(name: "_Main", uv: "turned"),
+                    "grain": Texture(name: "_Noise"),
+                    "n2": Noise(at: "uv", scale: 4.0),
+                    "n3": Noise(at: "position", scale: 0.5),
+                    "cells": Voronoi(scale: 6.0),
+                    "check": Checker(scale: 8.0),
+                    "rim": Fresnel(power: 3.0),
+                    "a": Add(a: "n2", b: "n3"),
+                    "s": Subtract(a: "a", b: 0.5),
+                    "d": Divide(a: "s", b: 2.0),
+                    "p": Power(a: "d", b: 2.0),
+                    "lo": Min(a: "p", b: "cells.y"),
+                    "hi": Max(a: "lo", b: "check"),
+                    "m": Modulo(a: "hi", b: 0.3),
+                    "st": Step(edge: 0.5, of: "m"),
+                    "dt": Dot(a: "normal", b: "view"),
+                    "ds": Distance(a: "position", b: (0.0, 1.0, 0.0)),
+                    "cr": Cross(a: "normal", b: "view"),
+                    "neg": Negate(of: "dt"),
+                    "om": OneMinus(of: "neg"),
+                    "ab": Abs(of: "om"),
+                    "fl": Floor(of: "ab"),
+                    "ce": Ceil(of: "fl"),
+                    "ro": Round(of: "ce"),
+                    "fr": Fract(of: "ds"),
+                    "sg": Sign(of: "fr"),
+                    "si": Sine(of: "t"),
+                    "co": Cosine(of: "si"),
+                    "sq": Sqrt(of: "co"),
+                    "ex": Exp(of: "sq"),
+                    "sa": Saturate(of: "ex"),
+                    "le": Length(of: "cr"),
+                    "no": Normalize(of: "cr"),
+                    "mix": Lerp(a: (0.1, 0.2, 0.3), b: "main.rgb", t: "sa"),
+                    "cl": Clamp(of: "mix", low: 0.0, high: 2.0),
+                    "sm": Smoothstep(low: 0.2, high: 0.8, of: "st"),
+                    "rm": Remap(of: "sm", from: (0.0, 1.0), to: (-1.0, 1.0)),
+                    "po": Posterize(of: "rm", steps: 4.0),
+                    "cb": Combine(x: "po", y: "tint_r", z: "sg", w: "ro"),
+                    "tint": Multiply(a: "cl", b: "cb.rgb"),
+                    "glowing": Multiply(a: "rim", b: "glow"),
+                },
+                surface: (
+                    albedo: "tint",
+                    alpha: "grain.a",
+                    metallic: "le",
+                    smoothness: 0.5,
+                    normal: "no",
+                    emission: "glowing",
+                    clip: 0.1,
+                ),
+            )"#,
+        )
+        .unwrap();
+        let kinds: std::collections::BTreeSet<&str> = graph.nodes.values().map(|n| n.kind()).collect();
+        assert_eq!(kinds.len(), 40, "every kind of node is in the graph: {kinds:?}");
+        let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/every.graph.ron").unwrap();
+        assert!(wgsl.starts_with("// Made from shaders/every.graph.ron"), "{wgsl}");
+        assert!(wgsl.contains("// scrap:params speed glow tint_r"), "{wgsl}");
+        assert_eq!(declared_textures(&wgsl), vec!["_Main".to_string(), "_Noise".to_string()]);
+        check_material_shader(&wgsl).unwrap_or_else(|e| panic!("{e}\n{wgsl}"));
+        assert!(scrap_shadergraph::surface::problems(&graph).is_empty());
+    }
 
     #[test]
     fn a_world_box_is_the_box_round_its_eight_corners() {

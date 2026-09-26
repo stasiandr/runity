@@ -113,6 +113,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
 
     expansion(project, &mut out);
     animators(project, &mut out);
+    shaders(project, &mut out);
 
     let input = project.root().join(scrap::project::INPUT);
     if input.is_file() {
@@ -1131,6 +1132,46 @@ fn wired_parameters(project: &Project) -> HashSet<String> {
         lines.extend(line.children);
     }
     out
+}
+
+/// Every material shader in `shaders/` — hand-written or a graph — built
+/// over the standard shader as the renderer would, without a GPU; and what
+/// a graph holds that nothing reads.
+fn shaders(project: &Project, out: &mut Vec<Finding>) {
+    let dir = project.root().join(scrap::project::SHADERS);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if scrap::render::material_shader_name(&path).is_none() {
+            continue;
+        }
+        let file = relative(project, &path);
+        let source = match scrap::render::material_shader_source(&path) {
+            Ok(source) => source,
+            Err(e) => {
+                out.push(error(&file, e));
+                continue;
+            }
+        };
+        if let Err(e) = scrap::render::check_material_shader(&source) {
+            out.push(error(&file, e));
+            continue;
+        }
+        if file.ends_with(".graph.ron") {
+            if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::surface::parse(&t)) {
+                for problem in scrap::shader_graph::surface::problems(&graph) {
+                    out.push(Finding {
+                        severity: Severity::Warning,
+                        file: file.clone(),
+                        message: problem,
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn error(file: &str, message: impl fmt::Display) -> Finding {
