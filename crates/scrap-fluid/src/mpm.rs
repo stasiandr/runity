@@ -130,6 +130,12 @@ pub struct Grain {
     f: Mat3,
     /// How much snow has packed, by volume.
     jp: f32,
+    /// `f` decomposed, as plasticity left it — for snow its turn (`u·vᵀ`),
+    /// for sand `u` — with its stretches: the next substep's stress
+    /// needs exactly these, and decomposing `f` again to get them was a
+    /// third of the step. `None` until plasticity has made `f`; kept with
+    /// the material it was made for, as the two keep different turns.
+    known: Option<(MpmMaterial, Mat3, Vec3)>,
 }
 
 /// An MPM block as it moves: the component [`run_mpm`] steps.
@@ -219,6 +225,7 @@ impl MpmState {
                         c: Mat3::ZERO,
                         f: Mat3::IDENTITY,
                         jp: 1.0,
+                        known: None,
                     });
                 }
             }
@@ -457,7 +464,7 @@ impl MpmState {
             let high = origin + Vec3::new(nx as f32 - 2.0, ny as f32 - 2.0, nz as f32 - 2.0) * dx;
             g.x = g.x.clamp(low, high);
             let f = (Mat3::IDENTITY + c * dt) * g.f;
-            g.f = plastic(f, material, &mut g.jp);
+            (g.f, g.known) = plastic(f, material, &mut g.jp);
         });
     }
 
@@ -532,14 +539,24 @@ fn stress_of(g: &Grain, material: MpmMaterial, mu0: f32, lambda0: f32) -> Mat3 {
             } else {
                 (mu0 * 0.3, lambda0 * 0.3)
             };
-            let (u, _, v) = svd(g.f);
-            let r = u * v.transpose();
+            let r = match (material, g.known) {
+                (MpmMaterial::Snow, Some((MpmMaterial::Snow, turn, _))) => turn,
+                _ => {
+                    let (u, _, v) = svd(g.f);
+                    u * v.transpose()
+                }
+            };
             (g.f - r) * g.f.transpose() * (2.0 * mu) + Mat3::IDENTITY * (lambda * (j - 1.0) * j)
         }
         MpmMaterial::Sand => {
             // St. Venant–Kirchhoff in log strain; what plasticity left.
-            let (u, sigma, v) = svd(g.f);
-            let _ = v;
+            let (u, sigma) = match g.known {
+                Some((MpmMaterial::Sand, u, sigma)) => (u, sigma),
+                _ => {
+                    let (u, sigma, _) = svd(g.f);
+                    (u, sigma)
+                }
+            };
             let log = Vec3::new(sigma.x.max(1e-4).ln(), sigma.y.max(1e-4).ln(), sigma.z.max(1e-4).ln());
             let trace = log.x + log.y + log.z;
             let tau = log * (2.0 * mu0) + Vec3::splat(lambda0 * trace);
@@ -549,19 +566,22 @@ fn stress_of(g: &Grain, material: MpmMaterial, mu0: f32, lambda0: f32) -> Mat3 {
 }
 
 /// A deformation after what the material could not hold is let go.
-fn plastic(f: Mat3, material: MpmMaterial, jp: &mut f32) -> Mat3 {
+/// With it, what the next stress reads of it decomposed (see
+/// `Grain::known`), where plasticity decomposed it.
+fn plastic(f: Mat3, material: MpmMaterial, jp: &mut f32) -> (Mat3, Option<(MpmMaterial, Mat3, Vec3)>) {
     match material {
         MpmMaterial::Water => {
             // Only its volume counts: a shear is forgotten.
             let j = f.determinant().clamp(0.2, 2.0);
-            Mat3::from_diagonal(Vec3::new(j, 1.0, 1.0))
+            (Mat3::from_diagonal(Vec3::new(j, 1.0, 1.0)), None)
         }
-        MpmMaterial::Jelly => f,
+        MpmMaterial::Jelly => (f, None),
         MpmMaterial::Snow => {
             let (u, sigma, v) = svd(f);
             let kept = sigma.clamp(Vec3::splat(1.0 - 2.5e-2), Vec3::splat(1.0 + 4.5e-3));
             *jp = (*jp * (sigma.x * sigma.y * sigma.z) / (kept.x * kept.y * kept.z)).clamp(0.6, 20.0);
-            u * Mat3::from_diagonal(kept) * v.transpose()
+            let vt = v.transpose();
+            (u * Mat3::from_diagonal(kept) * vt, Some((material, u * vt, kept)))
         }
         MpmMaterial::Sand => {
             let (u, sigma, v) = svd(f);
@@ -584,7 +604,8 @@ fn plastic(f: Mat3, material: MpmMaterial, jp: &mut f32) -> Mat3 {
                     log - shear / shear_len * slip
                 }
             };
-            u * Mat3::from_diagonal(Vec3::new(kept.x.exp(), kept.y.exp(), kept.z.exp())) * v.transpose()
+            let stretch = Vec3::new(kept.x.exp(), kept.y.exp(), kept.z.exp());
+            (u * Mat3::from_diagonal(stretch) * v.transpose(), Some((material, u, stretch)))
         }
     }
 }
