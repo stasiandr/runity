@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/rim.scrmat",
-    hash: "31227c88817bb3c7f6ea683e7990d1c8",
-    id: Some("d6d524d21888815528cf86d24615ee42"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

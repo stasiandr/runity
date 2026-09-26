@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/spark.scrmat",
-    hash: "3ae11c22d8f5f111f417414166d918f9",
-    id: Some("3ecd24317d762500942bed2eb1e6b229"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

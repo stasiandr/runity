@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/toon.scrmat",
-    hash: "45ae00c3f9e2b2e50cad1a08f24f5e29",
-    id: Some("9f38cad02cd1fb35e59df0c6f3032b22"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

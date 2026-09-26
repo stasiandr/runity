@@ -1,7 +1,8 @@
 # Graphs — a gallery of shader and effect graphs
 
-Every look in this project is a graph in `shaders/`, text you can read,
-diff and edit while the game runs (docs/shadergraph.md):
+Every look in this project is a graph — `content/graphs/<feature>/`, each
+beside its material and textures — text you can read, diff and edit while
+the game runs (docs/shadergraph.md):
 
 | On the pedestals, left to right | Graph | What it shows |
 |---|---|---|
@@ -40,4 +41,7 @@ In the studio, Window › Shader Graph shows each graph as boxes and
 arrows with previews; an agent has the same through the MCP tools
 `shader_graph`, `shader_graph_edit` and `shader_graph_preview`.
 
-The textures in `assets/textures/` were drawn for this example.
+The shared pieces — the `ripple` subgraph, the fullscreen `film` graph,
+the pedestals' material — are in `content/graphs/core/`, the scene in
+`content/graphs/maps/main.scene.ron`. The textures were drawn for this
+example.

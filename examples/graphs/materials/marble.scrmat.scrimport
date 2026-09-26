@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/marble.scrmat",
-    hash: "066bec321b8a7f0cfbba46fa747bbad6",
-    id: Some("d2d4b9451199d3d163b28218e012c3b5"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

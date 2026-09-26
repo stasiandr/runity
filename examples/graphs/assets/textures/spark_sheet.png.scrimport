@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/textures/spark_sheet.png",
-    hash: "3ce1e9c9a307645713ddd7cc84b74397",
-    id: Some("9b624b8e273a38f48c221fe79fffa1f6"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

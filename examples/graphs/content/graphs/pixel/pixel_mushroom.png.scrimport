@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/pixel/pixel_mushroom.png",
+    hash: "03ff4c5c32211de97c71c091c82a24a9",
+    id: Some("2388cf8690948a46c7d82ff267e34264"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

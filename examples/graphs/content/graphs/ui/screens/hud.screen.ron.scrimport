@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/graphs/ui/screens/hud.screen.ron",
+    id: Some("80e4d51cc3e1f0d2b3405d43b942e88c"),
+)

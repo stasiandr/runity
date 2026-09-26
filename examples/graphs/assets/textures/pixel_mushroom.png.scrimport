@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/textures/pixel_mushroom.png",
-    hash: "03ff4c5c32211de97c71c091c82a24a9",
-    id: Some("5fb34989ec25cc9db9038523ee6fc6f4"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

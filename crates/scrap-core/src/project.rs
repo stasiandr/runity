@@ -1896,6 +1896,7 @@ Kinds, by extension — find them anywhere with a glob (`**/*.prefab`):
 *.cases.ron     beside a graph or a dialogue: the cases `scrap check` plays
 *.wgsl, *.graph.ron  materials' own looks: `shader: \"water\"` is water.wgsl
 *.vfx.ron       particle effect graphs
+*.post.ron      fullscreen graphs, over the whole picture: a scene says `fullscreen: (graph: \"name\")`
 *.ron           anything else is the game's data: one struct is scrap::Tuned, records by name scrap::Table
 models, textures, sounds  sources; each gets a .scrimport beside it
 ```

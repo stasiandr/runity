@@ -97,7 +97,7 @@
 | префаб | `.prefab` | так же, но только в `prefabs/` |
 | материал | `.scrmat` | так же, но только в `materials/` и `assets/` |
 | модель, текстура, звук, шрифт | `.glb`, `.png`, `.wav`, … | только в `assets/` |
-| шейдер | `.wgsl`, `.graph.ron`, `.vfx.ron` | только в `shaders/` |
+| шейдер | `.wgsl`, `.graph.ron`, `.vfx.ron`, `.post.ron` | только в `shaders/` |
 | экран | `.screen.ron` | `ui/*.ron` |
 | граф анимации | `.animator.ron` | `animators/*.ron` |
 | клип | `.clip.ron` | `clips/*.ron` |

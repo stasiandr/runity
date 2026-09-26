@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/banner.scrmat",
-    hash: "abc2134303f8cdcc9f6cd4b027496a65",
-    id: Some("7579439a1b5d0775877d31d50d1494ec"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

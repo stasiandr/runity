@@ -1,6 +1,6 @@
 //! graphs.
 //!
-//! `cargo run` opens a window on `scenes/main.ron`. Save the scene, a
+//! `cargo run` opens a window on the `main` scene. Save the scene, a
 //! prefab, or re-import an asset while it runs, and the change is in the
 //! next frames without the game losing its state. Run under
 //! `dx serve --hotpatch` and a rebuilt system, `step` or `frame` takes
@@ -39,7 +39,7 @@ mod systems {
     include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 }
 
-/// Numbers from `configs/world.ron`, reloaded while the game runs.
+/// Numbers from `core/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
@@ -92,7 +92,7 @@ impl Game {
 /// nothing drawn.
 fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop, profile: &mut scrap::perf::Profiler, seconds: f32) {
     // systems, in order
-    profile.time("spin", || systems::spin::run(world, seconds));
+    profile.time("turn", || systems::turn::run(world, seconds));
     // The modules' systems of the fixed step (`scrap::player_loop`).
     modules.run(Phase::FixedUpdate, world, seconds, Some(profile));
     // Physics is a system too: bodies from the scene, a fixed step, and
@@ -134,10 +134,10 @@ fn write_shapes() {
     }
 }
 
-/// Every table the game reads from configs/, and what its records are: a
+/// Every table the game reads, and what its records are: a
 /// `Wolf` that is a `scrap::Record`, read with
 /// `scrap::Table::<Wolf>::load(...)`, is registered here as
-/// `tables.register::<Wolf>("configs/wolves.ron")` — and then the editor
+/// `tables.register::<Wolf>("content/graphs/wolves/wolves.ron")` — and then the editor
 /// knows its fields and `scrap check` its links.
 fn game_tables() -> Tables {
     Tables::new()
@@ -147,7 +147,7 @@ fn game_tables() -> Tables {
 fn game_components() -> Components {
     let mut components = Components::new();
     components::register(&mut components);
-    // What tuning/ is read as: the editor's Table shows its columns and
+    // What core/world.ron is read as: the editor's Table shows its columns and
     // `scrap check` its misspelt fields.
     components.register_tuning::<WorldNumbers>("world");
     components
@@ -339,13 +339,13 @@ fn main() -> anyhow::Result<()> {
     // A panic is written down in the player's folder: scrap::crash::pending
     // finds it on the next start.
     scrap::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
-    // `scrap run --scene cave` plays scenes/cave.ron.
+    // `scrap run --scene cave` plays the scene called `cave`, wherever it lies.
     let playing = std::env::var("SCRAP_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     // Started from the editor, the game watches the editor's document as it
     // stands (SCRAP_SCENE_FILE), so an edit shows here without a save.
     let scene = match std::env::var_os("SCRAP_SCENE_FILE") {
         Some(file) => std::path::PathBuf::from(file),
-        None => scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing)),
+        None => scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &playing),
     };
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
@@ -370,18 +370,18 @@ fn main() -> anyhow::Result<()> {
         },
         ..Default::default()
     };
-    let actions = Actions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
+    let actions = Actions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "config/input.ron"))?;
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
-    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "configs/world.ron"))
+    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "content/graphs/core/world.ron"))
         .map_err(anyhow::Error::msg)?;
-    let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
+    let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "config/layers.ron"))
         .map_err(anyhow::Error::msg)?;
-    let hud = Screen::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui/hud.ron"))
+    let hud = Screen::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "content/graphs/ui/screens/hud.screen.ron"))
         .map_err(anyhow::Error::msg)?;
     let strings = scrap::strings::Strings::load(
-        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), scrap::strings::DIR),
         &settings.language,
     )
     .map_err(anyhow::Error::msg)?;
@@ -397,7 +397,7 @@ fn main() -> anyhow::Result<()> {
         console: scrap::console::Console::for_build(cheats(), cfg!(debug_assertions)),
         debug: scrap::debug_overlay::DebugOverlay::new(),
         widgets: Widgets::new(),
-        shaders: scrap::render::MaterialShaders::new(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
+        shaders: scrap::render::MaterialShaders::new(scrap::project::data_root(env!("CARGO_MANIFEST_DIR"))),
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
@@ -423,10 +423,7 @@ mod tests {
     fn the_start_scene_plays() {
         write_shapes();
         let (_, settings) = scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
-        let scene = scrap::project::data_file(
-            env!("CARGO_MANIFEST_DIR"),
-            &format!("scenes/{}.ron", settings.start_scene),
-        );
+        let scene = scrap::project::data_scene(env!("CARGO_MANIFEST_DIR"), &settings.start_scene);
         let (live, problems) = LiveScene::open(&scene).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let mut live = live.with_components(game_components());

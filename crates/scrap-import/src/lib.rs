@@ -2287,9 +2287,10 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
         let result = import_to(&source, &library, &new_sidecar, settings)
             .map(|imported| imported.id)
             .map_err(|e| format!("{e:#}"));
-        if result.is_ok() {
-            // The asset is built under its ID, so the one built before the
-            // move has just been written over: only the old sidecar goes.
+        // The asset is built under its ID, so the one built before the move
+        // has just been written over: only the old sidecar goes — unless it
+        // was moved along with its source, and is the new one.
+        if result.is_ok() && !same(&old_sidecar, &new_sidecar) {
             let _ = std::fs::remove_file(&old_sidecar);
         }
         out.push(Reimported {

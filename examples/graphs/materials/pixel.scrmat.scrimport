@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/pixel.scrmat",
-    hash: "cae922fca90d126bcc9dc1728b73ac4f",
-    id: Some("94aaad5eb48ede189b4f4dc7f0cff09e"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

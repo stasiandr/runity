@@ -1,12 +1,12 @@
 # Text as LF on every machine: .scrimport stores a hash of the source's bytes.
 * text=auto eol=lf
 
-# Scenes and prefabs merge by entity and field, configs by record and field,
-# not by line. The driver is `scrap merge`; `scrap git-setup` turns it on in
-# a clone.
-scenes/**/*.ron merge=scrap
-prefabs/**/*.prefab merge=scrap
-configs/**/*.ron merge=scrap
+# Scenes and prefabs merge by entity and field, the game's data by record
+# and field, not by line — wherever they lie. The driver is `scrap merge`;
+# `scrap git-setup` turns it on in a clone.
+*.scene.ron merge=scrap
+*.prefab merge=scrap
+*.ron merge=scrap
 
 # Binary sources: stored in LFS, lockable. Text sources (.ron, .prefab,
 # .scrmat, .scrimport, .obj, .gltf) stay in git, where a diff means something.

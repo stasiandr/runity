@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/dissolve/dissolve.scrmat",
+    hash: "80433a9f9df4371596b241dcf14f4d9e",
+    id: Some("e17ae1af16c71ead7cc4bfbb58bb7aa6"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)
