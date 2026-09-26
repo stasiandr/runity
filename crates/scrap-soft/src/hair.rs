@@ -342,7 +342,25 @@ impl HairState {
         let mut vertices = Vec::with_capacity(self.follows.len() * n * SIDES);
         let mut indices = Vec::with_capacity(self.follows.len() * (n - 1) * SIDES * 6);
         let mut line = vec![Vec3::ZERO; n];
+        // How each guide has turned at each of its points since it grew:
+        // the same for every strand that follows it, so found once here
+        // rather than once a strand (a guide leads dozens).
+        let turned_since: Vec<glam::Quat> = self
+            .rods
+            .iter()
+            .zip(&self.clamps)
+            .flat_map(|(rod, clamp)| {
+                let then = turn_now * *clamp;
+                (0..n).map(move |i| rod.turn_at(i) * then.inverse())
+            })
+            .collect();
+        // The sides' directions round a strand, the same at every point.
+        let round: [(f32, f32); SIDES] = std::array::from_fn(|s| {
+            let a = s as f32 / SIDES as f32 * std::f32::consts::TAU;
+            (a.cos(), a.sin())
+        });
         for (k, f) in self.follows.iter().enumerate() {
+            let offset = turn_now * f.offset;
             // Along the guides it follows, its root's offset carried as
             // their links are turned, and drawn in toward the tip.
             for (i, point) in line.iter_mut().enumerate() {
@@ -350,13 +368,11 @@ impl HairState {
                 let mut at = Vec3::ZERO;
                 let mut turned = Vec3::ZERO;
                 for j in 0..3 {
-                    let rod = &self.rods[f.guides[j] as usize];
+                    let guide = f.guides[j] as usize;
+                    let rod = &self.rods[guide];
                     let w = f.weights[j];
                     at += rod.particles.x[i] * w;
-                    // How this guide has turned here since it grew.
-                    let now = rod.turn_at(i);
-                    let then = turn_now * self.clamps[f.guides[j] as usize];
-                    turned += (now * then.inverse()) * (turn_now * f.offset) * w;
+                    turned += turned_since[guide * n + i] * offset * w;
                 }
                 let wave = if curl > 0.0 {
                     let a = t * curl * std::f32::consts::TAU + k as f32;
@@ -380,9 +396,8 @@ impl HairState {
                 let up = tangent.cross(side);
                 let r = width * (1.0 - 0.85 * i as f32 / (n - 1) as f32);
                 let local = back.transform_point3(p);
-                for s in 0..SIDES {
-                    let a = s as f32 / SIDES as f32 * std::f32::consts::TAU;
-                    let normal = side * a.cos() + up * a.sin();
+                for (s, &(cos, sin)) in round.iter().enumerate() {
+                    let normal = side * cos + up * sin;
                     vertices.push(Vertex {
                         position: (local + back.transform_vector3(normal * r)).to_array(),
                         normal: back.transform_vector3(normal).normalize_or(normal).to_array(),
