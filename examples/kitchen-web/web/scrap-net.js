@@ -1,5 +1,7 @@
 // Rooms for the kitchen in the browser: what `src/lobby.rs` and the
-// engine's `net::page` wire call as `scrapNet.*`.
+// engine's `net::page` wire call as `scrapNet.*`. Another game's page uses
+// it as it is, saying who it is first in `window.scrapNetConfig` (its
+// PeerJS prefix, so its rooms are not the kitchen's; its words).
 //
 // The host opens a room: a PeerJS peer named after a short code, reached
 // through PeerJS's public signalling broker (the page is static, it has no
@@ -8,7 +10,11 @@
 // of it. Datagrams start with the sender's id (little-endian u32), so the
 // host learns which channel is whose from what comes in.
 
-const PREFIX = "scrap-kitchen-rush-";
+const CONFIG = Object.assign(
+  { prefix: "scrap-kitchen-rush-", place: "kitchen", title: "Kitchen Rush", invite: "Cook with me in Kitchen Rush", player: "Cook" },
+  window.scrapNetConfig || {},
+);
+const PREFIX = CONFIG.prefix;
 // No 0/O, 1/I/L: a code is read out loud and typed on a phone.
 const LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const JOIN_TIMEOUT_MS = 20000;
@@ -62,7 +68,7 @@ function nameOf() {
     name = localStorage.getItem("scrap:name");
   } catch (_) {}
   if (!name) {
-    name = "Cook " + Math.floor(100 + Math.random() * 900);
+    name = CONFIG.player + " " + Math.floor(100 + Math.random() * 900);
     try {
       localStorage.setItem("scrap:name", name);
     } catch (_) {}
@@ -70,9 +76,19 @@ function nameOf() {
   return name;
 }
 
+// A room's code in what was typed or pasted: the code, or a link with
+// `#join=CODE` in it.
+function codeIn(text) {
+  text = String(text || "").trim();
+  const at = text.indexOf("join=");
+  if (at >= 0) text = text.slice(at + 5).split(/[&?#/]/)[0];
+  return text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 const net = {
   wasm: null,
   _state: "",
+  _opened: false,
   _peer: null,
   _code: null,
   // Host: each guest's channel by the id it sends from.
@@ -92,6 +108,11 @@ const net = {
 
   code() {
     return this._code;
+  },
+
+  // Whether the room is up at the broker: findable by its code.
+  open() {
+    return this._state === "hosting" && this._opened;
   },
 
   link() {
@@ -119,9 +140,10 @@ const net = {
     window.scrapToast && window.scrapToast(text, ms);
   },
 
-  host() {
+  // A room under `code` when the game chose one, else a fresh one.
+  host(code) {
     this.leave();
-    const code = randomCode();
+    code = codeIn(code) || randomCode();
     this._code = code;
     this._state = "hosting";
     this._everOpened = false;
@@ -140,6 +162,7 @@ const net = {
     let opened = false;
     peer.on("open", () => {
       opened = true;
+      this._opened = true;
       this.onRoom(code);
       if (tries === 0) this._say("Room " + code + " is open. Keep this page in front while friends join.", 6000);
     });
@@ -190,7 +213,7 @@ const net = {
   },
 
   async join(code) {
-    code = String(code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    code = codeIn(code);
     if (!code) return;
     this.leave();
     this._code = code;
@@ -204,12 +227,12 @@ const net = {
     this._say("Joining " + code + ": " + step + "…", JOIN_TIMEOUT_MS);
     this._timer = setTimeout(() => {
       if (this._state === "joining") {
-        this._fail("no answer from kitchen " + code + " (stuck " + step + ")");
+        this._fail("no answer from " + CONFIG.place + " " + code + " (stuck " + step + ")");
         this._close();
       }
     }, JOIN_TIMEOUT_MS);
     peer.on("open", () => {
-      step = "calling the kitchen";
+      step = "calling the " + CONFIG.place;
       this._say("Joining " + code + ": " + step + "…", JOIN_TIMEOUT_MS);
       const conn = peer.connect(PREFIX + code, { reliable: false, serialization: "raw" });
       this._host = conn;
@@ -235,7 +258,7 @@ const net = {
       conn.on("open", () => {
         clearTimeout(this._timer);
         this._state = "open";
-        this._say("In kitchen " + code + "!", 2500);
+        this._say("In " + CONFIG.place + " " + code + "!", 2500);
       });
       conn.on("data", (data) => this._deliver(data));
       conn.on("close", () => {
@@ -245,13 +268,15 @@ const net = {
     peer.on("error", (e) => {
       if (this._state !== "joining") return;
       clearTimeout(this._timer);
-      this._fail(e.type === "peer-unavailable" ? "no kitchen with the code " + code : String(e.message || e.type));
+      this._fail(e.type === "peer-unavailable" ? "no " + CONFIG.place + " with the code " + code : String(e.message || e.type));
       this._close();
     });
   },
 
   // Ask for a friend's code: the page's dialog, which calls join.
   ask() {
+    // The dialog takes the keys: the pointer let go if the game had it.
+    if (document.exitPointerLock) document.exitPointerLock();
     const dialog = document.getElementById("join-dialog");
     if (!dialog) {
       const code = prompt("Room code");
@@ -266,10 +291,10 @@ const net = {
 
   async invite() {
     const url = this.link();
-    const text = "Cook with me in Kitchen Rush — room " + this._code;
+    const text = CONFIG.invite + " — room " + this._code;
     try {
       if (navigator.share) {
-        await navigator.share({ title: "Kitchen Rush", text, url });
+        await navigator.share({ title: CONFIG.title, text, url });
         return;
       }
     } catch (_) {}
@@ -306,6 +331,7 @@ const net = {
   leave() {
     clearTimeout(this._timer);
     this._close();
+    this._opened = false;
     this._code = null;
     this._state = "";
     this.onRoom(null);
