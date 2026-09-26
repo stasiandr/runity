@@ -27,7 +27,7 @@ map of where each part of the engine is used. What is different here:
 
 ```
 scrap sync                 # the library, from assets/ (once, and after changing one)
-web/build.sh                # → site/: the game, data.bin.gz, the page
+web/build.sh                # → site/: the game, data-bc7/-astc.bin.gz (the library cooked for the GPU), the page
 python3 -m http.server -d site 8765
 ```
 

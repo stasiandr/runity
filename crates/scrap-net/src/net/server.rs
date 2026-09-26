@@ -54,7 +54,7 @@ struct Client {
     pending: HashMap<EntityId, Pending>,
     /// Bytes it may be sent now, and when that was reckoned.
     allowance: f32,
-    reckoned: std::time::Instant,
+    reckoned: web_time::Instant,
 }
 
 /// An entry waiting for its turn to one client: whose, of which tick,
@@ -480,7 +480,7 @@ impl Server {
                 pending: HashMap::new(),
                 // A tenth of a second's worth to begin with.
                 allowance: self.client_budget * 0.1,
-                reckoned: std::time::Instant::now(),
+                reckoned: web_time::Instant::now(),
             },
         );
         let accepted = ToClient::JoinAccepted {
@@ -672,7 +672,7 @@ impl Server {
     /// waited first (Fiedler's priority accumulator, as the peers' own
     /// budget): what does not fit gains a point and waits.
     fn send_pending(&mut self) {
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let budget = self.client_budget;
         let mut out: Vec<(PeerId, ToClient)> = Vec::new();
         for (&peer, client) in &mut self.clients {

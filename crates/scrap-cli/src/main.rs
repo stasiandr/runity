@@ -835,12 +835,13 @@ fn cook(rest: &[String]) -> Result<ExitCode> {
         let started = std::time::Instant::now();
         let done = scrap_cli::build::cook(&project, &folder, coding, zstd)?;
         println!(
-            "{coding:?} into {}: {} textures encoded, {} assets compressed, {} from the cache, {} files as they were; {:.1} MB to {:.1} MB in {:.1} s",
+            "{coding:?} into {}: {} textures encoded, {} assets compressed, {} from the cache, {} files as they were, {} stale left out; {:.1} MB to {:.1} MB in {:.1} s",
             folder.display(),
             done.encoded,
             done.compressed,
             done.cached,
             done.copied,
+            done.dropped,
             done.bytes_in as f64 / 1e6,
             done.bytes_out as f64 / 1e6,
             started.elapsed().as_secs_f32()
