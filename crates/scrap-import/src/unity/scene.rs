@@ -2178,8 +2178,9 @@ fn piece(unity: &Unity, model: String, object: &str) -> String {
     }
 }
 
-/// Fields a MonoBehaviour's document has that are Unity's, not the game's.
-const UNITY_FIELDS: [&str; 10] = [
+/// Fields a MonoBehaviour's document has that are Unity's, not the game's
+/// (the last two from prefabs saved before Unity 2018.3).
+const UNITY_FIELDS: [&str; 12] = [
     "m_ObjectHideFlags",
     "m_CorrespondingSourceObject",
     "m_PrefabInstance",
@@ -2190,6 +2191,8 @@ const UNITY_FIELDS: [&str; 10] = [
     "m_Script",
     "m_Name",
     "m_EditorClassIdentifier",
+    "m_PrefabParentObject",
+    "m_PrefabInternal",
 ];
 
 /// A HingeJoint's spring (held at an angle) or motor (turning at a

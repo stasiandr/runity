@@ -31,6 +31,7 @@ fn a_texture_keeps_the_levels_the_screen_needs() {
         pixels: vec![200; 512 * 512 * 4],
         mips,
         srgb: true,
+        coding: Default::default(),
     };
     let bytes = scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE).unwrap();
     let archived = scrap::asset::view::<TextureAsset>(&bytes).unwrap();

@@ -51,6 +51,29 @@ fn how_many_play_is_this_persons_choice_and_kept() {
     assert_eq!(again.link(), "poor");
 }
 
+/// Play builds the game's own code optimized when this person asks, as a
+/// debug build otherwise; the choice is kept.
+#[test]
+fn an_optimized_game_is_this_persons_choice_and_kept() {
+    let Some((mut session, project)) = project("fast") else {
+        return;
+    };
+    let level = |command: &std::process::Command| {
+        command
+            .get_envs()
+            .find(|(k, _)| *k == scrap_editor::FAST_GAME_VAR)
+            .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    };
+    assert!(!session.fast_game(), "a debug build, until chosen");
+    assert_eq!(level(&session.game_command().unwrap()), Some(None), "unset for the game");
+    session.set_fast_game(true);
+    assert_eq!(level(&session.game_command().unwrap()), Some(Some(scrap_editor::FAST_GAME_LEVEL.into())));
+
+    let mut again = Session::offscreen(64, 64).unwrap();
+    again.open_scene(project.scenes().join("main.ron")).unwrap();
+    assert!(again.fast_game(), "kept in .scrap/, with the view");
+}
+
 /// The whole thing: the editor builds the project's game, starts it as the
 /// host, then a second player from the same build, and each says it sees
 /// the other. Compiles a game, so it is not in every run:

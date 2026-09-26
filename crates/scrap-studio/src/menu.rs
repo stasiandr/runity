@@ -146,6 +146,8 @@ pub enum Action {
     DockAll,
     /// During play: keep the selection where the simulation puts it.
     KeepSimulation,
+    /// Play builds the game's own code optimized, or as a debug build.
+    FastGame,
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
     /// A material that is another one with nothing changed yet.
@@ -415,6 +417,8 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Pause", Action::Pause),
                 item("Step", Action::Step),
                 item("Keep Simulation Changes", Action::KeepSimulation),
+                MenuItem::separator(),
+                item("Optimized Game Code", Action::FastGame),
             ],
         ),
     ]

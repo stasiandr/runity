@@ -347,14 +347,50 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp") {
+        // What the file is, by its bytes: Unity reads a JPEG named .png
+        // without a word, and so must we.
+        let read_as = image::ImageReader::open(path)
+            .and_then(|r| r.with_guessed_format())
+            .ok()
+            .and_then(|r| r.format());
+        let copies = matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp")
+            && read_as == image::ImageFormat::from_extension(&extension);
+        if !copies
+            && !matches!(
+                read_as,
+                Some(
+                    image::ImageFormat::Tiff
+                        | image::ImageFormat::Png
+                        | image::ImageFormat::Jpeg
+                        | image::ImageFormat::Tga
+                        | image::ImageFormat::Bmp
+                )
+            )
+        {
             report.skip(format!("texture in .{extension} (convert it to PNG)"));
             continue;
         }
         std::fs::create_dir_all(&textures)?;
-        let to = textures.join(format!("{name}.{extension}"));
+        let to = textures.join(if copies {
+            format!("{name}.{extension}")
+        } else {
+            format!("{name}.png")
+        });
         writable(&to);
-        if let Err(e) = std::fs::copy(path, &to) {
+        let written = if copies {
+            std::fs::copy(path, &to)
+                .map(|_| ())
+                .map_err(anyhow::Error::from)
+        } else {
+            // A TIFF, or a file whose name lies about it: made a PNG.
+            image::ImageReader::open(path)
+                .and_then(|r| r.with_guessed_format())
+                .map_err(image::ImageError::from)
+                .and_then(|r| r.decode())
+                .and_then(|picture| picture.save(&to))
+                .map_err(anyhow::Error::from)
+        };
+        if let Err(e) = written {
             report.errors.push(format!("{}: {e}", path.display()));
             continue;
         }
@@ -569,7 +605,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     }
 
     for (guid, path) in unity.of_kind("animator") {
-        match animator::convert(&unity, path) {
+        match animator::convert(&unity, path, &mut report) {
             Ok(text) => {
                 let dir = project.root().join(scrap::project::ANIMATORS);
                 let name = &unity.names[guid];

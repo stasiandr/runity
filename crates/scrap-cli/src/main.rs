@@ -11,7 +11,8 @@
 //! scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]  frames against budgets.ron
 //! scrap frame-debug SCENE [PROJECT] [--stop N] [--size WxH] [--out FILE]  a frame's passes and draws
-//! scrap build [PROJECT] [--out DIR] [--debug | --size]  a folder to ship
+//! scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform P]  a folder to ship
+//! scrap cook  [PROJECT] --platform desktop|mobile|web --out DIR  the library cooked
 //! scrap merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! scrap git-setup [PROJECT]             turn the driver on in this clone
 //! scrap rename FROM TO                   move an asset, and what names it
@@ -92,12 +93,17 @@ scrap modules [PROJECT]
 scrap modules sync [PROJECT]
     Write the engine's features in the game's Cargo.toml from the modules
     scrap.ron lists and what they stand on. `check` says when they part.
-scrap build [PROJECT] [--out DIR] [--debug | --size]
+scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform desktop|mobile|none]
     Sync the library, compile the game, and lay out DIR (build/ in the
     project by default): the executable and data/ with scenes, prefabs and
     the built library. Sources stay home. Compiled for speed by default;
     --size for the smallest download (opt-level z, LTO, stripped); --debug
-    quick to make.
+    quick to make. Textures are cooked into the GPU blocks of --platform:
+    BC7 for desktop (the default), ASTC for mobile, none as imported.
+scrap cook [PROJECT] --platform desktop|mobile|web --out DIR
+    The library cooked for a platform into DIR, for a build made by other
+    means: web cooks it twice, DIR/bc7 and DIR/astc, for a page to fetch
+    the one its browser samples.
 scrap git-setup [PROJECT]
     Turn on the scene merge driver in this clone: scenes and prefabs merge
     by entity and field, and conflicts are said in words.
@@ -317,6 +323,7 @@ fn run() -> Result<ExitCode> {
         "frame-debug" => frame_debug(&rest),
         "merge" => merge(&rest),
         "build" => build(&rest),
+        "cook" => cook(&rest),
         "rename" => rename(&rest),
         "uses" => uses(&rest),
         "add" => add(&rest),
@@ -770,19 +777,21 @@ fn build(rest: &[String]) -> Result<ExitCode> {
     let mut at: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
     let mut profile = scrap_cli::build::Profile::Speed;
+    let mut platform = scrap_cli::build::Platform::Desktop;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
             "--debug" => profile = scrap_cli::build::Profile::Debug,
             "--size" => profile = scrap_cli::build::Profile::Size,
+            "--platform" => platform = scrap_cli::build::Platform::parse(args.next().context("--platform wants desktop, mobile or none")?)?,
             other if other.starts_with('-') => bail!("unknown option {other}"),
             other => at.push(other.to_string()),
         }
     }
     let project = find(&at)?;
     let out = out.unwrap_or_else(|| project.root().join("build"));
-    let built = scrap_cli::build::build_with(&project, &out, profile)?;
+    let built = scrap_cli::build::build_for(&project, &out, profile, platform)?;
     for line in &built.stale {
         eprintln!("warning: {line}");
     }
@@ -792,6 +801,51 @@ fn build(rest: &[String]) -> Result<ExitCode> {
         built.folder.display(),
         built.executable.display()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `scrap cook`: the library cooked for a platform, into a folder — for a
+/// build made by other means (the web's). `web` cooks it twice, `bc7/` and
+/// `astc/`: a browser downloads the one its GPU samples.
+fn cook(rest: &[String]) -> Result<ExitCode> {
+    let mut at: Vec<String> = Vec::new();
+    let mut out: Option<PathBuf> = None;
+    let mut platform: Option<String> = None;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
+            "--platform" => platform = Some(args.next().context("--platform wants desktop, mobile or web")?.clone()),
+            other if other.starts_with('-') => bail!("unknown option {other}"),
+            other => at.push(other.to_string()),
+        }
+    }
+    let project = find(&at)?;
+    let out = out.context("scrap cook wants --out DIR")?;
+    use scrap::asset::TextureCoding;
+    // What each set is cooked into, and whether its assets are compressed:
+    // a download's and a phone's are.
+    let sets: Vec<(PathBuf, TextureCoding, bool)> = match platform.as_deref() {
+        Some("web") => vec![(out.join("bc7"), TextureCoding::Bc7, true), (out.join("astc"), TextureCoding::Astc4x4, true)],
+        Some("desktop") => vec![(out.clone(), TextureCoding::Bc7, false)],
+        Some("mobile" | "ios" | "android") => vec![(out.clone(), TextureCoding::Astc4x4, true)],
+        other => bail!("scrap cook --platform desktop|mobile|web, not {other:?}"),
+    };
+    for (folder, coding, zstd) in sets {
+        let started = std::time::Instant::now();
+        let done = scrap_cli::build::cook(&project, &folder, coding, zstd)?;
+        println!(
+            "{coding:?} into {}: {} textures encoded, {} assets compressed, {} from the cache, {} files as they were; {:.1} MB to {:.1} MB in {:.1} s",
+            folder.display(),
+            done.encoded,
+            done.compressed,
+            done.cached,
+            done.copied,
+            done.bytes_in as f64 / 1e6,
+            done.bytes_out as f64 / 1e6,
+            started.elapsed().as_secs_f32()
+        );
+    }
     Ok(ExitCode::SUCCESS)
 }
 
