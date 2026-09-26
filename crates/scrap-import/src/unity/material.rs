@@ -508,9 +508,37 @@ fn param_values(m: &Yaml, names: &[String]) -> Vec<f32> {
                     })
                     .unwrap_or(if matches!(channel, "x" | "y") { 1.0 } else { 0.0 })
             }
-            _ => float(m, name).unwrap_or(0.0),
+            // A float by that name, or a keyword the material has on
+            // (`_USE_GRADIENT_ON`): 1 on, 0 off.
+            _ => float(m, name).unwrap_or_else(|| if keywords(m).contains(&name.as_str()) { 1.0 } else { 0.0 }),
         })
         .collect()
+}
+
+/// A `.mat`'s glow from a colour property, as `.scrmat` fields: HDR past
+/// white, the brightest channel the intensity. None for black.
+fn emission_fields(m: &Yaml, property: &str) -> Vec<String> {
+    let Some(e) = color(m, property) else { return Vec::new() };
+    let peak = e[0].max(e[1]).max(e[2]);
+    if peak <= 0.0 {
+        return Vec::new();
+    }
+    let intensity = peak.max(1.0);
+    let mut out = vec![format!("emission: {:?}", hex([e[0] / intensity, e[1] / intensity, e[2] / intensity, 1.0]))];
+    if intensity > 1.0 {
+        out.push(format!("emission_intensity: {intensity}"));
+    }
+    out
+}
+
+/// The shader keywords a `.mat` has on: `m_ShaderKeywords` (a line of
+/// them) and, in newer files, `m_ValidKeywords` (a list).
+fn keywords(m: &Yaml) -> Vec<&str> {
+    let mut out: Vec<&str> = m["m_ShaderKeywords"].as_str().map(|k| k.split_whitespace().collect()).unwrap_or_default();
+    if let Some(list) = m["m_ValidKeywords"].as_vec() {
+        out.extend(list.iter().filter_map(|k| k.as_str()));
+    }
+    out
 }
 
 /// A line a shader written again says of itself: `// scrap:<key> value`.
@@ -530,7 +558,8 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
 /// A `.mat` as the text of a `.scrmat`. `shader_text` finds, by name, the
 /// shader written again for it, which may say what its material needs: its
 /// eight numbers (`// scrap:params`), a base map (`// scrap:base_map
-/// render:mirror`), how that is laid (`// scrap:screen_map Mirror`).
+/// render:mirror`), how that is laid (`// scrap:screen_map Mirror`), the
+/// colour property its glow is (`// scrap:emission _Emission`).
 pub fn convert_with(
     unity: &Unity,
     path: &Path,
@@ -552,20 +581,7 @@ pub fn convert_with(
     if let Some(smooth) = float(m, "_Smoothness").or_else(|| float(m, "_Glossiness")) {
         fields.push(format!("smoothness: {smooth}"));
     }
-    if let Some(e) = color(m, "_EmissionColor") {
-        // HDR: past white, the brightest channel is the intensity.
-        let peak = e[0].max(e[1]).max(e[2]);
-        if peak > 0.0 {
-            let intensity = peak.max(1.0);
-            fields.push(format!(
-                "emission: {:?}",
-                hex([e[0] / intensity, e[1] / intensity, e[2] / intensity, 1.0])
-            ));
-            if intensity > 1.0 {
-                fields.push(format!("emission_intensity: {intensity}"));
-            }
-        }
-    }
+    fields.extend(emission_fields(m, "_EmissionColor"));
     if float(m, "_Surface") == Some(1.0) {
         fields.push("surface: Transparent".into());
         if base[3] < 1.0 {
@@ -689,6 +705,11 @@ pub fn convert_with(
                 fields.push(format!("base_map: {map:?}"));
             }
         }
+        // Its glow's colour by another name (`// scrap:emission _Emission`).
+        if let Some(property) = declared(&written, "emission") {
+            fields.retain(|f| !f.starts_with("emission"));
+            fields.extend(emission_fields(m, &property));
+        }
         if let Some(how) = declared(&written, "screen_map") {
             fields.push(format!("screen_map: {how}"));
         }
@@ -767,6 +788,7 @@ mod tests {
 Material:
   m_Name: Wet Stone
   m_Shader: {fileID: 4800000, guid: 933532a4fcc9baf4fa0491de14d08ed7, type: 3}
+  m_ShaderKeywords: _NORMALMAP _WET_ON
   m_SavedProperties:
     m_TexEnvs:
     - _BaseMap:
@@ -795,10 +817,10 @@ Material:
             .into_iter()
             .find(|d| d.kind == "Material")
             .unwrap();
-        let names: Vec<String> = ["_Metallic", "_EmissionColor.g", "_Nothing"]
+        let names: Vec<String> = ["_Metallic", "_EmissionColor.g", "_Nothing", "_WET_ON", "_DRY_ON"]
             .map(String::from)
             .to_vec();
-        assert_eq!(param_values(&doc.body, &names), [0.1, 1.0, 0.0]);
+        assert_eq!(param_values(&doc.body, &names), [0.1, 1.0, 0.0, 1.0, 0.0], "a keyword on is 1");
     }
 
     #[test]
