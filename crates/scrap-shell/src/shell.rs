@@ -294,6 +294,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         touch_pad: None,
     };
     shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
+    #[cfg(target_os = "ios")]
+    crate::ios::register();
     #[cfg(not(target_arch = "wasm32"))]
     event_loop.run_app(&mut shell)?;
     #[cfg(target_arch = "wasm32")]
@@ -823,6 +825,13 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             }
         };
 
+        #[cfg(target_os = "ios")]
+        {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(RawWindowHandle::UiKit(h)) = window.window_handle().map(|h| h.as_raw()) {
+                crate::ios::window_made(h.ui_view.as_ptr());
+            }
+        }
         let proxy = self.proxy.take().expect("the window is made once");
         // The browser gives its device only asynchronously: made there and
         // handed back to the loop as an event.

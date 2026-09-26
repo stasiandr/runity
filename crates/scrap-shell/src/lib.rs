@@ -7,6 +7,9 @@
 pub mod shell;
 /// Sticks and buttons drawn on a touch screen, fed in as a pad's.
 pub mod touch_pad;
+/// The scene delegate UIKit asks for, holding winit's window.
+#[cfg(target_os = "ios")]
+mod ios;
 /// The page's own controls, in the browser: sticks and buttons on screen.
 #[cfg(target_arch = "wasm32")]
 pub mod web;
