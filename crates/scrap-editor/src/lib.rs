@@ -134,6 +134,11 @@ pub struct Session {
     /// Files this session (or its caller, [`Session::wrote`]) wrote: counted
     /// at once, before the system's word of it arrives.
     own_writes: std::sync::atomic::AtomicU64,
+    /// [`Session::wrote`]'s count when the listing was last read.
+    listed_own: std::sync::atomic::AtomicU64,
+    /// A listing being read beside the frames ([`Session::assets_soon`]):
+    /// for the disk as it was when it started.
+    listing: std::sync::Mutex<Option<(u64, std::thread::JoinHandle<EditResult<Vec<scrap_import::assets::Entry>>>)>>,
     /// [`Session::disk`] when the scene's stamps were last compared.
     reload_seen: Option<u64>,
     /// [`Session::disk`] when the last library update started.
@@ -392,8 +397,10 @@ impl Session {
             assets_listed: std::sync::Mutex::new(None),
             watch: std::sync::Mutex::new(None),
             own_writes: std::sync::atomic::AtomicU64::new(0),
+            listed_own: std::sync::atomic::AtomicU64::new(u64::MAX),
             reload_seen: None,
             synced_disk: None,
+            listing: std::sync::Mutex::new(None),
             synced_at: None,
             blender: None,
             prefabs: scrap::Prefabs::new(),
@@ -1569,7 +1576,21 @@ impl Session {
         }
         if prefabs_changed {
             if let Some(project) = &self.project {
-                self.prefabs = scrap::Prefabs::of(project).0;
+                // The ones whose files changed, read again; all of them
+                // only when one came or went, or an import's did.
+                let was: std::collections::HashMap<&PathBuf, _> = stamps[1..].iter().map(|(p, t)| (p, t)).collect();
+                let library = project.library();
+                let changed: Vec<&PathBuf> = now[1..]
+                    .iter()
+                    .filter(|(p, t)| was.get(p) != Some(&t))
+                    .map(|(p, _)| p)
+                    .collect();
+                let same_files = now.len() == stamps.len() && changed.iter().all(|p| was.contains_key(p));
+                let one_by_one = same_files && changed.iter().all(|p| !p.starts_with(&library));
+                let reread = one_by_one && changed.iter().all(|p| self.prefabs.reread(p).is_ok());
+                if !reread {
+                    self.prefabs = scrap::Prefabs::of(project).0;
+                }
             }
         }
         if scene_changed {
@@ -2921,6 +2942,66 @@ impl Session {
         self.own_writes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
+    /// [`Session::assets`] without waiting for it: the listing as last
+    /// read, with the disk it was read for, while a newer one is read on
+    /// another thread — a change heard from the disk (a file saved in
+    /// another program, a `git pull`) no longer stops the frame that hears
+    /// it. What this session wrote itself ([`Session::wrote`]) is read at
+    /// once, as [`Session::assets`] does. `None` before anything was read.
+    pub fn assets_soon(&self) -> Option<(u64, Vec<scrap_import::assets::Entry>)> {
+        use std::sync::atomic::Ordering;
+        let project = self.project.as_ref()?;
+        let disk = self.disk()?;
+        fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+            m.lock().unwrap_or_else(|e| e.into_inner())
+        }
+        let listed = |s: &Self| -> Option<(u64, Vec<scrap_import::assets::Entry>)> {
+            lock(&s.assets_listed).as_ref().map(|(was, entries): &(u64, Vec<_>)| (*was, entries.clone()))
+        };
+        // As read: nothing moved since.
+        if let Some((was, entries)) = listed(self) {
+            if was == disk {
+                return Some((was, entries));
+            }
+        }
+        // Never read, or written here: read now.
+        let own = self.own_writes.load(Ordering::Acquire);
+        if listed(self).is_none() || own != self.listed_own.load(Ordering::Acquire) {
+            return self.assets().ok().map(|entries| (disk, entries));
+        }
+        // Heard from the disk: read beside the frames, the last listing
+        // meanwhile.
+        let mut listing = lock(&self.listing);
+        if let Some((for_disk, job)) = listing.take() {
+            if !job.is_finished() {
+                *listing = Some((for_disk, job));
+            } else if let Ok(Ok(entries)) = job.join() {
+                *lock(&self.assets_listed) = Some((for_disk, entries));
+            }
+        }
+        let now = listed(self);
+        if listing.is_none() && now.as_ref().is_none_or(|(was, _)| *was != disk) {
+            let project = project.clone();
+            *listing = Some((
+                disk,
+                std::thread::spawn(move || {
+                    scrap_import::assets::list(&project).map_err(|e| EditError::Import(format!("{e:#}")))
+                }),
+            ));
+        }
+        now
+    }
+
+    /// A listing read beside the frames has come in, and
+    /// [`Session::assets_soon`] would give it now.
+    pub fn listing_ready(&self) -> bool {
+        self.listing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|(_, job)| job.is_finished())
+    }
+
     pub fn assets(&self) -> EditResult<Vec<scrap_import::assets::Entry>> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
         // Listed again only when a file of the project, or what the library
@@ -2932,8 +3013,10 @@ impl Session {
                 return Ok(entries.clone());
             }
         }
+        let own = self.own_writes.load(std::sync::atomic::Ordering::Acquire);
         let entries = scrap_import::assets::list(project).map_err(|e| EditError::Import(format!("{e:#}")))?;
         *listed = Some((seen, entries.clone()));
+        self.listed_own.store(own, std::sync::atomic::Ordering::Release);
         Ok(entries)
     }
 

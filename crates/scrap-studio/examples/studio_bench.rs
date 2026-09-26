@@ -140,6 +140,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     report("duplicate", &edits);
     report("undo", &undos);
 
+    // A prefab changed on disk by someone else (its time touched, its
+    // text the same): the worst frame of the second after, as the editor
+    // hears of it and reads what it must again.
+    let root = studio.session.project().map(|p| p.root().to_path_buf());
+    let prefab = root.and_then(|r| scrap::layout::files(&r, scrap::layout::Kind::Prefab).into_iter().next());
+    if let Some(prefab) = prefab {
+        let mut after = Vec::new();
+        for _ in 0..3 {
+            if let Ok(file) = std::fs::File::options().write(true).open(&prefab) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+            let t = Instant::now();
+            let mut worst: f64 = 0.0;
+            while t.elapsed().as_secs_f64() < 1.0 {
+                worst = worst.max(frame(&mut studio));
+            }
+            after.push(worst);
+        }
+        report("disk change", &after);
+    }
+
     drop(studio);
     for (path, bytes) in kept {
         std::fs::write(path, bytes)?;

@@ -83,6 +83,19 @@ impl Prefabs {
         Ok((prefabs, problems))
     }
 
+    /// Read one hand-written prefab file again, as [`Prefabs::open`] reads
+    /// each: what changed on disk, without reading all the others.
+    pub fn reread(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let (name, desc) = Self::read(path)?;
+        if let Some(id) = crate::asset::sidecar_id(crate::asset::sidecar_of(path)) {
+            self.ids.insert(id, name.clone());
+            self.id_of.insert(name.clone(), id);
+        }
+        self.insert(name, desc);
+        Ok(())
+    }
+
     /// Every prefab under `folder` of a game's [`crate::data::Data`] — `""`
     /// for all of it: what [`Prefabs::open`] reads from a directory, read
     /// through the seam.

@@ -798,13 +798,18 @@ impl Bottom {
     /// panel too, and on a big project reading it all was most of the
     /// click.
     fn listed(&mut self, session: &Session) -> std::rc::Rc<Listed> {
-        let disk = session.disk();
+        // The listing as the session has it — read beside the frames when
+        // the change was heard from the disk — sorted again only when it
+        // is a newer one.
+        let (disk, entries) = match session.assets_soon() {
+            Some((disk, entries)) => (Some(disk), entries),
+            None => (None, session.assets().unwrap_or_default()),
+        };
         if let (Some(disk), Some((was, listed))) = (disk, &self.listed) {
             if disk == *was {
                 return listed.clone();
             }
         }
-        let entries = session.assets().unwrap_or_default();
         let all = assets_of(session, &entries);
         let sources = sources_of(&entries);
         let folders = folders(&all, session, &sources);

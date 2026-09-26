@@ -264,8 +264,10 @@ struct Stamp {
     pivot: Pivot,
     path: Option<std::path::PathBuf>,
     game_view: bool,
-    /// The project's files as they are: a change on disk shows.
+    /// The project's files as they are: a change on disk shows, and so
+    /// does a listing of them read beside the frames coming in.
     disk: Option<u64>,
+    listing: bool,
 }
 
 impl Stamp {
@@ -288,6 +290,7 @@ impl Stamp {
             path: session.scene_path().map(Path::to_path_buf),
             game_view: session.is_game_view(),
             disk: session.disk(),
+            listing: session.listing_ready(),
         }
     }
 }

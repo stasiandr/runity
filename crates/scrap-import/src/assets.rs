@@ -20,6 +20,8 @@
 //! something else — onto a name another file has, or one lines already use
 //! (a builtin a project has not shadowed yet) — is refused rather than done.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -150,7 +152,7 @@ pub fn usages_of(project: &Project, what: &AssetRef) -> Result<Vec<Usage>> {
         }
     }
     for (path, prefab) in &documents.prefabs {
-        for at in refs::uses(std::slice::from_ref(prefab), what) {
+        for at in refs::uses(std::slice::from_ref(prefab.as_ref()), what) {
             out.push(Usage {
                 file: shown(project, path),
                 at,
@@ -224,14 +226,16 @@ pub fn rename(project: &Project, from: &Path, to: &Path) -> Result<Renamed> {
 
     let mut rewritten = Vec::new();
     if let Some(what) = &reference {
-        for (path, mut scene) in documents.scenes {
+        for (path, scene) in documents.scenes {
+            let mut scene = Arc::unwrap_or_clone(scene);
             let count = refs::rewrite_scene(&mut scene, what, &new);
             if count > 0 {
                 scene.save(&path)?;
                 rewritten.push((shown(project, &path), count));
             }
         }
-        for (path, mut prefab) in documents.prefabs {
+        for (path, prefab) in documents.prefabs {
+            let mut prefab = Arc::unwrap_or_clone(prefab);
             let count = refs::rewrite(std::slice::from_mut(&mut prefab), what, &new);
             if count > 0 {
                 Prefabs::save(&prefab, &path).map_err(anyhow::Error::msg)?;
@@ -360,7 +364,7 @@ pub fn list(project: &Project) -> Result<Vec<Entry>> {
         refs::count_uses(&scene.entities, &mut counts);
     }
     for (_, prefab) in &documents.prefabs {
-        refs::count_uses(std::slice::from_ref(prefab), &mut counts);
+        refs::count_uses(std::slice::from_ref(prefab.as_ref()), &mut counts);
     }
     let used = |what: &AssetRef| counts.get(what).copied().unwrap_or(0);
     // Which images the terrains paint with, found once: asked per image,
@@ -386,7 +390,7 @@ pub fn list(project: &Project) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     for path in files {
         let kind = kind(project, &path)?;
-        let sidecar = ImportSettings::load(sidecar_for(&path)).ok();
+        let sidecar = sidecar_read(&sidecar_for(&path));
         let uses = match kind {
             Kind::Model => used(&AssetRef::Model(stem(&path))),
             Kind::Material => used(&AssetRef::Material(stem(&path))),
@@ -501,36 +505,92 @@ fn painted_by(project: &Project, image: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// A source's import settings, read again only when its sidecar changed
+/// (a listing reads every one; see [`documents_read`]).
+fn sidecar_read(path: &Path) -> Option<ImportSettings> {
+    type Read = HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Option<ImportSettings>)>;
+    static READ: std::sync::OnceLock<std::sync::Mutex<Read>> = std::sync::OnceLock::new();
+    let meta = std::fs::metadata(path).ok()?;
+    let (at, len) = (meta.modified().ok(), meta.len());
+    let mut read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((was_at, was_len, settings)) = read.get(path) {
+        if at.is_some() && *was_at == at && *was_len == len {
+            return settings.clone();
+        }
+    }
+    let settings = ImportSettings::load(path).ok();
+    read.insert(path.to_path_buf(), (at, len, settings.clone()));
+    settings
+}
+
 /// Every scene and prefab in a project, read.
 struct Documents {
-    scenes: Vec<(PathBuf, Scene)>,
-    prefabs: Vec<(PathBuf, scrap::EntityDesc)>,
+    scenes: Vec<(PathBuf, Arc<Scene>)>,
+    prefabs: Vec<(PathBuf, Arc<scrap::EntityDesc>)>,
+}
+
+/// A scene or a prefab as read, and the file as it was then.
+#[derive(Clone)]
+enum Read {
+    Scene(Arc<Scene>),
+    Prefab(Arc<scrap::EntityDesc>),
+}
+
+/// What [`Documents::read`] read, by file: a file as it was when read is
+/// not read again. A project's listing reads every scene and prefab, and
+/// an editor asks for it each time a file changes; Dacha's twelve hundred
+/// prefabs took a quarter of a second to parse.
+fn documents_read() -> &'static std::sync::Mutex<HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Read)>> {
+    static READ: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Read)>>> =
+        std::sync::OnceLock::new();
+    READ.get_or_init(Default::default)
 }
 
 impl Documents {
     fn read(project: &Project) -> Result<Self> {
         let scene_paths = project.files(scrap::layout::Kind::Scene);
         let prefab_paths = project.files(scrap::layout::Kind::Prefab);
+        let mut read = documents_read().lock().unwrap_or_else(|e| e.into_inner());
+        let mut cached = |path: &Path, load: &dyn Fn() -> Result<Read>| -> Result<Read> {
+            let meta = std::fs::metadata(path).ok();
+            let (at, len) = (meta.as_ref().and_then(|m| m.modified().ok()), meta.map_or(0, |m| m.len()));
+            if let Some((was_at, was_len, doc)) = read.get(path) {
+                if at.is_some() && *was_at == at && *was_len == len {
+                    return Ok(doc.clone());
+                }
+            }
+            let doc = load()?;
+            read.insert(path.to_path_buf(), (at, len, doc.clone()));
+            Ok(doc)
+        };
 
         let mut scenes = Vec::new();
         for path in scene_paths {
-            let scene = Scene::load(&path).with_context(|| {
-                format!(
-                    "{} does not load, so what it names cannot be known; fix it first",
-                    shown(project, &path)
-                )
+            let doc = cached(&path, &|| {
+                Scene::load(&path).map(|s| Read::Scene(Arc::new(s))).with_context(|| {
+                    format!(
+                        "{} does not load, so what it names cannot be known; fix it first",
+                        shown(project, &path)
+                    )
+                })
             })?;
-            scenes.push((path, scene));
+            if let Read::Scene(scene) = doc {
+                scenes.push((path, scene));
+            }
         }
         let mut prefabs = Vec::new();
         for path in prefab_paths {
-            let (_, desc) = Prefabs::read(&path).map_err(|e| {
-                anyhow::anyhow!(
-                    "{e}\n{} does not load, so what it names cannot be known; fix it first",
-                    shown(project, &path)
-                )
+            let doc = cached(&path, &|| {
+                Prefabs::read(&path).map(|(_, desc)| Read::Prefab(Arc::new(desc))).map_err(|e| {
+                    anyhow::anyhow!(
+                        "{e}\n{} does not load, so what it names cannot be known; fix it first",
+                        shown(project, &path)
+                    )
+                })
             })?;
-            prefabs.push((path, desc));
+            if let Read::Prefab(desc) = doc {
+                prefabs.push((path, desc));
+            }
         }
         Ok(Self { scenes, prefabs })
     }
@@ -542,7 +602,7 @@ impl Documents {
                 .map(move |at| (path, at))
         });
         let prefabs = self.prefabs.iter().flat_map(|(path, prefab)| {
-            refs::uses(std::slice::from_ref(prefab), what)
+            refs::uses(std::slice::from_ref(prefab.as_ref()), what)
                 .into_iter()
                 .map(move |at| (path, at))
         });
