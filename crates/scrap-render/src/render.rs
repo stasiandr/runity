@@ -1248,6 +1248,14 @@ pub struct Renderer {
     /// Texture assets' resident levels and what the frames need
     /// ([`crate::streaming_textures`]).
     streams: scrap_core::hash::FastMap<TextureHandle, crate::streaming_textures::TextureStream>,
+    /// The last view's batch lists, by which list and which batch: their
+    /// instance buffers taken up again — cleared, not freed — rather than
+    /// grown from nothing by doubling every frame (a batch of thousands is
+    /// megabytes copied over and over). Only the batches the last view
+    /// had are kept.
+    batch_pool: BatchPool,
+    /// Every instance of a view, one after another, as uploaded: kept.
+    flat: Vec<InstanceRaw>,
     /// Live meshes by their key: the mesh each is drawn with, and the
     /// version last uploaded.
     live: std::collections::HashMap<u64, (MeshHandle, u64)>,
@@ -3405,6 +3413,8 @@ impl Renderer {
             meshes: Vec::new(),
             free_meshes: Vec::new(),
             streams: scrap_core::hash::FastMap::default(),
+            batch_pool: BatchPool::default(),
+            flat: Vec::new(),
             live: std::collections::HashMap::new(),
             targets: std::collections::HashMap::new(),
             textures: Vec::new(),
@@ -5853,9 +5863,10 @@ impl Renderer {
             }
         });
         let streaming_textures = !self.streams.is_empty() && probe.is_none() && view.is_some() && !self.picturing;
-        let mut shadow_index = BatchIndex::default();
-        let mut clip_index = BatchIndex::default();
-        let mut colour_index = BatchIndex::default();
+        let mut pool = std::mem::take(&mut self.batch_pool);
+        let mut shadow_index = BatchIndex::tagged(0);
+        let mut clip_index = BatchIndex::tagged(1);
+        let mut colour_index = BatchIndex::tagged(2);
         for (draw, prepared) in frame.draws.iter().zip(prepared) {
             let Prepared {
                 raw,
@@ -5883,9 +5894,9 @@ impl Renderer {
             let maps = self.batch_maps(maps);
             if !draw.material.is_transparent() {
                 if draw.material.alpha_clip > 0.0 {
-                    clip_index.push(&mut clip_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
+                    clip_index.push(&mut pool, &mut clip_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
                 } else {
-                    shadow_index.push(&mut shadow_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
+                    shadow_index.push(&mut pool, &mut shadow_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
                 }
                 stats.shadow_casters += 1;
             }
@@ -5915,7 +5926,7 @@ impl Renderer {
                         face: RenderFace::Front,
                         ..look
                     };
-                    colour_index.push(&mut batches, (Some(look), grid, maps), raw);
+                    colour_index.push(&mut pool, &mut batches, (Some(look), grid, maps), raw);
                     continue;
                 }
             }
@@ -5928,7 +5939,7 @@ impl Renderer {
                 // so two of them cannot share an instanced call anyway.
                 singles.push((look, mesh, maps, pose, raw));
             } else {
-                colour_index.push(&mut batches, (Some(look), mesh, maps), raw);
+                colour_index.push(&mut pool, &mut batches, (Some(look), mesh, maps), raw);
             }
         }
         if streaming_textures {
@@ -5947,10 +5958,11 @@ impl Renderer {
         self.stats = stats;
         // Each lamp shadow map's casters: what its own view sees.
         let mut lamp_batches: Vec<(Batches, Batches)> = Vec::new();
-        for view in &clustered.shadow_views {
+        for (lamp, view) in clustered.shadow_views.iter().enumerate() {
             let planes = frustum_planes(*view);
             let (mut solid, mut clipped) = (Vec::new(), Vec::new());
-            let (mut solid_index, mut clipped_index) = (BatchIndex::default(), BatchIndex::default());
+            let lamp = 3 + 2 * lamp as u32;
+            let (mut solid_index, mut clipped_index) = (BatchIndex::tagged(lamp), BatchIndex::tagged(lamp + 1));
             // What is unlit is a light itself: a lamp's bulb would
             // otherwise put everything around it in its shadow.
             for draw in frame
@@ -5972,7 +5984,7 @@ impl Renderer {
                 let maps = self.maps_of(draw);
                 let mut raw = instance_of(draw.transform, &draw.material);
                 raw.maps = packed(maps);
-                index.push(list, (None, draw.mesh, self.batch_maps(maps)), raw);
+                index.push(&mut pool, list, (None, draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
         }
@@ -6054,7 +6066,9 @@ impl Renderer {
                 .map(|(_, l)| l.len() as u32)
                 .sum::<u32>();
         let batched_total: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
-        let flat: Vec<InstanceRaw> = shadow_batches
+        let mut flat = std::mem::take(&mut self.flat);
+        flat.clear();
+        flat.extend(shadow_batches
             .iter()
             .chain(clip_batches.iter())
             .chain(batches.iter())
@@ -6068,8 +6082,7 @@ impl Renderer {
                     .iter()
                     .flat_map(|(a, b)| a.iter().chain(b.iter()))
                     .flat_map(|(_, l)| l.iter().copied()),
-            )
-            .collect();
+            ));
         if flat.len() as u64 > self.instance_capacity {
             self.instance_capacity = (flat.len() as u64).next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -6084,6 +6097,7 @@ impl Renderer {
             gpu.queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(&flat));
         }
+        self.flat = flat;
 
         // Poses go in before the pass: one slot each, padded to the device's
         // dynamic-offset alignment, and a pose longer than MAX_JOINTS is
@@ -6784,6 +6798,7 @@ impl Renderer {
         let Some(view) = view else {
             // A probe's face: lit, and that is all.
             gpu.queue.submit(Some(encoder.finish()));
+            self.keep_batches(pool, [shadow_batches, clip_batches, batches], lamp_batches);
             return;
         };
         let view_projection = frame.camera.view_projection(aspect);
@@ -6914,6 +6929,25 @@ impl Renderer {
                 gpu.queue.submit(Some(encoder.finish()));
             }
         }
+        self.keep_batches(pool, [shadow_batches, clip_batches, batches], lamp_batches);
+    }
+
+    /// This view's batch lists into the pool for the next (see
+    /// `batch_pool`): what was not used again is let go.
+    fn keep_batches(&mut self, old: BatchPool, lists: [Batches; 3], lamps: Vec<(Batches, Batches)>) {
+        drop(old);
+        let mut pool = BatchPool::default();
+        let lamps = lamps.into_iter().enumerate().flat_map(|(i, (solid, clipped))| {
+            let tag = 3 + 2 * i as u32;
+            [(tag, solid), (tag + 1, clipped)]
+        });
+        for (tag, list) in (0u32..).zip(lists).chain(lamps) {
+            for (key, mut instances) in list {
+                instances.clear();
+                pool.insert((tag, key), instances);
+            }
+        }
+        self.batch_pool = pool;
     }
 }
 
@@ -7036,10 +7070,19 @@ struct Prepared {
 struct BatchIndex {
     at: scrap_core::hash::FastMap<BatchKey, usize>,
     last: Option<(BatchKey, usize)>,
+    /// Which list it indexes, for the pool.
+    tag: u32,
 }
 
+/// Instance buffers of the last view's batches, by list and key.
+type BatchPool = scrap_core::hash::FastMap<(u32, BatchKey), Vec<InstanceRaw>>;
+
 impl BatchIndex {
-    fn push(&mut self, batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
+    fn tagged(tag: u32) -> Self {
+        BatchIndex { tag, ..Default::default() }
+    }
+
+    fn push(&mut self, pool: &mut BatchPool, batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
         if let Some((last, at)) = self.last {
             if last == key {
                 batches[at].1.push(raw);
@@ -7050,7 +7093,7 @@ impl BatchIndex {
             Some(&at) => at,
             None => {
                 self.at.insert(key, batches.len());
-                batches.push((key, Vec::new()));
+                batches.push((key, pool.remove(&(self.tag, key)).unwrap_or_default()));
                 batches.len() - 1
             }
         };
