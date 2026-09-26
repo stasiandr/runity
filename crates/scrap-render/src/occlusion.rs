@@ -375,13 +375,13 @@ impl Occlusion {
             args: Buffer::new(
                 gpu,
                 "occlusion draws",
-                storage_usage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
+                storage_usage | indirect(gpu) | wgpu::BufferUsages::COPY_SRC,
             ),
             kept: Buffer::new(gpu, "occlusion kept", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX),
             active: false,
             // Its draws start past their first instance: without that, not at all.
-            enabled: gpu.device.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
-            can: gpu.device.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
+            enabled: can_draw_indirect(gpu),
+            can: can_draw_indirect(gpu),
             batches: 0,
         }
     }
@@ -608,5 +608,25 @@ impl Occlusion {
         }
         drop(pass);
         self.made_with = Some(view_projection);
+    }
+}
+
+/// Whether the device draws from arguments in a buffer at all, and past
+/// their first instance: not the iOS Simulator's Metal, which has no
+/// indirect draws.
+pub(crate) fn can_draw_indirect(gpu: &Gpu) -> bool {
+    gpu.device.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+        && !indirect(gpu).is_empty()
+}
+
+/// `INDIRECT` for a buffer of draw arguments, where the device has
+/// indirect draws; nothing where it does not — asking for the usage there
+/// is an error, even for a buffer that is never drawn from.
+pub(crate) fn indirect(gpu: &Gpu) -> wgpu::BufferUsages {
+    let flags = gpu.adapter.get_downlevel_capabilities().flags;
+    if flags.contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION) {
+        wgpu::BufferUsages::INDIRECT
+    } else {
+        wgpu::BufferUsages::empty()
     }
 }

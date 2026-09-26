@@ -13,6 +13,7 @@ scrap-gpu = { path = "../scrap-gpu", features = ["winit"] }
 scrap-overlay = { path = "../scrap-overlay" }
 scrap-render = { path = "../scrap-render" }
 anyhow = "1.0.104"
+glam = "0.32"
 gilrs = "0.11"
 subsecond = "0.7.10"
 winit = "0.30.13"

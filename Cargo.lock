@@ -3701,6 +3701,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gilrs",
+ "glam 0.32.1",
  "js-sys",
  "scrap-core",
  "scrap-gpu",

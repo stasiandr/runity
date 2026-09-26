@@ -71,7 +71,16 @@ pub struct WindowConfig {
     /// steps (see the module). On by default; `SCRAP_RENDER_THREAD=0`
     /// turns it off, as does a target with no threads.
     pub render_thread: bool,
+    /// Sticks and buttons drawn on the screen and fed in as a pad's
+    /// ([`crate::touch_pad`]), while the pointer is captured. The
+    /// standard layout on iOS and Android and with `SCRAP_TOUCH_PAD=1`;
+    /// none elsewhere. A game lays out its own or turns it off.
+    pub touch_pad: Option<crate::touch_pad::TouchLayout>,
 }
+
+/// Whether the platform owns the screen and gives it to the game whole:
+/// the browser's page, a phone's. A size asked for there means nothing.
+const SCREEN_IS_GIVEN: bool = cfg!(any(target_arch = "wasm32", target_os = "ios", target_os = "android"));
 
 impl Default for WindowConfig {
     fn default() -> Self {
@@ -82,6 +91,12 @@ impl Default for WindowConfig {
             time: TimeSettings::default(),
             render_thread: cfg!(not(target_arch = "wasm32"))
                 && std::env::var("SCRAP_RENDER_THREAD").map_or(true, |v| v != "0"),
+            touch_pad: match std::env::var("SCRAP_TOUCH_PAD").as_deref() {
+                Ok("1") => true,
+                Ok(_) => false,
+                Err(_) => cfg!(any(target_os = "ios", target_os = "android")),
+            }
+            .then(crate::touch_pad::TouchLayout::standard),
         }
     }
 }
@@ -276,7 +291,9 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
             }
         },
         captured: false,
+        touch_pad: None,
     };
+    shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
     #[cfg(not(target_arch = "wasm32"))]
     event_loop.run_app(&mut shell)?;
     #[cfg(target_arch = "wasm32")]
@@ -395,6 +412,8 @@ struct Shell<G: Game> {
     pads: Option<gilrs::Gilrs>,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
+    /// The pad on the screen, where there is one.
+    touch_pad: Option<crate::touch_pad::TouchPad>,
 }
 
 impl<G: Game> Shell<G> {
@@ -579,7 +598,25 @@ impl<G: Game> Shell<G> {
         if let Some(on) = wanted.filter(|on| *on != self.captured) {
             set_captured(&state.window, on);
             self.captured = on;
+            if let (false, Some(pad)) = (on, self.touch_pad.as_mut()) {
+                for event in pad.release_all() {
+                    self.input.handle(&event);
+                }
+            }
         }
+        // The pad on the screen over the game's overlay, while playing.
+        let padded = match self.touch_pad.as_mut() {
+            Some(pad) if self.captured => {
+                pad.resize(
+                    glam::Vec2::new(size.0 as f32, size.1 as f32),
+                    state.window.scale_factor() as f32,
+                );
+                let mut ui = self.game.overlay().clone();
+                pad.draw(&mut ui);
+                Some(ui)
+            }
+            _ => None,
+        };
 
         let mut times = Vec::with_capacity(3);
         #[cfg(not(target_arch = "wasm32"))]
@@ -591,7 +628,7 @@ impl<G: Game> Shell<G> {
             {
                 // The overlay is the game's, which the steps are about to
                 // change: the drawing gets its own copy.
-                let ui = self.game.overlay().clone();
+                let ui = padded.unwrap_or_else(|| self.game.overlay().clone());
                 let thread = state
                     .render
                     .get_or_insert_with(|| RenderThread::new(state.gpu.clone()));
@@ -621,7 +658,7 @@ impl<G: Game> Shell<G> {
                 &mut d.renderer,
                 &mut d.overlay,
                 &frame,
-                self.game.overlay(),
+                padded.as_ref().unwrap_or_else(|| self.game.overlay()),
                 &mut times,
             )
         };
@@ -748,9 +785,9 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             return;
         }
         let mut attributes = Window::default_attributes().with_title(self.config.title.clone());
-        // In the browser the page's layout sizes the canvas; a size here
-        // would pin it in pixels.
-        if cfg!(not(target_arch = "wasm32")) {
+        // In the browser the page's layout sizes the canvas, on a phone the
+        // screen is the window; a size here would pin it in pixels.
+        if !SCREEN_IS_GIVEN {
             attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(
                 self.config.width,
                 self.config.height,
@@ -837,6 +874,19 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             // Captured, the pointer's position means nothing: only how far
             // it moves counts, and that comes as device motion.
             WindowEvent::CursorMoved { .. } if self.captured => {}
+            WindowEvent::Touch(touch) if self.touch_pad.is_some() => {
+                let pad = self.touch_pad.as_mut().expect("just checked");
+                let phase = match touch.phase {
+                    winit::event::TouchPhase::Started => crate::input::TouchPhase::Started,
+                    winit::event::TouchPhase::Moved => crate::input::TouchPhase::Moved,
+                    winit::event::TouchPhase::Ended => crate::input::TouchPhase::Ended,
+                    winit::event::TouchPhase::Cancelled => crate::input::TouchPhase::Cancelled,
+                };
+                let (x, y) = (touch.location.x as f32, touch.location.y as f32);
+                for event in pad.touch(touch.id, phase, x, y, self.captured) {
+                    self.input.handle(&event);
+                }
+            }
             other => {
                 for event in translate(&other) {
                     self.input.handle(&event);
