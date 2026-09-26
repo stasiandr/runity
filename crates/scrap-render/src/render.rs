@@ -1378,6 +1378,9 @@ pub struct Renderer {
     /// ([`crate::lean`]), and the shader modules they are built from: the
     /// standard one's (`None`) and each material shader's.
     lean: crate::lean::Lean<LeanKey>,
+    /// The error a clustered mesh is drawn with, in pixels
+    /// ([`crate::cluster_lod`]).
+    cluster_error: f32,
     /// The screen's shadow cascades as last drawn, and whose turn it is of
     /// the far ones; off by `SCRAP_SHADOW_STAGGER=0`.
     cascade_cache: Option<CascadeCache>,
@@ -3518,6 +3521,7 @@ impl Renderer {
             lowres: crate::lowres::LowRes::new(gpu),
             lowres_drawn: false,
             cascade_cache: None,
+            cluster_error: 1.0,
             shadow_turn: false,
             shadow_stagger: std::env::var("SCRAP_SHADOW_STAGGER").map_or(true, |v| v != "0"),
             lean_modules: [(None, shader.clone())].into_iter().collect(),
@@ -3746,6 +3750,12 @@ impl Renderer {
         Some((m.index_count / 3, Vec3::from(m.bounds.max) - Vec3::from(m.bounds.min)))
     }
 
+    /// A mesh's vertices as uploaded.
+    pub fn mesh_vertices(&self, mesh: MeshHandle) -> Option<u32> {
+        let m = self.meshes.get(mesh.0 as usize)?;
+        Some((m.vertices.size() / std::mem::size_of::<crate::asset::Vertex>() as u64) as u32)
+    }
+
     /// Meshes uploaded and not released.
     pub fn mesh_count(&self) -> usize {
         self.meshes.len() - self.free_meshes.len()
@@ -3823,6 +3833,9 @@ impl Renderer {
         if clustered.is_some() {
             usage |= wgpu::BufferUsages::STORAGE;
         }
+        // The mesh itself is the first part of a clustered one's indices;
+        // its coarser levels come after, for its clusters alone.
+        let own = indices.len();
         let indices = clustered.as_ref().map_or(indices, |(sorted, _)| sorted.as_slice());
         let vertex_buffer = gpu
             .device
@@ -3844,7 +3857,7 @@ impl Renderer {
                 &vertex_buffer,
                 vertices.len() as u32,
                 &index_buffer,
-                indices.len() as u32,
+                own as u32,
                 live,
             )
         });
@@ -3853,7 +3866,7 @@ impl Renderer {
             colors,
             skin: None,
             indices: index_buffer,
-            index_count: indices.len() as u32,
+            index_count: own as u32,
             bounds,
             blas,
             clusters: clustered.map(|(_, c)| crate::cluster::MeshClusters::new(gpu, &c)),
@@ -4260,7 +4273,7 @@ impl Renderer {
         textured: bool,
         masks: &[u8],
         bit: u8,
-        cascade: Option<Mat4>,
+        cascade: Option<(Mat4, f32)>,
     ) {
         let mut first = base;
         for ((look, handle, texture), list) in batches {
@@ -4283,13 +4296,13 @@ impl Renderer {
                 }
                 // A dense mesh a cluster at a time: of a mountain range a
                 // kilometre round, what is over this cascade's square.
-                if let (Some(clusters), Some(cascade)) = (mesh.clusters.as_ref(), cascade) {
+                if let (Some(clusters), Some((cascade, texel))) = (mesh.clusters.as_ref(), cascade) {
                     for instance in start..at {
                         let Some(model) = list.get((instance - first) as usize).map(|r| Mat4::from_cols_array_2d(&r.model)) else {
                             continue;
                         };
                         let mut runs = Vec::new();
-                        clusters.runs_in(model, cascade, &mut runs);
+                        clusters.runs_in(model, cascade, texel, &mut runs);
                         if runs.is_empty() {
                             continue;
                         }
@@ -4887,6 +4900,14 @@ impl Renderer {
     /// it off).
     pub fn set_lean_shaders(&mut self, on: bool) {
         self.lean.enabled = on;
+    }
+
+    /// How far, in pixels, a dense mesh's surface may stand from the mesh's
+    /// as it is drawn: its clusters are drawn at the coarsest level
+    /// ([`crate::cluster_lod`]) whose error is under it. One (the default)
+    /// is no difference an eye can see; 0 draws every mesh whole.
+    pub fn set_cluster_error(&mut self, pixels: f32) {
+        self.cluster_error = pixels.max(0.0);
     }
 
     /// Draw the far shadow cascades every other frame, in turn (on by
@@ -6792,6 +6813,18 @@ impl Renderer {
                     first += count;
                 }
                 let hiz = self.occlusion.hiz();
+                // Clusters at the level whose error is under a pixel
+                // (crate::cluster_lod): how many pixels a metre covers a
+                // metre off, or with an orthographic camera anywhere.
+                let lod = match frame.camera.ortho {
+                    Some(half) => [height as f32 / (2.0 * half.max(1e-3)), frame.camera.near, self.cluster_error, 1.0],
+                    None => [
+                        height as f32 / (2.0 * (frame.camera.fov_y_degrees.to_radians() * 0.5).tan()),
+                        frame.camera.near,
+                        self.cluster_error,
+                        0.0,
+                    ],
+                };
                 self.clusters.cull(
                     gpu,
                     &mut encoder,
@@ -6800,6 +6833,7 @@ impl Renderer {
                     drawn,
                     frame.camera.position,
                     hiz,
+                    lod,
                 );
             } else {
                 self.occlusion.active = false;
@@ -6895,18 +6929,18 @@ impl Renderer {
             let (one, both) = shadow_batches.split_at(shadow_one_sided);
             pass.set_pipeline(&self.pipelines.shadow_front);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_casters(&mut pass, one, 0, false, &caster_masks, bit, Some(cascades[cascade].0));
+            self.draw_casters(&mut pass, one, 0, false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
             pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-            self.draw_casters(&mut pass, both, count(one), false, &caster_masks, bit, Some(cascades[cascade].0));
+            self.draw_casters(&mut pass, both, count(one), false, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
             if !clip_batches.is_empty() {
                 let (one, both) = clip_batches.split_at(clip_one_sided);
                 pass.set_pipeline(&self.pipelines.shadow_clip_front);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_casters(&mut pass, one, solid_casters, true, &caster_masks, bit, Some(cascades[cascade].0));
+                self.draw_casters(&mut pass, one, solid_casters, true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
-                self.draw_casters(&mut pass, both, solid_casters + count(one), true, &caster_masks, bit, Some(cascades[cascade].0));
+                self.draw_casters(&mut pass, both, solid_casters + count(one), true, &caster_masks, bit, Some((cascades[cascade].0, cascades[cascade].3)));
             }
             }
             if debugged {

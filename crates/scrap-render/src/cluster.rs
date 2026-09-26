@@ -48,10 +48,15 @@ pub(crate) struct ClusterRaw {
     /// Where its indices start, and how many triangles.
     pub first: u32,
     pub count: u32,
-    pub pad: [u32; 2],
+    /// How far its surface may stand from the mesh's, and how far its
+    /// parents' may — the coarser clusters its group was simplified into
+    /// ([`crate::cluster_lod`]); [`crate::cluster_lod::NEVER`] at the top.
+    pub error: [f32; 2],
+    /// The spheres those errors are over: its own, its parents'.
+    pub lod: [[f32; 4]; 2],
 }
 
-fn morton(p: Vec3) -> u32 {
+pub(crate) fn morton(p: Vec3) -> u32 {
     fn spread(v: u32) -> u32 {
         let mut x = v & 0x3ff;
         x = (x | (x << 16)) & 0x0300_00ff;
@@ -64,8 +69,10 @@ fn morton(p: Vec3) -> u32 {
     spread(q.x) | (spread(q.y) << 1) | (spread(q.z) << 2)
 }
 
-/// The mesh's indices in cluster order, and its clusters: `None` when it
-/// is too small to be worth it.
+/// The mesh's indices in cluster order — then every coarser level's
+/// ([`crate::cluster_lod`]) — and its clusters: `None` when it is too small
+/// to be worth it. The mesh itself is the first part of the indices, as
+/// many as it had.
 ///
 /// Grown, as meshoptimizer's are: from the first triangle not yet taken in
 /// Morton order through the mesh's box, a cluster takes in, of the
@@ -77,28 +84,55 @@ pub(crate) fn build(vertices: &[Vertex], indices: &[u32]) -> Option<(Vec<u32>, V
     if triangles < FROM_TRIANGLES || vertices.is_empty() {
         return None;
     }
+    let started = std::time::Instant::now();
+    let (mut sorted, level0) = split(vertices, indices, 0);
+    let cut = started.elapsed();
+    let (extra, clusters) = crate::cluster_lod::levels(vertices, &sorted, &level0);
+    if std::env::var_os("SCRAP_LOD_WHY").is_some() {
+        eprintln!(
+            "clusters of {triangles} triangles: {} at level 0, {} in all, built in {:.0} ms ({:.0} cutting level 0)",
+            level0.len(),
+            clusters.len(),
+            started.elapsed().as_secs_f32() * 1000.0,
+            cut.as_secs_f32() * 1000.0
+        );
+    }
+    sorted.extend_from_slice(&extra);
+    Some((sorted, clusters))
+}
+
+/// Triangles cut into clusters: their indices in the clusters' order, and
+/// the clusters, each's `first` counted from `base`.
+pub(crate) fn split(vertices: &[Vertex], indices: &[u32], base: u32) -> (Vec<u32>, Vec<ClusterRaw>) {
+    let triangles = indices.len() / 3;
     let at = |i: u32| Vec3::from_array(vertices[i as usize].position);
+    // Only the vertices these triangles use: a coarser level's group is a
+    // few hundred triangles of a mesh of hundreds of thousands of vertices.
+    let mut used: Vec<u32> = indices.to_vec();
+    used.sort_unstable();
+    used.dedup();
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-    for v in vertices {
-        lo = lo.min(Vec3::from_array(v.position));
-        hi = hi.max(Vec3::from_array(v.position));
+    for &i in &used {
+        lo = lo.min(at(i));
+        hi = hi.max(at(i));
     }
     let span = (hi - lo).max(Vec3::splat(1e-6));
     // Corners by where they are, to a millionth of the box.
     let mut places: std::collections::HashMap<(i32, i32, i32), u32> = std::collections::HashMap::new();
-    let place: Vec<u32> = vertices
+    let place_of: std::collections::HashMap<u32, u32> = used
         .iter()
-        .map(|v| {
-            let q = ((Vec3::from_array(v.position) - lo) / span * 1.0e6).round().as_ivec3();
+        .map(|&i| {
+            let q = ((at(i) - lo) / span * 1.0e6).round().as_ivec3();
             let next = places.len() as u32;
-            *places.entry((q.x, q.y, q.z)).or_insert(next)
+            (i, *places.entry((q.x, q.y, q.z)).or_insert(next))
         })
         .collect();
+    let place = |i: u32| place_of[&i] as usize;
     let mut touching: Vec<Vec<u32>> = vec![Vec::new(); places.len()];
     let mut centres = Vec::with_capacity(triangles);
     for (t, tri) in indices.chunks_exact(3).enumerate() {
         for &i in tri {
-            touching[place[i as usize] as usize].push(t as u32);
+            touching[place(i)].push(t as u32);
         }
         centres.push((at(tri[0]) + at(tri[1]) + at(tri[2])) / 3.0);
     }
@@ -109,45 +143,78 @@ pub(crate) fn build(vertices: &[Vertex], indices: &[u32]) -> Option<(Vec<u32>, V
         .collect();
     seeds.sort_unstable();
     let mut taken = vec![false; triangles];
+    let mut near_mark = vec![u32::MAX; triangles];
     let mut sorted = Vec::with_capacity(indices.len());
     let mut clusters = Vec::new();
     let mut members: Vec<u32> = Vec::with_capacity(TRIANGLES as usize);
     let mut near: Vec<u32> = Vec::new();
+    // Where along the curve the next untaken triangle may be: what a
+    // cluster takes in when nothing touches it any more — a blade of grass
+    // is its own few triangles, and a cluster of eight is 372 vertices'
+    // work for 24.
+    let mut cursor = 0usize;
     for &(_, seed) in &seeds {
         if taken[seed as usize] {
             continue;
         }
         members.clear();
         near.clear();
+        // What touches the cluster, once each: marked with the cluster's
+        // number, so the list is its edge, not every touch counted again.
+        let cluster = clusters.len() as u32;
         let mut sum = Vec3::ZERO;
-        let take = |t: u32, taken: &mut [bool], members: &mut Vec<u32>, near: &mut Vec<u32>, sum: &mut Vec3| {
+        let take = |t: u32, taken: &mut [bool], near_mark: &mut [u32], members: &mut Vec<u32>, near: &mut Vec<u32>, sum: &mut Vec3| {
             taken[t as usize] = true;
             members.push(t);
             *sum += centres[t as usize];
             for &i in &indices[t as usize * 3..t as usize * 3 + 3] {
-                near.extend_from_slice(&touching[place[i as usize] as usize]);
+                for &u in &touching[place(i)] {
+                    if !taken[u as usize] && near_mark[u as usize] != cluster {
+                        near_mark[u as usize] = cluster;
+                        near.push(u);
+                    }
+                }
             }
         };
-        take(seed, &mut taken, &mut members, &mut near, &mut sum);
+        take(seed, &mut taken, &mut near_mark, &mut members, &mut near, &mut sum);
         while members.len() < TRIANGLES as usize {
             let middle = sum / members.len() as f32;
-            near.retain(|&t| !taken[t as usize]);
-            let Some(&best) = near.iter().min_by(|&&a, &&b| {
-                centres[a as usize]
-                    .distance_squared(middle)
-                    .total_cmp(&centres[b as usize].distance_squared(middle))
-            }) else {
-                break;
+            let nearest = near
+                .iter()
+                .enumerate()
+                .min_by(|(_, &a), (_, &b)| {
+                    centres[a as usize]
+                        .distance_squared(middle)
+                        .total_cmp(&centres[b as usize].distance_squared(middle))
+                })
+                .map(|(at, _)| at);
+            let best = match nearest {
+                Some(at) => near.swap_remove(at),
+                None => {
+                    // Nothing touches it: the next along the curve, near
+                    // enough to be worth drawing with it.
+                    while cursor < seeds.len() && taken[seeds[cursor].1 as usize] {
+                        cursor += 1;
+                    }
+                    let Some(&(_, next)) = seeds.get(cursor) else {
+                        break;
+                    };
+                    let reach = members.iter().map(|&t| centres[t as usize].distance(middle)).fold(0.0f32, f32::max);
+                    if centres[next as usize].distance(middle) > (reach * 4.0).max(span.length() * 0.02) {
+                        break;
+                    }
+                    next
+                }
             };
-            take(best, &mut taken, &mut members, &mut near, &mut sum);
+            take(best, &mut taken, &mut near_mark, &mut members, &mut near, &mut sum);
         }
         let first = sorted.len() as u32;
         for &t in &members {
             sorted.extend_from_slice(&indices[t as usize * 3..t as usize * 3 + 3]);
         }
-        clusters.push(describe(&sorted[first as usize..], first, &at));
+        clusters.push(describe(&sorted[first as usize..], first + base, &at));
     }
-    Some((sorted, clusters))
+    (sorted, clusters)
 }
 
 /// A cluster's sphere and cone, from its run of indices.
@@ -181,7 +248,8 @@ fn describe(run: &[u32], first: u32, at: &impl Fn(u32) -> Vec3) -> ClusterRaw {
         cone: [axis.x, axis.y, axis.z, cutoff],
         first,
         count: (run.len() / 3) as u32,
-        pad: [0; 2],
+        error: [0.0, crate::cluster_lod::NEVER],
+        lod: [[centre.x, centre.y, centre.z, radius]; 2],
     }
 }
 
@@ -198,6 +266,10 @@ struct Job {
     counts: vec4<u32>,
     // which slot of arguments; 0 front faces, 1 back, 2 both
     slot: vec4<u32>,
+    // the level of detail: pixels a metre covers one metre off (or, x
+    // with w = 1, at any distance: orthographic), the near plane, the
+    // error allowed in pixels
+    lod: vec4<f32>,
 };
 
 struct Cluster {
@@ -205,9 +277,21 @@ struct Cluster {
     cone: vec4<f32>,
     first: u32,
     count: u32,
-    pad_a: u32,
-    pad_b: u32,
+    // its own error, its parents'
+    error: vec2<f32>,
+    own: vec4<f32>,
+    parents: vec4<f32>,
 };
+
+// How many pixels `error` over `sphere` (the mesh's space) covers.
+fn pixels(error: f32, sphere: vec4<f32>, model: mat4x4<f32>, scale: f32) -> f32 {
+    if job.lod.w > 0.5 {
+        return error * scale * job.lod.x;
+    }
+    let c = (model * vec4<f32>(sphere.xyz, 1.0)).xyz;
+    let d = max(distance(c, job.eye.xyz) - sphere.w * scale, job.lod.y);
+    return error * scale * job.lod.x / d;
+}
 
 struct Drawn {
     instance: u32,
@@ -287,6 +371,14 @@ fn cs_clusters(@builtin(global_invocation_id) id: vec3<u32>) {
     let s = instance * 13u;
     let model = mat4x4<f32>(instances[s], instances[s + 1u], instances[s + 2u], instances[s + 3u]);
     let scale = max(length(model[0].xyz), max(length(model[1].xyz), length(model[2].xyz)));
+    // Its level: its own error under the threshold, its parents' not.
+    let allowed = job.lod.z;
+    if pixels(cluster.error.x, cluster.own, model, scale) > allowed {
+        return;
+    }
+    if cluster.error.y < 1.0e29 && pixels(cluster.error.y, cluster.parents, model, scale) <= allowed {
+        return;
+    }
     let c = (model * vec4<f32>(cluster.sphere.xyz, 1.0)).xyz;
     let r = cluster.sphere.w * scale;
     if !in_view(c, r) {
@@ -339,14 +431,21 @@ impl MeshClusters {
     /// placed by `model`, land in the clip box of `view_projection` (an
     /// orthographic one: a shadow cascade's) — neighbouring clusters one
     /// run, their indices being in order.
-    pub(crate) fn runs_in(&self, model: glam::Mat4, view_projection: glam::Mat4, out: &mut Vec<(u32, u32)>) {
+    /// Only the level whose error is under `texel` metres (a shadow map's
+    /// texel): a cascade's map needs no finer surface than it can hold.
+    pub(crate) fn runs_in(&self, model: glam::Mat4, view_projection: glam::Mat4, texel: f32, out: &mut Vec<(u32, u32)>) {
         out.clear();
+        let scale = model.x_axis.truncate().length().max(model.y_axis.truncate().length()).max(model.z_axis.truncate().length());
+        let fine = |e: f32| e * scale <= texel;
         let m = view_projection * model;
         // How far a unit of the mesh's space reaches in clip space, along
         // each axis of it: the row's length.
         let reach = |r: glam::Vec4| r.truncate().length();
         let (rx, ry, rz) = (reach(m.row(0)), reach(m.row(1)), reach(m.row(2)));
         for c in &self.spheres {
+            if !fine(c.error[0]) || (c.error[1] < crate::cluster_lod::NEVER && fine(c.error[1])) {
+                continue;
+            }
             let p = m.project_point3(Vec3::new(c.sphere[0], c.sphere[1], c.sphere[2]));
             let r = c.sphere[3];
             let inside = p.x.abs() - r * rx <= 1.0 && p.y.abs() - r * ry <= 1.0 && p.z - r * rz <= 1.0;
@@ -383,8 +482,9 @@ struct JobUniform {
     hiz_size: [f32; 4],
     counts: [u32; 4],
     slot: [u32; 4],
+    lod: [f32; 4],
     // To a uniform buffer offset's alignment.
-    pad: [u32; 16],
+    pad: [u32; 12],
 }
 
 /// Last frame's depth, for the occlusion test: the pyramid, the view it
@@ -613,6 +713,7 @@ impl Clusters {
         view_projection: glam::Mat4,
         eye: Vec3,
         hiz: Option<Hiz>,
+        lod: [f32; 4],
     ) {
         self.this_frame.clear();
         self.slots = 0;
@@ -667,7 +768,8 @@ impl Clusters {
                     0,
                     0,
                 ],
-                pad: [0; 16],
+                lod,
+                pad: [0; 12],
             });
             // Each kept cluster an instance of 372 vertices, starting at
             // this batch's part of the list.
@@ -800,9 +902,13 @@ mod tests {
     #[test]
     fn a_dense_sphere_is_cut_into_whole_compact_clusters_with_cones() {
         let sphere = crate::builtin::sphere(1.0, 96, 48);
-        let (indices, clusters) = build(&sphere.vertices, &sphere.indices).expect("dense enough");
+        let (all_indices, all) = build(&sphere.vertices, &sphere.indices).expect("dense enough");
+        // The mesh itself: level 0, first (the coarser levels come after).
+        let indices = &all_indices[..sphere.indices.len()];
+        let clusters: Vec<ClusterRaw> = all.iter().copied().filter(|c| c.error[0] == 0.0).collect();
+        assert!(all.len() > clusters.len(), "coarser levels were made");
         let triangles = sphere.indices.len() / 3;
-        assert_eq!(indices.len(), sphere.indices.len(), "every triangle kept");
+        assert!(all_indices.len() > sphere.indices.len(), "every triangle kept, and more after");
         assert_eq!(clusters.iter().map(|c| c.count as usize).sum::<usize>(), triangles);
         assert!(clusters.iter().all(|c| c.count <= TRIANGLES));
         // The same triangles, in another order.
@@ -815,7 +921,7 @@ mod tests {
             t.sort_unstable();
             t
         };
-        assert_eq!(key(&indices), key(&sphere.indices));
+        assert_eq!(key(indices), key(&sphere.indices));
         // Small: a sphere of radius one cut in a few hundred is pieces a
         // fraction of it across, and most face one way.
         let mean_radius = clusters.iter().map(|c| c.sphere[3]).sum::<f32>() / clusters.len() as f32;

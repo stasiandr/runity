@@ -16,6 +16,7 @@ pub mod bindless;
 pub mod cameras;
 pub mod clouds;
 pub mod cluster;
+mod cluster_lod;
 pub mod ddgi;
 pub mod decals;
 pub mod distance;
