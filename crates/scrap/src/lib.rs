@@ -49,6 +49,10 @@ pub mod matching {
                 .cast_ray_with_normal(from, -glam::Vec3::Y, reach, true)
                 .map(|(at, normal, _)| (at, normal))
         }
+
+        fn ray(&self, from: glam::Vec3, direction: glam::Vec3, reach: f32) -> Option<f32> {
+            self.0.cast_ray_with_normal(from, direction, reach, true).map(|(_, _, distance)| distance)
+        }
     }
 }
 /// The asset archive as the core has it: its header, its ID.

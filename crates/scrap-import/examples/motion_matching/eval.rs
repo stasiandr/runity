@@ -158,6 +158,23 @@ fn mean(v: &[f32]) -> f32 {
 }
 
 pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
+    if std::env::var_os("MM_CLIPS_INFO").is_some() {
+        let feet = db.feet();
+        for (name, range) in &db.clips {
+            let high = range.clone().filter(|&f| db.support(f) > 0.3).count();
+            let top = range.clone().map(|f| db.support(f)).fold(0.0f32, f32::max);
+            // Frames with a planted foot far above the frame's ground.
+            let odd = range
+                .clone()
+                .filter(|&f| {
+                    let w = db.skeleton.world_matrices(db.pose(f));
+                    let c = db.contacts(f);
+                    (0..2).any(|s| c[s] && w[feet[s]].w_axis.y > 0.3)
+                })
+                .count();
+            println!("{name:40} {:6} frames, {high:5} over 0.3 m, top {top:.2}, {odd} planted feet high", range.len());
+        }
+    }
     let dt = 1.0 / 60.0;
     let skeleton = db.skeleton.clone();
     let feet = db.feet();
@@ -200,7 +217,7 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
             if let Some((name, at)) = std::env::var("MM_AT").ok().and_then(|v| v.split_once(':').map(|(a, b)| (a.to_string(), b.parse::<f32>().unwrap_or(0.0)))) {
                 walker.matcher.debug = name == course.name && (t - at).abs() < 0.06;
                 if walker.matcher.debug {
-                    eprintln!("{t:.3}s frame {}", walker.matcher.frame);
+                    eprintln!("{t:.3}s frame {} root {:.3?} spring {:.3?} grounded {} committed {}", walker.matcher.frame, walker.matcher.root.0, walker.matcher.spring.0, walker.matcher.grounded, walker.matcher.committed());
                 }
             }
             let started = std::time::Instant::now();

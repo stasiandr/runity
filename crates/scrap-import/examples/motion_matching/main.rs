@@ -174,6 +174,8 @@ impl Walker {
                     "lock_feet" => feel.lock_feet = v != 0.0,
                     "search_every" => feel.search_every = v,
                     "switch_margin" => feel.switch_margin = v,
+                    "pose_weight" => feel.pose_weight = v,
+                    "pose_free" => feel.pose_free = v,
                     "lock_reach" => feel.lock_reach = v,
                     "lock_creep" => feel.lock_creep = v,
                     "blend_halflife" => feel.blend_halflife = v,

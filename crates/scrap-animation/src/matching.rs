@@ -432,7 +432,16 @@ impl Database {
                 let at = |j: usize| world[j].w_axis.truncate();
                 let lean = neck.map_or(0.0, |n| (at(n) - at(root)).normalize_or(Vec3::Y).dot(Vec3::Y).clamp(-1.0, 1.0).acos().to_degrees());
                 let hands_low = hands.iter().flatten().any(|&h| at(h).y < setup.lowest_hands);
-                lean <= setup.steepest_lean && !hands_low
+                // Arms out level both sides: the T-pose a take starts with
+                // for its calibration, not a way anyone walks.
+                let t_pose = match (hands[0], hands[1], neck) {
+                    (Some(l), Some(r), Some(n)) => {
+                        let level = |h: usize| (at(h).y - at(n).y).abs() < 0.25;
+                        level(l) && level(r) && flat(at(l) - at(r)).length() > 1.2
+                    }
+                    _ => false,
+                };
+                lean <= setup.steepest_lean && !hands_low && !t_pose
             })
             .collect::<Vec<bool>>();
         // A frame to jump to plays on for a third of a second as good: one
@@ -555,6 +564,31 @@ impl Database {
         best
     }
 
+    /// The `k` frames nearest `query`, nearest first.
+    pub fn search_best(&self, query: &[f32; FEATURES], k: usize) -> Vec<(usize, f32)> {
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(k + 1);
+        let mut worst = f32::INFINITY;
+        for frame in self.searchable() {
+            let f = &self.features[frame];
+            let mut cost = 0.0;
+            for d in 0..FEATURES {
+                cost += (f[d] - query[d]).powi(2);
+                if cost >= worst {
+                    break;
+                }
+            }
+            if cost < worst {
+                let at = best.partition_point(|b| b.1 <= cost);
+                best.insert(at, (frame, cost));
+                best.truncate(k);
+                if best.len() == k {
+                    worst = best[k - 1].1;
+                }
+            }
+        }
+        best
+    }
+
     fn cost(&self, frame: usize, query: &[f32; FEATURES]) -> f32 {
         self.features[frame].iter().zip(query).map(|(a, b)| (a - b).powi(2)).sum()
     }
@@ -569,10 +603,28 @@ impl Database {
         self.toes
     }
 
+    /// How high a frame's ground is over its take's floor.
+    pub fn support(&self, frame: usize) -> f32 {
+        self.support[frame]
+    }
+
     /// Whether each foot is down at a frame.
     pub fn contacts(&self, frame: usize) -> [bool; 2] {
         self.contacts[frame]
     }
+}
+
+/// How far apart two poses are where it shows: each joint's turn between
+/// them past `free` radians, squared, summed. Small differences everywhere
+/// blend away unseen; one joint half a turn off is a limb swung through.
+fn pose_distance(a: &[PoseTransform], b: &[PoseTransform], free: f32) -> f32 {
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| {
+            let (qa, qb) = (Quat::from_array(a.rotation), Quat::from_array(b.rotation));
+            (qa.angle_between(qb) - free).max(0.0).powi(2)
+        })
+        .sum()
 }
 
 /// A vector laid on the ground.
@@ -652,6 +704,11 @@ pub trait Surroundings {
     /// The ground under a point: a ray down from `from`, as far as `reach`
     /// — where it hits, and which way the surface faces.
     fn ground(&self, from: Vec3, reach: f32) -> Option<(Vec3, Vec3)>;
+    /// How far a ray from `from` along `direction` goes before it hits
+    /// something, as far as `reach`: how far a ledge's face is.
+    fn ray(&self, _from: Vec3, _direction: Vec3, _reach: f32) -> Option<f32> {
+        None
+    }
 }
 
 /// An endless floor at height zero with nothing on it.
@@ -690,6 +747,11 @@ pub struct Feel {
     /// share of playing on's cost: jumps that buy little cost a visible
     /// blend.
     pub switch_margin: f32,
+    /// What a jump's pose change costs against the features: radians²
+    /// summed over the joints, times this.
+    pub pose_weight: f32,
+    /// How far a joint may turn in a jump for nothing, radians.
+    pub pose_free: f32,
     /// How fast a jump's difference fades.
     pub blend_halflife: f32,
     /// How fast the animation's root is pulled to the spring, and how far
@@ -721,6 +783,8 @@ impl Default for Feel {
             facing_halflife: 0.27,
             search_every: 0.1,
             switch_margin: 0.0,
+            pose_weight: 10.0,
+            pose_free: 0.5,
             blend_halflife: 0.1,
             hold_halflife: 0.2,
             leash: 0.15,
@@ -764,6 +828,9 @@ pub struct Matcher {
     /// multiplied by to fit, and the frame it tops out at.
     climbing_on: bool,
     warp: f32,
+    /// How much the walk to a ledge's face is stretched, and up to which
+    /// frame.
+    stretch: (f32, usize),
     plan_end: usize,
     /// How high the checked climb gets, in the world, and from where.
     plan_top: f32,
@@ -824,6 +891,7 @@ impl Matcher {
             drop: 0.0,
             bends: [Vec3::ZERO; 2],
             warp: 1.0,
+            stretch: (1.0, 0),
             plan_end: 0,
             plan_top: 0.0,
             plan_base: 0.0,
@@ -1012,8 +1080,9 @@ impl Matcher {
                 // Only a climb the world has: where the take gets to, and
                 // how high, set against the ground there.
                 match self.plan(db, world) {
-                    Some((warp, end, top)) => {
+                    Some((warp, end, top, stretch, edge)) => {
                         self.warp = warp;
+                        self.stretch = (stretch, edge);
                         self.plan_end = end;
                         self.plan_top = top;
                         self.plan_base = self.spring.0.y;
@@ -1063,14 +1132,26 @@ impl Matcher {
         if forced || (!committed && self.since_search >= self.feel.search_every) {
             self.since_search = 0.0;
             let query = self.query(db, ask, world);
-            let (best, cost) = db.search(&query);
             // Played on into a frame that is not walking: away from it.
             let current = if forced || !db.open[self.frame] { f32::INFINITY } else { db.cost(self.frame, &query) };
-            // Not to a frame of the same take within half a second either
-            // way: back a few frames is a stutter, and round again a loop.
-            let near = db.clip_of(best) == db.clip_of(self.frame) && best.abs_diff(self.frame) <= 15;
-            if cost < current * (1.0 - self.feel.switch_margin) && !near {
-                self.jump(db, best);
+            // The nearest few by features, then weighed by how far each
+            // whole pose is from the one shown: a jump to a pose far off is
+            // a blend through poses nobody made — a leg swung up, an arm
+            // through the body.
+            let shown = self.blended(db);
+            let clip = db.clip_of(self.frame);
+            let best = db
+                .search_best(&query, 16)
+                .into_iter()
+                // Not to a frame of the same take within half a second either
+                // way: back a few frames is a stutter, and round again a loop.
+                .filter(|&(f, _)| !(db.clip_of(f) == clip && f.abs_diff(self.frame) <= 15))
+                .map(|(f, cost)| (f, cost + self.feel.pose_weight * pose_distance(&shown, db.pose(f), self.feel.pose_free)))
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((best, score)) = best {
+                if score < current * (1.0 - self.feel.switch_margin) {
+                    self.jump(db, best);
+                }
             }
         }
         for (offset, speed) in &mut self.turns {
@@ -1080,8 +1161,13 @@ impl Matcher {
 
         let (mut velocity, spin) = db.motion[self.frame];
         if committed {
-            // Warped: the take's climb made the height this one is.
+            // Warped: the take's climb made the height this one is, and
+            // the walk to it the length this one is.
             velocity.y *= self.warp;
+            if self.frame < self.stretch.1 && db.clip_of(self.frame) == db.clip_of(self.stretch.1) {
+                velocity.x *= self.stretch.0;
+                velocity.z *= self.stretch.0;
+            }
         }
         let (mut at, mut turn) = self.root;
         at += turn * velocity * dt;
@@ -1164,7 +1250,7 @@ impl Matcher {
     /// higher, and how high the ground is there. What to multiply the
     /// take's rise by to make the world's, and the frame it tops out at;
     /// `None` when it is not the same climb to within 30 cm.
-    fn plan(&self, db: &Database, world: &dyn Surroundings) -> Option<(f32, usize, f32)> {
+    fn plan(&self, db: &Database, world: &dyn Surroundings) -> Option<(f32, usize, f32, f32, usize)> {
         let clip = &db.clips[db.clip_of(self.frame)].1;
         let here = db.support[self.frame];
         let end = clip.end.min(self.frame + 60);
@@ -1183,7 +1269,31 @@ impl Matcher {
         let base = self.spring.0.y;
         let (hit, _) = world.ground(Vec3::new(at.x, base + climb, at.z), climb * 2.0)?;
         let real = hit.y - base;
-        ((real - take).abs() < 0.3).then(|| ((real / take).clamp(0.5, 1.5), peak, hit.y))
+        if (real - take).abs() >= 0.3 {
+            return None;
+        }
+        // Up a ledge: how far the take walks before it is half way up — to
+        // the ledge's face, near enough — against how far this one's face
+        // is. The walk there is stretched or squeezed to meet it, so the
+        // body climbs at the face and not through it.
+        let mut reach = (1.0, self.frame);
+        if take > 0.0 {
+            let edge = (self.frame..=peak).find(|&f| db.support[f] - here > take / 2.0).unwrap_or(peak);
+            let mut walked = Vec3::ZERO;
+            let mut turn = self.root.1;
+            for f in self.frame..edge {
+                let (v, spin) = db.motion[f];
+                walked += turn * flat(v) / db.setup.rate;
+                turn *= Quat::from_rotation_y(spin / db.setup.rate);
+            }
+            if walked.length() > 0.1 {
+                let from = Vec3::new(self.root.0.x, base + real.min(take) * 0.5, self.root.0.z);
+                if let Some(face) = world.ray(from, walked.normalize(), 3.0) {
+                    reach = ((face / walked.length()).clamp(0.5, 2.0), edge);
+                }
+            }
+        }
+        Some(((real / take).clamp(0.5, 1.5), peak, hit.y, reach.0, reach.1))
     }
 
     /// Keep each foot that is down where it went down: the leg bent to it,
