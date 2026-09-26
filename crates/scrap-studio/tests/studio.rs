@@ -54,6 +54,9 @@ fn studio() -> Option<(Studio, std::path::PathBuf)> {
         }
     };
     let mut studio = Studio::new(session, 1440.0, 900.0, 1.0);
+    // The library built before anything is looked at, as a project
+    // already opened once has it: not in the background under the test.
+    studio.session.reload_assets();
     studio.frame();
     Some((studio, dir))
 }
@@ -146,6 +149,12 @@ fn key(studio: &mut Studio, key: Key) {
 /// folder it is in, as a person finds it.
 fn find_in_project(s: &mut Studio, name: &str) {
     click(s, "project search");
+    // Over whatever the search held: a second click selects it all only
+    // as a double click, which a slow frame between the two is not.
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
     type_text(s, name);
     s.frame();
 }
@@ -742,6 +751,38 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     );
 }
 
+/// Time this thread has spent on a core: what the editor itself costs,
+/// however busy the machine is. The wall's time where there is no such
+/// clock.
+#[derive(Clone, Copy)]
+struct Clock(std::time::Duration, std::time::Instant);
+
+impl Clock {
+    fn thread() -> Option<std::time::Duration> {
+        #[cfg(unix)]
+        {
+            let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            // SAFETY: a valid timespec to write into, and a clock every
+            // unix has.
+            if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0 {
+                return Some(std::time::Duration::new(t.tv_sec as u64, t.tv_nsec as u32));
+            }
+        }
+        None
+    }
+
+    fn now() -> Clock {
+        Clock(Self::thread().unwrap_or_default(), std::time::Instant::now())
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        match Self::thread() {
+            Some(t) => t.saturating_sub(self.0),
+            None => self.1.elapsed(),
+        }
+    }
+}
+
 #[test]
 fn a_big_scene_stays_quick() {
     let Some((mut s, _dir)) = studio() else {
@@ -759,19 +800,27 @@ fn a_big_scene_stays_quick() {
     // being drawn once.
     draw_pictures(&mut s);
     // Idle: nothing changed.
-    let t = std::time::Instant::now();
+    // The editor's own work: its thread's time on a core, not the wall's,
+    // which counts the other tests' drawing sharing the cores — on a
+    // software GPU (a CI runner's lavapipe) drawing is the processor's work,
+    // on threads of the driver's own.
+    let mut idle = std::time::Duration::ZERO;
     for _ in 0..10 {
+        let t = Clock::now();
         s.frame();
+        idle += t.elapsed();
     }
-    let idle = t.elapsed() / 10;
+    let idle = idle / 10;
     // A selection change: every line is looked at again.
     let ids = s.session.entities();
-    let t = std::time::Instant::now();
+    let mut select = std::time::Duration::ZERO;
     for id in ids.iter().take(10) {
+        let t = Clock::now();
         s.session.select(Some(*id)).unwrap();
         s.frame();
+        select += t.elapsed();
     }
-    let select = t.elapsed() / 10;
+    let select = select / 10;
     eprintln!("2000 entities: first {first:?}, idle frame {idle:?}, selection frame {select:?}");
     // Debug build, our crates unoptimised: a budget with room, not a target.
     assert!(select.as_millis() < 80, "a selection took {select:?}");
@@ -4850,6 +4899,21 @@ fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
     click(&mut s, "graph delete node");
     s.frame();
     assert!(!std::fs::read_to_string(&file).unwrap().contains("pulse"));
+
+    // One node read by another: its box dragged onto the other's, and the
+    // input picked — one input in the file, no place kept anywhere.
+    drag_tab(&mut s, "graph node drift", "graph node glow");
+    assert!(s.ui.dump().contains("`glow` reads `drift` as:"), "{}", s.ui.dump());
+    click(&mut s, "graph connect as b");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#""glow": Multiply(a: "heat", b: "drift"),"#), "{text}");
+    // Onto what the graph sets: a field of the surface.
+    drag_tab(&mut s, "graph node churn", "graph node surface");
+    click(&mut s, "graph connect as metallic");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#"smoothness: "rough", metallic: "churn")"#), "{text}");
 
     // An effect's graph: its three parts are what it sets.
     click(&mut s, "graph embers.vfx.ron");

@@ -59,15 +59,28 @@ fn closing(text: &str, open: usize) -> Option<usize> {
     None
 }
 
+/// Past whitespace and `//` comments from `i`, up to `close`.
+fn skip_blank(text: &str, mut i: usize, close: usize) -> usize {
+    loop {
+        let rest = &text[i..close];
+        i += rest.len() - rest.trim_start().len();
+        if text[i..close].starts_with("//") {
+            i += text[i..close].find('\n').unwrap_or(close - i);
+        } else {
+            return i;
+        }
+    }
+}
+
 /// The top-level `field: value` pairs between `open` and `close`, each as
-/// (field, where its value starts, where it ends).
+/// (field, where its value starts, where it ends) — the end before any
+/// comment after it, so a value set keeps the comment.
 fn fields(text: &str, open: usize, close: usize) -> Vec<(String, usize, usize)> {
     let mut out = Vec::new();
     let mut i = open + 1;
+    let bytes = text.as_bytes();
     while i < close {
-        let rest = &text[i..close];
-        let skip = rest.len() - rest.trim_start().len();
-        i += skip;
+        i = skip_blank(text, i, close);
         if i >= close {
             break;
         }
@@ -76,11 +89,17 @@ fn fields(text: &str, open: usize, close: usize) -> Vec<(String, usize, usize)> 
         };
         let field = text[i..i + colon].trim().to_string();
         let value_start = i + colon + 1;
-        // The value ends at the next top-level comma.
+        // The value ends at the next top-level comma; a comment in the way
+        // is not the value's, and its commas are not.
         let mut j = value_start;
-        let bytes = text.as_bytes();
+        let mut code_end = None;
         while j < close {
             match bytes[j] {
+                b'/' if bytes.get(j + 1) == Some(&b'/') => {
+                    code_end.get_or_insert(j);
+                    j += text[j..close].find('\n').unwrap_or(close - j);
+                    continue;
+                }
                 b'(' | b'[' | b'{' => j = closing(text, j).unwrap_or(close),
                 b'"' => {
                     j += 1;
@@ -89,15 +108,72 @@ fn fields(text: &str, open: usize, close: usize) -> Vec<(String, usize, usize)> 
                     }
                 }
                 b',' => break,
-                _ => {}
+                _ => {
+                    if !bytes[j].is_ascii_whitespace() {
+                        code_end = None;
+                    }
+                }
             }
             j += 1;
         }
-        let value_end = j.min(close);
-        out.push((field, value_start, value_end));
-        i = value_end + 1;
+        let end = j.min(close);
+        out.push((field, value_start, code_end.unwrap_or(end).min(end)));
+        i = end + 1;
     }
     out
+}
+
+/// `text` with `field` of the parenthesised value from `open` to `close`
+/// set to `value`, or added at its end.
+fn set_field(text: &str, open: usize, close: usize, field: &str, value: &str) -> String {
+    if let Some((_, start, end)) = fields(text, open, close)
+        .into_iter()
+        .find(|(f, _, _)| f == field)
+    {
+        let lead = &text[start..end];
+        let pad = lead.len() - lead.trim_start().len();
+        let tail = lead.len() - lead.trim_end().len();
+        return format!("{}{value}{}", &text[..start + pad], &text[end - tail..]);
+    }
+    let body = text[open + 1..close].trim_end();
+    let at = open + 1 + body.len();
+    let insert = if body.trim().is_empty() {
+        format!("{field}: {value}")
+    } else if body.ends_with(',') {
+        format!(" {field}: {value}")
+    } else {
+        format!(", {field}: {value}")
+    };
+    format!("{}{insert}{}", &text[..at], &text[at..])
+}
+
+/// The graph's own parentheses: the first `(` outside a comment.
+fn outer(text: &str) -> Option<(usize, usize)> {
+    let open = skip_blank(text, 0, text.len());
+    (text[open..].starts_with('(')).then_some(())?;
+    Some((open, closing(text, open)?))
+}
+
+/// `text` with `field` of the graph's part `part` — `surface`, `vertex`,
+/// `spawn`, `update`, `output` — set to `value`: the part added when the
+/// graph has none. `None` when the text is not a graph.
+pub fn set_part(text: &str, part: &str, field: &str, value: &str) -> Option<String> {
+    let (open, close) = outer(text)?;
+    if let Some((_, start, _)) = fields(text, open, close)
+        .into_iter()
+        .find(|(f, _, _)| f == part)
+    {
+        let paren = start + text[start..].find('(')?;
+        let end = closing(text, paren)?;
+        return Some(set_field(text, paren, end, field, value));
+    }
+    Some(set_field(
+        text,
+        open,
+        close,
+        part,
+        &format!("({field}: {value})"),
+    ))
 }
 
 /// `text` with input `field` of node `name` set to `value` (written as
@@ -105,29 +181,7 @@ fn fields(text: &str, open: usize, close: usize) -> Vec<(String, usize, usize)> 
 /// it to its default. `None` when there is no such node.
 pub fn set_input(text: &str, name: &str, field: &str, value: &str) -> Option<String> {
     let (_, open, close) = node_span(text, name)?;
-    let found = fields(text, open, close);
-    if let Some((_, start, end)) = found.iter().find(|(f, _, _)| f == field) {
-        let lead = &text[*start..*end];
-        let pad = lead.len() - lead.trim_start().len();
-        let tail = lead.len() - lead.trim_end().len();
-        return Some(format!(
-            "{}{}{}{}",
-            &text[..start + pad],
-            value,
-            &text[end - tail..],
-            ""
-        ));
-    }
-    let inside = text[open + 1..close].trim();
-    let insert = if inside.is_empty() {
-        format!("{field}: {value}")
-    } else if inside.ends_with(',') {
-        format!(" {field}: {value}")
-    } else {
-        format!(", {field}: {value}")
-    };
-    let at = open + 1 + text[open + 1..close].trim_end().len();
-    Some(format!("{}{insert}{}", &text[..at], &text[at..]))
+    Some(set_field(text, open, close, field, value))
 }
 
 /// `text` with a node added at the end of `nodes: { … }`, on a line of its
@@ -189,6 +243,23 @@ pub fn remove_node(text: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_part_of_the_graph_is_set_and_comments_on_the_way_stay() {
+        let t = set_part(GRAPH, "surface", "emission", "\"a\"").unwrap();
+        assert!(
+            t.contains(r#"surface: (albedo: "c", emission: "a"),"#),
+            "{t}"
+        );
+        crate::surface::parse(&t).unwrap();
+        let t = set_part(GRAPH, "vertex", "position", "\"position\"").unwrap();
+        assert!(t.contains(r#"vertex: (position: "position")"#), "{t}");
+        crate::surface::parse(&t).unwrap();
+        let commented =
+            "(\n    // Lit: from below, the lava.\n    surface: (albedo: \"x\"), // after: this\n)";
+        let t = set_part(commented, "surface", "albedo", "\"y\"").unwrap();
+        assert_eq!(t, commented.replace("\"x\"", "\"y\""));
+    }
 
     const GRAPH: &str = r#"// A test.
 (

@@ -360,6 +360,10 @@ pub struct Studio {
     sculpt: bool,
     /// A long background import has been announced.
     import_said: bool,
+    /// Whether the library has been brought up to date once: the first
+    /// time builds what a project fresh from git lacks, which is not
+    /// something changing on disk.
+    assets_synced: bool,
     /// The foliage brush (docs/artist.md): on, what it paints, how big it
     /// is, and the stroke under way — when the last dab was and how many
     /// undo steps the stroke has made, to be one.
@@ -722,6 +726,7 @@ impl Studio {
             sculpt_button: sculpt,
             sculpt: false,
             import_said: false,
+            assets_synced: false,
             foliage: false,
             foliage_button: foliage,
             foliage_what: None,
@@ -2848,7 +2853,8 @@ impl Studio {
         }
         if let Some(n) = self.session.poll_assets() {
             self.import_said = false;
-            if n > 0 {
+            let first = !std::mem::replace(&mut self.assets_synced, true);
+            if n > 0 && !first {
                 self.session.say(
                     Level::Info,
                     format!("{n} assets changed on disk and were reloaded"),

@@ -130,6 +130,9 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "game_console",
         "group",
         "thumbnail",
+        "shader_graph",
+        "shader_graph_edit",
+        "shader_graph_preview",
         "drop",
         "add_component",
         "import_settings",
@@ -962,4 +965,69 @@ fn an_agent_reads_finds_and_sets_a_table_s_records() {
         .call("config_set", json!({ "file": "configs/tools.ron", "record": "Кость", "field": "weight", "value": "1" }))
         .unwrap_err();
     assert!(err.contains("no record `Кость`"), "{err}");
+}
+
+#[test]
+fn an_agent_reads_edits_and_looks_at_a_shader_graph() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join(format!("scrap-mcp-shader-graph-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    let file = root.join("shaders/glow.graph.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "// A pulse.\n(\n    nodes: {\n        \"pulse\": Sine(of: \"time\"),\n    },\n    surface: (emission: \"pulse\"),\n)\n",
+    )
+    .unwrap();
+    assert_eq!(agent.text("shader_graph", json!({ "name": "" })), "glow.graph.ron");
+    let read = agent.text("shader_graph", json!({ "name": "glow" }));
+    assert!(read.contains("node pulse: Sine(of: \"time\")"), "{read}");
+    assert!(read.contains("surface: emission: \"pulse\""), "{read}");
+    assert!(read.contains("builds"), "{read}");
+
+    // A node added, read by the surface, one input set: each one change
+    // in the file, the comment kept.
+    agent.text(
+        "shader_graph_edit",
+        json!({ "name": "glow", "node": "tint", "add": "Multiply(a: \"pulse\", b: (1.0, 0.4, 0.1))" }),
+    );
+    agent.text(
+        "shader_graph_edit",
+        json!({ "name": "glow", "part": "surface", "input": "emission", "value": "\"tint\"" }),
+    );
+    let read = agent.text(
+        "shader_graph_edit",
+        json!({ "name": "glow", "node": "pulse", "input": "of", "value": "\"time.x\"" }),
+    );
+    assert!(read.contains("builds"), "{read}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("// A pulse."), "{text}");
+    assert!(text.contains("\"tint\": Multiply(a: \"pulse\", b: (1.0, 0.4, 0.1)),"), "{text}");
+    assert!(text.contains("surface: (emission: \"tint\")"), "{text}");
+
+    // Misspelt: told so, with what was meant; the file as it was.
+    let err = agent
+        .call("shader_graph_edit", json!({ "name": "glow", "node": "puls", "remove": true }))
+        .unwrap_err();
+    assert!(err.contains("did you mean `pulse`"), "{err}");
+    let err = agent.call("shader_graph", json!({ "name": "glwo" })).unwrap_err();
+    assert!(err.contains("did you mean"), "{err}");
+
+    // Its pictures: the whole on a ball, and one node.
+    for args in [json!({ "name": "glow", "size": 64 }), json!({ "name": "glow", "node": "pulse", "size": 64 })] {
+        let content = agent.call("shader_graph_preview", args).unwrap();
+        assert_eq!(content[0]["type"], "image");
+        let png = decode_base64(content[0]["data"].as_str().unwrap());
+        let decoded = image::load_from_memory(&png).expect("a PNG");
+        assert_eq!((decoded.width(), decoded.height()), (64, 64));
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
