@@ -495,6 +495,8 @@ pub struct PhysicsWorld {
     /// Pairs of entities told to pass through each other, by their bits,
     /// smaller first.
     ignored: std::collections::HashSet<(u64, u64)>,
+    /// Shapes built from meshes, kept for the next body of the same mesh.
+    mesh_shapes: MeshShapes,
 }
 
 /// Rapier's say on each pair of colliders: no contact for a pair told to
@@ -602,6 +604,7 @@ impl PhysicsWorld {
             ground: None,
             layers: crate::layers::Layers::default(),
             ignored: Default::default(),
+            mesh_shapes: Default::default(),
         }
     }
 
@@ -834,6 +837,7 @@ impl PhysicsWorld {
             }
         }
 
+        self.make_mesh_shapes(world, &off, &parts);
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
         let mut part_handles: Vec<(hecs::Entity, ColliderHandle)> = Vec::new();
         for (entity, placed, physics, shape, local, existing, mesh, props, layer, replica) in world
@@ -871,7 +875,7 @@ impl PhysicsWorld {
             };
             let dynamic = kind == Body::Dynamic;
             let mine = parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]);
-            let own = build_collider(shape.0, placed.0, mesh, dynamic);
+            let own = build_collider(shape.0, placed.0, mesh, dynamic, &self.mesh_shapes);
             if own.is_none() && mine.is_empty() && kind != Body::Kinematic {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
@@ -958,7 +962,7 @@ impl PhysicsWorld {
             // colliding as its own line says, weighing its share.
             let mut part_colliders: Vec<(ColliderHandle, f32)> = Vec::new();
             for part in mine {
-                let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else {
+                let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic, &self.mesh_shapes) else {
                     continue;
                 };
                 if unswept {
@@ -1060,6 +1064,69 @@ impl PhysicsWorld {
             scrap_core::world::take_off::<crate::world::Takeover>(world, entity);
         }
         self.sync_joints(world);
+    }
+
+    /// Build, before the bodies that want them, every mesh shape not built
+    /// yet — each once, however many bodies share it, and several at once
+    /// across the cores. A shape is the same whoever builds it, so this only
+    /// changes when it is ready, not what it is. Shapes whose mesh nothing
+    /// else holds any more are let go.
+    fn make_mesh_shapes(
+        &mut self,
+        world: &World,
+        off: &scrap_core::hash::FastSet<hecs::Entity>,
+        parts: &scrap_core::hash::FastMap<hecs::Entity, Vec<PartFound>>,
+    ) {
+        let mut wanted: Vec<(MeshShapeKey, CollisionMesh, Vec3)> = Vec::new();
+        let want = |mesh: &CollisionMesh, placed: glam::Mat4, dynamic: bool, wanted: &mut Vec<(MeshShapeKey, CollisionMesh, Vec3)>| {
+            let (scale, _, _) = placed.to_scale_rotation_translation();
+            let key = MeshShapeKey::of(mesh, scale, dynamic);
+            if !self.mesh_shapes.contains_key(&key) && wanted.iter().all(|w| w.0 != key) {
+                wanted.push((key, mesh.clone(), scale));
+            }
+        };
+        for (entity, placed, physics, shape, existing, mesh, replica) in world
+            .query::<(
+                hecs::Entity,
+                &WorldTransform,
+                &Physics,
+                &Shape,
+                Option<&BodyHandle>,
+                Option<&CollisionMesh>,
+                Option<&crate::world::Replica>,
+            )>()
+            .iter()
+        {
+            if existing.is_some() || physics.0 == Body::None || physics.0.is_part() || off.contains(&entity) {
+                continue;
+            }
+            let dynamic = solved(physics.0, replica.is_some()) == Body::Dynamic;
+            if let (ColliderShape::Model, Some(mesh)) = (shape.0, mesh) {
+                want(mesh, placed.0, dynamic, &mut wanted);
+            }
+            for part in parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]) {
+                if let (ColliderShape::Model, Some(mesh)) = (part.shape, part.mesh.as_ref()) {
+                    want(mesh, part.placed, dynamic, &mut wanted);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let built = scrap_core::jobs::map(&wanted, 1, |(key, mesh, scale)| model_shape(mesh, *scale, key.dynamic));
+        for ((key, mesh, _), shape) in wanted.into_iter().zip(built) {
+            if let Some(shape) = shape {
+                self.mesh_shapes.insert(key, MadeShape { mesh, shape });
+            }
+        }
+        // Held by more than the shapes kept of it (one a scale): something
+        // still has the mesh.
+        let mut kept: scrap_core::hash::FastMap<usize, usize> = Default::default();
+        for key in self.mesh_shapes.keys() {
+            *kept.entry(key.mesh).or_default() += 1;
+        }
+        self.mesh_shapes
+            .retain(|key, made| std::sync::Arc::strong_count(&made.mesh.vertices) > kept[&key.mesh]);
     }
 
     /// Joints after bodies: build each once both of its bodies exist,
@@ -2323,12 +2390,92 @@ fn shape_offset(shape: ColliderShape, transform: glam::Mat4) -> Pose {
     }
 }
 
+/// A `Model` collider's shape at a scale: its hull for a body the solver
+/// moves, its triangles for one that stands still. Building the triangles'
+/// tree is most of a level's first step, so what is built is kept
+/// ([`MeshShapes`]) and several are built at once.
+fn model_shape(mesh: &CollisionMesh, scale: Vec3, dynamic: bool) -> Option<SharedShape> {
+    let points: Vec<Vector> = mesh
+        .vertices
+        .iter()
+        .map(|v| {
+            let v = *v * scale;
+            Vector::new(v.x, v.y, v.z)
+        })
+        .collect();
+    if dynamic {
+        let polyhedron = rapier3d::parry::shape::ConvexPolyhedron::from_convex_hull(&points)?;
+        Some(SharedShape::new(crate::shapes::Hull::new(polyhedron)))
+    } else {
+        // Triangles with no area — a mesh squashed flat by a zero
+        // scale, a sliver — are nothing to stand on, and a query
+        // against a tree of only those panics in parry. A mirroring
+        // scale turns every triangle inside out: turned back, so
+        // each still faces the side it was drawn to face.
+        let mirrored = scale.x * scale.y * scale.z < 0.0;
+        let triangles: Vec<[u32; 3]> = mesh
+            .triangles
+            .iter()
+            .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
+            .filter(|t| {
+                let [a, b, c] = t.map(|i| points.get(i as usize).copied());
+                let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
+                (b - a).cross(c - a).length() > 1e-10
+            })
+            .collect();
+        if triangles.is_empty() || points.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        // Ground as PhysX has it. Its internal edges fixed: a body
+        // sliding over the seam between two triangles is pushed by
+        // the surface the two make, not bumped up by the edge of the
+        // one ahead. And one-sided — each triangle solid on the side
+        // it faces — so a body swept between steps is stopped by
+        // the ground it would pass through, not by the next rise of
+        // the ground it slides over (it ends the step in front of
+        // that, and rapier's sweep lets it go on).
+        SharedShape::trimesh_with_flags(
+            points,
+            triangles,
+            TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::ORIENTED,
+        )
+        .ok()
+    }
+}
+
+/// Which [`model_shape`] a collider wants: one mesh at one scale, moving or
+/// still.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MeshShapeKey {
+    mesh: usize,
+    scale: [u32; 3],
+    dynamic: bool,
+}
+
+impl MeshShapeKey {
+    fn of(mesh: &CollisionMesh, scale: Vec3, dynamic: bool) -> Self {
+        MeshShapeKey { mesh: mesh.key(), scale: scale.to_array().map(f32::to_bits), dynamic }
+    }
+}
+
+/// A shape built from a mesh, with the mesh it was built from: held, so the
+/// key's address stays that mesh's for as long as the shape is kept.
+struct MadeShape {
+    mesh: CollisionMesh,
+    shape: SharedShape,
+}
+
+/// Shapes built from meshes, shared by every collider of the same mesh at
+/// the same scale — a level's twenty-eight lengths of rail are one.
+type MeshShapes = scrap_core::hash::FastMap<MeshShapeKey, MadeShape>;
+
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
 fn build_collider(
     shape: ColliderShape,
     transform: glam::Mat4,
     mesh: Option<&CollisionMesh>,
     dynamic: bool,
+    made: &MeshShapes,
 ) -> Option<Collider> {
     let (scale, _, _) = transform.to_scale_rotation_translation();
     Some(match shape {
@@ -2337,52 +2484,11 @@ fn build_collider(
             // No geometry yet — the model is not imported, or nobody
             // attached it: no collider, and the next sync tries again.
             let mesh = mesh?;
-            let points: Vec<Vector> = mesh
-                .vertices
-                .iter()
-                .map(|v| {
-                    let v = *v * scale;
-                    Vector::new(v.x, v.y, v.z)
-                })
-                .collect();
-            if dynamic {
-                hull(&points)?
-            } else {
-                // Triangles with no area — a mesh squashed flat by a zero
-                // scale, a sliver — are nothing to stand on, and a query
-                // against a tree of only those panics in parry. A mirroring
-                // scale turns every triangle inside out: turned back, so
-                // each still faces the side it was drawn to face.
-                let mirrored = scale.x * scale.y * scale.z < 0.0;
-                let triangles: Vec<[u32; 3]> = mesh
-                    .triangles
-                    .iter()
-                    .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
-                    .filter(|t| {
-                        let [a, b, c] = t.map(|i| points.get(i as usize).copied());
-                        let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
-                        (b - a).cross(c - a).length() > 1e-10
-                    })
-                    .collect();
-                if triangles.is_empty() || points.iter().any(|p| !p.is_finite()) {
-                    return None;
-                }
-                // Ground as PhysX has it. Its internal edges fixed: a body
-                // sliding over the seam between two triangles is pushed by
-                // the surface the two make, not bumped up by the edge of the
-                // one ahead. And one-sided — each triangle solid on the side
-                // it faces — so a body swept between steps is stopped by
-                // the ground it would pass through, not by the next rise of
-                // the ground it slides over (it ends the step in front of
-                // that, and rapier's sweep lets it go on).
-                ColliderBuilder::trimesh_with_flags(
-                    points,
-                    triangles,
-                    TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::ORIENTED,
-                )
-                    .ok()?
-                    .build()
-            }
+            let shape = match made.get(&MeshShapeKey::of(mesh, scale, dynamic)) {
+                Some(made) => made.shape.clone(),
+                None => model_shape(mesh, scale, dynamic)?,
+            };
+            ColliderBuilder::new(shape).build()
         }
         ColliderShape::Box { half, center } => {
             let (h, c) = (half * scale, center * scale);
@@ -3034,7 +3140,7 @@ mod tests {
             ColliderShape::Ramp { half: Vec3::splat(0.5) },
             ColliderShape::Stairs { half: Vec3::splat(0.5), steps: 3 },
         ] {
-            let built = *build_collider(shape, placed, None, true).unwrap().position();
+            let built = *build_collider(shape, placed, None, true, &MeshShapes::default()).unwrap().position();
             let offset = shape_offset(shape, placed);
             assert!(
                 (built.translation - offset.translation).length() < 1e-6
@@ -4107,6 +4213,55 @@ mod tests {
         let above = (at - Vec3::new(at.x, slope(at.x, at.z), at.z)).dot(normal);
         assert!((above - 0.06).abs() < 0.02, "lying on the ground: {above} above it, at {at}");
         assert!(up.angle_between(normal).to_degrees() < 2.0, "flat on the slope: up {up}");
+    }
+
+    /// Two lengths of the same mesh ground are one shape, built once; a
+    /// third at another scale is its own; and once nothing has the mesh,
+    /// its shape is let go.
+    #[test]
+    fn bodies_of_one_mesh_at_one_scale_share_its_shape() {
+        let mesh = ground_mesh(4, |_, _| 0.0);
+        let mut lengths: Vec<EntityDesc> = (0..3)
+            .map(|i| {
+                let mut e = entity(&format!("rail {i}"), 0.0, Body::Static, ColliderShape::Model);
+                e.transform.position = Vec3::new(10.0 * i as f32, 0.0, 0.0);
+                e
+            })
+            .collect();
+        lengths[2].transform.scale = Vec3::splat(2.0);
+        let mut scene = Scene { entities: lengths, ..Default::default() };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let rails: Vec<hecs::Entity> = scene.entities.iter().map(|e| by_id(&world, e.id)).collect();
+        for &rail in &rails {
+            let _ = world.insert_one(rail, mesh.clone());
+        }
+        drop(mesh);
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.sync_from_world(&mut world);
+        let shape = |e: hecs::Entity| {
+            let body = world.get::<&BodyHandle>(e).unwrap().0;
+            let collider = physics.bodies[body].colliders()[0];
+            physics.colliders[collider].shared_shape().clone()
+        };
+        let (a, b, c) = (shape(rails[0]), shape(rails[1]), shape(rails[2]));
+        assert!(std::sync::Arc::ptr_eq(&a.0, &b.0), "one scale, one shape");
+        assert!(!std::sync::Arc::ptr_eq(&a.0, &c.0), "another scale, another shape");
+        assert_eq!(physics.mesh_shapes.len(), 2);
+        for &rail in &rails {
+            let _ = world.despawn(rail);
+        }
+        physics.sync_from_world(&mut world);
+        assert_eq!(physics.mesh_shapes.len(), 2, "kept until something new is built");
+        let other = ground_mesh(2, |_, _| 0.0);
+        let mut scene = Scene { entities: vec![entity("ground", 0.0, Body::Static, ColliderShape::Model)], ..Default::default() };
+        scene.assign_ids();
+        spawn(&scene, &mut world);
+        let ground = by_id(&world, scene.entities[0].id);
+        let _ = world.insert_one(ground, other);
+        physics.sync_from_world(&mut world);
+        assert_eq!(physics.mesh_shapes.len(), 1, "the rails' shapes let go, the new ground's kept");
     }
 
     /// Ground mirrored by its scale still faces up: a ball lands on it.
