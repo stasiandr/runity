@@ -547,7 +547,15 @@ impl PhysicsWorld {
     /// (a door standing in the ground), at a little more time a step. Four
     /// unless set.
     pub fn set_solver_iterations(&mut self, iterations: usize) {
-        self.parameters.num_solver_iterations = iterations.max(1);
+        let (was, now) = (self.parameters.num_solver_iterations, iterations.max(1));
+        self.parameters.num_solver_iterations = now;
+        // A body that asked for more than the world keeps what it asked.
+        for (_, body) in self.bodies.iter_mut() {
+            let extra = body.additional_solver_iterations();
+            if extra > 0 {
+                body.set_additional_solver_iterations((was + extra).saturating_sub(now));
+            }
+        }
     }
 
     /// When a still body falls asleep: slower than `linear` m/s and
@@ -942,6 +950,9 @@ impl PhysicsWorld {
             // its shapes, above), and this sweeps it against what moves
             // too. (`fast` is kept for lines that ask; it is always so now.)
             .ccd_enabled(props.fast || (kind == Body::Dynamic && !props.unswept))
+            .additional_solver_iterations(
+                (props.solver_iterations as usize).saturating_sub(self.parameters.num_solver_iterations),
+            )
             .locked_axes(locked(&props))
             .build();
             let mut body = body;
@@ -3640,6 +3651,34 @@ mod tests {
         let mut both = inside(true);
         both.sort();
         assert_eq!(both, ["crate", "lift"], "asked: what stands still too");
+    }
+
+    /// A body that asks for more solver passes than the world gets them,
+    /// and keeps what it asked when the world's number changes.
+    #[test]
+    fn a_body_keeps_the_solver_passes_it_asks_for() {
+        let mut door = entity("door", 1.0, Body::Dynamic, ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO });
+        door.set_part(&crate::scene::BodyProps { solver_iterations: 16, ..Default::default() });
+        let mut scene = Scene {
+            entities: vec![door, entity("crate", 3.0, Body::Dynamic, ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO })],
+            ..Default::default()
+        };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.set_solver_iterations(4);
+        physics.sync_from_world(&mut world);
+        let passes = |physics: &PhysicsWorld, name: &str| {
+            let e = scene.entities.iter().find(|d| d.name == name).map(|d| by_id(&world, d.id)).unwrap();
+            let body = &physics.bodies[world.get::<&BodyHandle>(e).unwrap().0];
+            physics.parameters.num_solver_iterations + body.additional_solver_iterations()
+        };
+        assert_eq!((passes(&physics, "door"), passes(&physics, "crate")), (16, 4));
+        physics.set_solver_iterations(8);
+        assert_eq!((passes(&physics, "door"), passes(&physics, "crate")), (16, 8));
+        physics.set_solver_iterations(20);
+        assert_eq!((passes(&physics, "door"), passes(&physics, "crate")), (20, 20));
     }
 
     /// A trigger part with no body above it is a zone of its own: what falls
