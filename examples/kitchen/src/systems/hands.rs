@@ -88,7 +88,7 @@ fn throw(world: &mut World, cook: Entity, at: Vec3, facing: Vec3) {
         (
             scrap::world::Physics(scrap::scene::Body::Dynamic),
             // A ball the size of the fruit under the item.
-            scrap::world::Shape(scrap::scene::Collider::Sphere { radius: FOOD_RADIUS }),
+            scrap::world::Shape(scrap::scene::Collider::Sphere { radius: FOOD_RADIUS, center: Default::default() }),
             // Food does not roll far on a kitchen floor.
             scrap::world::Props(scrap::scene::BodyProps {
                 drag: 0.4,

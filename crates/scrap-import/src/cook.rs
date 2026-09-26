@@ -144,6 +144,9 @@ pub struct Cooked {
     pub compressed: usize,
     /// Files copied as they were: prefabs, and assets without zstd.
     pub copied: usize,
+    /// Asset files left out: of an older format or not ours, which a game
+    /// would refuse anyway (`scrap sync` rebuilds what is still used).
+    pub dropped: usize,
     /// Bytes of the library, and of what it became.
     pub bytes_in: u64,
     pub bytes_out: u64,
@@ -166,6 +169,7 @@ pub fn cook_library(library: &Path, out: &Path, coding: TextureCoding, zstd: boo
             Done::Cached => report.cached += 1,
             Done::Compressed => report.compressed += 1,
             Done::Copied => report.copied += 1,
+            Done::Dropped => report.dropped += 1,
         }
         report.bytes_in += bytes_in;
         report.bytes_out += bytes_out;
@@ -178,6 +182,7 @@ enum Done {
     Cached,
     Compressed,
     Copied,
+    Dropped,
 }
 
 fn collect(dir: &Path, into: &mut Vec<PathBuf>) -> Result<()> {
@@ -198,7 +203,16 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
         std::fs::create_dir_all(parent)?;
     }
     let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
-    let asset = file.extension().is_some_and(|e| e == "scrasset") && scrap::asset::split_header(&bytes).is_ok();
+    // `.rasset` is what an asset was called before the engine was scrap:
+    // stale, whatever it holds.
+    if file.extension().is_some_and(|e| e == "rasset") {
+        return Ok((Done::Dropped, bytes.len() as u64, 0));
+    }
+    let asset_file = file.extension().is_some_and(|e| e == "scrasset");
+    let asset = asset_file && scrap::asset::split_header(&bytes).is_ok();
+    if asset_file && !asset {
+        return Ok((Done::Dropped, bytes.len() as u64, 0));
+    }
     let texture = asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::asset::TEXTURE);
     let mesh = asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::asset::MESH);
     if !texture && !(asset && zstd) {

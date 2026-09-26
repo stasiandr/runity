@@ -20,7 +20,12 @@ if [ "${WASM_OPT:-0}" = 1 ] && command -v wasm-opt >/dev/null; then
   wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
     "$OUT/kitchen_bg.wasm" -o "$OUT/kitchen_bg.wasm"
 fi
-python3 web/pack.py "$OUT/data.bin.gz"
+# The library cooked for a browser's GPU, twice — BC7 for a desktop's,
+# ASTC for a phone's and an Apple one's — each asset's body in zstd; the
+# page fetches the one its GPU samples.
+cargo run --quiet --release --manifest-path ../../Cargo.toml -p scrap-cli -- cook . --platform web --out target/cooked
+python3 web/pack.py "$OUT/data-bc7.bin.gz" --library target/cooked/bc7
+python3 web/pack.py "$OUT/data-astc.bin.gz" --library target/cooked/astc
 cp web/index.html web/pad.js "$OUT/"
 # The relay's credentials endpoint, when there is one (SCRAP_TURN_URL: a
 # Metered app's REST URL with its key; the Pages workflow has it as a

@@ -2218,6 +2218,31 @@ fn lit_keys(looks: impl IntoIterator<Item = Look>) -> std::collections::HashSet<
     keys
 }
 
+/// Work begun on a thread of a scope — or done here and now where there
+/// are none (the web: its core is one thread, DNA postulate 7).
+enum Aside<'s, T> {
+    Thread(std::thread::ScopedJoinHandle<'s, T>),
+    Done(T),
+}
+
+impl<T> Aside<'_, T> {
+    fn join(self) -> T {
+        match self {
+            Aside::Thread(h) => h.join().expect("work set aside on a thread panicked"),
+            Aside::Done(done) => done,
+        }
+    }
+}
+
+/// `work` on a thread of `scope`, or here where threads cannot be made.
+fn aside<'s, 'e, T: Send + 's>(scope: &'s std::thread::Scope<'s, 'e>, work: impl FnOnce() -> T + Send + 's) -> Aside<'s, T> {
+    if cfg!(target_arch = "wasm32") {
+        Aside::Done(work())
+    } else {
+        Aside::Thread(scope.spawn(work))
+    }
+}
+
 /// `make` over `items` on the workers, each under an error scope of its
 /// own — wgpu's scopes are the thread's, so one the caller pushed would not
 /// see what went wrong on another — and the first error back with the
@@ -2242,7 +2267,14 @@ pub(crate) fn compiled<T: Sync, R: Send>(
 }
 
 /// `make` under a validation error scope of its own, on this thread.
+///
+/// Not on the web: its scope is a promise the page answers only once the
+/// game gives the thread back, so waiting on it here never ends. There an
+/// error goes to the device's own handler, as it would unscoped.
 fn scoped<R>(gpu: &Gpu, make: impl FnOnce() -> R) -> (R, Option<wgpu::Error>) {
+    if cfg!(target_arch = "wasm32") {
+        return (make(), None);
+    }
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let result = make();
     (result, pollster::block_on(scope.pop()))
@@ -2695,25 +2727,25 @@ fn build_pipelines(
     // Each the driver compiling a shader: all of them side by side, each
     // under its own error scope, the first error said for them all.
     std::thread::scope(|s| {
-        fn made<T>(h: std::thread::ScopedJoinHandle<'_, (T, Option<wgpu::Error>)>, error: &mut Option<wgpu::Error>) -> T {
-            let (made, e) = h.join().expect("a pipeline's build panicked");
+        fn made<T>(h: Aside<'_, (T, Option<wgpu::Error>)>, error: &mut Option<wgpu::Error>) -> T {
+            let (made, e) = h.join();
             if error.is_none() {
                 *error = e;
             }
             made
         }
-        let prepass = s.spawn(|| scoped(gpu, make_prepass));
-        let shadow = s.spawn(|| scoped(gpu, shadow));
-        let shadow_front = s.spawn(|| scoped(gpu, shadow_front));
-        let shadow_clip = s.spawn(|| scoped(gpu, shadow_clip));
-        let shadow_clip_front = s.spawn(|| scoped(gpu, shadow_clip_front));
-        let overlay = s.spawn(|| scoped(gpu, overlay));
-        let outline_mask = s.spawn(|| scoped(gpu, outline_mask));
-        let sky = s.spawn(|| scoped(gpu, sky));
-        let precipitation = s.spawn(|| scoped(gpu, precipitation));
-        let fog_inject = s.spawn(|| scoped(gpu, || compute(layouts.fog_inject, "cs_fog_inject")));
-        let fog_integrate = s.spawn(|| scoped(gpu, || compute(layouts.fog_integrate, "cs_fog_integrate")));
-        let terrain_mesh = s.spawn(|| scoped(gpu, || terrain_mesh_pipelines(gpu, source, samples, layouts)));
+        let prepass = aside(s, || scoped(gpu, make_prepass));
+        let shadow = aside(s, || scoped(gpu, shadow));
+        let shadow_front = aside(s, || scoped(gpu, shadow_front));
+        let shadow_clip = aside(s, || scoped(gpu, shadow_clip));
+        let shadow_clip_front = aside(s, || scoped(gpu, shadow_clip_front));
+        let overlay = aside(s, || scoped(gpu, overlay));
+        let outline_mask = aside(s, || scoped(gpu, outline_mask));
+        let sky = aside(s, || scoped(gpu, sky));
+        let precipitation = aside(s, || scoped(gpu, precipitation));
+        let fog_inject = aside(s, || scoped(gpu, || compute(layouts.fog_inject, "cs_fog_inject")));
+        let fog_integrate = aside(s, || scoped(gpu, || compute(layouts.fog_integrate, "cs_fog_integrate")));
+        let terrain_mesh = aside(s, || scoped(gpu, || terrain_mesh_pipelines(gpu, source, samples, layouts)));
         let mut error = error;
         let (prepass, prepass_error) = made(prepass, &mut error);
         error = error.or(prepass_error);
@@ -3783,11 +3815,11 @@ impl Renderer {
             ((made_clusters, e1), ((made_ddgi, e2), (made_restir, e3))),
             (post, lens, taa, upscaler, smoke_sim, occlusion, lowres, gpu_particles),
         ) = std::thread::scope(|s| {
-            let built = s.spawn(|| scoped(gpu, || build_pipelines(gpu, &shader, &shader_source, format, samples, &layouts)));
+            let built = aside(s, || scoped(gpu, || build_pipelines(gpu, &shader, &shader_source, format, samples, &layouts)));
             let (ddgi, restir) = (&ddgi, &restir);
             let shader = &shader;
             let clusters = &clusters;
-            let others = s.spawn(move || {
+            let others = aside(s, move || {
                 scrap_core::jobs::join(
                     || {
                         let ((made, inner), outer) = scoped(gpu, || clusters.make_pipelines(gpu, shader));
@@ -3801,16 +3833,16 @@ impl Renderer {
                     },
                 )
             });
-            let post = s.spawn(|| crate::post::PostRenderer::new(gpu, format));
-            let lens = s.spawn(|| crate::lens::LensRenderer::new(gpu));
-            let taa = s.spawn(|| crate::taa::Taa::new(gpu));
-            let upscaler = s.spawn(|| crate::upscale::Upscaler::new(gpu));
-            let smoke = s.spawn(|| crate::smoke_gpu::SmokeSim::new(gpu));
-            let occlusion = s.spawn(|| crate::occlusion::Occlusion::new(gpu));
-            let lowres = s.spawn(|| crate::lowres::LowRes::new(gpu));
-            let particles = s.spawn(|| crate::particles_gpu::GpuParticles::new(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples));
-            fn made<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
-                h.join().expect("a pass's pipelines panicked")
+            let post = aside(s, || crate::post::PostRenderer::new(gpu, format));
+            let lens = aside(s, || crate::lens::LensRenderer::new(gpu));
+            let taa = aside(s, || crate::taa::Taa::new(gpu));
+            let upscaler = aside(s, || crate::upscale::Upscaler::new(gpu));
+            let smoke = aside(s, || crate::smoke_gpu::SmokeSim::new(gpu));
+            let occlusion = aside(s, || crate::occlusion::Occlusion::new(gpu));
+            let lowres = aside(s, || crate::lowres::LowRes::new(gpu));
+            let particles = aside(s, || crate::particles_gpu::GpuParticles::new(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples));
+            fn made<T>(h: Aside<'_, T>) -> T {
+                h.join()
             }
             (
                 made(built),
@@ -3942,7 +3974,8 @@ impl Renderer {
             lean_modules: [(None, shader.clone())].into_iter().collect(),
             full: crate::lean::Lean::always(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8)),
             known: lit_keys(Look::all()),
-            wait_for_pipelines: wait,
+            // The web has no threads to build them on while frames go on.
+            wait_for_pipelines: wait || cfg!(target_arch = "wasm32"),
             clustering: None,
             clusters_waiting: 0,
             mesh_names: Default::default(),

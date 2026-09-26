@@ -84,7 +84,7 @@ pub(crate) fn build(vertices: &[Vertex], indices: &[u32]) -> Option<(Vec<u32>, V
     if triangles < FROM_TRIANGLES || vertices.is_empty() {
         return None;
     }
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     let (mut sorted, level0) = split(vertices, indices, 0);
     let cut = started.elapsed();
     let (extra, clusters) = crate::cluster_lod::levels(vertices, &sorted, &level0);
