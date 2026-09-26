@@ -3012,8 +3012,14 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let highlights = (flags & 1u) != 0u;
 
     let to_sun = -normalize(frame.sun_direction.xyz);
+    // Whether the sun's shadow counts for anything here: on a face turned
+    // from the sun its light is nothing — unless it shows through (a
+    // leaf's, what lies under skin) or a grain of sand glints — and the
+    // shadow, the most of a lit pixel's work, is not looked up.
+    let sun_matters = dot(normal, to_sun) > 0.0 || in.detail.w > 0.0
+        || (in.subsurface.r + in.subsurface.g + in.subsurface.b) > 0.0 || dot(glint_facet, glint_facet) > 0.0;
     var shadow = 1.0;
-    if (flags & 4u) != 0u {
+    if (flags & 4u) != 0u && sun_matters {
         if frame.ray.x > 0.5 && !LEAN {
             shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
         } else {
@@ -3029,14 +3035,16 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // The scene's distance field softens the sun's shadow where the map
     // is coarse and adds what the map missed.
     let field_on = frame.distance[0].w > 0.5 && unlit < 0.5;
-    if field_on && shadow > 0.0 && (flags & 4u) != 0u {
+    if field_on && shadow > 0.0 && (flags & 4u) != 0u && sun_matters {
         shadow = min(shadow, field_shadow(in.world_position, geometric, to_sun));
     }
     // Under a cloud: in its shadow.
-    shadow *= cloud_shadow(in.world_position);
+    if sun_matters {
+        shadow *= cloud_shadow(in.world_position);
+    }
     // Under water: the sun comes down as caustics, dimmer the deeper.
     let submerged = under_water(in.world_position);
-    if submerged > 0.0 {
+    if submerged > 0.0 && sun_matters {
         let pattern = caustics(in.world_position.xz, frame.foliage.wind.w);
         shadow *= (0.35 + 1.8 * pattern) * exp(-submerged * 0.35);
     }
@@ -3129,6 +3137,10 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         let spot = light.spot;
         let along = dot(-toward, spot.xyz);
         let cone = spot_cone(light, along);
+        // Out of its reach or its cone, or behind the face: nothing to add.
+        if reach * facing * cone <= 0.0 {
+            continue;
+        }
         // A lamp's shadow, by a ray to it — only where it lights at all.
         // Or by its shadow map, where it has one.
         var blocked = 1.0;
