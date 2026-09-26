@@ -290,6 +290,19 @@ pub struct BodyProps {
     /// above it goes on, for their joint to fling both back up.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unswept: bool,
+    /// A trigger that notices what stands still too — a static crate, the
+    /// level's walls — not only what moves: Unity's trigger on a kinematic
+    /// Rigidbody. A zone with no Rigidbody in Unity sees only what has one,
+    /// and so does a `Trigger` that does not say this: a level-wide zone
+    /// is not tested against every wall of the level every step.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notices_still: bool,
+    /// Solver passes a step for it and whatever it is joined or pressed
+    /// to, when more than the world's: Unity's `Rigidbody.solverIterations`.
+    /// A hinged door of twenty kilos standing in sand keeps to its hinge at
+    /// sixteen, where the rest of a level is well at four. 0 is the world's.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub solver_iterations: u32,
     /// Axes it may not move along, as letters: `"y"` keeps it at its height.
     /// Unity's Freeze Position.
     #[serde(default, skip_serializing_if = "Axes::is_none")]
@@ -298,6 +311,36 @@ pub struct BodyProps {
     /// whatever knocks it. Unity's Freeze Rotation.
     #[serde(default, skip_serializing_if = "Axes::is_none")]
     pub freeze_turn: Axes,
+    /// Where a frame between two fixed steps draws it: between them by
+    /// default. Drawing only — the simulation never reads it. Unity's
+    /// Rigidbody `interpolation`.
+    #[serde(default, skip_serializing_if = "Drawn::is_between")]
+    pub drawn: Drawn,
+}
+
+/// Where a moving body is drawn in a frame that falls between two fixed
+/// steps ([`world::interpolate`](crate::world::interpolate)). The
+/// simulation runs at its own rate (30 steps a second, say) and the screen
+/// at its (60 to 144 frames): drawn only where the steps leave it, a body
+/// stands still for several frames and then jumps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Drawn {
+    /// Between the last two steps, by how far the frame is into the next:
+    /// smooth, a step behind. Unity's `Interpolate`.
+    #[default]
+    Between,
+    /// Where the last step left it, until the next: Unity's `None`.
+    AtStep,
+    /// On from the last step as the last step moved it: smooth and not
+    /// behind, and wrong for a moment when it hits something. Unity's
+    /// `Extrapolate`.
+    Ahead,
+}
+
+impl Drawn {
+    pub fn is_between(&self) -> bool {
+        *self == Drawn::Between
+    }
 }
 
 /// Some of x, y and z, written as the letters: `"xz"`.
@@ -359,8 +402,11 @@ impl Default for BodyProps {
             blown: 0.0,
             fast: false,
             unswept: false,
+            notices_still: false,
+            solver_iterations: 0,
             freeze_move: Axes::default(),
             freeze_turn: Axes::default(),
+            drawn: Drawn::Between,
         }
     }
 }
@@ -368,6 +414,12 @@ impl Default for BodyProps {
 impl BodyProps {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The same with the drawing left out: what the solver is built from,
+    /// so changing only how it is drawn does not rebuild the body.
+    pub fn solved(&self) -> Self {
+        Self { drawn: Drawn::Between, ..*self }
     }
 }
 

@@ -168,7 +168,7 @@ impl PartKey {
         PartKey {
             entity: part.entity,
             shape: part.shape,
-            props: part.props,
+            props: part.props.solved(),
             layer: part.layer.clone(),
             trigger: part.trigger,
             mesh: part.mesh.as_ref().map_or(0, CollisionMesh::key),
@@ -178,7 +178,7 @@ impl PartKey {
     fn is(&self, part: &PartFound) -> bool {
         self.entity == part.entity
             && self.shape == part.shape
-            && self.props == part.props
+            && self.props == part.props.solved()
             && self.layer == part.layer
             && self.trigger == part.trigger
             && self.mesh == part.mesh.as_ref().map_or(0, CollisionMesh::key)
@@ -326,6 +326,20 @@ fn solved(asked: Body, replica: bool) -> Body {
 }
 
 /// What a line's `freeze_move` and `freeze_turn` hold still.
+/// Where a step took a body from and to, for a frame between steps to
+/// draw it by ([`crate::world::interpolate`]); drawn [`AtStep`], both are
+/// where it is now, and it is drawn there.
+///
+/// [`AtStep`]: crate::scene::Drawn::AtStep
+fn stepped(from: glam::Mat4, to: glam::Mat4, drawn: crate::scene::Drawn) -> crate::world::Stepped {
+    use crate::scene::Drawn;
+    crate::world::Stepped {
+        from: if drawn == Drawn::AtStep { to } else { from },
+        to,
+        ahead: drawn == Drawn::Ahead,
+    }
+}
+
 fn locked(props: &crate::scene::BodyProps) -> LockedAxes {
     let mut out = LockedAxes::empty();
     for (on, axis) in [
@@ -495,6 +509,8 @@ pub struct PhysicsWorld {
     /// Pairs of entities told to pass through each other, by their bits,
     /// smaller first.
     ignored: std::collections::HashSet<(u64, u64)>,
+    /// Shapes built from meshes, kept for the next body of the same mesh.
+    mesh_shapes: MeshShapes,
 }
 
 /// Rapier's say on each pair of colliders: no contact for a pair told to
@@ -545,7 +561,15 @@ impl PhysicsWorld {
     /// (a door standing in the ground), at a little more time a step. Four
     /// unless set.
     pub fn set_solver_iterations(&mut self, iterations: usize) {
-        self.parameters.num_solver_iterations = iterations.max(1);
+        let (was, now) = (self.parameters.num_solver_iterations, iterations.max(1));
+        self.parameters.num_solver_iterations = now;
+        // A body that asked for more than the world keeps what it asked.
+        for (_, body) in self.bodies.iter_mut() {
+            let extra = body.additional_solver_iterations();
+            if extra > 0 {
+                body.set_additional_solver_iterations((was + extra).saturating_sub(now));
+            }
+        }
     }
 
     /// When a still body falls asleep: slower than `linear` m/s and
@@ -602,6 +626,7 @@ impl PhysicsWorld {
             ground: None,
             layers: crate::layers::Layers::default(),
             ignored: Default::default(),
+            mesh_shapes: Default::default(),
         }
     }
 
@@ -721,7 +746,7 @@ impl PhysicsWorld {
                 && matches!(body, Body::Dynamic | Body::Kinematic)
                 && built.collider == shape.0
                 && built.mesh == mesh
-                && built.props == props
+                && built.props.solved() == props.solved()
                 && built.layer == layer;
             if switch {
                 switched.push((entity, handle.0, body));
@@ -736,7 +761,7 @@ impl PhysicsWorld {
             if built.body != body
                 || built.collider != shape.0
                 || built.mesh != mesh
-                || built.props != props
+                || built.props.solved() != props.solved()
                 || built.layer != layer
             {
                 stale.push(entity);
@@ -834,6 +859,7 @@ impl PhysicsWorld {
             }
         }
 
+        self.make_mesh_shapes(world, &off, &parts);
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
         let mut part_handles: Vec<(hecs::Entity, ColliderHandle)> = Vec::new();
         for (entity, placed, physics, shape, local, existing, mesh, props, layer, replica) in world
@@ -871,7 +897,7 @@ impl PhysicsWorld {
             };
             let dynamic = kind == Body::Dynamic;
             let mine = parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]);
-            let own = build_collider(shape.0, placed.0, mesh, dynamic);
+            let own = build_collider(shape.0, placed.0, mesh, dynamic, &self.mesh_shapes);
             if own.is_none() && mine.is_empty() && kind != Body::Kinematic {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
@@ -916,11 +942,9 @@ impl PhysicsWorld {
             if let Some(mass) = props.mass.filter(|m| *m > 0.0) {
                 collider.set_mass(mass);
             }
-            if physics.0 == Body::Trigger {
+            if kind == Body::Trigger {
                 collider.set_sensor(true);
-                // A zone notices whatever enters it, a kinematic player or
-                // a static crate included — not only what the solver moves.
-                collider.set_active_collision_types(ActiveCollisionTypes::all());
+                collider.set_active_collision_types(zone_notices(props.notices_still));
             }
             let body = match kind {
                 Body::Dynamic => RigidBodyBuilder::dynamic(),
@@ -940,6 +964,9 @@ impl PhysicsWorld {
             // its shapes, above), and this sweeps it against what moves
             // too. (`fast` is kept for lines that ask; it is always so now.)
             .ccd_enabled(props.fast || (kind == Body::Dynamic && !props.unswept))
+            .additional_solver_iterations(
+                (props.solver_iterations as usize).saturating_sub(self.parameters.num_solver_iterations),
+            )
             .locked_axes(locked(&props))
             .build();
             let mut body = body;
@@ -958,7 +985,7 @@ impl PhysicsWorld {
             // colliding as its own line says, weighing its share.
             let mut part_colliders: Vec<(ColliderHandle, f32)> = Vec::new();
             for part in mine {
-                let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else {
+                let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic, &self.mesh_shapes) else {
                     continue;
                 };
                 if unswept {
@@ -983,7 +1010,14 @@ impl PhysicsWorld {
                 c.set_density(part.props.density.max(1e-3));
                 if part.trigger {
                     c.set_sensor(true);
-                    c.set_active_collision_types(ActiveCollisionTypes::all());
+                    // On a body that moves, a trigger meets what stands
+                    // still as well (Unity's trigger under a Rigidbody); on
+                    // one that does not, it is a zone like any other.
+                    c.set_active_collision_types(if matches!(kind, Body::Dynamic | Body::Kinematic) {
+                        ActiveCollisionTypes::all()
+                    } else {
+                        zone_notices(part.props.notices_still || props.notices_still)
+                    });
                 }
                 let volume = if part.trigger { 0.0 } else { c.shape().mass_properties(1.0).mass() };
                 let h = self.colliders.insert_with_parent(c, handle, &mut self.bodies);
@@ -1060,6 +1094,69 @@ impl PhysicsWorld {
             scrap_core::world::take_off::<crate::world::Takeover>(world, entity);
         }
         self.sync_joints(world);
+    }
+
+    /// Build, before the bodies that want them, every mesh shape not built
+    /// yet — each once, however many bodies share it, and several at once
+    /// across the cores. A shape is the same whoever builds it, so this only
+    /// changes when it is ready, not what it is. Shapes whose mesh nothing
+    /// else holds any more are let go.
+    fn make_mesh_shapes(
+        &mut self,
+        world: &World,
+        off: &scrap_core::hash::FastSet<hecs::Entity>,
+        parts: &scrap_core::hash::FastMap<hecs::Entity, Vec<PartFound>>,
+    ) {
+        let mut wanted: Vec<(MeshShapeKey, CollisionMesh, Vec3)> = Vec::new();
+        let want = |mesh: &CollisionMesh, placed: glam::Mat4, dynamic: bool, wanted: &mut Vec<(MeshShapeKey, CollisionMesh, Vec3)>| {
+            let (scale, _, _) = placed.to_scale_rotation_translation();
+            let key = MeshShapeKey::of(mesh, scale, dynamic);
+            if !self.mesh_shapes.contains_key(&key) && wanted.iter().all(|w| w.0 != key) {
+                wanted.push((key, mesh.clone(), scale));
+            }
+        };
+        for (entity, placed, physics, shape, existing, mesh, replica) in world
+            .query::<(
+                hecs::Entity,
+                &WorldTransform,
+                &Physics,
+                &Shape,
+                Option<&BodyHandle>,
+                Option<&CollisionMesh>,
+                Option<&crate::world::Replica>,
+            )>()
+            .iter()
+        {
+            if existing.is_some() || physics.0 == Body::None || physics.0.is_part() || off.contains(&entity) {
+                continue;
+            }
+            let dynamic = solved(physics.0, replica.is_some()) == Body::Dynamic;
+            if let (ColliderShape::Model, Some(mesh)) = (shape.0, mesh) {
+                want(mesh, placed.0, dynamic, &mut wanted);
+            }
+            for part in parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]) {
+                if let (ColliderShape::Model, Some(mesh)) = (part.shape, part.mesh.as_ref()) {
+                    want(mesh, part.placed, dynamic, &mut wanted);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let built = scrap_core::jobs::map(&wanted, 1, |(key, mesh, scale)| model_shape(mesh, *scale, key.dynamic));
+        for ((key, mesh, _), shape) in wanted.into_iter().zip(built) {
+            if let Some(shape) = shape {
+                self.mesh_shapes.insert(key, MadeShape { mesh, shape });
+            }
+        }
+        // Held by more than the shapes kept of it (one a scale): something
+        // still has the mesh.
+        let mut kept: scrap_core::hash::FastMap<usize, usize> = Default::default();
+        for key in self.mesh_shapes.keys() {
+            *kept.entry(key.mesh).or_default() += 1;
+        }
+        self.mesh_shapes
+            .retain(|key, made| std::sync::Arc::strong_count(&made.mesh.vertices) > kept[&key.mesh]);
     }
 
     /// Joints after bodies: build each once both of its bodies exist,
@@ -1465,9 +1562,11 @@ impl PhysicsWorld {
     /// A thing just hinged or slid on the world — a door, a handle — stops
     /// colliding with the still things it was put into: a door set flush
     /// in the sand would otherwise grind against it, and a stiff solver
-    /// hold it shut by that friction. What it only comes to touch later (a
-    /// wall it swings into) it still meets. Once, after the first step its
-    /// contacts are known.
+    /// hold it shut by that friction. Still is fixed or kinematic: a padlock
+    /// the scene set into a door's leaf would push the leaf past its stop,
+    /// to tremble there awake for good. What it only comes to touch later
+    /// (a wall it swings into, the lock's bar it rests on) it still meets.
+    /// Once, after the first step its contacts are known.
     fn free_hinged(&mut self, world: &mut World) {
         let fresh: Vec<(hecs::Entity, RigidBodyHandle)> = world
             .query::<(hecs::Entity, &JointBuilt)>()
@@ -1488,7 +1587,7 @@ impl PhysicsWorld {
                         .get(other)
                         .and_then(|c| c.parent())
                         .and_then(|h| self.bodies.get(h))
-                        .is_none_or(|b| b.is_fixed());
+                        .is_none_or(|b| b.is_fixed() || b.is_kinematic());
                     let deep = pair
                         .manifolds()
                         .iter()
@@ -1526,8 +1625,12 @@ impl PhysicsWorld {
     /// writing rapier's copy back over it would let rounding walk the world
     /// a fraction at a time.
     pub fn sync_to_world(&self, world: &mut World) {
-        let mut moved: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, Option<hecs::Entity>)> = Vec::new();
-        for (entity, handle, physics, placed, parent, replica) in world
+        let mut moved: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, Option<hecs::Entity>, crate::scene::Drawn)> = Vec::new();
+        // What the game moves (a kinematic body, a train, a lift): where it
+        // is now, drawn between there and where the last step left it.
+        let mut carried: Vec<(hecs::Entity, glam::Mat4, glam::Mat4, crate::scene::Drawn)> = Vec::new();
+        let mut unstepped: Vec<hecs::Entity> = Vec::new();
+        for (entity, handle, physics, placed, parent, replica, props, stepped) in world
             .query::<(
                 hecs::Entity,
                 &BodyHandle,
@@ -1535,10 +1638,23 @@ impl PhysicsWorld {
                 &WorldTransform,
                 Option<&Parent>,
                 Option<&crate::world::Replica>,
+                Option<&Props>,
+                Option<&crate::world::Stepped>,
             )>()
             .iter()
         {
-            if solved(physics.0, replica.is_some()) != Body::Dynamic {
+            let drawn = props.map(|p| p.0.drawn).unwrap_or_default();
+            let kind = solved(physics.0, replica.is_some());
+            // A replica is shown by the network, between the poses its
+            // owner sent, every frame.
+            if kind == Body::Kinematic && replica.is_none() && drawn != crate::scene::Drawn::AtStep {
+                carried.push((entity, stepped.map_or(placed.0, |s| s.to), placed.0, drawn));
+                continue;
+            }
+            if kind != Body::Dynamic {
+                if stepped.is_some() {
+                    unstepped.push(entity);
+                }
                 continue;
             }
             let Some(body) = self.bodies.get(handle.0) else {
@@ -1558,29 +1674,69 @@ impl PhysicsWorld {
                 placed.0,
                 glam::Mat4::from_scale_rotation_translation(scale, rotation, translation),
                 parent.map(|p| p.0),
+                drawn,
             ));
         }
-        for (entity, was, matrix, parent) in moved {
+        for entity in unstepped {
+            let _ = world.remove_one::<crate::world::Stepped>(entity);
+        }
+        for (entity, from, to, drawn) in carried {
+            let _ = world.insert_one(entity, stepped(from, to, drawn));
+        }
+        for (entity, was, matrix, parent, drawn) in moved {
             // The local transform too, relative to the parent: it is what
             // the hierarchy is recomputed from, and what a reload compares
             // with the file. Writing only the world one would let the next
             // hierarchy pass put the body back where the scene had it.
-            let parent_matrix = parent
+            //
+            // Only its place and turn are the body's: its own scale stays
+            // what it was, as Unity keeps a Rigidbody's `localScale`. Under
+            // a parent scaled unevenly and turned, the world matrix is
+            // sheared, and reading a scale back out of it and into the
+            // local one grew the thing a little every step — a mouse's jaw
+            // on a hinge, under its model's 275×325×282 bones, a metre
+            // wider each second.
+            let parent_world = parent
                 .and_then(|p| world.get::<&WorldTransform>(p).ok().map(|w| w.0))
                 .unwrap_or(glam::Mat4::IDENTITY);
-            let local_matrix = parent_matrix.inverse() * matrix;
-            let (scale, rotation, translation) = local_matrix.to_scale_rotation_translation();
-            let mut local = Transform {
-                position: translation,
-                scale,
-                ..Transform::default()
+            // What the hierarchy puts between them (a bone it rides on).
+            let between = world.get::<&crate::world::Between>(entity).ok().map(|b| b.0);
+            let parent_matrix = parent_world * between.unwrap_or(glam::Mat4::IDENTITY);
+            let (parent_scale, parent_rotation, _) = parent_matrix.to_scale_rotation_translation();
+            let uneven = parent.is_some()
+                && parent_scale.abs().max_element() > parent_scale.abs().min_element() * 1.001;
+            let kept = world.get::<&Transform>(entity).ok().map(|t| t.scale);
+            let (local, matrix) = match kept.filter(|_| uneven) {
+                // Its place and turn under the parent; its scale its own.
+                Some(scale) => {
+                    let (_, rotation, translation) = matrix.to_scale_rotation_translation();
+                    let mut local = Transform {
+                        position: parent_matrix.inverse().transform_point3(translation),
+                        scale,
+                        ..Transform::default()
+                    };
+                    local.set_rotation((parent_rotation.inverse() * rotation).normalize());
+                    // What the hierarchy makes of it: the parent's shear and all.
+                    (local, parent_matrix * local.matrix())
+                }
+                // An evenly scaled parent — mirrored too — shears nothing:
+                // the local transform is the world one undone by it.
+                None => {
+                    let (scale, rotation, translation) = (parent_world.inverse() * matrix).to_scale_rotation_translation();
+                    let mut local = Transform {
+                        position: translation,
+                        scale,
+                        ..Transform::default()
+                    };
+                    local.set_rotation(rotation);
+                    (local, matrix)
+                }
             };
-            local.set_rotation(rotation);
             // Where the step took it from and to: a frame between steps
             // draws it between them (`world::interpolate`). Written in place:
             // after the first step a body has all of these, and an insert
             // would look up the archetype to move it to on every one.
-            let stepped = crate::world::Stepped { from: was, to: matrix };
+            let stepped = stepped(was, matrix, drawn);
             let Ok((placed, own, step, built)) = world.query_one_mut::<(
                 &mut WorldTransform,
                 Option<&mut Transform>,
@@ -1766,6 +1922,14 @@ impl PhysicsWorld {
     /// The rapier body behind an entity, once it has been built.
     fn body_of(&self, world: &World, entity: hecs::Entity) -> Option<RigidBodyHandle> {
         world.get::<&BodyHandle>(entity).ok().map(|h| h.0)
+    }
+
+    /// Whether an entity's body is asleep — still long enough that the
+    /// solver leaves it until something touches it: Unity's
+    /// `Rigidbody.IsSleeping`. `None` for an entity with no body.
+    pub fn asleep(&self, world: &World, entity: hecs::Entity) -> Option<bool> {
+        let handle = world.get::<&BodyHandle>(entity).ok()?.0;
+        Some(self.bodies.get(handle)?.is_sleeping())
     }
 
     /// How fast an entity's body moves, metres per second. `None` before
@@ -2296,6 +2460,20 @@ fn hull(points: &[Vector]) -> Option<Collider> {
     Some(ColliderBuilder::new(SharedShape::new(crate::shapes::Hull::new(polyhedron))).build())
 }
 
+/// What a zone of its own (`Body::Trigger`) is tested against: whatever
+/// moves — dynamic or kinematic, a player carried by the game included —
+/// and, only when its line asks, what stands still. As Unity's triggers: one
+/// with no Rigidbody meets only colliders that have one, which keeps a
+/// level-wide zone from being tested against every wall of the level each
+/// step (Dacha's sandstorm box, a third of a level's physics).
+fn zone_notices(still: bool) -> ActiveCollisionTypes {
+    if still {
+        ActiveCollisionTypes::all()
+    } else {
+        ActiveCollisionTypes::all() - ActiveCollisionTypes::KINEMATIC_FIXED - ActiveCollisionTypes::FIXED_FIXED
+    }
+}
+
 /// `collider`'s shape, never swept between steps (see
 /// [`crate::shapes::Unswept`]).
 fn unsweep(collider: &mut Collider) {
@@ -2323,12 +2501,92 @@ fn shape_offset(shape: ColliderShape, transform: glam::Mat4) -> Pose {
     }
 }
 
+/// A `Model` collider's shape at a scale: its hull for a body the solver
+/// moves, its triangles for one that stands still. Building the triangles'
+/// tree is most of a level's first step, so what is built is kept
+/// ([`MeshShapes`]) and several are built at once.
+fn model_shape(mesh: &CollisionMesh, scale: Vec3, dynamic: bool) -> Option<SharedShape> {
+    let points: Vec<Vector> = mesh
+        .vertices
+        .iter()
+        .map(|v| {
+            let v = *v * scale;
+            Vector::new(v.x, v.y, v.z)
+        })
+        .collect();
+    if dynamic {
+        let polyhedron = rapier3d::parry::shape::ConvexPolyhedron::from_convex_hull(&points)?;
+        Some(SharedShape::new(crate::shapes::Hull::new(polyhedron)))
+    } else {
+        // Triangles with no area — a mesh squashed flat by a zero
+        // scale, a sliver — are nothing to stand on, and a query
+        // against a tree of only those panics in parry. A mirroring
+        // scale turns every triangle inside out: turned back, so
+        // each still faces the side it was drawn to face.
+        let mirrored = scale.x * scale.y * scale.z < 0.0;
+        let triangles: Vec<[u32; 3]> = mesh
+            .triangles
+            .iter()
+            .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
+            .filter(|t| {
+                let [a, b, c] = t.map(|i| points.get(i as usize).copied());
+                let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
+                (b - a).cross(c - a).length() > 1e-10
+            })
+            .collect();
+        if triangles.is_empty() || points.iter().any(|p| !p.is_finite()) {
+            return None;
+        }
+        // Ground as PhysX has it. Its internal edges fixed: a body
+        // sliding over the seam between two triangles is pushed by
+        // the surface the two make, not bumped up by the edge of the
+        // one ahead. And one-sided — each triangle solid on the side
+        // it faces — so a body swept between steps is stopped by
+        // the ground it would pass through, not by the next rise of
+        // the ground it slides over (it ends the step in front of
+        // that, and rapier's sweep lets it go on).
+        SharedShape::trimesh_with_flags(
+            points,
+            triangles,
+            TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::ORIENTED,
+        )
+        .ok()
+    }
+}
+
+/// Which [`model_shape`] a collider wants: one mesh at one scale, moving or
+/// still.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MeshShapeKey {
+    mesh: usize,
+    scale: [u32; 3],
+    dynamic: bool,
+}
+
+impl MeshShapeKey {
+    fn of(mesh: &CollisionMesh, scale: Vec3, dynamic: bool) -> Self {
+        MeshShapeKey { mesh: mesh.key(), scale: scale.to_array().map(f32::to_bits), dynamic }
+    }
+}
+
+/// A shape built from a mesh, with the mesh it was built from: held, so the
+/// key's address stays that mesh's for as long as the shape is kept.
+struct MadeShape {
+    mesh: CollisionMesh,
+    shape: SharedShape,
+}
+
+/// Shapes built from meshes, shared by every collider of the same mesh at
+/// the same scale — a level's twenty-eight lengths of rail are one.
+type MeshShapes = scrap_core::hash::FastMap<MeshShapeKey, MadeShape>;
+
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
 fn build_collider(
     shape: ColliderShape,
     transform: glam::Mat4,
     mesh: Option<&CollisionMesh>,
     dynamic: bool,
+    made: &MeshShapes,
 ) -> Option<Collider> {
     let (scale, _, _) = transform.to_scale_rotation_translation();
     Some(match shape {
@@ -2337,52 +2595,11 @@ fn build_collider(
             // No geometry yet — the model is not imported, or nobody
             // attached it: no collider, and the next sync tries again.
             let mesh = mesh?;
-            let points: Vec<Vector> = mesh
-                .vertices
-                .iter()
-                .map(|v| {
-                    let v = *v * scale;
-                    Vector::new(v.x, v.y, v.z)
-                })
-                .collect();
-            if dynamic {
-                hull(&points)?
-            } else {
-                // Triangles with no area — a mesh squashed flat by a zero
-                // scale, a sliver — are nothing to stand on, and a query
-                // against a tree of only those panics in parry. A mirroring
-                // scale turns every triangle inside out: turned back, so
-                // each still faces the side it was drawn to face.
-                let mirrored = scale.x * scale.y * scale.z < 0.0;
-                let triangles: Vec<[u32; 3]> = mesh
-                    .triangles
-                    .iter()
-                    .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
-                    .filter(|t| {
-                        let [a, b, c] = t.map(|i| points.get(i as usize).copied());
-                        let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
-                        (b - a).cross(c - a).length() > 1e-10
-                    })
-                    .collect();
-                if triangles.is_empty() || points.iter().any(|p| !p.is_finite()) {
-                    return None;
-                }
-                // Ground as PhysX has it. Its internal edges fixed: a body
-                // sliding over the seam between two triangles is pushed by
-                // the surface the two make, not bumped up by the edge of the
-                // one ahead. And one-sided — each triangle solid on the side
-                // it faces — so a body swept between steps is stopped by
-                // the ground it would pass through, not by the next rise of
-                // the ground it slides over (it ends the step in front of
-                // that, and rapier's sweep lets it go on).
-                ColliderBuilder::trimesh_with_flags(
-                    points,
-                    triangles,
-                    TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::ORIENTED,
-                )
-                    .ok()?
-                    .build()
-            }
+            let shape = match made.get(&MeshShapeKey::of(mesh, scale, dynamic)) {
+                Some(made) => made.shape.clone(),
+                None => model_shape(mesh, scale, dynamic)?,
+            };
+            ColliderBuilder::new(shape).build()
         }
         ColliderShape::Box { half, center } => {
             let (h, c) = (half * scale, center * scale);
@@ -2623,6 +2840,37 @@ mod tests {
         assert!((angle.abs() - 40.0).abs() < 3.0, "at its limit: {angle}");
     }
 
+    /// A door hung with a kinematic lock set into its leaf — a padlock the
+    /// scene placed a few centimetres into it — stays where it was hung and
+    /// goes to sleep, whichever side the lock is on: pushed out of the lock
+    /// against its own stop, it would tremble there awake for good.
+    #[test]
+    fn a_door_hung_into_a_kinematic_lock_rests_where_it_was_hung() {
+        for side in [1.0f32, -1.0] {
+            let text = format!(
+                r#"(entities: [
+                (id: "0000000000000001", name: "door", model: "builtin:cube", body: Dynamic,
+                 transform: (position: (0.6, 1.0, 0.0)),
+                 collider: Box(half: (0.5, 1.0, 0.05)), physics: (mass: Some(20.0), gravity: 0.0),
+                 joint: Hinge(anchor: (-0.6, 0.0, 0.0), axis: (0.0, -1.0, 0.0), limits_deg: (0.0, 90.0))),
+                (id: "0000000000000002", name: "lock", model: "builtin:cube", body: Kinematic,
+                 transform: (position: (1.0, 1.0, {z})),
+                 collider: Box(half: (0.1, 0.1, 0.06))),
+            ])"#,
+                z = side * 0.08
+            );
+            let scene: Scene = ron::from_str(&text).unwrap();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            let mut physics = PhysicsWorld::new(1.0 / 30.0);
+            let door = the(&world, Body::Dynamic);
+            run_for(&mut physics, &mut world, 150);
+            let angle = physics.hinge_angle(&world, door).unwrap();
+            assert!(angle.abs() < 2.0, "lock on side {side}: where it was hung, not pushed to {angle}°");
+            assert_eq!(physics.asleep(&world, door), Some(true), "lock on side {side}: asleep");
+        }
+    }
+
     /// A crop tethered to its bed by a spring that breaks at 250 N: pulled
     /// gently it stays, pulled hard it comes loose.
     #[test]
@@ -2708,6 +2956,38 @@ mod tests {
         let found = physics.overlap_sphere(head_now, 0.1);
         assert!(!found.is_empty(), "the head's collider is where its parent took it: {found:?}");
         assert!(physics.overlap_sphere(Vec3::new(0.0, 0.0, 1.0), 0.1).is_empty(), "and not left where it started");
+    }
+
+    /// A dynamic body under a parent scaled unevenly and turned keeps its
+    /// own scale, as Unity keeps a Rigidbody's `localScale`: reading one
+    /// back out of its sheared world matrix grew it every step (Dacha's
+    /// metal sphere mouse's jaw, a hinged body under 275×325×282 bones,
+    /// was metres wide in seconds).
+    #[test]
+    fn a_body_under_an_unevenly_scaled_turned_parent_keeps_its_scale() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "bones", transform: (rotation_deg: (0.0, -90.0, 0.0), scale: (275.0, 325.0, 282.0)),
+             children: [(id: "0000000000000002", name: "jaw",
+               transform: (position: (0.0, 0.01, 0.0), rotation_deg: (0.0, -177.0, 136.0), scale: (0.009, 0.0077, 0.0089)),
+               body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)), physics: (gravity: 0.0))]),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let jaw = world.query::<(hecs::Entity, &Physics)>().iter().find(|(_, p)| p.0 == Body::Dynamic).map(|(e, _)| e).unwrap();
+        let was = world.get::<&Transform>(jaw).unwrap().scale;
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.run(&mut world);
+        physics.set_spin(&world, jaw, Vec3::new(0.0, 1.0, 2.0));
+        for _ in 0..90 {
+            physics.run(&mut world);
+            crate::world::apply_hierarchy(&mut world);
+        }
+        let now = world.get::<&Transform>(jaw).unwrap().scale;
+        assert!((now - was).abs().max_element() < 1e-6, "its own scale kept: {was} then {now}");
+        let wide = world.get::<&WorldTransform>(jaw).unwrap().0.to_scale_rotation_translation().0.max_element();
+        assert!(wide < 4.0, "and not grown in the world: {wide}");
     }
 
     /// A hinge held at an angle by its spring gets there, and against a
@@ -3034,7 +3314,7 @@ mod tests {
             ColliderShape::Ramp { half: Vec3::splat(0.5) },
             ColliderShape::Stairs { half: Vec3::splat(0.5), steps: 3 },
         ] {
-            let built = *build_collider(shape, placed, None, true).unwrap().position();
+            let built = *build_collider(shape, placed, None, true, &MeshShapes::default()).unwrap().position();
             let offset = shape_offset(shape, placed);
             assert!(
                 (built.translation - offset.translation).length() < 1e-6
@@ -3481,6 +3761,91 @@ mod tests {
             .unwrap()
     }
 
+    /// A zone meets what moves — a kinematic thing carried into it — and
+    /// not what stands still in it, unless its line says it notices that
+    /// too: Unity's trigger with no Rigidbody, and one on a kinematic one.
+    #[test]
+    fn a_zone_notices_what_stands_still_only_when_asked() {
+        let cube = ColliderShape::Box { half: Vec3::splat(0.25), center: Vec3::ZERO };
+        let inside = |notices_still: bool| {
+            let mut zone = entity("zone", 1.0, Body::Trigger, ColliderShape::Box { half: Vec3::splat(2.0), center: Vec3::ZERO });
+            if notices_still {
+                zone.set_part(&crate::scene::BodyProps { notices_still: true, ..Default::default() });
+            }
+            let mut scene = Scene {
+                entities: vec![zone, entity("crate", 1.0, Body::Static, cube), entity("lift", 1.5, Body::Kinematic, cube)],
+                ..Default::default()
+            };
+            scene.assign_ids();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            let mut physics = PhysicsWorld::new(1.0 / 30.0);
+            run_for(&mut physics, &mut world, 3);
+            let zone = the(&world, Body::Trigger);
+            let names: Vec<String> = world
+                .get::<&Contacts>(zone)
+                .unwrap()
+                .inside
+                .iter()
+                .map(|e| world.get::<&crate::world::LineName>(*e).map(|n| n.0.clone()).unwrap_or_default())
+                .collect();
+            names
+        };
+        assert_eq!(inside(false), ["lift"], "what moves, not what stands still");
+        let mut both = inside(true);
+        both.sort();
+        assert_eq!(both, ["crate", "lift"], "asked: what stands still too");
+    }
+
+    /// A body that asks for more solver passes than the world gets them,
+    /// and keeps what it asked when the world's number changes.
+    #[test]
+    fn a_body_keeps_the_solver_passes_it_asks_for() {
+        let mut door = entity("door", 1.0, Body::Dynamic, ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO });
+        door.set_part(&crate::scene::BodyProps { solver_iterations: 16, ..Default::default() });
+        let mut scene = Scene {
+            entities: vec![door, entity("crate", 3.0, Body::Dynamic, ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO })],
+            ..Default::default()
+        };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.set_solver_iterations(4);
+        physics.sync_from_world(&mut world);
+        let passes = |physics: &PhysicsWorld, name: &str| {
+            let e = scene.entities.iter().find(|d| d.name == name).map(|d| by_id(&world, d.id)).unwrap();
+            let body = &physics.bodies[world.get::<&BodyHandle>(e).unwrap().0];
+            physics.parameters.num_solver_iterations + body.additional_solver_iterations()
+        };
+        assert_eq!((passes(&physics, "door"), passes(&physics, "crate")), (16, 4));
+        physics.set_solver_iterations(8);
+        assert_eq!((passes(&physics, "door"), passes(&physics, "crate")), (16, 8));
+        physics.set_solver_iterations(20);
+        assert_eq!((passes(&physics, "door"), passes(&physics, "crate")), (20, 20));
+    }
+
+    /// A trigger part with no body above it is a zone of its own: what falls
+    /// into it falls through.
+    #[test]
+    fn a_trigger_part_on_its_own_stops_nothing() {
+        let mut scene = Scene {
+            entities: vec![
+                entity("floor", 0.0, Body::Static, ColliderShape::Box { half: Vec3::new(5.0, 0.1, 5.0), center: Vec3::ZERO }),
+                entity("zone", 2.0, Body::TriggerPart, ColliderShape::Box { half: Vec3::new(2.0, 0.5, 2.0), center: Vec3::ZERO }),
+                entity("ball", 4.0, Body::Dynamic, ColliderShape::Sphere { radius: 0.25, center: Vec3::ZERO }),
+            ],
+            ..Default::default()
+        };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        run_for(&mut physics, &mut world, 180);
+        let y = world.get::<&WorldTransform>(the(&world, Body::Dynamic)).unwrap().0.w_axis.y;
+        assert!((y - 0.35).abs() < 0.05, "through the zone to the floor: {y}");
+    }
+
     #[test]
     fn a_trigger_says_who_came_in_and_who_left_and_stops_nothing() {
         // A ball falls through a zone, onto the floor below it.
@@ -3557,6 +3922,81 @@ mod tests {
             "the zone is not a surface: {:?}",
             hit.point
         );
+    }
+
+    /// 30 steps a second drawn at 144 frames: a body gliding at a steady
+    /// speed is drawn a steady distance further on every frame — not still
+    /// for four frames and then a step's worth at once — and so is what
+    /// hangs from it, and a lift the game moves. Drawn `AtStep`, it
+    /// stair-steps, as Unity's `None` does. The simulation is the same
+    /// either way.
+    #[test]
+    fn a_moving_body_is_drawn_smoothly_between_steps_at_any_frame_rate() {
+        use crate::scene::{BodyProps, Drawn};
+        use scrap_core::time::{Time, TimeSettings};
+        const SPEED: f32 = 3.0;
+        const FRAME: f32 = 1.0 / 144.0;
+        let run = |drawn: Drawn| {
+            let floating = BodyProps { gravity: 0.0, drawn, ..BodyProps::default() };
+            let mut glider = entity("glider", 5.0, Body::Dynamic, ColliderShape::Sphere { radius: 0.5, center: Vec3::ZERO }).with(floating);
+            // A lamp riding on it.
+            glider.children.push(EntityDesc { name: "lamp".into(), transform: Transform { position: Vec3::Y, ..Default::default() }, ..Default::default() });
+            let lift = entity("lift", -5.0, Body::Kinematic, ColliderShape::Box { half: Vec3::splat(0.5), center: Vec3::ZERO })
+                .with(BodyProps { drawn, ..BodyProps::default() });
+            let scene = Scene { entities: vec![glider, lift], ..Default::default() };
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            crate::world::apply_hierarchy(&mut world);
+            let named = |world: &World, name: &str| {
+                world.query::<(hecs::Entity, &crate::world::LineName)>().iter().find(|(_, n)| n.0 == name).map(|(e, _)| e).unwrap()
+            };
+            let (glider, lamp, lift) = (named(&world, "glider"), named(&world, "lamp"), named(&world, "lift"));
+            let mut time = Time::new(TimeSettings { fixed_delta: 1.0 / 30.0, ..Default::default() });
+            let mut physics = PhysicsWorld::new(1.0 / 30.0);
+            physics.sync_from_world(&mut world);
+            physics.set_velocity(&world, glider, Vec3::new(SPEED, 0.0, 0.0));
+            let mut drawn_x = Vec::new();
+            let mut stepped_x = Vec::new();
+            for _ in 0..288 {
+                time.advance(FRAME);
+                while time.next_step().is_some() {
+                    // The game moves the lift up at the same speed.
+                    world.get::<&mut Transform>(lift).unwrap().position.y += SPEED / 30.0;
+                    crate::world::apply_hierarchy(&mut world);
+                    physics.run(&mut world);
+                    crate::world::apply_hierarchy(&mut world);
+                }
+                crate::world::interpolate(&mut world, time.interpolation());
+                let at = |e| crate::world::drawn(&world, e).unwrap().w_axis;
+                drawn_x.push((at(glider).x, at(lamp).x, at(lift).y));
+                stepped_x.push(world.get::<&WorldTransform>(glider).unwrap().0.w_axis.x);
+            }
+            (drawn_x, stepped_x)
+        };
+        // From the third step on: a lift the game has only just started
+        // moving is drawn where its first step put it.
+        let deltas = |xs: &[f32]| xs.windows(2).skip(12).map(|w| w[1] - w[0]).collect::<Vec<f32>>();
+        let each = SPEED * FRAME;
+        let (between, simulated) = run(Drawn::Between);
+        for (what, xs) in [
+            ("the body", between.iter().map(|d| d.0).collect::<Vec<_>>()),
+            ("the lamp on it", between.iter().map(|d| d.1).collect()),
+            ("the lift", between.iter().map(|d| d.2).collect()),
+        ] {
+            let d = deltas(&xs);
+            let (lo, hi) = d.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+            assert!(
+                (lo - each).abs() < each * 0.02 && (hi - each).abs() < each * 0.02,
+                "{what} moves {each} a frame, drawn between steps: from {lo} to {hi}"
+            );
+        }
+        // Where it is drawn is only drawing: the steps are the same.
+        let (at_step, simulated_at_step) = run(Drawn::AtStep);
+        assert_eq!(simulated, simulated_at_step);
+        let d = deltas(&at_step.iter().map(|d| d.0).collect::<Vec<_>>());
+        let still = d.iter().filter(|x| x.abs() < 1e-6).count();
+        let jumps = d.iter().filter(|x| (**x - SPEED / 30.0).abs() < 1e-3).count();
+        assert!(still > d.len() / 2 && jumps + still == d.len(), "drawn at its steps it stands and jumps: {d:?}");
     }
 
     #[test]
@@ -4107,6 +4547,55 @@ mod tests {
         let above = (at - Vec3::new(at.x, slope(at.x, at.z), at.z)).dot(normal);
         assert!((above - 0.06).abs() < 0.02, "lying on the ground: {above} above it, at {at}");
         assert!(up.angle_between(normal).to_degrees() < 2.0, "flat on the slope: up {up}");
+    }
+
+    /// Two lengths of the same mesh ground are one shape, built once; a
+    /// third at another scale is its own; and once nothing has the mesh,
+    /// its shape is let go.
+    #[test]
+    fn bodies_of_one_mesh_at_one_scale_share_its_shape() {
+        let mesh = ground_mesh(4, |_, _| 0.0);
+        let mut lengths: Vec<EntityDesc> = (0..3)
+            .map(|i| {
+                let mut e = entity(&format!("rail {i}"), 0.0, Body::Static, ColliderShape::Model);
+                e.transform.position = Vec3::new(10.0 * i as f32, 0.0, 0.0);
+                e
+            })
+            .collect();
+        lengths[2].transform.scale = Vec3::splat(2.0);
+        let mut scene = Scene { entities: lengths, ..Default::default() };
+        scene.assign_ids();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let rails: Vec<hecs::Entity> = scene.entities.iter().map(|e| by_id(&world, e.id)).collect();
+        for &rail in &rails {
+            let _ = world.insert_one(rail, mesh.clone());
+        }
+        drop(mesh);
+        let mut physics = PhysicsWorld::new(1.0 / 30.0);
+        physics.sync_from_world(&mut world);
+        let shape = |e: hecs::Entity| {
+            let body = world.get::<&BodyHandle>(e).unwrap().0;
+            let collider = physics.bodies[body].colliders()[0];
+            physics.colliders[collider].shared_shape().clone()
+        };
+        let (a, b, c) = (shape(rails[0]), shape(rails[1]), shape(rails[2]));
+        assert!(std::sync::Arc::ptr_eq(&a.0, &b.0), "one scale, one shape");
+        assert!(!std::sync::Arc::ptr_eq(&a.0, &c.0), "another scale, another shape");
+        assert_eq!(physics.mesh_shapes.len(), 2);
+        for &rail in &rails {
+            let _ = world.despawn(rail);
+        }
+        physics.sync_from_world(&mut world);
+        assert_eq!(physics.mesh_shapes.len(), 2, "kept until something new is built");
+        let other = ground_mesh(2, |_, _| 0.0);
+        let mut scene = Scene { entities: vec![entity("ground", 0.0, Body::Static, ColliderShape::Model)], ..Default::default() };
+        scene.assign_ids();
+        spawn(&scene, &mut world);
+        let ground = by_id(&world, scene.entities[0].id);
+        let _ = world.insert_one(ground, other);
+        physics.sync_from_world(&mut world);
+        assert_eq!(physics.mesh_shapes.len(), 1, "the rails' shapes let go, the new ground's kept");
     }
 
     /// Ground mirrored by its scale still faces up: a ball lands on it.

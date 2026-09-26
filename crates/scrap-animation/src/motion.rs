@@ -291,7 +291,7 @@ pub fn attach(
                 Some(skin) => {
                     let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
                     for clip in clips_of(graph) {
-                        if animator.clips.iter().any(|c| c.name == clip) {
+                        if animator.clip_named(&clip).is_some() {
                             continue;
                         }
                         if let Some(from) = skins(&crate::AssetLink::named(clip.clone())) {

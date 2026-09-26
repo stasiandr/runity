@@ -402,7 +402,7 @@ fn lamp_flares(uv: vec2<f32>) -> vec3<f32> {
 
 // The ALEXA LogC curve URP grades contrast in (Color.hlsl, precise).
 fn linear_to_logc(x: vec3<f32>) -> vec3<f32> {
-    let curve = 0.244161 * log10(max(5.555556 * x + 0.047996, vec3<f32>(1e-10))) + 0.386036;
+    let curve = 0.244161 * log_10(max(5.555556 * x + 0.047996, vec3<f32>(1e-10))) + 0.386036;
     return select(5.301883 * x + 0.092819, curve, x > vec3<f32>(0.011361));
 }
 
@@ -411,7 +411,10 @@ fn logc_to_linear(x: vec3<f32>) -> vec3<f32> {
     return select((x - 0.092819) / 5.301883, curve, x > vec3<f32>(5.301883 * 0.011361 + 0.092819));
 }
 
-fn log10(x: vec3<f32>) -> vec3<f32> {
+// Not `log10`: that is Metal's own, and a translation through
+// SPIRV-Cross that keeps the name (the Android emulator's MoltenVK) makes
+// the call ambiguous.
+fn log_10(x: vec3<f32>) -> vec3<f32> {
     return log2(x) * 0.30102999566;
 }
 

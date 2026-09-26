@@ -31,6 +31,10 @@ pub fn is_false(v: &bool) -> bool {
     !*v
 }
 
+pub fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 /// An optional field written as its value, not as `Some(value)`: absent
 /// means `None`, present means `Some`. RON would otherwise want `Some(…)`
 /// spelled out around every override, which is noise to read and a trap to

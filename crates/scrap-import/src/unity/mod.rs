@@ -108,6 +108,10 @@ pub struct Unity {
     /// `assets/models/<model>@<object>.glb`, in that object's own frame —
     /// what a MeshFilter that names one mesh of a model draws.
     pub pieces: HashMap<String, Vec<String>>,
+    /// A mesh of a model (its GUID and fileID) → the piece it is, from the
+    /// prefabs that draw it on an object named as one of the model's
+    /// pieces — and only where they all agree.
+    pub mesh_pieces: HashMap<(String, i64), String>,
     /// A material's name → what its shader written again says its eight
     /// numbers are (`// scrap:params`): where a particle's custom data goes.
     pub declared_params: HashMap<String, Vec<String>>,
@@ -219,6 +223,7 @@ impl Unity {
             names,
             layers,
             pieces: HashMap::new(),
+            mesh_pieces: HashMap::new(),
             declared_params: HashMap::new(),
         })
     }
@@ -317,6 +322,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         }
     }
     unity.pieces = pieces(&project.assets().join("models"));
+    unity.mesh_pieces = mesh_pieces(&unity);
     keep_origins(&project.assets().join("models"))?;
 
     if let Some((layers, _)) = unity_layers(&unity.root) {
@@ -370,6 +376,21 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
             );
             settings.srgb = false;
             let _ = settings.save(crate::sidecar_for(&to));
+        }
+    }
+
+    // Unity's own textures the materials name, made again (there is no
+    // file of theirs to copy).
+    for file_id in material::builtin_textures_used(&unity) {
+        let Some((name, picture)) = material::builtin_texture(file_id) else {
+            continue;
+        };
+        std::fs::create_dir_all(&textures)?;
+        let to = textures.join(format!("{name}.png"));
+        writable(&to);
+        match picture.save(&to) {
+            Ok(()) => report.textures += 1,
+            Err(e) => report.errors.push(format!("{}: {e}", to.display())),
         }
     }
 
@@ -623,6 +644,51 @@ fn pieces(dir: &Path) -> HashMap<String, Vec<String>> {
         list.sort();
     }
     out
+}
+
+/// Which piece each mesh of a model is, by the prefabs that draw it on an
+/// object named as a piece of that model (Unity's "(1)" copies aside). A
+/// mesh two prefabs name differently is left out.
+fn mesh_pieces(unity: &Unity) -> HashMap<(String, i64), String> {
+    let mut seen: HashMap<(String, i64), Option<String>> = HashMap::new();
+    for (_, path) in unity.of_kind("prefab") {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        if !text.contains("m_Mesh: {fileID") {
+            continue;
+        }
+        let docs = yaml::documents(&text);
+        let by_id = yaml::by_id(&docs);
+        for doc in &docs {
+            if !matches!(doc.kind.as_str(), "MeshFilter" | "SkinnedMeshRenderer") {
+                continue;
+            }
+            let Some(mesh) = doc.body.reference("m_Mesh") else { continue };
+            let Some(guid) = mesh.guid.clone() else { continue };
+            let Some((kind, model)) = unity.named(&guid) else { continue };
+            if kind != "model" {
+                continue;
+            }
+            let Some(pieces) = unity.pieces.get(model) else { continue };
+            let Some(object) = doc
+                .body
+                .reference("m_GameObject")
+                .and_then(|g| by_id.get(&g.file_id))
+                .and_then(|g| g.body.str("m_Name"))
+            else {
+                continue;
+            };
+            let bare = object.trim_end_matches(|c: char| c == ')' || c.is_ascii_digit());
+            let bare = bare.strip_suffix(" (").unwrap_or(object).trim();
+            let Some(piece) = [object, bare].into_iter().map(piece_name).find(|p| pieces.contains(p)) else {
+                continue;
+            };
+            let entry = seen.entry((guid, mesh.file_id)).or_insert_with(|| Some(piece.clone()));
+            if entry.as_deref() != Some(piece.as_str()) {
+                *entry = None;
+            }
+        }
+    }
+    seen.into_iter().filter_map(|(k, v)| Some((k, v?))).collect()
 }
 
 /// A piece's file name for a Blender object's name: what a file name

@@ -781,4 +781,35 @@ mod tests {
         assert_eq!(drawn(&world), 3);
         assert!(is_active(&world, shelf));
     }
+
+    #[test]
+    fn a_spawned_things_switched_off_part_is_not_drawn() {
+        // What the game spawns has no scene line: its parts that are off
+        // (a soil's mound before it is dug) are left out all the same.
+        let mut world = World::new();
+        let placed = |world: &mut World, parent: Option<hecs::Entity>| {
+            let e = world.spawn((
+                crate::Transform::default(),
+                WorldTransform(glam::Mat4::IDENTITY),
+                Model(MeshHandle::TEST),
+                crate::world::Surface(crate::Material::default()),
+            ));
+            if let Some(p) = parent {
+                let _ = world.insert_one(e, crate::world::Parent(p));
+            }
+            e
+        };
+        let soil = placed(&mut world, None);
+        let mound = placed(&mut world, Some(soil));
+        let _ = placed(&mut world, Some(mound));
+        set_active(&mut world, mound, false);
+        let drawn = |world: &World| {
+            build_frame(world, Camera::default(), Lighting::default(), FogSettings::default())
+                .draws
+                .len()
+        };
+        assert_eq!(drawn(&world), 1, "the soil alone, not its mound nor what is on it");
+        set_active(&mut world, mound, true);
+        assert_eq!(drawn(&world), 3);
+    }
 }
