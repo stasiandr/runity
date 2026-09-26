@@ -7,10 +7,12 @@
 
 pub mod effect;
 pub mod expr;
+pub mod fullscreen;
 pub mod subgraph;
 pub mod surface;
 pub mod text;
 
 pub use effect::{effect_name, EffectGraph};
+pub use fullscreen::{fullscreen_name, FullscreenGraph};
 pub use expr::{Input, Node, Ty};
 pub use surface::{shader_name, Kind, Param, ShaderGraph, SurfaceOut, VertexOut};

@@ -28,6 +28,7 @@ pub mod footprints;
 pub mod gizmo;
 pub mod graph;
 pub mod lens;
+pub mod fullscreen;
 pub mod lights;
 pub mod lod;
 mod lean;

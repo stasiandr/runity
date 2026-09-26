@@ -143,6 +143,7 @@ fn a_source_model_becomes_a_frame() {
         smoke: Vec::new(),
         distance_field: None,
         gpu_particles: Vec::new(),
+        fullscreen: None,
         plumes: Vec::new(),
         terrain: None,
         draws: vec![

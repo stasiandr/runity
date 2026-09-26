@@ -256,6 +256,12 @@ pub struct SurfaceOut {
     /// Cut away where the alpha is below this.
     #[serde(default)]
     pub clip: Option<Input>,
+    /// Unity's Specular workflow: the colour of the light it reflects
+    /// straight on, `albedo` then the diffuse colour alone — turned into
+    /// the metallic and base colour the renderer shades with, as glTF turns
+    /// specular-glossiness into metal-roughness. Not with `metallic`.
+    #[serde(default)]
+    pub specular: Option<Input>,
 }
 
 impl SurfaceOut {
@@ -269,6 +275,7 @@ impl SurfaceOut {
             ("normal", &self.normal, Ty::F3),
             ("emission", &self.emission, Ty::F3),
             ("clip", &self.clip, Ty::F1),
+            ("specular", &self.specular, Ty::F3),
         ] {
             if let Some(input) = input {
                 out.push((name, input, ty));
@@ -329,6 +336,18 @@ struct Material<'a> {
     graph: &'a ShaderGraph,
 }
 
+impl Material<'_> {
+    /// Which of the material's four textures `name` is.
+    fn slot(&self, name: &str) -> Result<usize, String> {
+        self.graph.textures.iter().position(|t| t == name).ok_or_else(|| {
+            let hint = scrap_core::spelling::closest(name, self.graph.textures.iter().map(String::as_str))
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            format!("the graph declares no texture `{name}` in `textures`{hint}")
+        })
+    }
+}
+
 impl Context for Material<'_> {
     fn builtin(&self, name: &str) -> Option<Value> {
         if let Some((_, code, ty)) = BUILTINS.iter().find(|(n, _, _)| *n == name) {
@@ -344,20 +363,8 @@ impl Context for Material<'_> {
     }
 
     fn texture(&self, name: &str, uv: &str) -> Result<Value, String> {
-        match self.graph.textures.iter().position(|t| t == name) {
-            Some(slot) => Ok(Value::new(format!("texture_at(in, {slot}u, {uv})"), Ty::F4)),
-            None => {
-                let hint = scrap_core::spelling::closest(
-                    name,
-                    self.graph.textures.iter().map(String::as_str),
-                )
-                .map(|n| format!(" — did you mean `{n}`?"))
-                .unwrap_or_default();
-                Err(format!(
-                    "the graph declares no texture `{name}` in `textures`{hint}"
-                ))
-            }
-        }
+        let slot = self.slot(name)?;
+        Ok(Value::new(format!("texture_at(in, {slot}u, {uv})"), Ty::F4))
     }
 
     fn derivatives(&self) -> bool {
@@ -384,6 +391,24 @@ impl Context for Material<'_> {
 
     fn scene_color(&self, at: &str) -> Result<Value, String> {
         Ok(Value::new(format!("surface_scene_color({at})"), Ty::F3))
+    }
+
+    fn texture_with(&self, name: &str, uv: &str, lod: Option<&str>) -> Result<Value, String> {
+        match lod {
+            None => self.texture(name, uv),
+            Some(lod) => {
+                let slot = self.slot(name)?;
+                Ok(Value::new(format!("texture_at_level(in, {slot}u, {uv}, {lod})"), Ty::F4))
+            }
+        }
+    }
+
+    fn texture_size(&self, name: &str) -> Result<String, String> {
+        Ok(format!("texture_size(in, {}u)", self.slot(name)?))
+    }
+
+    fn environment(&self, direction: &str, roughness: &str) -> Result<Value, String> {
+        Ok(Value::new(format!("surface_environment(in, {direction}, {roughness})"), Ty::F3))
     }
 
     fn fresnel(&self, power: &str) -> Result<Value, String> {
@@ -419,6 +444,7 @@ fn expanded(
         &mut s.normal,
         &mut s.emission,
         &mut s.clip,
+        &mut s.specular,
         &mut v.position,
         &mut v.normal,
     ]
@@ -482,6 +508,9 @@ pub fn to_wgsl_with(
         }
     }
     out.extend(helpers);
+    if graph.surface.specular.is_some() {
+        out.push_str(SPECULAR);
+    }
     out.push_str("fn surface(in: SurfaceIn, out: Surface) -> Surface {\n");
     out.push_str(&compiled.body);
     out.push_str("    var o = out;\n");
@@ -490,6 +519,10 @@ pub fn to_wgsl_with(
         if *name == "clip" {
             out.push_str(&format!(
                 "    if (o.alpha < {code}) {{\n        discard;\n    }}\n"
+            ));
+        } else if *name == "specular" {
+            out.push_str(&format!(
+                "    let sg_metal = sg_specular_workflow(o.albedo, {code});\n    o.albedo = sg_metal.rgb;\n    o.metallic = sg_metal.a;\n"
             ));
         } else {
             out.push_str(&format!("    o.{name} = {code};\n"));
@@ -635,8 +668,35 @@ pub fn problems_with(graph: &ShaderGraph, library: &dyn crate::subgraph::Library
     out
 }
 
+/// Diffuse and specular colours as a base colour and a metallic (in `a`),
+/// by the glTF sample's conversion: the metallic that gives the specular's
+/// brightness over the dielectric's 0.04, the colour blended from what
+/// each side says by it.
+const SPECULAR: &str = "fn sg_brightness(c: vec3<f32>) -> f32 {
+    return sqrt(dot(c * c, vec3<f32>(0.299, 0.587, 0.114)));
+}
+fn sg_specular_workflow(diffuse: vec3<f32>, specular: vec3<f32>) -> vec4<f32> {
+    let one_minus = 1.0 - max(specular.r, max(specular.g, specular.b));
+    let d = sg_brightness(diffuse);
+    let s = sg_brightness(specular);
+    var metallic = 0.0;
+    if s >= 0.04 {
+        let b = d * one_minus / 0.96 + s - 0.08;
+        let c = 0.04 - s;
+        metallic = clamp((-b + sqrt(max(b * b - 0.16 * c, 0.0))) / 0.08, 0.0, 1.0);
+    }
+    let from_diffuse = diffuse * one_minus / (0.96 * max(1.0 - metallic, 1e-4));
+    let from_specular = (specular - vec3<f32>(0.04 * (1.0 - metallic))) / max(metallic, 1e-4);
+    let base = clamp(mix(from_diffuse, from_specular, metallic * metallic), vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(base, metallic);
+}
+";
+
 /// What the file says that no graph can be, before its nodes are looked at.
 fn shape(graph: &ShaderGraph) -> Result<(), String> {
+    if graph.surface.specular.is_some() && graph.surface.metallic.is_some() {
+        return Err("surface: `specular` and `metallic` are two ways of saying one thing — keep one".into());
+    }
     let numbers: usize = graph.params.iter().map(|p| p.kind().size()).sum();
     if numbers > PARAMS {
         return Err(format!(
@@ -744,6 +804,15 @@ mod tests {
             w.contains("mix(vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0)"),
             "{w}"
         );
+    }
+
+    #[test]
+    fn the_specular_workflow_is_turned_into_metallic_and_is_not_said_twice() {
+        let g = parse(r#"(surface: (albedo: (0.5, 0.1, 0.1), specular: (0.9, 0.9, 0.9)))"#).unwrap();
+        let wgsl = to_wgsl(&g, "shaders/spec.graph.ron").unwrap();
+        assert!(wgsl.contains("fn sg_specular_workflow") && wgsl.contains("o.metallic = sg_metal.a;"), "{wgsl}");
+        let both = parse(r#"(surface: (metallic: 1.0, specular: (0.9, 0.9, 0.9)))"#).unwrap();
+        assert!(to_wgsl(&both, "x").unwrap_err().contains("two ways of saying one thing"));
     }
 
     #[test]

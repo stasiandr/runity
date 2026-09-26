@@ -8,6 +8,6 @@
     depends: ["geometry", "gpu", "overlay"],
     runtime: true,
     editor: false,
-    parts: ["ambient_occlusion", "bends_grass", "camera", "decal", "fog", "footprints", "irradiance_volume", "light", "material", "particles", "post", "post_volume", "ray_tracing", "reflection_probe", "render_texture", "screen_space_reflections", "shadows", "sky", "sun", "view", "virtual_shadows", "volumetric_fog", "weather"],
+    parts: ["ambient_occlusion", "bends_grass", "camera", "decal", "fog", "footprints", "fullscreen", "irradiance_volume", "light", "material", "particles", "post", "post_volume", "ray_tracing", "reflection_probe", "render_texture", "screen_space_reflections", "shadows", "sky", "sun", "view", "virtual_shadows", "volumetric_fog", "weather"],
     assets: [],
 )

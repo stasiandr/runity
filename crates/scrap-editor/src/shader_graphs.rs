@@ -1,5 +1,6 @@
 //! The project's shader graphs — `shaders/<name>.graph.ron` (a material's),
-//! `<name>.vfx.ron` (a particle effect's) and `<name>.subgraph.ron` — as
+//! `<name>.vfx.ron` (a particle effect's), `<name>.post.ron` (over the
+//! whole picture) and `<name>.subgraph.ron` — as
 //! the editor and an agent both handle them (DNA, postulate 5: what the
 //! editor can do, the agent can): listed, read, checked in the compiler's
 //! words, told in words, and changed in the file where the change is and
@@ -9,13 +10,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use scrap::shader_graph::{effect::EffectGraph, subgraph::SubGraph, Input, Node, ShaderGraph};
+use scrap::shader_graph::{effect::EffectGraph, subgraph::SubGraph, FullscreenGraph, Input, Node, ShaderGraph};
 
 /// What a graph file is, by its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Material,
     Effect,
+    Fullscreen,
     Subgraph,
 }
 
@@ -26,6 +28,8 @@ impl Kind {
             Some(Kind::Subgraph)
         } else if f.ends_with(".vfx.ron") {
             Some(Kind::Effect)
+        } else if f.ends_with(".post.ron") {
+            Some(Kind::Fullscreen)
         } else if f.ends_with(".graph.ron") {
             Some(Kind::Material)
         } else {
@@ -37,6 +41,7 @@ impl Kind {
         match self {
             Kind::Material => "material",
             Kind::Effect => "effect",
+            Kind::Fullscreen => "fullscreen",
             Kind::Subgraph => "subgraph",
         }
     }
@@ -47,6 +52,7 @@ impl Kind {
 pub enum Doc {
     Material(ShaderGraph),
     Effect(EffectGraph),
+    Fullscreen(FullscreenGraph),
     Subgraph(SubGraph),
 }
 
@@ -55,6 +61,7 @@ impl Doc {
         match kind {
             Kind::Subgraph => scrap::shader_graph::subgraph::parse(text).map(Doc::Subgraph),
             Kind::Effect => scrap::shader_graph::effect::parse(text).map(Doc::Effect),
+            Kind::Fullscreen => scrap::shader_graph::fullscreen::parse(text).map(Doc::Fullscreen),
             Kind::Material => scrap::shader_graph::surface::parse(text).map(Doc::Material),
         }
     }
@@ -70,6 +77,7 @@ impl Doc {
         match self {
             Doc::Material(g) => &g.nodes,
             Doc::Effect(g) => &g.nodes,
+            Doc::Fullscreen(g) => &g.nodes,
             Doc::Subgraph(g) => &g.nodes,
         }
     }
@@ -94,6 +102,7 @@ impl Doc {
                         ("normal", &s.normal),
                         ("emission", &s.emission),
                         ("clip", &s.clip),
+                        ("specular", &s.specular),
                     ]),
                 )];
                 let v = some(vec![
@@ -112,6 +121,7 @@ impl Doc {
                         ("position", &g.spawn.position),
                         ("velocity", &g.spawn.velocity),
                         ("life", &g.spawn.life),
+                        ("custom", &g.spawn.custom),
                     ]),
                 ),
                 (
@@ -119,6 +129,7 @@ impl Doc {
                     some(vec![
                         ("velocity", &g.update.velocity),
                         ("position", &g.update.position),
+                        ("custom", &g.update.custom),
                     ]),
                 ),
                 (
@@ -127,9 +138,11 @@ impl Doc {
                         ("color", &g.output.color),
                         ("alpha", &g.output.alpha),
                         ("size", &g.output.size),
+                        ("frame", &g.output.frame),
                     ]),
                 ),
             ],
+            Doc::Fullscreen(g) => vec![("output", some(vec![("color", &g.output.color)]))],
             Doc::Subgraph(g) => vec![(
                 "outputs",
                 g.outputs.iter().map(|(k, v)| (k.clone(), v)).collect(),
@@ -272,6 +285,11 @@ pub fn check(path: &Path, doc: &Doc) -> Checked {
             built: scrap::render::effect_source(path)
                 .and_then(|s| scrap::particles_gpu::check_effect(&s)),
         },
+        Doc::Fullscreen(g) => Checked {
+            problems: scrap::shader_graph::fullscreen::problems_with(g, &library),
+            built: scrap::fullscreen::fullscreen_source(path)
+                .and_then(|s| scrap::fullscreen::check_fullscreen(&s)),
+        },
         // A subgraph builds as the graphs that call it do: those, checked.
         Doc::Subgraph(_) => {
             let stem = path
@@ -375,11 +393,13 @@ pub fn fields_of(doc: &Doc, to: &str) -> Vec<&'static str> {
             "normal",
             "emission",
             "clip",
+            "specular",
         ],
         (Doc::Material(_), "vertex") => vec!["position", "normal"],
-        (Doc::Effect(_), "spawn") => vec!["position", "velocity", "life"],
-        (Doc::Effect(_), "update") => vec!["velocity", "position"],
-        (Doc::Effect(_), "output") => vec!["color", "alpha", "size"],
+        (Doc::Effect(_), "spawn") => vec!["position", "velocity", "life", "custom"],
+        (Doc::Effect(_), "update") => vec!["velocity", "position", "custom"],
+        (Doc::Effect(_), "output") => vec!["color", "alpha", "size", "frame"],
+        (Doc::Fullscreen(_), "output") => vec!["color"],
         _ => Vec::new(),
     }
 }
@@ -420,6 +440,7 @@ pub fn apply(path: &Path, edit: &Edit) -> Result<Doc, String> {
             let parts: &[&str] = match kind {
                 Kind::Material => &["surface", "vertex"],
                 Kind::Effect => &["spawn", "update", "output"],
+                Kind::Fullscreen => &["output"],
                 Kind::Subgraph => &[],
             };
             if !parts.contains(&part.as_str()) {
@@ -467,6 +488,11 @@ pub fn describe(path: &Path, doc: &Doc) -> String {
         Doc::Effect(g) => {
             if !g.params.is_empty() {
                 out.push_str(&format!("params (the emitter's `params`): {}\n", params(&g.params)));
+            }
+        }
+        Doc::Fullscreen(g) => {
+            if !g.params.is_empty() {
+                out.push_str(&format!("params (the scene's `fullscreen: (params: …)`): {}\n", params(&g.params)));
             }
         }
         Doc::Subgraph(g) => {

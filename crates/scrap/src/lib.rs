@@ -120,6 +120,7 @@ pub use scrap_render::lights;
 pub use scrap_render::lod;
 pub use scrap_render::occlusion;
 pub use scrap_render::particles_gpu;
+pub use scrap_render::fullscreen;
 pub use scrap_render::upscale;
 pub use scrap_render::vsm;
 pub mod live;

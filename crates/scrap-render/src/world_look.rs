@@ -517,6 +517,7 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(ssr) = scene.screen_space_reflections() {
         frame.screen_space_reflections = ssr;
     }
+    frame.fullscreen = scene.part::<crate::fullscreen::FullscreenPass>();
 }
 
 /// The camera a scene's view describes.
@@ -949,6 +950,8 @@ fn build_frame_seen(
         smoke,
         distance_field: world.query::<(&DistanceFieldLook, Option<&SceneId>)>().iter().find(|(_, line)| keep(line.map(|l| l.0))).map(|(f, _)| f.0.clone()),
         gpu_particles,
+        // The scene's, set with the rest of its look (`scene_look`).
+        fullscreen: None,
         plumes,
         terrain,
         volumetric_fog: Default::default(),

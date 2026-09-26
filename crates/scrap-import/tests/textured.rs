@@ -75,6 +75,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
         smoke: Vec::new(),
         distance_field: None,
         gpu_particles: Vec::new(),
+        fullscreen: None,
         plumes: Vec::new(),
         terrain: None,
         draws: vec![Draw {
