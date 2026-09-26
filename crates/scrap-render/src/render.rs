@@ -8794,6 +8794,13 @@ fn texture_format(coding: crate::asset::TextureCoding, srgb: bool) -> wgpu::Text
 
 /// A level of `coding`'s blocks unpacked to RGBA8, for a device that does
 /// not sample them: black where they do not decode.
+/// A texture's picture as RGBA8, top row first, whatever its blocks: what
+/// something outside the renderer wants of it (a picture on the overlay).
+pub fn texture_rgba(texture: &ArchivedTextureAsset) -> (u32, u32, Vec<u8>) {
+    let (width, height) = (texture.width.to_native(), texture.height.to_native());
+    (width, height, unpack_blocks(texture.coding.native(), width, height, texture.pixels.as_slice()))
+}
+
 fn unpack_blocks(coding: crate::asset::TextureCoding, width: u32, height: u32, blocks: &[u8]) -> Vec<u8> {
     use crate::asset::TextureCoding;
     let (w, h) = (width.max(1) as usize, height.max(1) as usize);

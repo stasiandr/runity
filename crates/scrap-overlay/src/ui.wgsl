@@ -1,5 +1,6 @@
 // Filled rectangles in pixel coordinates. Four vertices generated from the
 // vertex index, so a quad costs one instance and no vertex buffer of its own.
+// Each is its colour times its picture (a white pixel for a plain one).
 
 struct Screen {
     // width, height, and two words of padding.
@@ -7,12 +8,16 @@ struct Screen {
 };
 
 @group(0) @binding(0) var<uniform> screen: Screen;
+@group(1) @binding(0) var picture: texture_2d<f32>;
+@group(1) @binding(1) var picture_sampler: sampler;
 
 struct Instance {
     @location(0) rect: vec4<f32>,
     @location(1) color: vec4<f32>,
     // The corner radius in pixels, and three words of padding.
     @location(2) shape: vec4<f32>,
+    // The part of its picture: left, top, right, bottom, 0 to 1.
+    @location(3) uv: vec4<f32>,
 };
 
 struct Output {
@@ -22,6 +27,7 @@ struct Output {
     @location(1) local: vec2<f32>,
     @location(2) half: vec2<f32>,
     @location(3) radius: f32,
+    @location(4) uv: vec2<f32>,
 };
 
 @vertex
@@ -42,17 +48,19 @@ fn vs(@builtin(vertex_index) index: u32, instance: Instance) -> Output {
     out.half = instance.rect.zw * 0.5;
     out.local = (corner - vec2<f32>(0.5)) * instance.rect.zw;
     out.radius = min(instance.shape.x, min(out.half.x, out.half.y));
+    out.uv = mix(instance.uv.xy, instance.uv.zw, corner);
     return out;
 }
 
 @fragment
 fn fs(in: Output) -> @location(0) vec4<f32> {
+    let color = in.color * textureSample(picture, picture_sampler, in.uv);
     if in.radius <= 0.0 {
-        return in.color;
+        return color;
     }
     // A rounded box's distance, and a pixel of softness at its edge.
     let q = abs(in.local) - in.half + vec2<f32>(in.radius);
     let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - in.radius;
     let a = clamp(0.5 - d, 0.0, 1.0);
-    return vec4<f32>(in.color.rgb, in.color.a * a);
+    return vec4<f32>(color.rgb, color.a * a);
 }

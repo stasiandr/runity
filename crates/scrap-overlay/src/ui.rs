@@ -7,8 +7,9 @@
 //!
 //! What it deliberately is not is a widget system. Layout, focus, hit
 //! testing and state are the parts that tie a renderer to one way of
-//! building interfaces, and none of them are here. A rectangle and a run of
-//! text are the whole vocabulary, and anything above that feeds this.
+//! building interfaces, and none of them are here. A rectangle (filled, or
+//! with part of a picture) and a run of text are the whole vocabulary, and
+//! anything above that feeds this.
 //!
 //! Coordinates are pixels from the top left, which is where a mouse position
 //! already is. A layer that used a different origin from the input it
@@ -27,7 +28,16 @@ pub struct Quad {
     pub color: Vec4,
     /// Pixels its corners are rounded by; square at 0.
     pub radius: f32,
+    /// A picture it is filled with, times `color`: which, and the part of
+    /// it — left, top, right, bottom, 0 to 1 from its top left — a sprite
+    /// of a sheet. `None` fills it with `color` alone.
+    pub image: Option<(UiImage, [f32; 4])>,
 }
+
+/// A picture the overlay renderer holds
+/// ([`crate::ui_render::UiRenderer::add_image`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UiImage(pub u32);
 
 impl Quad {
     pub fn new(x: f32, y: f32, width: f32, height: f32, color: Vec4) -> Self {
@@ -38,7 +48,15 @@ impl Quad {
             height,
             color,
             radius: 0.0,
+            image: None,
         }
+    }
+
+    /// The same, filled with part of a picture (`uv`: left, top, right,
+    /// bottom of it, 0 to 1) times its colour.
+    pub fn image(mut self, image: UiImage, uv: [f32; 4]) -> Self {
+        self.image = Some((image, uv));
+        self
     }
 
     /// The same, its corners rounded by `radius` pixels.
@@ -154,11 +172,18 @@ impl Ui {
             (quad.y + quad.height).min(bottom),
         );
         if x1 > x0 && y1 > y0 {
+            // A picture cut with it: the part of it still showing.
+            let image = quad.image.map(|(image, [u0, v0, u1, v1])| {
+                let across = |x: f32| u0 + (u1 - u0) * (x - quad.x) / quad.width.max(f32::EPSILON);
+                let down = |y: f32| v0 + (v1 - v0) * (y - quad.y) / quad.height.max(f32::EPSILON);
+                (image, [across(x0), down(y0), across(x1), down(y1)])
+            });
             self.quads.push(Quad {
                 x: x0,
                 y: y0,
                 width: x1 - x0,
                 height: y1 - y0,
+                image,
                 ..quad
             });
         }
@@ -221,6 +246,15 @@ mod tests {
         ui.quad(Quad::new(9.0, 0.0, 1.0, 1.0, Vec4::ZERO));
         assert_eq!(ui.quads[0].x, 0.0);
         assert_eq!(ui.quads[1].x, 9.0);
+    }
+
+    #[test]
+    fn a_picture_cut_to_a_box_shows_the_part_inside() {
+        let mut ui = Ui::new();
+        ui.push_clip(0.0, 0.0, 50.0, 100.0);
+        ui.quad(Quad::new(0.0, 0.0, 100.0, 100.0, Vec4::ONE).image(UiImage(1), [0.5, 0.0, 1.0, 1.0]));
+        assert_eq!(ui.quads[0].width, 50.0);
+        assert_eq!(ui.quads[0].image, Some((UiImage(1), [0.5, 0.0, 0.75, 1.0])));
     }
 
     #[test]

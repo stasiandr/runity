@@ -7,7 +7,9 @@
 //! dependency.
 //!
 //! Both draw after the scene, with no depth test, in the order the list
-//! holds them.
+//! holds them. A rectangle may be filled with part of a picture: the
+//! pictures are held here ([`UiRenderer::add_image`]), and a run of
+//! rectangles with one picture is one draw.
 
 use glyphon::{
     Attrs, Buffer, Cache, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
@@ -15,7 +17,7 @@ use glyphon::{
 };
 
 use crate::gpu::Gpu;
-use crate::ui::Ui;
+use crate::ui::{Ui, UiImage};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -25,6 +27,8 @@ struct QuadInstance {
     color: [f32; 4],
     /// The corner radius, and padding.
     shape: [f32; 4],
+    /// The part of its picture: left, top, right, bottom.
+    uv: [f32; 4],
 }
 
 #[repr(C)]
@@ -49,6 +53,14 @@ pub struct UiRenderer {
     /// The font the game gave, by its family name; the system's sans-serif
     /// until then.
     family: Option<String>,
+    /// The pictures rectangles are filled with, by [`UiImage`]: the first a
+    /// white pixel, for a plain one.
+    images: Vec<wgpu::BindGroup>,
+    image_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// Whether what is drawn into takes sRGB: a picture's texels are
+    /// uploaded as the target reads them.
+    srgb: bool,
 }
 
 impl UiRenderer {
@@ -66,6 +78,14 @@ impl UiRenderer {
             .ok_or("a font with no family name")?;
         self.family = Some(name);
         Ok(())
+    }
+
+    /// Hold a picture for rectangles to be filled with: `rgba`, `width` by
+    /// `height`, top row first, sRGB as an image file has it.
+    pub fn add_image(&mut self, gpu: &Gpu, width: u32, height: u32, rgba: &[u8]) -> UiImage {
+        let group = picture(gpu, &self.image_layout, &self.sampler, width, height, rgba, self.srgb);
+        self.images.push(group);
+        UiImage(self.images.len() as u32 - 1)
     }
 
     /// Build an overlay renderer for an offscreen target.
@@ -115,11 +135,42 @@ impl UiRenderer {
                 resource: screen.as_entire_binding(),
             }],
         });
+        let image_layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ui picture"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui picture"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let srgb = format.is_srgb();
+        let white = picture(gpu, &image_layout, &sampler, 1, 1, &[255; 4], srgb);
         let pipeline_layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("scrap::ui"),
-                bind_group_layouts: &[Some(&layout)],
+                bind_group_layouts: &[Some(&layout), Some(&image_layout)],
                 immediate_size: 0,
             });
 
@@ -135,7 +186,7 @@ impl UiRenderer {
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<QuadInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4],
                     })],
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -196,6 +247,10 @@ impl UiRenderer {
             viewport: Viewport::new(&gpu.device, &cache),
             text,
             family: None,
+            images: vec![white],
+            image_layout,
+            sampler,
+            srgb,
         }
     }
 
@@ -243,8 +298,19 @@ impl UiRenderer {
                 rect: [q.x, q.y, q.width, q.height],
                 color: q.color.to_array(),
                 shape: [q.radius, 0.0, 0.0, 0.0],
+                uv: q.image.map_or([0.0, 0.0, 1.0, 1.0], |(_, uv)| uv),
             })
             .collect();
+        // Runs of rectangles with one picture, in the list's order.
+        let mut runs: Vec<(usize, std::ops::Range<u32>)> = Vec::new();
+        for (i, q) in ui.quads.iter().enumerate() {
+            let image = q.image.map_or(0, |(image, _)| image.0 as usize);
+            let image = if image < self.images.len() { image } else { 0 };
+            match runs.last_mut() {
+                Some((last, range)) if *last == image => range.end = i as u32 + 1,
+                _ => runs.push((image, i as u32..i as u32 + 1)),
+            }
+        }
         if quads.len() as u64 > self.capacity {
             self.capacity = (quads.len() as u64).next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -369,7 +435,10 @@ impl UiRenderer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_vertex_buffer(0, self.instances.slice(..));
-                pass.draw(0..4, 0..quads.len() as u32);
+                for (image, range) in runs {
+                    pass.set_bind_group(1, &self.images[image], &[]);
+                    pass.draw(0..4, range);
+                }
             }
             if prepared.is_ok() {
                 let _ = self.text.render(&self.atlas, &self.viewport, &mut pass);
@@ -377,4 +446,47 @@ impl UiRenderer {
         }
         gpu.queue.submit(Some(encoder.finish()));
     }
+}
+
+/// A picture for rectangles: its texture and how it is read.
+fn picture(
+    gpu: &Gpu,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    srgb: bool,
+) -> wgpu::BindGroup {
+    let size = wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 };
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ui picture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    gpu.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        rgba,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * size.width), rows_per_image: Some(size.height) },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ui picture"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
 }

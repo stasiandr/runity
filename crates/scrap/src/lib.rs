@@ -736,7 +736,7 @@ pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use table::{Link, Record, RecordId, Table, Tables};
 pub use tuned::Tuned;
-pub use ui::{Quad, TextRun, Ui};
+pub use ui::{Quad, TextRun, Ui, UiImage};
 pub use ui_render::UiRenderer;
 pub use widgets::{Rect, Widgets};
 pub use world::{
