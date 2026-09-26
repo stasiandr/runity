@@ -20,11 +20,20 @@ pub fn is_mesh_asset(path: &std::path::Path) -> bool {
 
 /// The text after `key: ` on its line: the hex strings, read as text (as
 /// YAML, a string of digits would be a number).
-fn raw<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+fn raw(text: &str, key: &str) -> Option<String> {
     let mark = format!("{key}: ");
-    text.lines()
-        .find_map(|l| l.trim_start().strip_prefix(&mark))
-        .map(str::trim)
+    let mut lines = text.lines();
+    let first = lines.find_map(|l| l.trim_start().strip_prefix(&mark))?.trim().to_string();
+    // A long string goes on over the lines after, indented, hex alone.
+    let mut out = first;
+    for l in lines {
+        let t = l.trim();
+        if t.is_empty() || !t.chars().all(|c| c.is_ascii_hexdigit()) {
+            break;
+        }
+        out.push_str(t);
+    }
+    Some(out)
 }
 
 fn hex(s: &str) -> Result<Vec<u8>> {
@@ -48,9 +57,12 @@ struct Channel {
 }
 
 /// The mesh as triangles in scrap's frame (Unity's z mirrored), with
-/// glTF's v (down from the top). The winding stays: Unity's front face is
-/// clockwise in its left-handed frame, and mirrored — the camera with it —
-/// that is counter-clockwise in a right-handed one, glTF's front.
+/// glTF's v (down from the top). The winding turns over: Unity's front
+/// face is clockwise seen from the front, and the mirror keeps the order of
+/// the corners while turning the frame right-handed, so a triangle kept as
+/// Unity winds it faces away from its own normals — ground a one-sided
+/// collider holds from below. Reversed, it is counter-clockwise from the
+/// front, glTF's front, as an FBX's comes in.
 pub struct Mesh {
     pub name: String,
     pub positions: Vec<[f32; 3]>,
@@ -79,7 +91,7 @@ pub fn read(body: &Yaml, text: &str) -> Result<Mesh> {
             dimension: c.i64("dimension").unwrap_or(0) as usize & 0xf,
         })
         .collect();
-    let bytes = hex(raw(text, "_typelessdata").unwrap_or(""))?;
+    let bytes = hex(&raw(text, "_typelessdata").unwrap_or_default())?;
     // Channel order: Unity 2018 on — position, normal, tangent, colour,
     // eight UVs (and skin weights and indices); before — position,
     // normal, colour, four UVs, tangent. Formats then: 0 float, 1 half,
@@ -172,7 +184,7 @@ pub fn read(body: &Yaml, text: &str) -> Result<Mesh> {
             })
             .collect();
     }
-    let indices = hex(raw(text, "m_IndexBuffer").unwrap_or(""))?;
+    let indices = hex(&raw(text, "m_IndexBuffer").unwrap_or_default())?;
     let wide = body.i64("m_IndexFormat") == Some(1);
     let index = |i: usize| -> u32 {
         if wide {
@@ -198,7 +210,7 @@ pub fn read(body: &Yaml, text: &str) -> Result<Mesh> {
         let mut list = Vec::with_capacity(n);
         for t in 0..n / 3 {
             let i = first + t * 3;
-            let triangle = [index(i) + base, index(i + 1) + base, index(i + 2) + base];
+            let triangle = [index(i) + base, index(i + 2) + base, index(i + 1) + base];
             if triangle.iter().all(|&v| (v as usize) < count) {
                 list.extend(triangle);
             }
@@ -322,6 +334,51 @@ pub fn convert_asset(path: &std::path::Path) -> Result<Vec<u8>> {
     Ok(glb(&read(&doc.body, &text)?))
 }
 
+/// The text of the document `file_id` of a multi-document Unity file.
+pub fn document_text(text: &str, file_id: i64) -> Option<&str> {
+    let starts: Vec<usize> = text.match_indices("--- !u!").map(|(i, _)| i).collect();
+    let id = file_id.to_string();
+    for (n, &s) in starts.iter().enumerate() {
+        let line = text[s..].lines().next()?;
+        if line.split('&').nth(1).and_then(|r| r.split_whitespace().next()) == Some(id.as_str()) {
+            return Some(&text[s..starts.get(n + 1).copied().unwrap_or(text.len())]);
+        }
+    }
+    None
+}
+
+/// The Meshes a scene or prefab keeps inside itself (ProBuilder's), each
+/// written as `<file>_<fileID>.glb` into `dir`: fileID → the model's name.
+pub fn inside(text: &str, file: &str, dir: &std::path::Path, errors: &mut Vec<String>) -> std::collections::HashMap<i64, String> {
+    let mut out = std::collections::HashMap::new();
+    if !text.contains("\nMesh:") {
+        return out;
+    }
+    for doc in yaml::documents(text).into_iter().filter(|d| d.kind == "Mesh") {
+        let Some(own) = document_text(text, doc.file_id) else { continue };
+        // A vertex stream alone (Polybrush's colours over a renderer's own
+        // mesh, m_AdditionalVertexStreamMesh) has no indices: not a shape.
+        if raw(own, "m_IndexBuffer").is_none_or(|b| b.is_empty()) {
+            continue;
+        }
+        let name = format!("{file}_{}", doc.file_id.unsigned_abs());
+        match read(&doc.body, own) {
+            Ok(mesh) => {
+                let _ = std::fs::create_dir_all(dir);
+                let to = dir.join(format!("{name}.glb"));
+                match std::fs::write(&to, glb(&mesh)) {
+                    Ok(()) => {
+                        out.insert(doc.file_id, name);
+                    }
+                    Err(e) => errors.push(format!("{}: {e}", to.display())),
+                }
+            }
+            Err(e) => errors.push(format!("{file}: a mesh inside it: {e:#}")),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,7 +421,12 @@ mod tests {
         assert_eq!(mesh.normals[0], [0.0, 1.0, 0.0]);
         assert_eq!(mesh.colors[1], [0, 255, 0, 255]);
         assert_eq!(mesh.uvs[3], [0.0, 0.0], "v from the top");
-        assert_eq!(mesh.submeshes, vec![vec![0, 2, 1, 0, 3, 2]], "wound as Unity winds it");
+        assert_eq!(mesh.submeshes, vec![vec![0, 1, 2, 0, 2, 3]], "wound the other way round");
+        let p = |i: u32| scrap::glam::Vec3::from_array(mesh.positions[i as usize]);
+        for t in mesh.submeshes[0].chunks(3) {
+            let facing = (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0]));
+            assert!(facing.y > 0.0, "a triangle faces the way its normals do: {facing}");
+        }
         let glb = glb(&mesh);
         let (document, buffers, _) = gltf::import_slice(&glb).unwrap();
         let prim = document.meshes().next().unwrap().primitives().next().unwrap();
