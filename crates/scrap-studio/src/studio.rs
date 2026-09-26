@@ -264,6 +264,8 @@ struct Stamp {
     pivot: Pivot,
     path: Option<std::path::PathBuf>,
     game_view: bool,
+    /// The project's files as they are: a change on disk shows.
+    disk: Option<u64>,
 }
 
 impl Stamp {
@@ -285,6 +287,7 @@ impl Stamp {
             pivot: session.pivot(),
             path: session.scene_path().map(Path::to_path_buf),
             game_view: session.is_game_view(),
+            disk: session.disk(),
         }
     }
 }
@@ -3718,6 +3721,8 @@ impl Studio {
 
     /// Do what a menu entry, a button or a context menu asks.
     pub fn run(&mut self, action: Action) {
+        // Whatever it writes is read again, not waited for.
+        self.session.wrote();
         if let Err(message) = self.run_inner(action) {
             self.session.say(Level::Error, message);
         }
@@ -4672,6 +4677,7 @@ impl Studio {
     /// The dialog's answer, done.
     fn answer(&mut self) {
         let Some(p) = &self.prompt else { return };
+        self.session.wrote();
         let text = self.ui.text(p.field).unwrap_or_default().trim().to_string();
         let ask = p.ask.clone();
         self.close_prompt();

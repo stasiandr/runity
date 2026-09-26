@@ -58,6 +58,9 @@ impl Asset {
 }
 
 pub struct Bottom {
+    /// The project's assets as last read, for the disk as it was then
+    /// ([`Session::disk`]): read again only when it moved.
+    listed: Option<(u64, std::rc::Rc<Listed>)>,
     /// Project, Console, History and Git: each panel's content.
     pub roots: [NodeId; 4],
     /// Which of them is on top in its dock, and so worth updating.
@@ -397,6 +400,7 @@ impl Bottom {
         let git_tab = crate::git_tab::GitTab::new(ui, git);
 
         Self {
+            listed: None,
             roots: [project, console, history, git],
             visible: [true, false, false, false],
             search,
@@ -788,11 +792,30 @@ fn assets_of(session: &Session, entries: &[Entry]) -> Vec<Asset> {
 impl Bottom {
     /// The Project: the two columns or the one tree, the path of what is
     /// chosen under them, the kind chips.
-    fn update_project(&mut self, ui: &mut Ui, session: &Session) {
+    /// The project's assets, their folders and the imported materials'
+    /// sources: read and sorted when the disk moved ([`Session::disk`]),
+    /// else as last time — a click elsewhere in the studio updates this
+    /// panel too, and on a big project reading it all was most of the
+    /// click.
+    fn listed(&mut self, session: &Session) -> std::rc::Rc<Listed> {
+        let disk = session.disk();
+        if let (Some(disk), Some((was, listed))) = (disk, &self.listed) {
+            if disk == *was {
+                return listed.clone();
+            }
+        }
         let entries = session.assets().unwrap_or_default();
         let all = assets_of(session, &entries);
         let sources = sources_of(&entries);
         let folders = folders(&all, session, &sources);
+        let listed = std::rc::Rc::new(Listed { all, sources, folders });
+        self.listed = disk.map(|d| (d, listed.clone()));
+        listed
+    }
+
+    fn update_project(&mut self, ui: &mut Ui, session: &Session) {
+        let listed = self.listed(session);
+        let (all, sources, folders) = (&listed.all, &listed.sources, &listed.folders);
         // A folder gone (moved, deleted): back to the project.
         if !self.folder.is_empty() && !folders.contains(&self.folder) {
             self.folder = String::new();
@@ -2075,6 +2098,13 @@ fn folder_of(asset: &Asset, session: &Session, sources: &Sources) -> String {
         Some(file) => parent_folder(&file),
         None => BUILTIN.to_string(),
     }
+}
+
+/// What the Project panel shows, read from the project.
+struct Listed {
+    all: Vec<Asset>,
+    sources: Sources,
+    folders: Vec<String>,
 }
 
 /// Materials without a file of their own, by the file they were imported

@@ -353,6 +353,18 @@ pub struct Entry {
 /// each is used.
 pub fn list(project: &Project) -> Result<Vec<Entry>> {
     let documents = Documents::read(project)?;
+    // Which images the terrains paint with, found once: asked per image,
+    // it was a walk of the project for each of hundreds.
+    let mut painted: std::collections::HashMap<PathBuf, usize> = Default::default();
+    walk(project.root(), &mut |path| {
+        if extension(path) != "scrterrain" {
+            return;
+        }
+        if let Some(name) = terrain::heightmap(path) {
+            let dir = path.parent().unwrap_or(Path::new(""));
+            *painted.entry(normalize(&dir.join(name))).or_default() += 1;
+        }
+    });
     let mut files = Vec::new();
     walk(project.root(), &mut |path| {
         if kind(project, path).is_ok() {
@@ -373,7 +385,7 @@ pub fn list(project: &Project) -> Result<Vec<Entry>> {
             Kind::Prefab => documents
                 .uses(project, &AssetRef::Prefab(stem(&path)))
                 .len(),
-            Kind::Other => painted_by(project, &path).len(),
+            Kind::Other => painted.get(&normalize(&path)).copied().unwrap_or(0),
         };
         out.push(Entry {
             file: shown(project, &path),

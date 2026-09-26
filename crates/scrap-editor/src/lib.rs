@@ -45,6 +45,7 @@ pub mod shader_graphs;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
 mod visibility;
+mod watch;
 
 pub use views::{Pivot, Side, Space};
 
@@ -127,6 +128,16 @@ pub struct Session {
     /// (Dacha's twelve hundred prefabs) cannot afford each time a panel
     /// updates.
     assets_listed: std::sync::Mutex<Option<(u64, Vec<scrap_import::assets::Entry>)>>,
+    /// The project's folder watched ([`Session::disk`]), started the first
+    /// time it is asked for.
+    watch: std::sync::Mutex<Option<watch::Watch>>,
+    /// Files this session (or its caller, [`Session::wrote`]) wrote: counted
+    /// at once, before the system's word of it arrives.
+    own_writes: std::sync::atomic::AtomicU64,
+    /// [`Session::disk`] when the scene's stamps were last compared.
+    reload_seen: Option<u64>,
+    /// [`Session::disk`] when the last library update started.
+    synced_disk: Option<u64>,
     /// When the last library update finished: the next waits a moment
     /// rather than walking the project again straight away.
     synced_at: Option<std::time::Instant>,
@@ -379,6 +390,10 @@ impl Session {
             material_dir: None,
             syncing: None,
             assets_listed: std::sync::Mutex::new(None),
+            watch: std::sync::Mutex::new(None),
+            own_writes: std::sync::atomic::AtomicU64::new(0),
+            reload_seen: None,
+            synced_disk: None,
             synced_at: None,
             blender: None,
             prefabs: scrap::Prefabs::new(),
@@ -590,6 +605,7 @@ impl Session {
 
     /// Write the scene back: to `path`, or where it was opened from.
     pub fn save_scene(&mut self, path: Option<&Path>) -> EditResult<()> {
+        self.wrote();
         let target = path
             .map(Path::to_path_buf)
             .or_else(|| self.scene_path.clone())
@@ -1047,6 +1063,7 @@ impl Session {
     /// that the next campfire placed from `name` is already mossy. One undo
     /// step in the scene; the file stays, as a saved prefab does.
     pub fn make_variant(&mut self, instance: EntityId, name: &str) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a prefab variant"));
@@ -1518,12 +1535,27 @@ impl Session {
     /// either way — that is [`SceneReload::Conflict`], and the caller asks.
     /// While playing it waits: the change is picked up after stop.
     pub fn reload_scene(&mut self) -> EditResult<SceneReload> {
-        let (Some(path), Some((seen, stamps))) = (&self.scene_path, &self.on_disk) else {
+        if self.scene_path.is_none() || self.on_disk.is_none() {
             return Ok(SceneReload::Unchanged);
-        };
+        }
         if self.play.is_some() {
             return Ok(SceneReload::Unchanged);
         }
+        // Nothing on disk moved since the last look, the system says, and
+        // the scene's own file (a stat) is as it was: nothing to compare.
+        // Its prefabs are looked at only when something moved.
+        let disk = self.disk();
+        let (Some(path), Some((_, stamps))) = (&self.scene_path, &self.on_disk) else {
+            return Ok(SceneReload::Unchanged);
+        };
+        let scene_as_was = stamps.first().is_some_and(|(_, at)| *at == scrap::files::modified(path));
+        if disk.is_some() && disk == self.reload_seen && scene_as_was {
+            return Ok(SceneReload::Unchanged);
+        }
+        self.reload_seen = disk;
+        let (Some(path), Some((seen, stamps))) = (&self.scene_path, &self.on_disk) else {
+            return Ok(SceneReload::Unchanged);
+        };
         let now = scrap::live::stamps(path, self.project.as_ref());
         if &now == stamps {
             return Ok(SceneReload::Unchanged);
@@ -2395,6 +2427,7 @@ impl Session {
     /// ground to stand on — and open it. What was open is not saved first;
     /// save it before, as Unity asks.
     pub fn new_scene(&mut self, name: &str) -> EditResult<PathBuf> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let path = project.new_scene(name).map_err(EditError::Scene)?;
@@ -2607,6 +2640,7 @@ impl Session {
     /// beside the scene and imports it, so the thing the editor produced is
     /// the same kind of file a person would have written.
     pub fn save_material(&mut self, id: EntityId, name: &str) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
@@ -2738,6 +2772,7 @@ impl Session {
     /// retype it as an instance": doing it by hand leaves the scene holding
     /// a copy that drifts from the file the moment either changes.
     pub fn make_prefab(&mut self, id: EntityId, name: &str) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a prefab"));
@@ -2787,6 +2822,7 @@ impl Session {
         from: impl AsRef<Path>,
         to: impl AsRef<Path>,
     ) -> EditResult<scrap_import::assets::Renamed> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         self.refuse_if_locked_by_others(&project, from.as_ref())?;
@@ -2853,11 +2889,34 @@ impl Session {
 
     /// Every asset source in the project, with its kind, ID, whether it is
     /// built, and how many lines use it: the Project window's list.
+    /// A number that moves whenever a file of the open project may have
+    /// changed: the operating system's word of it, and the writes this
+    /// session was told of ([`Session::wrote`]). `None` without a project,
+    /// or where the system cannot watch a folder — then the caller looks.
+    pub fn disk(&self) -> Option<u64> {
+        let project = self.project.as_ref()?;
+        let mut watch = self.watch.lock().unwrap_or_else(|e| e.into_inner());
+        if watch.as_ref().is_none_or(|w| w.root != project.root()) {
+            *watch = watch::Watch::start(project.root());
+        }
+        let changes = watch.as_ref()?.changes();
+        let own = self.own_writes.load(std::sync::atomic::Ordering::Acquire);
+        Some(changes.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ own)
+    }
+
+    /// Files of the project were written here, just now — by this session
+    /// or by whoever drives it (the studio after an action, an agent's
+    /// tool): what was read from the disk is read again at the next ask,
+    /// not when the system's word of it arrives.
+    pub fn wrote(&self) {
+        self.own_writes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
     pub fn assets(&self) -> EditResult<Vec<scrap_import::assets::Entry>> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
         // Listed again only when a file of the project, or what the library
         // holds, is not as it was: a walk and a stat a file, not a parse.
-        let seen = files_as_they_are(project);
+        let seen = self.disk().unwrap_or_else(|| files_as_they_are(project));
         let mut listed = self.assets_listed.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((was, entries)) = listed.as_ref() {
             if *was == seen {
@@ -2872,6 +2931,7 @@ impl Session {
     /// Delete an asset source nothing uses — on disk, or in the open scene's
     /// unsaved edits. Refused, with the lines, when something does.
     pub fn delete_asset(&mut self, file: impl AsRef<Path>) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let file = file.as_ref();
@@ -2902,6 +2962,7 @@ impl Session {
         from: impl AsRef<Path>,
         to: impl AsRef<Path>,
     ) -> EditResult<()> {
+        self.wrote();
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         scrap_import::assets::duplicate(&project, from.as_ref(), to.as_ref())
@@ -2923,6 +2984,7 @@ impl Session {
     /// warning that comes back says a clone elsewhere will not find it —
     /// that is for the editor to show, not to swallow.
     pub fn import(&mut self, source: impl AsRef<Path>) -> EditResult<Vec<String>> {
+        self.wrote();
         let source = source.as_ref();
         let warnings = match &self.project {
             Some(project) => {
@@ -3209,7 +3271,10 @@ impl Session {
             }
             // Looked a moment ago: a file saved since is found at the next.
             None if self.synced_at.is_some_and(|t| t.elapsed() < SYNC_EVERY) => None,
+            // Nothing on disk moved since the last update started.
+            None if self.disk().is_some_and(|d| Some(d) == self.synced_disk) => None,
             None => {
+                self.synced_disk = self.disk();
                 // A .blend an open Blender just saved is on its way over
                 // the link; this leaves it a moment to arrive.
                 self.syncing = Some((

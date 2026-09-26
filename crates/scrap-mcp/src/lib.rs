@@ -107,7 +107,13 @@ impl Server {
                 Err(message) => json!({ "content": [text(message)], "isError": true }),
             };
         }
-        match tools::call(self, name, arguments) {
+        let answer = tools::call(self, name, arguments);
+        // A tool may have written files: what the session read from the
+        // project is read again at the next ask.
+        if let Some(session) = &self.session {
+            session.wrote();
+        }
+        match answer {
             Ok(content) => json!({ "content": content, "isError": false }),
             Err(message) => json!({ "content": [text(message)], "isError": true }),
         }
