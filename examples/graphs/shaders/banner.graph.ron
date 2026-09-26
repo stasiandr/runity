@@ -1,0 +1,30 @@
+// A banner in the wind: the vertex stage waves it, more the further from
+// the pole; two stripe colours and a switch for a border, all the
+// material's properties.
+(
+    params: ["wind", ("stripe", Color), ("field", Color), ("border", Boolean)],
+    nodes: {
+        "from_pole": Saturate(of: "uv.x"),
+        "along": Multiply(a: "object.x", b: 5.0),
+        "gust": Multiply(a: "time", b: 4.0),
+        "phase": Subtract(a: "along", b: "gust"),
+        "flap": Sine(of: "phase"),
+        "amount": Multiply(a: "flap", b: "wind"),
+        "reach": Multiply(a: "amount", b: "from_pole"),
+        "push": Combine(x: 0.0, y: 0.0, z: "reach"),
+        "waved": Add(a: "position", b: "push"),
+        "rows": Multiply(a: "uv.y", b: 5.0),
+        "row": Fract(of: "rows"),
+        "which": Step(edge: 0.5, of: "row"),
+        "cloth": Lerp(a: "field", b: "stripe", t: "which"),
+        "mid": Rectangle(uv: "uv", width: 0.9, height: 0.86),
+        "outside": OneMinus(of: "mid"),
+        "rim": Multiply(a: "outside", b: "border"),
+        "framed": Lerp(a: "cloth", b: (0.9, 0.75, 0.2), t: "rim"),
+        "fold": Fresnel(power: 1.0),
+        "shade": Lerp(a: 1.0, b: 0.7, t: "fold"),
+        "paint": Multiply(a: "framed", b: "shade"),
+    },
+    vertex: (position: "waved"),
+    surface: (albedo: "paint", smoothness: 0.2),
+)

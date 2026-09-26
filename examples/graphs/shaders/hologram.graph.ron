@@ -1,0 +1,28 @@
+// A hologram: see-through, glowing at its rim, lines climbing it up the
+// screen and a ripple of the subgraph running through it, flickering now
+// and then. `tint` is its colour, `speed` how fast the lines climb.
+(
+    params: [("tint", Color), "speed"],
+    nodes: {
+        "rim": Fresnel(power: 2.5),
+        "climb": Multiply(a: "time", b: "speed"),
+        "rows": Multiply(a: "screen.y", b: 160.0),
+        "row": Add(a: "rows", b: "climb"),
+        "wave": Sine(of: "row"),
+        "lines": Smoothstep(low: 0.2, high: 0.9, of: "wave"),
+        "pulse": Subgraph(name: "ripple", inputs: { "at": "position.xy", "center": (0.0, 1.2), "count": 3.0, "speed": 0.6 }),
+        "scan": Multiply(a: "pulse.rings", b: 0.35),
+        "fast": Multiply(a: "time", b: 37.0),
+        "noise": SimpleNoise(at: "fast", scale: 1.0),
+        "stutter": Step(edge: 0.92, of: "noise"),
+        "dim": OneMinus(of: "stutter"),
+        "body": Add(a: "rim", b: "lines"),
+        "lit": Add(a: "body", b: "scan"),
+        "shown": Multiply(a: "lit", b: "dim"),
+        "glow": Multiply(a: "tint", b: "shown"),
+        "bright": Multiply(a: "glow", b: 3.0),
+        "see": Multiply(a: "shown", b: 0.6),
+        "clear": Saturate(of: "see"),
+    },
+    surface: (albedo: (0.0, 0.0, 0.0), emission: "bright", alpha: "clear"),
+)

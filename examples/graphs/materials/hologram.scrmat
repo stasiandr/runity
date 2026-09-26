@@ -1,0 +1,3 @@
+// A hologram: shaders/hologram.graph.ron. `params` are its `tint`
+// (linear red, green, blue) and `speed`, how fast its lines climb.
+(color: "#ffffff", shader: "hologram", params: [0.1, 0.75, 1.0, 3.0], surface: Transparent, render_face: Both)

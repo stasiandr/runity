@@ -1,0 +1,23 @@
+// A fountain of sparks: they leave up the cone as fast as the emitter's
+// `lift` says, fall, and cool — each one's heat is its own (`custom`,
+// given at birth, lowered each step) — from white-hot to the emitter's
+// `tint`.
+(
+    params: [("tint", Color), "lift"],
+    nodes: {
+        "up": Multiply(a: "cone", b: "lift"),
+        "born_hot": Combine(x: 1.0, y: "seed", z: 0.0),
+        "pull": Multiply(a: "gravity", b: "dt"),
+        "fall": Add(a: "velocity", b: "pull"),
+        "cooling": Multiply(a: "dt", b: -0.9),
+        "keeps": Add(a: 1.0, b: "cooling"),
+        "cooler": Multiply(a: "custom", b: "keeps"),
+        "hot": Multiply(a: (1.0, 0.85, 0.6), b: 4.0),
+        "glow": Lerp(a: "tint", b: "hot", t: "custom.x"),
+        "fade": OneMinus(of: "t"),
+        "small": Multiply(a: "size", b: "fade"),
+    },
+    spawn: (velocity: "up", custom: "born_hot"),
+    update: (velocity: "fall", custom: "cooler"),
+    output: (color: "glow", alpha: "fade", size: "small"),
+)

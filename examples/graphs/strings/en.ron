@@ -1,0 +1,6 @@
+// The game's words in English. A screen shows one with `@hud.quit`; add
+// ru.ron beside this for Russian, with the same keys. scrap check lists
+// every key a language lacks.
+{
+    "hud.quit": "Quit",
+}

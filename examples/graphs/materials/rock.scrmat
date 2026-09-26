@@ -1,0 +1,3 @@
+// Rock from three sides, mossy on top: shaders/rock.graph.ron reads its
+// `stone`.
+(color: "#ffffff", shader: "rock", textures: {"stone": "stone"})

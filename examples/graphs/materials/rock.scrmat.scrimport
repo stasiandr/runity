@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/rock.scrmat",
+    hash: "0029ba90152f3acdeac276c275c888ed",
+    id: Some("16bc30abdabc92bdb4a66eaf724e7295"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

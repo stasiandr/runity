@@ -8387,7 +8387,14 @@ impl Renderer {
                         },
                         // Kept when far clusters were left out of the prepass:
                         // what comes after reads this depth then.
-                        store: if self.split_prepass { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                        // And when a fullscreen graph reads it: by then
+                        // it holds what its own shader moved or cut out,
+                        // which the prepass left out.
+                        store: if self.split_prepass || (fullscreen_on && reuse_depth) {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: None,
                 }),
@@ -8593,7 +8600,9 @@ impl Renderer {
                 &mut encoder,
                 frame.fullscreen.as_ref(),
                 picture,
-                after_depth,
+                // Everything solid, drawn: the scene's own depth where it
+                // is one sample a pixel and went on from the prepass's.
+                if reuse_depth { &self.depth } else { after_depth },
                 (width, height),
                 &crate::fullscreen::View {
                     near: frame.camera.near,

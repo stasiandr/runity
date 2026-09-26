@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/dissolve.scrmat",
+    hash: "80433a9f9df4371596b241dcf14f4d9e",
+    id: Some("6741c601ef41f2a09d729a53a61f9027"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

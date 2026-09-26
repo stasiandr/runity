@@ -1,0 +1,3 @@
+// What the sparks are drawn with: a sheet of four shapes, 2 by 2, added
+// to what is behind them.
+(color: "#ffffff", base_map: "spark_sheet", surface: Transparent, blend: Additive, unlit: true)

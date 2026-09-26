@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/textures/stone.png",
+    hash: "a28e5866de77b950de0fe1904621b18c",
+    id: Some("aaf0ac7f4f23354439c54fee89139c6a"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

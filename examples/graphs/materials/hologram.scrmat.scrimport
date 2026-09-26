@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/hologram.scrmat",
+    hash: "bd78c91cebbb17711cf9df50c1be81ab",
+    id: Some("941e29c0129fdf7d7d880cdae402b60f"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

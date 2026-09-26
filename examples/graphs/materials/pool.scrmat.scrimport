@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/pool.scrmat",
+    hash: "37e694c0519d22fc1967cb7e309887b6",
+    id: Some("70c82869937c33a2f837b5fa4fe3c6e4"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

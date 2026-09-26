@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/pedestal.scrmat",
+    hash: "f6ede58a79b864bef3ccf316c17f280e",
+    id: Some("c14ba222d54706d21afdfd8267fdc170"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)
