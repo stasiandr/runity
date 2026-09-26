@@ -28,9 +28,11 @@ struct Params {
 @group(0) @binding(6) var<storage, read_write> heat_next: array<f32>;
 @group(0) @binding(7) var<storage, read_write> pres: array<f32>;
 @group(0) @binding(8) var<storage, read_write> pres_next: array<f32>;
-@group(0) @binding(9) var<storage, read_write> div: array<f32>;
-@group(0) @binding(10) var<storage, read_write> curl: array<vec4<f32>>;
-@group(0) @binding(11) var<storage, read> solid: array<u32>;
+// The curl, and in its w the divergence: the confinement has read the
+// curl before the divergence is taken, so one buffer holds both — ten
+// storage buffers, as many as WebGPU lets a compute stage have.
+@group(0) @binding(9) var<storage, read_write> curl: array<vec4<f32>>;
+@group(0) @binding(10) var<storage, read> solid: array<u32>;
 @group(0) @binding(12) var picture: texture_storage_3d<rgba8unorm, write>;
 
 fn at(i: u32, j: u32, k: u32) -> u32 {
@@ -163,12 +165,12 @@ fn cs_divergence(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let a = at(id.x, id.y, id.z);
     if !interior(id) {
-        div[a] = 0.0;
+        curl[a].w = 0.0;
         return;
     }
     let nx = p.n.x;
     let slice = p.n.x * p.n.y;
-    div[a] = (vel[a + 1u].x - vel[a - 1u].x + vel[a + nx].y - vel[a - nx].y + vel[a + slice].z - vel[a - slice].z) * 0.5;
+    curl[a].w = (vel[a + 1u].x - vel[a - 1u].x + vel[a + nx].y - vel[a - nx].y + vel[a + slice].z - vel[a - slice].z) * 0.5;
 }
 
 fn pressure_at(a: u32, here: u32) -> f32 {
@@ -188,7 +190,7 @@ fn cs_jacobi(@builtin(global_invocation_id) id: vec3<u32>) {
     let nx = p.n.x;
     let slice = p.n.x * p.n.y;
     pres_next[a] = (pressure_at(a - 1u, a) + pressure_at(a + 1u, a) + pressure_at(a - nx, a) + pressure_at(a + nx, a)
-        + pressure_at(a - slice, a) + pressure_at(a + slice, a) - div[a]) / 6.0;
+        + pressure_at(a - slice, a) + pressure_at(a + slice, a) - curl[a].w) / 6.0;
 }
 
 // The sweep back: the next pressure's neighbours into this one, so two
@@ -210,7 +212,7 @@ fn cs_jacobi_back(@builtin(global_invocation_id) id: vec3<u32>) {
     let nx = p.n.x;
     let slice = p.n.x * p.n.y;
     pres[a] = (pressure_next_at(a - 1u, a) + pressure_next_at(a + 1u, a) + pressure_next_at(a - nx, a) + pressure_next_at(a + nx, a)
-        + pressure_next_at(a - slice, a) + pressure_next_at(a + slice, a) - div[a]) / 6.0;
+        + pressure_next_at(a - slice, a) + pressure_next_at(a + slice, a) - curl[a].w) / 6.0;
 }
 
 // What was made into the second buffers, back into the first.
