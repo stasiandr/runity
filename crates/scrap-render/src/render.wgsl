@@ -812,6 +812,81 @@ struct VertexOutput {
     @location(12) vertex_color: vec4<f32>,
 };
 
+// What a vertex stage hands the rasteriser: what changes across a
+// triangle, and which instance it is of. The instance's own numbers — its
+// colour, its material's, its maps — are the same at every corner, and a
+// tiling GPU writes every output of every vertex out to memory and back:
+// the fragment stage reads them from the instances instead (`expand`).
+struct VertexSlim {
+    @invariant @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    // Terrain's vertices say how far outside its grid they are (w).
+    @location(3) surface: vec4<f32>,
+    // Terrain's vertices carry their ripples' blend (zw).
+    @location(4) params_1: vec4<f32>,
+    @location(5) vertex_color: vec4<f32>,
+    // Which instance: its index; with the top bit, the terrain's grid by
+    // the vertex stage; all ones, the terrain by mesh shaders.
+    @location(6) @interpolate(flat) instance: u32,
+};
+
+// The frame's instances, 13 vec4s each (InstanceRaw), for `expand`.
+@group(0) @binding(33) var<storage, read> instance_data: array<vec4<f32>>;
+
+const TERRAIN_GRID: u32 = 0x80000000u;
+const TERRAIN_MESH: u32 = 0xffffffffu;
+
+fn slim(o: VertexOutput, instance: u32) -> VertexSlim {
+    var v: VertexSlim;
+    v.clip_position = o.clip_position;
+    v.world_position = o.world_position;
+    v.normal = o.normal;
+    v.uv = o.uv;
+    v.surface = o.surface;
+    v.params_1 = o.params_1;
+    v.vertex_color = o.vertex_color;
+    v.instance = instance;
+    return v;
+}
+
+// A fragment's whole input: what was interpolated, and its instance's
+// numbers as the vertex stage would have handed them on.
+fn expand(v: VertexSlim) -> VertexOutput {
+    var o: VertexOutput;
+    o.clip_position = v.clip_position;
+    o.world_position = v.world_position;
+    o.normal = v.normal;
+    o.uv = v.uv;
+    o.surface = v.surface;
+    o.params_1 = v.params_1;
+    o.vertex_color = v.vertex_color;
+    if v.instance == TERRAIN_MESH {
+        o.base_color = frame.terrain_look[0].rgb;
+        o.shading = frame.terrain_look[0].w;
+        o.emission = frame.terrain_look[2];
+        o.detail = frame.terrain_look[4];
+        o.params_0 = frame.terrain_look[5];
+        o.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+        o.maps = vec4<u32>(0u);
+        return o;
+    }
+    let s = (v.instance & ~TERRAIN_GRID) * 13u;
+    let colour = instance_data[s + 4u];
+    o.base_color = colour.rgb;
+    o.shading = colour.w;
+    o.emission = instance_data[s + 6u];
+    o.detail = instance_data[s + 8u];
+    o.params_0 = instance_data[s + 9u];
+    o.subsurface = instance_data[s + 11u];
+    o.maps = bitcast<vec4<u32>>(instance_data[s + 12u]);
+    if (v.instance & TERRAIN_GRID) != 0u {
+        o.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+    }
+    return o;
+}
+
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
 // two characters in different poses cost two offsets rather than two
 // pipelines.
@@ -832,7 +907,11 @@ struct SkinInput {
 /// agree for rigid motion and differ under scale, and the first is both
 /// cheaper and what every exporter assumes.
 @vertex
-fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
+fn vs_skinned(in: VertexInput, skin: SkinInput, @builtin(instance_index) instance: u32) -> VertexSlim {
+    return slim(skinned_vertex(in, skin), instance);
+}
+
+fn skinned_vertex(in: VertexInput, skin: SkinInput) -> VertexOutput {
     var skinning =
         pose.joints[skin.joints.x] * skin.weights.x +
         pose.joints[skin.joints.y] * skin.weights.y +
@@ -1992,7 +2071,11 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
 /// the sand's ripples — real relief, catching the light and standing out
 /// against the sky. Its normal is the slope of what it was raised to.
 @vertex
-fn vs_terrain(in: VertexInput) -> VertexOutput {
+fn vs_terrain(in: VertexInput, @builtin(instance_index) instance: u32) -> VertexSlim {
+    return slim(terrain_grid_vertex(in), instance | TERRAIN_GRID);
+}
+
+fn terrain_grid_vertex(in: VertexInput) -> VertexOutput {
     var out = terrain_vertex(
         in.position.xz,
         in.position.y,
@@ -2003,8 +2086,8 @@ fn vs_terrain(in: VertexInput) -> VertexOutput {
 }
 
 @vertex
-fn vs(in: VertexInput) -> VertexOutput {
-    return standard_vertex(in);
+fn vs(in: VertexInput, @builtin(instance_index) instance: u32) -> VertexSlim {
+    return slim(standard_vertex(in), instance);
 }
 
 // Tools over the finished picture (tools.rs): handles and the outline
@@ -2085,12 +2168,12 @@ struct ClusterDrawn {
 @group(3) @binding(6) var<storage, read> cluster_drawn: array<ClusterDrawn>;
 
 @vertex
-fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept: u32) -> VertexOutput {
+fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept: u32) -> VertexSlim {
     let d = cluster_drawn[kept];
     if corner >= d.count * 3u {
         // Past the cluster's last triangle: all three corners the same
         // point, behind the eye — nothing drawn.
-        var none: VertexOutput;
+        var none: VertexSlim;
         none.clip_position = vec4<f32>(0.0, 0.0, -1.0, 1.0);
         return none;
     }
@@ -2116,7 +2199,7 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
     // What has its own shader, the only reader of vertex colours, is not
     // drawn by clusters.
     in.vertex_color = vec4<f32>(1.0);
-    return standard_vertex(in);
+    return slim(standard_vertex(in), d.instance);
 }
 
 fn standard_vertex(in: VertexInput) -> VertexOutput {
@@ -2700,7 +2783,8 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
 // scrap:surface }
 
 @fragment
-fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     return shade(in, front, true);
 }
 
@@ -2708,7 +2792,8 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
 /// what is cut out was cut there already, and a shader with no discard
 /// keeps the GPU's hidden surface removal.
 @fragment
-fn fs_prepassed(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_prepassed(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     return shade(in, front, false);
 }
 
@@ -2728,7 +2813,8 @@ fn seen_front(in: VertexOutput, front: bool) -> bool {
 /// `shade` does for the light (normal maps, decals, weather). A sky of
 /// smoke sprites, each over most of the screen, is what this is for.
 @fragment
-fn fs_unlit(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_unlit(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     var base_uv = in.uv;
     let screen_flags = u32(in.emission.w + 0.5);
     if (screen_flags & 48u) != 0u {
@@ -3137,7 +3223,8 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 /// The depth-and-normals prepass for ambient occlusion: the world normal of
 /// what is solid, cut out where the surface is.
 @fragment
-fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_normals(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     let alpha = in.surface.z * surface_at(in.maps, in.uv).a;
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
@@ -3448,7 +3535,8 @@ fn water_normal(p: vec2<f32>, t: f32, height: f32) -> vec3<f32> {
 // much of that shows is how deep the water is there — read from the
 // prepass's depth.
 @fragment
-fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_water(slimmed: VertexSlim) -> @location(0) vec4<f32> {
+    let in = expand(slimmed);
     let t = frame.foliage.wind.w;
     let p = in.world_position;
     let waves = max(in.detail.z, 0.0) * max(frame.foliage.wind.z, 0.2);

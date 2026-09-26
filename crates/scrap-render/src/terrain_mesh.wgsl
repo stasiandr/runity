@@ -142,7 +142,7 @@ struct TerrainPrimitive {
 };
 
 struct TerrainMesh {
-    @builtin(vertices) vertices: array<VertexOutput, 81>,
+    @builtin(vertices) vertices: array<VertexSlim, 81>,
     @builtin(primitives) primitives: array<TerrainPrimitive, 128>,
     @builtin(vertex_count) vertex_count: u32,
     @builtin(primitive_count) primitive_count: u32,
@@ -250,7 +250,7 @@ fn ms_terrain(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation
         out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
         out.vertex_color = vec4<f32>(1.0);
         out.maps = vec4<u32>(0u);
-        terrain_mesh.vertices[v] = out;
+        terrain_mesh.vertices[v] = slim(out, TERRAIN_MESH);
     }
     // Counter-clockwise seen from above, as the vertex-shader grid is.
     let i = li % 8u;

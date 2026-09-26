@@ -1413,6 +1413,11 @@ pub struct Renderer {
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
+    /// The two frame groups again with the occlusion culling's kept
+    /// instances for `instance_data` (binding 33): what it draws numbers
+    /// its instances in that list, not in the frame's. With the buffer
+    /// they were made for, to make them again when it is.
+    kept_groups: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup),
 }
 
 /// Where the scene is drawn before post-processing turns it into a picture.
@@ -2921,6 +2926,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // The frame's instances, read by the fragment stage (`expand`).
+            wgpu::BindGroupLayoutEntry {
+                binding: 33,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
             // The scene's distance field, for occlusion and soft shadows.
             wgpu::BindGroupLayoutEntry {
                 binding: 31,
@@ -3118,6 +3134,13 @@ impl Renderer {
         });
         let trample_view = trample_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let distance = crate::distance::DistanceTexture::new(gpu);
+        let instance_capacity = 256;
+        let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instances"),
+            size: instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let bind_group = frame_bind_group(
             gpu,
             &layout,
@@ -3128,6 +3151,7 @@ impl Renderer {
                 terrain_heights: &terrain_heights,
                 trample: &trample_view,
                 distance: &distance.view,
+                instances: &instances,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
                 history: clouds.view(),
@@ -3403,13 +3427,6 @@ impl Renderer {
             },
         );
 
-        let instance_capacity = 256;
-        let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instances"),
-            size: instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
 
         let white_capacity = 4096;
         let white_colors = white_buffer(gpu, white_capacity);
@@ -3421,6 +3438,7 @@ impl Renderer {
         (restir.initial, restir.spatial) = restir.make_pipelines(gpu, &shader, gpu.ray_tracing);
 
         let fog_bind_group = bind_group.clone();
+        let kept_groups = (instances.clone(), bind_group.clone(), bind_group.clone());
         let mut renderer = Self {
             pipelines,
             clusters,
@@ -3509,6 +3527,7 @@ impl Renderer {
             fog_integrate_layout,
             volumes,
             fog_bind_group,
+            kept_groups,
             started: web_time::Instant::now(),
             bolt: None,
             occlusion: crate::occlusion::Occlusion::new(gpu),
@@ -3575,13 +3594,22 @@ impl Renderer {
     /// While probes are being baked their pictures are left out of it:
     /// they are being drawn.
     fn rebind(&mut self, gpu: &Gpu) {
-        self.bind_group = self.frame_group(gpu, false);
-        self.fog_bind_group = self.frame_group(gpu, true);
+        self.bind_group = self.frame_group(gpu, false, &self.instances);
+        self.fog_bind_group = self.frame_group(gpu, true, &self.instances);
+        self.rebind_kept(gpu);
+    }
+
+    /// [`Renderer::kept_groups`] made again, on the kept buffer as it is.
+    fn rebind_kept(&mut self, gpu: &Gpu) {
+        let kept = self.occlusion.kept.buffer.clone();
+        let group = self.frame_group(gpu, false, &kept);
+        let fog = self.frame_group(gpu, true, &kept);
+        self.kept_groups = (kept, group, fog);
     }
 
     /// The frame's bind group; with `making_fog`, the fog's grid and the
     /// prepass's depth left out, for the passes that fill them.
-    fn frame_group(&self, gpu: &Gpu, making_fog: bool) -> wgpu::BindGroup {
+    fn frame_group(&self, gpu: &Gpu, making_fog: bool, instances: &wgpu::Buffer) -> wgpu::BindGroup {
         let baking = self.reflections.baking;
         frame_bind_group(
             gpu,
@@ -3593,6 +3621,7 @@ impl Renderer {
                 terrain_heights: &self.terrain_heights,
                 trample: &self.trample_view,
                 distance: &self.distance.view,
+                instances,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
@@ -4246,7 +4275,11 @@ impl Renderer {
                     };
                     if let Some(pipeline) = pipeline {
                         pass.set_pipeline(pipeline);
-                        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
+                        pass.set_bind_group(
+                            0,
+                            if occluded { self.kept_group_for(prepass) } else { self.frame_group_for(prepass) },
+                            &[],
+                        );
                     }
                     current = Some(*look);
                 }
@@ -4629,6 +4662,16 @@ impl Renderer {
             &self.fog_bind_group
         } else {
             &self.bind_group
+        }
+    }
+
+    /// [`Renderer::frame_group_for`] for draws of the occlusion culling's
+    /// kept instances.
+    fn kept_group_for(&self, prepass: bool) -> &wgpu::BindGroup {
+        if prepass {
+            &self.kept_groups.2
+        } else {
+            &self.kept_groups.1
         }
     }
 
@@ -6697,6 +6740,8 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
+            // The fragment stage reads them from the frame's group.
+            self.rebind(gpu);
         }
         if !flat.is_empty() {
             gpu.queue
@@ -6800,6 +6845,9 @@ impl Renderer {
                     frame.camera.position,
                     forward,
                 );
+                if self.occlusion.kept.buffer != self.kept_groups.0 {
+                    self.rebind_kept(gpu);
+                }
                 // Dense meshes a cluster at a time: what can be drawn so —
                 // opaque, the standard shader, neither skinned nor terrain.
                 let mut jobs = Vec::new();
@@ -8108,6 +8156,8 @@ struct FrameInputs<'a> {
     trample: &'a wgpu::TextureView,
     /// The scene's distance field.
     distance: &'a wgpu::TextureView,
+    /// The frame's instances.
+    instances: &'a wgpu::Buffer,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -8198,6 +8248,7 @@ fn frame_bind_group(
         view(23, inputs.terrain_heights),
         view(30, inputs.trample),
         view(31, inputs.distance),
+        buffer(33, inputs.instances),
     ];
     if let Some((rays, materials)) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
@@ -8443,3 +8494,4 @@ mod half_float_tests {
         assert_eq!(super::half_bits(5.960_464_5e-8), 0x0001);
     }
 }
+
