@@ -751,6 +751,32 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     );
 }
 
+#[test]
+fn an_instances_tag_opens_its_prefab_and_its_parts_select() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    // A name of its own: the scene has a campfire already, not an instance.
+    s.session.rename(fire, "fire instance").unwrap();
+    s.session.set_open(fire, true);
+    s.refresh();
+    s.frame();
+    // No eye and no lock on the lines, for now: the arrow, the icon, the
+    // name, the uncommitted dot and the prefab's tag, last.
+    let name = s.session.entity_name(fire).unwrap();
+    let line = s.ui.find(&format!("line {name}")).unwrap();
+    let kids = s.ui.children(line);
+    assert_eq!(kids.len(), 5);
+    assert_eq!(s.ui.find(&format!("open {name}")), kids.last().copied());
+    // A part of the instance selects, as Unity's Hierarchy has it.
+    click(&mut s, "line stone n");
+    let stone = s.session.selected().expect("the part is selected");
+    assert_ne!(stone, fire);
+    assert_eq!(s.session.instanced_owner(stone), fire);
+    // The prefab's tag at the line's end opens it.
+    click(&mut s, &format!("open {name}"));
+    assert!(s.session.is_prefab(), "the tag opened the prefab");
+}
+
 /// Time this thread has spent on a core: what the editor itself costs,
 /// however busy the machine is. The wall's time where there is no such
 /// clock.
@@ -1417,32 +1443,18 @@ fn the_hierarchy_collapses_and_expands_every_line_at_once() {
 }
 
 #[test]
-fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
+fn a_line_has_no_eye_or_lock_and_hides_from_its_menu() {
     let Some((mut s, _dir)) = studio() else { return };
     s.ui.paint();
-    // Line → [arrow, icon, name, tag, tools[eye, lock], dot, open].
-    let tools = |s: &Studio, name: &str| -> (f32, f32) {
-        let line = s.ui.find(name).unwrap();
-        let tools = s.ui.children(s.ui.children(line)[4]);
-        (
-            s.ui.style(tools[0]).look.opacity,
-            s.ui.style(tools[1]).look.opacity,
-        )
-    };
-    assert_eq!(tools(&s, "line crate"), (0.0, 0.0), "quiet");
-    let (x, y) = s.ui.rect(s.ui.find("line crate").unwrap()).center();
-    s.handle(&InputEvent::MouseMoved { x, y });
-    s.frame();
-    assert_eq!(tools(&s, "line crate"), (1.0, 1.0), "under the pointer");
-    assert_eq!(tools(&s, "line boulder"), (0.0, 0.0));
-    // Hidden: its eye stays when the pointer leaves.
+    // Line → [arrow, icon, name, dot, prefab tag]: hiding and locking are
+    // the context menu's and the Scene view's, not buttons on every line.
+    let line = s.ui.find("line crate").unwrap();
+    assert_eq!(s.ui.children(line).len(), 5);
+    assert!(s.ui.find("eye crate").is_none());
     let crate_id = s.session.find("crate").unwrap();
-    s.session.set_hidden(&[crate_id], true).unwrap();
-    s.refresh();
-    let (x, y) = s.ui.rect(s.ui.find("line boulder").unwrap()).center();
-    s.handle(&InputEvent::MouseMoved { x, y });
-    s.frame();
-    assert_eq!(tools(&s, "line crate"), (1.0, 0.0), "the eye of what is hidden");
+    press(&mut s, "line crate", MouseButton::Right);
+    click(&mut s, "menu Hide");
+    assert_eq!(s.session.hidden(), [crate_id], "hidden from the line's menu");
 }
 
 #[test]
@@ -3952,21 +3964,17 @@ fn the_scene_is_the_first_line_and_its_menu_saves_and_reloads() {
 }
 
 #[test]
-fn an_instance_opens_its_prefab_by_the_arrow_at_its_end() {
+fn an_instance_opens_its_prefab_by_the_tag_at_its_end() {
     let Some((mut s, _dir)) = studio() else { return };
     let fire = s.session.add_instance(None, "campfire").unwrap();
     s.session.rename(fire, "fire instance").unwrap();
     s.refresh();
     s.frame();
     s.ui.paint();
-    let open = s.ui.find("open fire instance").unwrap();
-    assert_eq!(s.ui.style(open).look.opacity, 0.0, "quiet until hovered");
     let plain = s.ui.find("open crate").unwrap();
-    assert_eq!(s.ui.rect(plain).width, 0.0, "a plain line has none");
-    let (x, y) = s.ui.rect(s.ui.find("line fire instance").unwrap()).center();
-    s.handle(&InputEvent::MouseMoved { x, y });
-    s.frame();
-    assert_eq!(s.ui.style(open).look.opacity, 1.0, "under the pointer");
+    assert_eq!(s.ui.rect(plain).width, 0.0, "a plain line has no tag");
+    let open = s.ui.find("open fire instance").unwrap();
+    assert!(s.ui.rect(open).width > 0.0, "an instance's shows, always");
     click(&mut s, "open fire instance");
     assert!(s.session.is_prefab(), "prefab mode");
     // The first line is the prefab now.
@@ -4933,3 +4941,181 @@ fn a_shader_graph_is_boxes_and_arrows_edited_in_its_file_with_previews() {
     }
     assert!(s.ui.dump().contains("Builds."));
 }
+
+/// File › Projects: the list over the editor, with the project open now
+/// marked, a gone one saying so, a pin that moves a line to the top, a
+/// search, and a click that opens a project's start scene.
+#[test]
+fn the_projects_screen_lists_pins_forgets_and_opens() {
+    let Some((mut s, dir)) = studio() else { return };
+    let config = scrap_studio::appearance::config_dir().unwrap();
+    // A second project of its own, and one whose folder is gone.
+    let other = dir.with_file_name(format!("{}-other", dir.file_name().unwrap().to_string_lossy()));
+    copy_dir(&dir, &other);
+    std::fs::write(
+        other.join("scrap.ron"),
+        std::fs::read_to_string(other.join("scrap.ron"))
+            .unwrap()
+            .replace("name: \"valley\"", "name: \"meadow\""),
+    )
+    .unwrap();
+    let gone = dir.with_file_name("scrap-hub-test-gone");
+    // The list is shared by every test in this process: this test's lines
+    // only, and each checked by its path.
+    scrap_cli::hub::update(&config, |k| {
+        k.add(&gone);
+        k.add(&other);
+        k.opened(&dir);
+    })
+    .unwrap();
+
+    s.run(scrap_studio::menu::Action::Projects);
+    s.frame();
+    let line = |s: &mut Studio, path: &std::path::Path| {
+        let path = path.canonicalize().unwrap_or(path.to_path_buf());
+        s.hub()
+            .unwrap()
+            .entries()
+            .iter()
+            .position(|e| e.path == path)
+            .unwrap_or_else(|| panic!("{} is not listed", path.display()))
+    };
+    let this = line(&mut s, &dir);
+    let meadow = line(&mut s, &other);
+    let missing = line(&mut s, &gone);
+    s.frame();
+    {
+        let entries = s.hub().unwrap().entries();
+        assert_eq!(entries[this].name, "valley");
+        assert_eq!(entries[meadow].name, "meadow");
+        assert_eq!(entries[missing].problem.as_deref(), Some("the folder is gone"));
+        assert!(this < meadow, "the one opened comes before one never opened");
+    }
+    assert!(s.ui.find("projects overlay").is_some());
+
+    // Pinned, meadow goes above the one opened.
+    let other_path = other.canonicalize().unwrap();
+    click(&mut s, &format!("pin {}", other_path.display()));
+    s.frame();
+    assert!(line(&mut s, &other) < line(&mut s, &dir), "pinned first");
+
+    // Forgotten, the gone one leaves the list; its folder was never there.
+    click(&mut s, &format!("forget {}", gone.display()));
+    s.frame();
+    let gone_listed = s
+        .hub()
+        .unwrap()
+        .entries()
+        .iter()
+        .any(|e| e.path == gone);
+    assert!(!gone_listed);
+
+    // Typed, only what matches is drawn.
+    click(&mut s, "projects field");
+    type_text(&mut s, "meadow");
+    s.frame();
+    let row = |s: &Studio, p: &std::path::Path| s.ui.find(&format!("project {}", p.display())).is_some();
+    assert!(row(&s, &other_path));
+    assert!(!row(&s, &dir.canonicalize().unwrap()));
+
+    // A click opens its start scene, in this window, and the screen goes.
+    click(&mut s, &format!("project {}", other_path.display()));
+    s.frame();
+    assert!(s.ui.find("projects overlay").is_none(), "the screen closes");
+    assert_eq!(
+        s.session.project().map(|p| p.root().canonicalize().unwrap()),
+        Some(other_path.clone()),
+        "meadow is open"
+    );
+    let opened = scrap_cli::hub::Known::load(&config)
+        .unwrap()
+        .projects
+        .into_iter()
+        .find(|k| k.path == other_path)
+        .unwrap()
+        .opened;
+    assert!(opened > 0, "opening it counts as opened");
+
+    // Esc closes it without opening anything.
+    s.run(scrap_studio::menu::Action::Projects);
+    s.frame();
+    assert!(s.ui.find("projects overlay").is_some());
+    click(&mut s, "projects field");
+    key(&mut s, Key::Escape);
+    assert!(s.ui.find("projects overlay").is_none());
+
+    scrap_cli::hub::update(&config, |k| {
+        k.forget(&dir);
+        k.forget(&other);
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&other);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The app started with nothing to open: the Projects screen over no
+/// project at all — which Esc does not close, there being nothing behind
+/// it — and New there makes a project from one of the engine's examples and
+/// opens it.
+#[test]
+fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
+    let Some((_, dir)) = studio() else { return };
+    let session = scrap_studio::open_empty().unwrap();
+    let mut s = Studio::new(session, 1440.0, 900.0, 1.0);
+    for _ in 0..3 {
+        s.frame();
+    }
+    assert!(s.session.project().is_none());
+    s.open_hub();
+    s.frame();
+    assert!(s.ui.find("projects close").is_none(), "nothing to close it to");
+    click(&mut s, "projects field");
+    key(&mut s, Key::Escape);
+    assert!(s.ui.find("projects overlay").is_some(), "Esc leaves it up");
+
+    // New: the example valley, as `meadow`, in a folder of the test's own.
+    click(&mut s, "projects new");
+    assert!(s.ui.find("new set basic").is_some(), "an empty one on offer");
+    assert!(s.ui.find("new template valley").is_some(), "and the examples");
+    let place = dir.with_file_name(format!("{}-new", dir.file_name().unwrap().to_string_lossy()));
+    std::fs::create_dir_all(&place).unwrap();
+    {
+        let (hub, ui) = s.hub_mut().unwrap();
+        hub.set_location(ui, place.clone());
+    }
+    click(&mut s, "new template valley");
+    // Typed as a person types it, then a choice clicked: leaving the name
+    // does not make the project before it is chosen.
+    let name = s.ui.find("new name").unwrap();
+    s.ui.set_text(name, "");
+    click(&mut s, "new name");
+    type_text(&mut s, "meadow");
+    s.frame();
+    click(&mut s, "new template graphs");
+    assert!(!place.join("meadow").exists(), "nothing made by leaving the name");
+    click(&mut s, "new template valley");
+    click(&mut s, "new create");
+    s.frame();
+    assert!(s.ui.find("projects overlay").is_none(), "the screen goes");
+    let made = place.join("meadow").canonicalize().unwrap();
+    assert_eq!(
+        s.session.project().map(|p| p.root().canonicalize().unwrap()),
+        Some(made.clone()),
+        "the new project is open"
+    );
+    assert_eq!(s.session.project().unwrap().name(), "meadow");
+    let config = scrap_studio::appearance::config_dir().unwrap();
+    let listed = scrap_cli::hub::Known::load(&config)
+        .unwrap()
+        .projects
+        .iter()
+        .any(|k| k.path == made);
+    assert!(listed, "and on the list");
+    scrap_cli::hub::update(&config, |k| {
+        k.forget(&made);
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&place);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

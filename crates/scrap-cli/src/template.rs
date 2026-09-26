@@ -18,7 +18,12 @@ pub fn examples() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-/// The templates there are: every example with a `scrap.ron`.
+/// Examples that are not games to start from: `kitchen-web` is `kitchen`
+/// built for the browser, the same game.
+const NOT_TEMPLATES: [&str; 1] = ["kitchen-web"];
+
+/// The templates there are: every example with a `scrap.ron`, but those
+/// that only build another for somewhere else.
 pub fn names() -> Vec<String> {
     let mut out: Vec<String> = std::fs::read_dir(examples())
         .into_iter()
@@ -26,6 +31,7 @@ pub fn names() -> Vec<String> {
         .flatten()
         .filter(|e| e.path().join(scrap::project::FILE).is_file())
         .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !NOT_TEMPLATES.contains(&name.as_str()))
         .collect();
     out.sort();
     out

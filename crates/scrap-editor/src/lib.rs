@@ -531,6 +531,14 @@ impl Session {
             self.library_dir = Some(directory);
             self.uploaded.clear();
         }
+        // Another project: what was the last one's goes — its game, and
+        // the watcher over its shaders (made again for this one on the
+        // next frame).
+        let root = |p: &Option<scrap::Project>| p.as_ref().map(|p| p.root().to_path_buf());
+        if root(&project) != root(&self.project) {
+            self.stop_game();
+            self.shaders = None;
+        }
         self.project = project;
         self.prefabs = prefabs;
         // Every link given its ID and its file's name now (docs/refs.md).
@@ -4274,13 +4282,13 @@ impl Session {
     ///
     /// Tested against bounding boxes, against the expanded scene, and
     /// answered with a document entity: clicking a stone that came out of a
-    /// prefab selects the fire that brought it, because the fire is the
-    /// thing the document can move. A triangle-exact pick is better and
+    /// prefab selects the fire that brought it. Clicked again, with the
+    /// fire selected, it is the stone — changed as the fire's override. A triangle-exact pick is better and
     /// much slower, and for a box the difference only shows on thin
     /// diagonal geometry.
     pub fn pick(&self, x: u32, y: u32) -> Option<EntityId> {
         let (near, direction) = self.ray(x, y);
-        let mut best: Option<(f32, EntityId)> = None;
+        let mut best: Option<(f32, EntityId, EntityId)> = None;
         let unseen = self.unseen();
         for (desc, world) in self.instanced.scene.flatten() {
             let Some(bounds) = self.bounds_of(&desc.model()) else {
@@ -4293,12 +4301,18 @@ impl Session {
                 continue;
             }
             if let Some(distance) = ray_box(near, direction, bounds, world) {
-                if best.is_none_or(|(closest, _)| distance < closest) {
-                    best = Some((distance, owner));
+                if best.is_none_or(|(closest, _, _)| distance < closest) {
+                    best = Some((distance, desc.id, owner));
                 }
             }
         }
-        best.map(|(_, id)| id)
+        // As Unity: the first click takes the instance, the next one on
+        // it — with it, or one of its parts, selected — the part itself.
+        let (_, part, owner) = best?;
+        let within = self
+            .selected
+            .is_some_and(|s| s == owner || self.instanced.owner_of(s) == Some(owner));
+        Some(if within { part } else { owner })
     }
 
     /// The face of an entity's box under a pixel of the view: ProBuilder's
@@ -4432,7 +4446,7 @@ impl Session {
     /// Put the gizmo on an entity, or clear the selection with `None`.
     pub fn select(&mut self, id: Option<EntityId>) -> EditResult<()> {
         if let Some(id) = id {
-            self.require(id)?;
+            self.require_line(id)?;
         }
         self.selected = id;
         self.also_selected.clear();
@@ -4447,7 +4461,7 @@ impl Session {
     /// Add an entity to the selection — shift-click. The first selected
     /// stays the one the gizmo is on.
     pub fn add_to_selection(&mut self, id: EntityId) -> EditResult<()> {
-        self.require(id)?;
+        self.require_line(id)?;
         match self.selected {
             None => self.selected = Some(id),
             Some(first) if first == id => {}
@@ -4870,28 +4884,33 @@ impl Session {
             .iter()
             .map(|(o, t)| (*o, *t, self.parent_matrix(*o)))
             .collect();
-        // Untracked: the snapshot for this gesture was taken at
-        // `gizmo_begin`.
-        let scene = self.history.scene_mut_untracked();
-        let desc = scene.get_mut(id).ok_or(EditError::NoEntity(id))?;
+        // Each moved entity's transform, worked out here and written back
+        // below: to its line, or for a prefab's part, to its instance's
+        // override.
+        let mut moved_to: std::collections::HashMap<EntityId, scrap::Transform> =
+            std::iter::once(id)
+                .chain(others.iter().map(|(o, _, _)| *o))
+                .filter_map(|e| Some((e, self.transform(e)?)))
+                .collect();
+        let mut own = moved_to.get(&id).copied().ok_or(EditError::NoEntity(id))?;
         match motion {
             Motion::Position(moved) => {
                 // Snapped in local space, which is the space the file holds
                 // and the space a person means: a child snapped in world
                 // space lands on a grid its parent is not on.
                 let local = parent.inverse().transform_point3(moved);
-                desc.transform.position = if turned {
+                own.position = if turned {
                     local
                 } else {
                     gizmo::snap_all(local, snap.meters)
                 };
                 // The rest go as far, in the world, as the gizmo's went.
                 if let Some(started) = started {
-                    let went = parent.transform_point3(desc.transform.position)
+                    let went = parent.transform_point3(own.position)
                         - parent.transform_point3(started.position);
                     for (other, from, other_parent) in &others {
-                        if let Some(d) = scene.get_mut(*other) {
-                            d.transform.position =
+                        if let Some(d) = moved_to.get_mut(other) {
+                            d.position =
                                 from.position + other_parent.inverse().transform_vector3(went);
                         }
                     }
@@ -4906,13 +4925,12 @@ impl Session {
                 // the same correction the move path makes for position.
                 let (_, parent_rotation, _) = parent.to_scale_rotation_translation();
                 let local = parent_rotation.inverse() * delta * parent_rotation;
-                desc.transform.set_rotation(local * started.rotation());
+                own.set_rotation(local * started.rotation());
                 // Each of the rest turns as much about its own pivot.
                 for (other, from, other_parent) in &others {
                     let (_, turn, _) = other_parent.to_scale_rotation_translation();
-                    if let Some(d) = scene.get_mut(*other) {
-                        d.transform
-                            .set_rotation(turn.inverse() * delta * turn * from.rotation());
+                    if let Some(d) = moved_to.get_mut(other) {
+                        d.set_rotation(turn.inverse() * delta * turn * from.rotation());
                     }
                 }
             }
@@ -4920,10 +4938,10 @@ impl Session {
                 let Some(started) = started else {
                     return Ok(false);
                 };
-                desc.transform.scale = gizmo::snap_all(started.scale * factor, snap.scale);
+                own.scale = gizmo::snap_all(started.scale * factor, snap.scale);
                 for (other, from, _) in &others {
-                    if let Some(d) = scene.get_mut(*other) {
-                        d.transform.scale = gizmo::snap_all(from.scale * factor, snap.scale);
+                    if let Some(d) = moved_to.get_mut(other) {
+                        d.scale = gizmo::snap_all(from.scale * factor, snap.scale);
                     }
                 }
             }
@@ -4934,14 +4952,14 @@ impl Session {
                 // Stretched along the rect's axes — the entity's own — and
                 // moved so that `about`, the far side, stays where it was.
                 let stretch = |at: Vec3| about + orientation * (scale * (orientation.inverse() * (at - about)));
-                desc.transform.scale = started.scale * scale;
-                desc.transform.position = parent
+                own.scale = started.scale * scale;
+                own.position = parent
                     .inverse()
                     .transform_point3(stretch(started_at(&started, parent)));
                 for (other, from, other_parent) in &others {
-                    if let Some(d) = scene.get_mut(*other) {
-                        d.transform.scale = from.scale * scale;
-                        d.transform.position = other_parent
+                    if let Some(d) = moved_to.get_mut(other) {
+                        d.scale = from.scale * scale;
+                        d.position = other_parent
                             .inverse()
                             .transform_point3(stretch(started_at(from, *other_parent)));
                     }
@@ -4964,13 +4982,48 @@ impl Session {
             let moves = std::iter::once((id, started.position, parent))
                 .chain(others.iter().map(|(o, t, p)| (*o, t.position, *p)));
             for (who, from, parent) in moves {
-                if let (Some(to), Some(d)) = (place(from, parent), scene.get_mut(who)) {
-                    d.transform.position = to;
+                if let Some(to) = place(from, parent) {
+                    if who == id {
+                        own.position = to;
+                    } else if let Some(d) = moved_to.get_mut(&who) {
+                        d.position = to;
+                    }
                 }
             }
         }
+        moved_to.insert(id, own);
+        // Untracked: the snapshot for this gesture was taken at
+        // `gizmo_begin`.
+        for (who, transform) in moved_to {
+            self.put_transform_untracked(who, transform);
+        }
         self.respawn();
         Ok(true)
+    }
+
+    /// Where a drag put an entity: its line's transform, or for a part an
+    /// instance brought, that instance's override of it. A part of a
+    /// prefab nested in another stays: that prefab is where it changes.
+    fn put_transform_untracked(&mut self, id: EntityId, transform: scrap::Transform) {
+        let scene = self.history.scene_mut_untracked();
+        if let Some(desc) = scene.get_mut(id) {
+            desc.transform = transform;
+            return;
+        }
+        let Some(&(instance, part)) = self.instanced.parts.get(&id) else {
+            return;
+        };
+        let unchanged = self
+            .instanced
+            .scene
+            .get(id)
+            .is_some_and(|d| d.transform == transform);
+        if unchanged {
+            return;
+        }
+        if let Some(line) = self.history.scene_mut_untracked().get_mut(instance) {
+            line.overrides.entry(part).or_default().transform = Some(transform);
+        }
     }
 
     /// Whether a handle is being dragged.
@@ -5203,6 +5256,16 @@ impl Session {
         }
     }
 
+    /// That there is a line with this ID to select: the document's, or a
+    /// part a prefab instance brought — Unity's Hierarchy selects a
+    /// prefab's children too, and what is done to them is an override.
+    fn require_line(&self, id: EntityId) -> EditResult<()> {
+        match self.line(id) {
+            Some(_) => Ok(()),
+            None => Err(EditError::NoEntity(id)),
+        }
+    }
+
     /// That the document has an entity with this ID.
     fn require(&self, id: EntityId) -> EditResult<()> {
         match self.history.scene().get(id) {
@@ -5414,10 +5477,15 @@ impl Session {
         world * desc.transform.matrix().inverse()
     }
 
-    /// An entity of the document and where its parents put it.
+    /// An entity of the document — or a part an instance brought — and
+    /// where its parents put it.
     fn placed(&self, id: EntityId) -> Option<(&EntityDesc, Mat4)> {
-        self.history
-            .scene()
+        let scene = if self.history.scene().get(id).is_some() {
+            self.history.scene()
+        } else {
+            &self.instanced.scene
+        };
+        scene
             .flatten()
             .into_iter()
             .find(|(desc, _)| desc.id == id)

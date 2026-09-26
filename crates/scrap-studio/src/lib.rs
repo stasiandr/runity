@@ -28,6 +28,7 @@ mod dock;
 mod git_marks;
 mod git_tab;
 mod hierarchy;
+pub mod hub;
 mod inspector;
 pub mod keymap;
 pub mod layouts;
@@ -61,6 +62,16 @@ pub fn open(scene: &Path) -> Result<Session, String> {
 /// ([`Session::draw_while_building`]).
 pub fn open_live(scene: &Path) -> Result<Session, String> {
     open_with(scene, true)
+}
+
+/// A session with nothing open: the editor as it starts on the Projects
+/// screen, before a project is chosen (docs/hub.md).
+pub fn open_empty() -> Result<Session, String> {
+    let mut session = Session::offscreen(1280, 720).map_err(|e| {
+        format!("no renderer: {e}\nSCRAP_RENDERER and a working adapter are what this needs.")
+    })?;
+    session.draw_while_building();
+    Ok(session)
 }
 
 fn open_with(scene: &Path, live: bool) -> Result<Session, String> {

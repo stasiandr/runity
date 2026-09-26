@@ -444,6 +444,8 @@ pub struct Studio {
     popup: Option<Popup>,
     prompt: Option<Prompt>,
     search: Option<Search>,
+    /// The Projects screen, when it is up.
+    hub: Option<crate::hub::Hub>,
     /// Where a walker can go is shown.
     navigation: bool,
     seen: Option<Stamp>,
@@ -800,6 +802,7 @@ impl Studio {
             popup: None,
             prompt: None,
             search: None,
+            hub: None,
             navigation: false,
             seen: None,
             scene_buttons: HashSet::new(),
@@ -1321,6 +1324,9 @@ impl Studio {
         let timing = std::env::var_os("SCRAP_STUDIO_TIMING").is_some();
         let t0 = Instant::now();
         let mut requests = Requests::default();
+        if let Some(hub) = &mut self.hub {
+            hub.poll(&mut self.ui);
+        }
         for (node, event) in self.ui.events() {
             self.dispatch(node, &event, &mut requests);
         }
@@ -1395,7 +1401,6 @@ impl Studio {
             }
         }
         self.update_tooltip();
-        self.hierarchy.hover(&mut self.ui);
         if self.git.poll(&self.session) {
             self.hierarchy.set_marks(&mut self.ui, &self.git.entities);
             let mut files = self.git.files.clone();
@@ -1699,6 +1704,15 @@ impl Studio {
     /// Turn the compass to the camera: each axis where it points on screen,
     /// the ones pointing away drawn faint.
     fn turn_compass(&mut self) {
+        // The Scene view's: neither the Game view nor play has it.
+        let off = self.session.is_playing() || self.session.is_game_view();
+        if self.compass.off != off {
+            self.compass.off = off;
+            self.ui.restyle(self.compass.holder, |s| if off { s.hidden() } else { s.shown() });
+        }
+        if off {
+            return;
+        }
         let camera = self.session.camera();
         let key = (camera.position, camera.target, camera.ortho.is_some());
         if self.compass.seen == Some(key) {
@@ -3282,6 +3296,13 @@ impl Studio {
             self.spline_handle_event(i, event);
             return;
         }
+        // The Projects screen takes everything aimed at it.
+        if let Some(hub) = &mut self.hub {
+            if let Some(outcome) = hub.event(&mut self.ui, node, event) {
+                self.hub_outcome(outcome, requests);
+                return;
+            }
+        }
         // Quick Search takes what is aimed at it.
         if let Some(q) = &self.search {
             let (field, overlay) = (q.field, q.overlay);
@@ -3741,12 +3762,30 @@ impl Studio {
                         return Err("the open scene has unsaved changes: save first, or open the other one again to discard them".into());
                     }
                     self.discard_asked = None;
+                    let before = s.project().map(|p| p.root().to_path_buf());
                     let missing = s.open_scene(&path).map_err(e)?;
                     s.say(Level::Info, format!("opened {}", path.display()));
                     for m in missing {
                         s.say(Level::Warning, m);
                     }
+                    let after = s.project().map(|p| p.root().to_path_buf());
+                    if let Some(root) = &after {
+                        if let Some(dir) = &self.config_dir {
+                            if let Err(problem) = scrap_cli::hub::update(dir, |k| k.opened(root)) {
+                                s.say(Level::Warning, problem);
+                            }
+                        }
+                    }
+                    // Another project: its own layout, and a word when its
+                    // game builds against another engine than this editor.
+                    if after != before {
+                        if let Some(note) = after.as_deref().and_then(crate::hub::engine_note) {
+                            s.say(Level::Warning, note);
+                        }
+                        self.restore_layout();
+                    }
                 }
+                Action::Projects => self.open_hub(),
                 Action::NewScene => {
                     self.ask("New scene", "", Ask::NewScene);
                 }
@@ -4491,6 +4530,83 @@ impl Studio {
             hits: Vec::new(),
         });
         self.fill_search("");
+    }
+
+    /// The Projects screen (docs/hub.md), over everything.
+    pub fn open_hub(&mut self) {
+        self.close_hub();
+        self.close_search();
+        self.close_popup();
+        let current = self.session.project().map(|p| p.root().to_path_buf());
+        self.hub = Some(crate::hub::Hub::open(
+            &mut self.ui,
+            self.config_dir.clone(),
+            current,
+        ));
+    }
+
+    pub fn close_hub(&mut self) {
+        if let Some(hub) = self.hub.take() {
+            hub.close(&mut self.ui);
+            self.ui.focus(Some(self.viewport));
+        }
+    }
+
+    /// The Projects screen as it is: for a test, which waits for its list.
+    pub fn hub_mut(&mut self) -> Option<(&mut crate::hub::Hub, &mut Ui)> {
+        let hub = self.hub.as_mut()?;
+        hub.wait(&mut self.ui);
+        Some((hub, &mut self.ui))
+    }
+
+    /// The Projects screen as it is: for a test, which waits for its list.
+    pub fn hub(&mut self) -> Option<&crate::hub::Hub> {
+        let hub = self.hub.as_mut()?;
+        hub.wait(&mut self.ui);
+        Some(hub)
+    }
+
+    /// What a click on the Projects screen asked for.
+    fn hub_outcome(&mut self, outcome: crate::hub::Outcome, requests: &mut Requests) {
+        use crate::hub::Outcome;
+        match outcome {
+            Outcome::Handled => {}
+            Outcome::Close => self.close_hub(),
+            Outcome::Open(scene) => {
+                self.close_hub();
+                requests.action = Some(Action::OpenScene(scene));
+            }
+            Outcome::Add => {
+                let Some(folder) = rfd::FileDialog::new()
+                    .set_title("Add projects: a project, or a folder of them")
+                    .pick_folder()
+                else {
+                    return;
+                };
+                let found = scrap_cli::hub::discover(&folder);
+                if found.is_empty() {
+                    self.session.say(
+                        Level::Warning,
+                        format!("no scrap.ron in {} or two levels under it", folder.display()),
+                    );
+                    return;
+                }
+                if let Some(hub) = &mut self.hub {
+                    hub.change(&mut self.ui, |k| found.iter().for_each(|p| k.add(p)));
+                }
+            }
+            Outcome::ChooseLocation => {
+                let Some(folder) = rfd::FileDialog::new()
+                    .set_title("Where the new project goes")
+                    .pick_folder()
+                else {
+                    return;
+                };
+                if let Some(hub) = &mut self.hub {
+                    hub.set_location(&mut self.ui, folder);
+                }
+            }
+        }
     }
 
     fn close_search(&mut self) {
@@ -5309,6 +5425,9 @@ fn tooltip_key(name: &str) -> Option<&'static str> {
 const COMPASS: f32 = 84.0;
 
 struct Compass {
+    /// The corner the compass stands in: hidden while playing.
+    holder: NodeId,
+    off: bool,
     /// +X, +Y, +Z, −X, −Y, −Z, and the side each looks from.
     axes: Vec<(NodeId, scrap_editor::Side)>,
     /// The dial the axes stand on: what they are put in, back to front.
@@ -5426,6 +5545,8 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
         axes.push((dot, side));
     }
     Compass {
+        holder,
+        off: false,
         axes,
         dial,
         beads,

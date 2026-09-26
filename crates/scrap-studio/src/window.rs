@@ -101,6 +101,8 @@ impl FloatWindow {
 struct App {
     /// The session until the window exists to put it in.
     pending: Option<(scrap_editor::Session, String)>,
+    /// The Projects screen over the scene when the window opens.
+    projects: bool,
     running: Option<Running>,
     /// Panels torn off into windows of their own.
     floats: Vec<FloatWindow>,
@@ -226,8 +228,10 @@ impl ApplicationHandler<Chosen> for App {
             size.height as f32 / scale,
             scale,
         );
-        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut studio = studio;
+        if self.projects {
+            studio.open_hub();
+        }
         #[cfg(target_os = "macos")]
         {
             // After launch, or winit's own menu would replace it.
@@ -513,6 +517,12 @@ fn float_event(run: &mut Running, float: &mut FloatWindow, event: &WindowEvent) 
 
 /// Open the window over `session` and run until it closes.
 pub fn run(session: scrap_editor::Session, title: String) {
+    run_with(session, title, false);
+}
+
+/// `run`, with the Projects screen up over the scene when `projects`: how
+/// the app starts from the Dock or a launcher (docs/hub.md).
+pub fn run_with(session: scrap_editor::Session, title: String, projects: bool) {
     let mut builder = EventLoop::<Chosen>::with_user_event();
     // The menu bar is ours (`crate::native_menu`), not winit's default.
     #[cfg(target_os = "macos")]
@@ -529,6 +539,7 @@ pub fn run(session: scrap_editor::Session, title: String) {
     };
     let mut app = App {
         pending: Some((session, title)),
+        projects,
         running: None,
         floats: Vec::new(),
         close_asked: false,

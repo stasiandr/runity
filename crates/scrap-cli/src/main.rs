@@ -76,6 +76,14 @@ scrap bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
     how far down the ladder each holds — and every run; writes it all as
     RON to FILE (bench.ron). Real time: the full ladder takes about an
     hour a seed.
+scrap projects [--json]
+scrap projects add FOLDER | forget PROJECT | pin PROJECT | unpin PROJECT
+    The projects the editor's Projects screen lists (File > Projects):
+    each with its branch and the engine checkout its game builds against —
+    that checkout's commit and branch, a star when it has changes not
+    committed. The list is the person's (projects.ron in the editor's
+    settings folder); opening a project in the editor puts it there. add
+    takes a project, or a folder of them up to two levels down.
 scrap sync [PROJECT]
     Build library/ from assets/ and materials/: changed sources by content
     hash, moved ones found by it, new ones imported, sidecars written.
@@ -157,6 +165,72 @@ scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]
 
 PROJECT is any path inside a project; the current folder by default.";
 
+/// `scrap projects`: the hub's list, or a change to it.
+fn projects(rest: &[String]) -> Result<ExitCode> {
+    use scrap_cli::hub;
+    let dir = hub::config_dir().context("no settings folder: HOME is not set")?;
+    let err = |e: String| anyhow::anyhow!(e);
+    let path = |i: usize| -> Result<PathBuf> {
+        let p = PathBuf::from(rest.get(i).context("wants a path")?);
+        Ok(p.canonicalize().unwrap_or(p))
+    };
+    match rest.first().map(String::as_str) {
+        None | Some("--json") => {
+            let entries = hub::entries(&hub::Known::load(&dir).map_err(err)?);
+            if rest.first().is_some() {
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            if entries.is_empty() {
+                println!("no projects yet: open one in the editor, or `scrap projects add FOLDER`");
+            }
+            for e in &entries {
+                let pin = if e.pinned { "📌 " } else { "" };
+                println!("{pin}{}  {}", e.name, e.path.display());
+                match &e.problem {
+                    Some(problem) => println!("    {problem}"),
+                    None => println!(
+                        "    engine {} ({})  ·  branch {}  ·  opened {}",
+                        e.engine.label(),
+                        e.engine.checkout.as_ref().map_or(e.engine.source.clone(), |c| c.display().to_string()),
+                        e.branch.as_deref().unwrap_or("-"),
+                        hub::ago(e.opened),
+                    ),
+                }
+            }
+        }
+        Some("add") => {
+            let folder = path(1)?;
+            let found = hub::discover(&folder);
+            if found.is_empty() {
+                bail!("no scrap.ron in {} or two levels under it", folder.display());
+            }
+            hub::update(&dir, |k| found.iter().for_each(|p| k.add(p))).map_err(err)?;
+            for p in &found {
+                println!("added {}", p.display());
+            }
+        }
+        Some("forget") => {
+            let root = path(1)?;
+            let mut there = false;
+            hub::update(&dir, |k| there = k.forget(&root)).map_err(err)?;
+            if !there {
+                bail!("{} is not on the list", root.display());
+            }
+        }
+        Some(pin @ ("pin" | "unpin")) => {
+            let root = path(1)?;
+            let mut there = false;
+            hub::update(&dir, |k| there = k.pin(&root, pin == "pin")).map_err(err)?;
+            if !there {
+                bail!("{} is not on the list", root.display());
+            }
+        }
+        Some(other) => bail!("scrap projects: unknown {other}"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
@@ -173,6 +247,7 @@ fn run() -> Result<ExitCode> {
     let rest: Vec<String> = args.collect();
     match command.as_str() {
         "new" => new(&rest),
+        "projects" => projects(&rest),
         "sync" => sync(&find(&rest)?),
         "bench" => bench(&rest),
         "import-unity" => {

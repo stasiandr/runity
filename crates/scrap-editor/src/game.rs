@@ -98,7 +98,26 @@ pub(crate) struct Running {
     waiting: Option<Waiting>,
     /// Drawing into the Game view rather than a window.
     pub(crate) embed: Option<crate::embedded::Embedded>,
+    /// The game's scene, followed by the document while it plays.
+    follow: Follow,
 }
+
+/// The Hierarchy during play shows the scene the game is in, as Unity's
+/// does: when the game goes to another level, the document goes with it,
+/// and back to where it was when the game ends.
+struct Follow {
+    /// The scene the game last said it was in.
+    seen: Option<String>,
+    /// The document open when the game first went elsewhere.
+    from: Option<PathBuf>,
+    /// A level not followed because the document had unsaved edits: said
+    /// once.
+    refused: Option<String>,
+    checked: std::time::Instant,
+}
+
+/// How often the game's report is read for the scene it is in.
+const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Players who start once the host is: from the build the host ran, each
 /// with what makes it that player.
@@ -137,6 +156,12 @@ impl Running {
             guests: Vec::new(),
             waiting: None,
             embed: None,
+            follow: Follow {
+                seen: None,
+                from: None,
+                refused: None,
+                checked: std::time::Instant::now(),
+            },
         })
     }
 
@@ -466,6 +491,7 @@ impl Session {
     /// it is seen to have ended — its last lines are in by then.
     pub fn poll_game(&mut self) -> Option<i32> {
         self.mirror_to_game();
+        self.follow_game();
         self.poll_embedded();
         let running = self.game.as_mut()?;
         let mut said = running.start_guests();
@@ -502,8 +528,13 @@ impl Session {
         let status = exited?;
         // The host gone is the game gone: the others go with it, and a
         // Game view it drew in goes back to the scene.
-        if self.game.take().is_some_and(|g| g.embed.is_some()) {
-            self.game_view = false;
+        if let Some(mut gone) = self.game.take() {
+            if gone.embed.is_some() {
+                self.game_view = false;
+            }
+            let from = gone.follow.from.take();
+            drop(gone);
+            self.back_from_game(from);
         }
         let code = status.code().unwrap_or(-1);
         if status.success() {
@@ -692,7 +723,100 @@ impl Session {
         for (level, text) in last {
             self.say(level, text);
         }
+        let from = running.follow.from.take();
+        drop(running);
+        self.back_from_game(from);
         true
+    }
+
+    /// The scene the running game says it is playing, by name. `None`
+    /// without a game, or before it has said.
+    pub fn game_scene(&self) -> Option<String> {
+        self.game_state()?
+            .diagnostics
+            .map(|d| d.scene)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// When the game went to another level, open that level: the
+    /// Hierarchy shows what is playing, and its lines select what the
+    /// Inspector shows the game's values of. Only on a change of the
+    /// game's level, so a scene opened by hand while it plays stays open;
+    /// never over unsaved edits, which it says once.
+    fn follow_game(&mut self) {
+        let Some(running) = self.game.as_mut() else {
+            return;
+        };
+        if running.follow.checked.elapsed() < FOLLOW_EVERY {
+            return;
+        }
+        running.follow.checked = std::time::Instant::now();
+        let Some(name) = self.game_scene() else {
+            return;
+        };
+        let modified = self.is_modified();
+        let open = self.scene_path.as_deref().map(scrap::layout::name_of);
+        let path = self.project.as_ref().and_then(|p| p.scene(&name));
+        let here = self.scene_path.clone();
+        let Some(running) = self.game.as_mut() else {
+            return;
+        };
+        if running.follow.seen.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        if open.as_deref() == Some(name.as_str()) {
+            running.follow.seen = Some(name);
+            return;
+        }
+        let Some(path) = path else {
+            running.follow.seen = Some(name);
+            return;
+        };
+        if modified {
+            if running.follow.refused.as_deref() != Some(name.as_str()) {
+                running.follow.refused = Some(name.clone());
+                let open = open.unwrap_or_default();
+                self.say(
+                    Level::Warning,
+                    format!("the game went to {name}; {open} has unsaved changes, so the Hierarchy stays on it — save it to follow the game"),
+                );
+            }
+            return;
+        }
+        running.follow.seen = Some(name.clone());
+        running.follow.refused = None;
+        if running.follow.from.is_none() {
+            running.follow.from = here;
+        }
+        match self.open_scene(&path) {
+            Ok(_) => self.say(
+                Level::Info,
+                format!("the game went to {name}: the Hierarchy shows it while it plays"),
+            ),
+            Err(e) => self.say(Level::Warning, format!("could not follow the game to {name}: {e}")),
+        }
+    }
+
+    /// The game ended: back to the scene that was open when it first went
+    /// to another level — unless the one open now has unsaved edits.
+    fn back_from_game(&mut self, from: Option<PathBuf>) {
+        let Some(from) = from else {
+            return;
+        };
+        if self.scene_path.as_ref() == Some(&from) {
+            return;
+        }
+        if self.is_modified() {
+            let open = self.scene_path.as_deref().map(scrap::layout::name_of).unwrap_or_default();
+            self.say(
+                Level::Warning,
+                format!("{open} stays open: it has unsaved changes"),
+            );
+            return;
+        }
+        if let Err(e) = self.open_scene(&from) {
+            self.say(Level::Warning, format!("could not go back to {}: {e}", from.display()));
+        }
     }
 }
 

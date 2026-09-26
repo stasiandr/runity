@@ -64,6 +64,10 @@ pub struct Diagnostics {
     /// Which player this is: 0 the host.
     #[serde(default)]
     pub me: u32,
+    /// The scene the game is playing, by name: the one it started on, or
+    /// the level it went to since. What the editor's Hierarchy follows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scene: String,
     /// Each networked entity: its id, owner, whether this peer only holds
     /// a copy, and the newest snapshot it applied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

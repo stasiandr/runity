@@ -1660,6 +1660,103 @@ fn editing_a_part_of_an_instance_overrides_it_in_that_instance_only() {
 }
 
 #[test]
+fn a_part_of_an_instance_is_selected_and_dragged_as_an_override() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "part drag",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "mouse red", prefab: "mouse"),
+            (id: "00000000000000a2", name: "mouse blue", prefab: "mouse", transform: (position: (4.0, 0.0, 0.0))),
+        ])"#,
+    );
+    let prefab = scrap::Project::find(&path).unwrap().prefabs().join("mouse.prefab");
+    write_all(
+        &prefab,
+        r#"(id: "00000000000000c1", name: "mouse", model: "builtin:cube",
+            children: [(id: "00000000000000c2", name: "ear", model: "builtin:sphere")])"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    session.set_camera(Vec3::new(0.0, 1.0, 6.0), Vec3::new(0.0, 0.5, 0.0));
+
+    // The Hierarchy selects a prefab's child, as Unity's does.
+    let red: EntityId = "00000000000000a1".parse().unwrap();
+    let ear = red.within("00000000000000c2".parse().unwrap());
+    session.select(Some(ear)).unwrap();
+    assert_eq!(session.selected(), Some(ear));
+
+    let (width, height) = session.size();
+    let grab_x = (0..width)
+        .find(|x| session.gizmo_begin(*x, height / 2).unwrap().is_some())
+        .expect("an arm crosses the middle of the view");
+    let before = session.transform(ear).unwrap();
+    assert!(session.gizmo_drag(grab_x + 30, height / 2).unwrap());
+    session.gizmo_end();
+
+    let after = session.transform(ear).unwrap();
+    assert_ne!(after.position, before.position, "the ear moved");
+    let blue: EntityId = "00000000000000a2".parse().unwrap();
+    let other_ear = blue.within("00000000000000c2".parse().unwrap());
+    assert_eq!(
+        session.transform(other_ear).unwrap(),
+        before,
+        "the other mouse keeps the prefab's"
+    );
+    assert!(!session.scene().get(red).unwrap().overrides.is_empty());
+    // One gesture, one step.
+    assert!(session.undo().unwrap());
+    assert_eq!(session.transform(ear).unwrap(), before);
+}
+
+#[test]
+fn the_document_follows_the_game_to_another_level_and_back() {
+    let Some((mut session, path)) = open("follow game") else {
+        return;
+    };
+    let second = path.with_file_name("second.scene.ron");
+    write_all(&second, r#"(entities: [(name: "tower", model: "builtin:cube")])"#).unwrap();
+    let state = root_of(&path).join(".scrap/state-test.ron");
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30").env(scrap::live::STATE_VAR, &state);
+    session.run_in_console(game).unwrap();
+    let say = |scene: &str| {
+        scrap::save::SaveGame {
+            diagnostics: Some(scrap::save::Diagnostics {
+                scene: scene.into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .write(&state)
+        .unwrap();
+    };
+    let settle = |session: &mut Session| {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        session.poll_game();
+    };
+
+    // Where it started: nothing to follow.
+    say("scene");
+    settle(&mut session);
+    assert_eq!(session.scene_path(), Some(path.as_path()));
+    // The game changed level: the document is that level.
+    say("second");
+    settle(&mut session);
+    assert_eq!(session.game_scene().as_deref(), Some("second"));
+    assert_eq!(session.scene_path(), Some(second.as_path()));
+    assert!(session.find("tower").is_some());
+    // And its lines select, for the Inspector's game values.
+    let tower = session.find("tower").unwrap();
+    session.select(Some(tower)).unwrap();
+
+    // The game ended: back to the scene it started from.
+    session.stop_game();
+    assert_eq!(session.scene_path(), Some(path.as_path()));
+}
+
+#[test]
 fn a_selection_of_several_moves_duplicates_and_deletes_as_one_step() {
     let Some((mut session, _)) = open("multi") else {
         return;
