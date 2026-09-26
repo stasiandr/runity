@@ -11,6 +11,8 @@
 //!
 //! The colours are Nocturne's, not whatever the person running it chose,
 //! unless `SCRAP_SHOT_THEME` names a preset (`daylight`, `graphite`…).
+//! `SCRAP_SHOT_PROJECTS=DIR` puts the Projects screen up over the list in
+//! DIR/projects.ron.
 
 use std::path::PathBuf;
 
@@ -68,6 +70,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         studio.set_native_menu(true);
     }
     studio.frame();
+    // `SCRAP_SHOT_PROJECTS=DIR`: the Projects screen up, over the list in
+    // DIR/projects.ron (a settings folder).
+    if let Ok(from) = std::env::var("SCRAP_SHOT_PROJECTS") {
+        let list = PathBuf::from(from).join(scrap_cli::hub::FILE);
+        std::fs::create_dir_all(&config)?;
+        std::fs::copy(&list, config.join(scrap_cli::hub::FILE))?;
+        studio.open_hub();
+        studio.hub();
+        studio.frame();
+    }
     for name in clicks.split(',').filter(|n| !n.is_empty()) {
         studio.ui.paint();
         let Some(node) = studio.ui.find(name) else {

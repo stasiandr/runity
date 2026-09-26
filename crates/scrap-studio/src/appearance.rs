@@ -54,29 +54,14 @@ pub const FILE: &str = "theme.ron";
 
 /// Stands in for the person's settings folder when set: a test, or the
 /// `shot` example, keeps its choices out of the real one.
-pub const CONFIG_DIR_VAR: &str = "SCRAP_CONFIG_DIR";
+pub const CONFIG_DIR_VAR: &str = scrap_cli::hub::CONFIG_DIR_VAR;
 
 /// Where the editor keeps what is the person's rather than a project's:
 /// `~/Library/Application Support/scrap` on macOS, `%APPDATA%\scrap` on
 /// Windows, `$XDG_CONFIG_HOME/scrap` or `~/.config/scrap` elsewhere — or
 /// `SCRAP_CONFIG_DIR`. None with no home folder to find.
 pub fn config_dir() -> Option<PathBuf> {
-    let env = |name: &str| {
-        std::env::var_os(name)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    if let Some(dir) = env(CONFIG_DIR_VAR) {
-        return Some(dir);
-    }
-    let base = if cfg!(windows) {
-        env("APPDATA")
-    } else if cfg!(target_os = "macos") {
-        env("HOME").map(|h| h.join("Library/Application Support"))
-    } else {
-        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))
-    };
-    base.map(|b| b.join("scrap"))
+    scrap_cli::hub::config_dir()
 }
 
 /// One theme file: the preset it names, if any, and the tokens it sets.

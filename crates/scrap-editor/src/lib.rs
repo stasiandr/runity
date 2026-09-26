@@ -531,6 +531,14 @@ impl Session {
             self.library_dir = Some(directory);
             self.uploaded.clear();
         }
+        // Another project: what was the last one's goes — its game, and
+        // the watcher over its shaders (made again for this one on the
+        // next frame).
+        let root = |p: &Option<scrap::Project>| p.as_ref().map(|p| p.root().to_path_buf());
+        if root(&project) != root(&self.project) {
+            self.stop_game();
+            self.shaders = None;
+        }
         self.project = project;
         self.prefabs = prefabs;
         // Every link given its ID and its file's name now (docs/refs.md).

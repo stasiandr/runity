@@ -28,6 +28,7 @@ mod dock;
 mod git_marks;
 mod git_tab;
 mod hierarchy;
+pub mod hub;
 mod inspector;
 pub mod keymap;
 pub mod layouts;
