@@ -286,21 +286,25 @@ impl OceanState {
             let shift = self.shifts[at];
             Vec3::new(start + i as f32 * step + shift.x, self.heights[at], start + k as f32 * step + shift.y)
         };
-        let mut vertices = Vec::with_capacity(side * side);
-        for k in 0..side {
-            for i in 0..side {
+        // Every row of the sea is its own `side` vertices: made across the
+        // cores, straight into their places (it is made again each frame).
+        let blank = Vertex { position: [0.0; 3], normal: [0.0; 3], uv: [0.0; 2] };
+        let mut vertices = vec![blank; side * side];
+        scrap_core::jobs::for_each_chunk_mut(&mut vertices, side, |start, row| {
+            let k = start / side;
+            for (i, out) in row.iter_mut().enumerate() {
                 let p = point(i, k);
                 let (e, w) = (point(i + 1, k), point(i + n - 1, k) - Vec3::new(l, 0.0, 0.0));
                 let (s, nn) = (point(i, k + 1), point(i, k + n - 1) - Vec3::new(0.0, 0.0, l));
                 let normal = (s - nn).cross(e - w).normalize_or(Vec3::Y);
                 let world = self.centre + p;
-                vertices.push(Vertex {
+                *out = Vertex {
                     position: back.transform_point3(world).to_array(),
                     normal: back.transform_vector3(normal).normalize_or(Vec3::Y).to_array(),
                     uv: [world.x, world.z],
-                });
+                };
             }
-        }
+        });
         let mut indices = Vec::with_capacity((side - 1) * (side - 1) * 6);
         for k in 0..side as u32 - 1 {
             for i in 0..side as u32 - 1 {
