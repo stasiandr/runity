@@ -1073,13 +1073,24 @@ impl Matcher {
         let over = |(rise, drop): (f32, f32)| rise.max(drop) > self.feel.body.step + 0.05;
         // Held to the climb that was checked: up to the frame it tops out
         // at, and no further along the take without checking again.
-        let holding = self.climbing_on && self.frame <= self.plan_end && db.clip_of(self.frame) == db.clip_of(self.plan_end);
+        let rising = self.plan_top > self.plan_base;
+        // Up: done once at the top. And while it stands on something, not
+        // held against a stick that points elsewhere.
+        let topped = rising && self.root.0.y >= self.plan_top - 0.05;
+        let steady = self.grounded && (self.root.0.y - self.spring.0.y).abs() < 0.1;
+        let heading = self.root.1 * Vec3::Z;
+        let turned_away = flat(ask.velocity).length() > 0.2 && flat(ask.velocity).normalize().dot(heading) < 0.5;
+        let holding = self.climbing_on
+            && self.frame <= self.plan_end
+            && db.clip_of(self.frame) == db.clip_of(self.plan_end)
+            && !topped
+            && !(steady && turned_away);
         let wants = holding || over(self.climbing(db, 20));
         let committed = wants
             && (holding || {
                 // Only a climb the world has: where the take gets to, and
                 // how high, set against the ground there.
-                match self.plan(db, world) {
+                match self.plan(db, ask, world) {
                     Some((warp, end, top, stretch, edge)) => {
                         self.warp = warp;
                         self.stretch = (stretch, edge);
@@ -1250,7 +1261,7 @@ impl Matcher {
     /// higher, and how high the ground is there. What to multiply the
     /// take's rise by to make the world's, and the frame it tops out at;
     /// `None` when it is not the same climb to within 30 cm.
-    fn plan(&self, db: &Database, world: &dyn Surroundings) -> Option<(f32, usize, f32, f32, usize)> {
+    fn plan(&self, db: &Database, ask: &Ask, world: &dyn Surroundings) -> Option<(f32, usize, f32, f32, usize)> {
         let clip = &db.clips[db.clip_of(self.frame)].1;
         let here = db.support[self.frame];
         let end = clip.end.min(self.frame + 60);
@@ -1264,6 +1275,13 @@ impl Matcher {
             let (v, spin) = db.motion[f];
             at += turn * flat(v) / db.setup.rate;
             turn *= Quat::from_rotation_y(spin / db.setup.rate);
+        }
+        // Where the stick points: a climb that goes elsewhere — the take's
+        // actor turning off the side of a landing — is not what is asked.
+        let wanted = flat(ask.velocity);
+        let goes = flat(at - self.root.0);
+        if wanted.length() < 0.2 || goes.length() < 0.1 || goes.normalize().dot(wanted.normalize()) < 0.7 {
+            return None;
         }
         let climb = self.feel.climb;
         let base = self.spring.0.y;
