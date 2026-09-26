@@ -910,6 +910,7 @@ crate::impl_parts! {
         "dust_devils", "drifted", "lightning", "drying", "mud",
     ];
     crate::reflections::ScreenSpaceReflections => "screen_space_reflections";
+    crate::fullscreen::FullscreenPass => "fullscreen";
 }
 
 /// What a line of a scene looks like, read off it: what was `desc.model`

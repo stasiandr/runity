@@ -1,0 +1,16 @@
+// Pixel art: its picture read texel by texel (`filter: Point`), never
+// blurred, tiled mirrored so it repeats without a seam, and a faint
+// sparkle of the sky from Environment on the white spots.
+(
+    textures: ["art"],
+    nodes: {
+        "tiled": Multiply(a: "uv", b: 2.0),
+        "texel": Texture(name: "art", uv: "tiled", wrap: Mirror, filter: Point),
+        "white": Luminance(of: "texel.rgb"),
+        "spots": Step(edge: 0.9, of: "white"),
+        "sky": Environment(direction: "normal", roughness: 0.2),
+        "gleam": Multiply(a: "sky", b: "spots"),
+        "soft": Multiply(a: "gleam", b: 0.4),
+    },
+    surface: (albedo: "texel.rgb", emission: "soft", smoothness: 0.3),
+)

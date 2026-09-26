@@ -1,0 +1,23 @@
+// Rings spreading out from a point, 0 to 1: used by the hologram's scan
+// and the water's drops. `speed` is how fast they leave, `count` how many
+// fit between the centre and the edge.
+(
+    inputs: {
+        "at": "uv",
+        "center": (0.5, 0.5),
+        "count": 8.0,
+        "speed": 1.0,
+    },
+    nodes: {
+        "far": Distance(a: "at", b: "center"),
+        "phase": Multiply(a: "far", b: "count"),
+        "moving": Multiply(a: "time", b: "speed"),
+        "wave": Subtract(a: "phase", b: "moving"),
+        "turns": Multiply(a: "wave", b: 6.2831853),
+        "sine": Sine(of: "turns"),
+        "ring": Remap(of: "sine", from: (-1.0, 1.0), to: (0.0, 1.0)),
+    },
+    outputs: {
+        "rings": "ring",
+    },
+)

@@ -1,0 +1,2 @@
+// Hammered gold in the Specular workflow: shaders/gold.graph.ron.
+(color: "#ffffff", shader: "gold")

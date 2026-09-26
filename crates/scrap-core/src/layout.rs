@@ -113,7 +113,7 @@ impl Kind {
 
 /// The extensions that say a kind, the longest first so `.cases.ron` is
 /// not taken for something else.
-const SUFFIXES: [(&str, Kind); 13] = [
+const SUFFIXES: [(&str, Kind); 14] = [
     (".scene.ron", Kind::Scene),
     (".screen.ron", Kind::Screen),
     (".animator.ron", Kind::Animator),
@@ -124,6 +124,7 @@ const SUFFIXES: [(&str, Kind); 13] = [
     (".graph.ron", Kind::Shader),
     (".clip.ron", Kind::Clip),
     (".vfx.ron", Kind::Shader),
+    (".post.ron", Kind::Shader),
     (".prefab", Kind::Prefab),
     (".scrmat", Kind::Material),
     (".wgsl", Kind::Shader),
@@ -396,6 +397,7 @@ mod tests {
         assert_eq!(kind_of("content/game/water/water.wgsl"), Some(Kind::Shader));
         assert_eq!(kind_of("fx/lava.graph.ron"), Some(Kind::Shader));
         assert_eq!(kind_of("fx/sparks.vfx.ron"), Some(Kind::Shader));
+        assert_eq!(kind_of("fx/film.post.ron"), Some(Kind::Shader));
         // Data: a config table is a plain `.ron` wherever it lies.
         assert_eq!(kind_of("content/game/core/world.ron"), None);
         assert_eq!(kind_of("content/game/food/tomato/tomato.png"), None);

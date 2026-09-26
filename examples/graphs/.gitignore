@@ -1,0 +1,10 @@
+# Built from the sources and their .scrimport sidecars; a clone rebuilds it.
+/library/
+/target/
+# What `scrap build` makes.
+/build/
+# The editor's memory for whoever uses it: views, the last scene.
+/.scrap/
+# Keys for the services editor modules call (FAL_KEY, …): a key in git is a
+# key on GitHub.
+.env

@@ -1,0 +1,21 @@
+// Rock laid on from three sides with no UVs (Triplanar), bumped by its
+// own grey, moss on what faces up; a blurred copy (a coarser mip level)
+// mixed in far away so it does not shimmer.
+(
+    textures: ["stone"],
+    nodes: {
+        "laid": Triplanar(name: "stone", at: "position", normal: "normal", scale: 0.6, sharpness: 6.0),
+        "grey": Luminance(of: "laid.rgb"),
+        "bumps": NormalFromHeight(height: "grey", strength: 0.35),
+        "far": Smoothstep(low: 8.0, high: 25.0, of: "depth"),
+        "blurred": Texture(name: "stone", uv: "position.xz", lod: 4.0),
+        "stone": Lerp(a: "laid.rgb", b: "blurred.rgb", t: "far"),
+        "up": Dot(a: "normal", b: (0.0, 1.0, 0.0)),
+        "mossy": Smoothstep(low: 0.55, high: 0.8, of: "up"),
+        "patchy": Noise(at: "position", scale: 1.5),
+        "moss_here": Multiply(a: "mossy", b: "patchy"),
+        "painted": Lerp(a: "stone", b: (0.18, 0.32, 0.1), t: "moss_here"),
+        "rough": Lerp(a: 0.25, b: 0.05, t: "moss_here"),
+    },
+    surface: (albedo: "painted", normal: "bumps", smoothness: "rough"),
+)

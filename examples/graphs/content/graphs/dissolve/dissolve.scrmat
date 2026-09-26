@@ -1,0 +1,3 @@
+// Burning away and back: shaders/dissolve.graph.ron. `params` are its
+// glowing `edge` (linear) and that band's `width`.
+(color: "#ffffff", shader: "dissolve", params: [1.0, 0.45, 0.08, 0.08], render_face: Both)

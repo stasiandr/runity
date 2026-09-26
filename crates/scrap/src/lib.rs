@@ -24,6 +24,7 @@ pub use scrap_core::impl_parts;
 pub use scrap_animation::animator;
 #[cfg(feature = "animation")]
 pub use scrap_animation::animgraph;
+#[cfg(feature = "animation")]
 pub use scrap_animation::rules;
 /// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
 #[cfg(feature = "animation")]
@@ -121,6 +122,7 @@ pub use scrap_render::lights;
 pub use scrap_render::lod;
 pub use scrap_render::occlusion;
 pub use scrap_render::particles_gpu;
+pub use scrap_render::fullscreen;
 pub use scrap_render::upscale;
 pub use scrap_render::vsm;
 pub mod live;

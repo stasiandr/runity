@@ -118,6 +118,9 @@ pub struct Unity {
     pub declared_params: HashMap<String, Vec<String>>,
     /// The `.asset` files that hold a Mesh: models, made without Blender.
     pub mesh_assets: std::collections::HashSet<PathBuf>,
+    /// The Meshes the file being converted keeps inside itself (ProBuilder's):
+    /// fileID → the model written for it.
+    pub local_meshes: HashMap<i64, String>,
 }
 
 /// The kind a Unity file becomes in scrap, by its extension.
@@ -241,6 +244,7 @@ impl Unity {
             mesh_pieces: HashMap::new(),
             declared_params: HashMap::new(),
             mesh_assets,
+            local_meshes: HashMap::new(),
         })
     }
 
@@ -564,10 +568,14 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         }
     }
 
-    for (guid, path) in unity.of_kind("prefab") {
+    let models_dir = project.assets().join("models");
+    let prefabs: Vec<(String, PathBuf)> = unity.of_kind("prefab").into_iter().map(|(g, p)| (g.to_string(), p.to_path_buf())).collect();
+    for (guid, path) in &prefabs {
+        let (guid, path) = (guid.as_str(), path.as_path());
         let Some(text) = read_text(path, &mut report) else {
             continue;
         };
+        unity.local_meshes = mesh::inside(&text, &unity.names[guid], &models_dir, &mut report.errors);
         let roots = scene::convert_file(&unity, &text, &mut report);
         let Some(root) = roots.into_iter().next() else {
             report
@@ -583,10 +591,13 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         report.prefabs += 1;
     }
 
-    for (guid, path) in unity.of_kind("scene") {
+    let scenes: Vec<(String, PathBuf)> = unity.of_kind("scene").into_iter().map(|(g, p)| (g.to_string(), p.to_path_buf())).collect();
+    for (guid, path) in &scenes {
+        let (guid, path) = (guid.as_str(), path.as_path());
         let Some(text) = read_text(path, &mut report) else {
             continue;
         };
+        unity.local_meshes = mesh::inside(&text, &unity.names[guid], &models_dir, &mut report.errors);
         let entities = scene::convert_file(&unity, &text, &mut report);
         let mut scene = scrap::Scene {
             entities,
@@ -652,6 +663,10 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         write(&project.root().join("data").join(format!("{name}.ron")), &text)?;
         report.data += 1;
     }
+
+    // The meshes scenes and prefabs kept inside themselves, where Unity put
+    // them, as every other model is.
+    keep_origins(&models_dir)?;
 
     for (guid, path) in unity.of_kind("animator") {
         match animator::convert(&unity, path, &mut report) {

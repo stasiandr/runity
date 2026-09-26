@@ -1,0 +1,25 @@
+// Over the whole picture, before the tonemapper: a haze of the scene's
+// `haze` colour growing with distance (the picture's depth), the corners
+// darkened and a fine grain — all as strong as `strength` says.
+(
+    params: ["strength", ("haze", Color)],
+    nodes: {
+        "far": Smoothstep(low: 25.0, high: 90.0, of: "depth"),
+        "hazy": Multiply(a: "far", b: 0.45),
+        "hazed": Lerp(a: "color", b: "haze", t: "hazy"),
+        "from_middle": Distance(a: "screen", b: (0.5, 0.5)),
+        "corner": Smoothstep(low: 0.35, high: 0.85, of: "from_middle"),
+        "dark": Multiply(a: "corner", b: "strength"),
+        "keep": OneMinus(of: "dark"),
+        "framed": Multiply(a: "hazed", b: "keep"),
+        "pixel": Multiply(a: "screen", b: "resolution"),
+        "moving": Multiply(a: "time", b: 91.0),
+        "grain_at": Add(a: "pixel", b: "moving"),
+        "grain": SimpleNoise(at: "grain_at", scale: 0.7),
+        "centred": Subtract(a: "grain", b: 0.5),
+        "fine": Multiply(a: "centred", b: 0.05),
+        "grained": Multiply(a: "fine", b: "strength"),
+        "out": Add(a: "framed", b: "grained"),
+    },
+    output: (color: "out"),
+)

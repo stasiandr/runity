@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/marble/marble.scrmat",
+    hash: "066bec321b8a7f0cfbba46fa747bbad6",
+    id: Some("9037844a1d801602df2bdfb5fdcd50c2"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

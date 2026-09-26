@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/banner/banner.scrmat",
+    hash: "abc2134303f8cdcc9f6cd4b027496a65",
+    id: Some("853ff81febea21ecc30054e5f99543ac"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

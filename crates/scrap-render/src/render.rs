@@ -771,6 +771,9 @@ pub struct Frame {
     pub distance_field: Option<crate::distance::DistanceField>,
     /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
     pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
+    /// A fullscreen graph over the picture before the post-processing
+    /// ([`crate::fullscreen`]); none by default.
+    pub fullscreen: Option<crate::fullscreen::FullscreenPass>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
     /// how much does, the wind decides.
     pub plumes: Vec<crate::volume::Plume>,
@@ -831,6 +834,7 @@ impl Frame {
             smoke,
             distance_field,
             gpu_particles,
+            fullscreen,
             plumes,
             terrain,
             wind,
@@ -867,6 +871,7 @@ impl Frame {
             smoke: smoke.clone(),
             distance_field: distance_field.clone(),
             gpu_particles: gpu_particles.clone(),
+            fullscreen: fullscreen.clone(),
             plumes: plumes.clone(),
             terrain: terrain.clone(),
             wind: wind.clone(),
@@ -910,6 +915,7 @@ impl Default for Frame {
             smoke: Vec::new(),
             distance_field: None,
             gpu_particles: Vec::new(),
+            fullscreen: None,
             plumes: Vec::new(),
             terrain: None,
             wind: crate::foliage::Wind::default(),
@@ -1509,6 +1515,7 @@ pub struct Renderer {
     bolt: Option<crate::weather::Bolt>,
     /// Particles on the GPU: their pipelines and pools.
     gpu_particles: crate::particles_gpu::GpuParticles,
+    fullscreen: crate::fullscreen::Fullscreen,
     /// Occlusion culling against last frame's depth ([`crate::occlusion`]).
     occlusion: crate::occlusion::Occlusion,
     /// Dense meshes culled a cluster at a time ([`crate::cluster`]).
@@ -1825,12 +1832,13 @@ impl MaterialShaders {
         if subgraph_changed {
             self.stamps.retain(|p, _| {
                 let f = p.file_name().and_then(|f| f.to_str()).unwrap_or_default();
-                !(f.ends_with(".graph.ron") || f.ends_with(".vfx.ron"))
+                !(f.ends_with(".graph.ron") || f.ends_with(".vfx.ron") || f.ends_with(".post.ron"))
             });
         }
         for path in self.found.clone() {
             let effect = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::effect_name).map(str::to_string);
-            let Some(name) = material_shader_name(&path).or(effect.clone()) else {
+            let screen = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::fullscreen_name).map(str::to_string);
+            let Some(name) = material_shader_name(&path).or(effect.clone()).or(screen.clone()) else {
                 continue;
             };
             let stamp = scrap_core::files::modified(&path);
@@ -1838,6 +1846,13 @@ impl MaterialShaders {
                 continue;
             }
             self.stamps.insert(path.clone(), stamp);
+            if screen.is_some() {
+                let result = crate::fullscreen::fullscreen_source(&path)
+                    .and_then(|source| renderer.set_fullscreen_graph(gpu, &name, &source))
+                    .map_err(|e| format!("{}:\n{e}", path.display()));
+                out.push((name, result));
+                continue;
+            }
             if effect.is_some() {
                 let result = effect_source(&path)
                     .and_then(|source| renderer.set_effect_graph(gpu, &name, &source))
@@ -1877,10 +1892,15 @@ pub fn effect_source(path: &std::path::Path) -> Result<String, String> {
 pub fn check_material_shader(surface: &str) -> Result<(), String> {
     use wgpu::naga;
     let full = with_surface(SHADER, surface)?;
-    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(&full))?;
+    // As bound map by map, and as one array where the GPU has them: a
+    // graph's reads go through either.
+    for on in [false, true] {
+        let full = crate::bindless::prepared(&full, on);
+        let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .map_err(|e| e.emit_to_string(&full))?;
+    }
     Ok(())
 }
 
@@ -3300,6 +3320,19 @@ impl Renderer {
         !name.is_empty() && self.gpu_particles.has_effect(name)
     }
 
+    /// Put in fullscreen graph `name` from its function
+    /// ([`scrap_shadergraph::fullscreen::to_wgsl`]): a frame naming it is
+    /// drawn through it from the next. Refused in words when it does not
+    /// build, and the one before goes on.
+    pub fn set_fullscreen_graph(&mut self, gpu: &Gpu, name: &str, code: &str) -> Result<(), String> {
+        self.fullscreen.set(gpu, name, code)
+    }
+
+    /// Whether fullscreen graph `name` is in.
+    pub fn has_fullscreen_graph(&self, name: &str) -> bool {
+        self.fullscreen.has(name)
+    }
+
     pub fn set_material_shader(
         &mut self,
         gpu: &Gpu,
@@ -4224,6 +4257,7 @@ impl Renderer {
             bolt: None,
             occlusion,
             gpu_particles,
+            fullscreen: crate::fullscreen::Fullscreen::new(gpu),
             lods: scrap_core::hash::FastMap::default(),
             lod_meshes: Vec::new(),
             timer: None,
@@ -5155,8 +5189,11 @@ impl Renderer {
                     at += 1;
                 }
                 // A dense mesh a cluster at a time: of a mountain range a
-                // kilometre round, what is over this cascade's square.
-                if let (Some(clusters), Some((cascade, texel))) = (mesh.clusters.as_ref(), cascade) {
+                // kilometre round, what is over this cascade's square. Not
+                // one whose material moves its vertices: its clusters'
+                // bounds are where they stood, not where it draws them.
+                let clusters = mesh.clusters.as_ref().filter(|_| mine.is_none());
+                if let (Some(clusters), Some((cascade, texel))) = (clusters, cascade) {
                     for instance in start..at {
                         let Some(model) = list.get((instance - first) as usize).map(|r| Mat4::from_cols_array_2d(&r.model)) else {
                             continue;
@@ -8121,6 +8158,12 @@ impl Renderer {
             graph.pass("lens", Kind::Render, &[picture, "depth"], &["hdr lensed"]);
             picture = "hdr lensed";
         }
+        // A scene's fullscreen graph, when it names one that is in.
+        let fullscreen_on = probe.is_none() && frame.fullscreen.as_ref().is_some_and(|f| self.fullscreen.has(&f.graph));
+        if fullscreen_on {
+            graph.pass("fullscreen", Kind::Render, &[picture, "depth"], &["hdr graphed"]);
+            picture = "hdr graphed";
+        }
         graph.output("post", Kind::Render, &[picture], &["screen"]);
         // A selection's outline tells where it is seen from where it is
         // hidden by the prepass's depth.
@@ -8366,7 +8409,14 @@ impl Renderer {
                         },
                         // Kept when far clusters were left out of the prepass:
                         // what comes after reads this depth then.
-                        store: if self.split_prepass { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                        // And when a fullscreen graph reads it: by then
+                        // it holds what its own shader moved or cut out,
+                        // which the prepass left out.
+                        store: if self.split_prepass || (fullscreen_on && reuse_depth) {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: None,
                 }),
@@ -8566,6 +8616,27 @@ impl Renderer {
             self.debugger.snapshot(gpu, &mut encoder, lens_mark, crate::frame_debugger::Source::Hdr(lensed));
         }
         let picture = lensed.unwrap_or(picture);
+        let graphed = if fullscreen_on {
+            self.fullscreen.run(
+                gpu,
+                &mut encoder,
+                frame.fullscreen.as_ref(),
+                picture,
+                // Everything solid, drawn: the scene's own depth where it
+                // is one sample a pixel and went on from the prepass's.
+                if reuse_depth { &self.depth } else { after_depth },
+                (width, height),
+                &crate::fullscreen::View {
+                    near: frame.camera.near,
+                    far: frame.camera.far,
+                    orthographic: frame.camera.ortho.is_some(),
+                    time: foliage.wind[3],
+                },
+            )
+        } else {
+            None
+        };
+        let picture = graphed.unwrap_or(picture);
         let picture = if upscale_on {
             self.upscaler.run(
                 gpu,
@@ -9345,6 +9416,23 @@ mod tests {
     }
 
     #[test]
+    fn a_specular_workflow_graph_builds_over_the_standard_shader() {
+        let graph = scrap_shadergraph::surface::parse(
+            r#"(
+                textures: ["_Main"],
+                nodes: {
+                    "sheen": Environment(direction: "normal", roughness: "smoothness"),
+                    "pix": Texture(name: "_Main", filter: Point, wrap: Mirror),
+                },
+                surface: (albedo: "pix.rgb", specular: (0.9, 0.8, 0.5), emission: "sheen"),
+            )"#,
+        )
+        .unwrap();
+        let wgsl = scrap_shadergraph::surface::to_wgsl(&graph, "shaders/spec.graph.ron").unwrap();
+        check_material_shader(&wgsl).unwrap_or_else(|e| panic!("{e}\n{wgsl}"));
+    }
+
+    #[test]
     fn a_shader_graph_of_every_kind_of_node_builds_over_the_standard_shader() {
         let graph = scrap_shadergraph::surface::parse(
             r#"(
@@ -9446,6 +9534,12 @@ mod tests {
                     "nh": NormalFromHeight(height: "n2"),
                     "nft": NormalFromTexture(name: "_Noise"),
                     "scol": SceneColor(),
+                    "env": Environment(direction: "normal", roughness: 0.3),
+                    "sharp": Texture(name: "_Main", uv: "uv", lod: 2.0, wrap: Clamp, filter: Point),
+                    "mirrored": Texture(name: "_Noise", wrap: Mirror),
+                    "envlit": Add(a: "env", b: "sharp.rgb"),
+                    "envall": Add(a: "envlit", b: "mirrored.rgb"),
+                    "glow_env": Add(a: "glowing_more", b: "envall"),
                     "tri": Triplanar(name: "_Noise"),
                     "fb": Flipbook(columns: 4.0, rows: 4.0, frame: "t"),
                     "pol": PolarCoordinates(),
@@ -9525,7 +9619,7 @@ mod tests {
                     metallic: "le",
                     smoothness: 0.5,
                     normal: "bent",
-                    emission: "glowing_more",
+                    emission: "glow_env",
                     clip: 0.1,
                 ),
             )"#,

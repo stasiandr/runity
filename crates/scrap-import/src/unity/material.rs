@@ -907,6 +907,7 @@ Material:
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ggg", file("Landscape_Shader.shadergraph")),
@@ -988,6 +989,7 @@ Material:
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: dir.clone(),
             guids: Default::default(),
             names: Default::default(),
@@ -1030,6 +1032,7 @@ Material:
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: dir.clone(),
             guids: Default::default(),
             names: Default::default(),
@@ -1076,6 +1079,7 @@ Material:
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ttt".to_string(), dir.join("stone_albedo.png")),
@@ -1106,6 +1110,7 @@ Material:
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: dir.clone(),
             guids: [("ttt".to_string(), dir.join("stone_albedo.png"))]
                 .into_iter()

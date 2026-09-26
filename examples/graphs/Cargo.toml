@@ -1,0 +1,24 @@
+[package]
+name = "graphs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The game is its own workspace: editing it rebuilds the game, never the
+# engine.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+scrap = { package = "scrap-engine", path = "../../crates/scrap", default-features = false, features = ["audio", "desktop-shell", "input", "net", "physics"] }
+serde = { version = "1", features = ["derive"] }
+
+# The engine and every other dependency optimised even in a dev build, the
+# game itself not: a frame that runs at speed, a rebuild that takes seconds.
+# Line tables only: panics still name the line, and the link — most of a
+# rebuild — is a third of the time. `scrap rebuild-time` measures it.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3

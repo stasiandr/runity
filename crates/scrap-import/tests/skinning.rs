@@ -74,6 +74,7 @@ fn shoot(
         smoke: Vec::new(),
         distance_field: None,
         gpu_particles: Vec::new(),
+        fullscreen: None,
         plumes: Vec::new(),
         terrain: None,
         draws: vec![Draw {

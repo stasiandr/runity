@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/pool/rim.scrmat",
+    hash: "31227c88817bb3c7f6ea683e7990d1c8",
+    id: Some("0337676f9108a5c4d30ba32a624b5c2e"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

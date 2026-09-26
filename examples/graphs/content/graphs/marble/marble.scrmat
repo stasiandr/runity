@@ -1,0 +1,2 @@
+// Graded marble: shaders/marble.graph.ron. `params` is its `hue` turn.
+(color: "#ffffff", shader: "marble", params: [0.0])

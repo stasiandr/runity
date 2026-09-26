@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/graphs/rock/rock.scrmat",
+    hash: "0029ba90152f3acdeac276c275c888ed",
+    id: Some("25b749eaf37436a47fc7e08e7fc3b1d2"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

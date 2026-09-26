@@ -1,0 +1,30 @@
+(
+    name: "graphs",
+    engine: "0.1.0",
+    game: (
+        start_scene: "main",
+        title: "Shader Graph Gallery",
+        width: 1280,
+        height: 720,
+        steps_per_second: 60,
+        language: "en",
+        player: (
+            height: 1.8,
+            radius: 0.35,
+            step: 0.3,
+            slope: 40.0,
+            jump_height: 1.2,
+            speed: 5.0,
+            gravity: 9.81,
+        ),
+    ),
+    modules: [
+        "render",
+        "input",
+        "overlay",
+        "audio",
+        "physics",
+        "net",
+        "shell",
+    ],
+)

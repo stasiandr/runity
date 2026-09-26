@@ -326,6 +326,16 @@ pub enum Node {
         name: String,
         #[serde(default = "uv")]
         uv: Input,
+        /// The mip level to read, 0 the sharpest: left out, the one the
+        /// pixel's footprint picks (Unity's Sample Texture 2D LOD).
+        #[serde(default)]
+        lod: Option<Input>,
+        /// Past its edges: repeated, held at the edge, or mirrored.
+        #[serde(default, skip_serializing_if = "is_repeat")]
+        wrap: Wrap,
+        /// Blended between texels, or each texel's own: pixel art.
+        #[serde(default, skip_serializing_if = "is_linear")]
+        filter: Filter,
     },
     /// 1 / `of`.
     Reciprocal {
@@ -674,6 +684,15 @@ pub enum Node {
         #[serde(default = "five_hundred")]
         scale: Input,
     },
+    /// What the surroundings — sky and ground, as reflections see them —
+    /// look like along `direction`, blurred as a surface this rough would
+    /// see them: Unity's Reflection Probe node. Only in a material's graph.
+    Environment {
+        #[serde(default = "normal_in")]
+        direction: Input,
+        #[serde(default = "zero")]
+        roughness: Input,
+    },
     /// What is drawn behind, at `at` on the screen (0 to 1): last frame's picture. Only in a material's graph.
     SceneColor {
         #[serde(default = "screen")]
@@ -746,6 +765,31 @@ fn ten() -> Input {
 }
 fn five_hundred() -> Input {
     Input::Number(500.0)
+}
+
+/// What a [`Node::Texture`] reads past its edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Wrap {
+    #[default]
+    Repeat,
+    Clamp,
+    Mirror,
+}
+
+fn is_repeat(w: &Wrap) -> bool {
+    *w == Wrap::Repeat
+}
+
+/// How a [`Node::Texture`] reads between texels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Filter {
+    #[default]
+    Linear,
+    Point,
+}
+
+fn is_linear(f: &Filter) -> bool {
+    *f == Filter::Linear
 }
 
 /// How [`Node::Comparison`] compares.
@@ -882,6 +926,7 @@ impl Node {
         "Polygon",
         "SimpleNoise",
         "SceneColor",
+        "Environment",
         "Subgraph",
     ];
 
@@ -990,6 +1035,7 @@ impl Node {
             Polygon,
             SimpleNoise,
             SceneColor,
+            Environment,
             Subgraph,
         )
     }
@@ -1050,7 +1096,13 @@ impl Node {
             Random { low, high } => vec![("low", low), ("high", high)],
             Checker { uv, scale } => vec![("uv", uv), ("scale", scale)],
             Fresnel { power } => vec![("power", power)],
-            Texture { uv, .. } => vec![("uv", uv)],
+            Texture { uv, lod, .. } => {
+                let mut out = vec![("uv", uv)];
+                if let Some(lod) = lod {
+                    out.push(("lod", lod));
+                }
+                out
+            }
             Reciprocal { of } => vec![("of", of)],
             Log { of } => vec![("of", of)],
             Truncate { of } => vec![("of", of)],
@@ -1231,6 +1283,7 @@ impl Node {
             ],
             SimpleNoise { at, scale } => vec![("at", at), ("scale", scale)],
             SceneColor { at } => vec![("at", at)],
+            Environment { direction, roughness } => vec![("direction", direction), ("roughness", roughness)],
             Subgraph { inputs, .. } => inputs.values().map(|i| ("in", i)).collect(),
         }
     }
@@ -1291,7 +1344,13 @@ impl Node {
             Random { low, high } => vec![("low", low), ("high", high)],
             Checker { uv, scale } => vec![("uv", uv), ("scale", scale)],
             Fresnel { power } => vec![("power", power)],
-            Texture { uv, .. } => vec![("uv", uv)],
+            Texture { uv, lod, .. } => {
+                let mut out = vec![("uv", uv)];
+                if let Some(lod) = lod {
+                    out.push(("lod", lod));
+                }
+                out
+            }
             Reciprocal { of } => vec![("of", of)],
             Log { of } => vec![("of", of)],
             Truncate { of } => vec![("of", of)],
@@ -1472,6 +1531,7 @@ impl Node {
             ],
             SimpleNoise { at, scale } => vec![("at", at), ("scale", scale)],
             SceneColor { at } => vec![("at", at)],
+            Environment { direction, roughness } => vec![("direction", direction), ("roughness", roughness)],
             Subgraph { inputs, .. } => inputs.values_mut().map(|i| ("in", i)).collect(),
         }
     }
@@ -1519,6 +1579,23 @@ pub trait Context {
     fn scene_color(&self, at: &str) -> Result<Value, String> {
         let _ = at;
         Err("this graph sees no screen".to_string())
+    }
+    /// [`Context::texture`] at mip level `lod` when there is one.
+    fn texture_with(&self, name: &str, uv: &str, lod: Option<&str>) -> Result<Value, String> {
+        match lod {
+            None => self.texture(name, uv),
+            Some(_) => Err("this graph picks no mip levels".to_string()),
+        }
+    }
+    /// A texture's size in texels, as a vec2's code.
+    fn texture_size(&self, name: &str) -> Result<String, String> {
+        let _ = name;
+        Err("this graph has no textures".to_string())
+    }
+    /// The surroundings along `direction`, as blurred as `roughness` sees.
+    fn environment(&self, direction: &str, roughness: &str) -> Result<Value, String> {
+        let _ = (direction, roughness);
+        Err("this graph sees no surroundings".to_string())
     }
 }
 
@@ -1963,14 +2040,37 @@ impl State<'_> {
                     .ok_or_else(|| at("`power` is a number".into()))?;
                 self.context.fresnel(&p).map_err(at)?
             }
-            Texture { name: texture, .. } => {
+            Texture { name: texture, lod, wrap, filter, .. } => {
                 if args[0].ty != Ty::F2 {
                     return Err(at(format!(
                         "`uv` has to be a vec2, not {}",
                         args[0].ty.said()
                     )));
                 }
-                self.context.texture(texture, &args[0].code).map_err(at)?
+                // One sampler, repeating and blending: the rest is the UVs
+                // moved before it reads.
+                let mut uv = args[0].code.clone();
+                uv = match wrap {
+                    Wrap::Repeat => uv,
+                    Wrap::Clamp => format!("clamp({uv}, vec2<f32>(0.0), vec2<f32>(1.0))"),
+                    Wrap::Mirror => format!("(1.0 - abs(1.0 - fract(({uv}) * 0.5) * 2.0))"),
+                };
+                if *filter == Filter::Point {
+                    let size = self.context.texture_size(texture).map_err(at)?;
+                    uv = format!("((floor(({uv}) * {size}) + 0.5) / {size})");
+                }
+                let lod = match lod {
+                    Some(_) => Some(
+                        args[1]
+                            .to(Ty::F1)
+                            .ok_or_else(|| at("`lod` is a number".into()))?,
+                    ),
+                    // Each texel its own: the sharpest level, not blurred
+                    // by the footprint.
+                    None if *filter == Filter::Point => Some("0.0".to_string()),
+                    None => None,
+                };
+                self.context.texture_with(texture, &uv, lod.as_deref()).map_err(at)?
             }
             _ => self.more(name, node, &args)?,
         };

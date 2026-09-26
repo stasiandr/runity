@@ -385,6 +385,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         // its own is not the one that counts — Dacha's providers contribute
         // only what is absent, and the prefab's comes first — so the
         // prefab's stays (a heap's own drops, its burst of scrap with them).
+        // The part's key in the prefab, and what this instance took off it
+        // (a script taken off and added back is this file's own).
+        let part_key = part_of_stripped(d.file_id).and_then(|(fid, guid)| parts.of(unity, &guid, 0).keys.get(&fid).copied());
+        let taken_off: HashSet<String> = part_key
+            .and_then(|k| entities.get(&instance.file_id)?.overrides.get(&k))
+            .map(|o| o.removed.iter().cloned().collect())
+            .unwrap_or_default();
         let had: HashSet<String> = part_of_stripped(d.file_id)
             .map(|(fid, guid)| {
                 let of = parts.of(unity, &guid, 0);
@@ -393,6 +400,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     .values()
                     .filter(|(on, _)| Some(*on) == key)
                     .map(|(_, name)| name.clone())
+                    .filter(|name| !taken_off.contains(name))
                     .collect()
             })
             .unwrap_or_default();
@@ -415,6 +423,11 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         let Some(desc) = entities.get_mut(&instance.file_id) else {
             continue;
         };
+        // Added back: no longer taken off.
+        let back: Vec<String> = added.iter().filter_map(|c| removal(c, unity)).filter(|n| taken_off.contains(n)).collect();
+        if let Some(o) = part_key.and_then(|k| desc.overrides.get_mut(&k)) {
+            o.removed.retain(|n| !back.contains(n));
+        }
         match part {
             None => {
                 for c in added {
@@ -648,11 +661,21 @@ fn instance(
         .list("m_Modifications")
         .iter()
         .any(|m| m.str("propertyPath").is_some_and(|p| p.starts_with("m_AnchoredPosition")));
+    // Components this instance takes off: what it changed on them before
+    // is left over, and Unity applies none of it.
+    let taken_off: HashSet<i64> = modification
+        .list("m_RemovedComponents")
+        .iter()
+        .filter_map(|r| yaml::reference(r).map(|r| r.file_id))
+        .collect();
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
         };
         let target = m.reference("target").map(|r| r.file_id);
+        if target.is_some_and(|t| taken_off.contains(&t)) {
+            continue;
+        }
         let behaviour = target.and_then(|t| Some((t, of.as_ref()?.behaviours.get(&t)?)));
         if let Some((t, b)) = behaviour.filter(|_| kind == "prefab" && !path.starts_with("m_")) {
             let b = behaviours.entry(t).or_insert_with(|| b.clone());
@@ -1338,7 +1361,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     let model = piece_of(refs.unity, model, &desc.name, &r);
                     desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
                 } else if r.guid.is_none() && r.file_id != 0 {
-                    report.skip("a mesh kept inside the scene (ProBuilder's)");
+                    report.skip("a mesh kept inside the scene that did not read");
                 } else if !r.is_none() {
                     report.skip("a mesh the import has no model for");
                 }
@@ -1616,7 +1639,19 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             let value = mono_behaviour(b, refs);
             match scrap::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
                 Ok(raw) => {
-                    desc.components.insert(name, raw);
+                    // A second of one script on the object (a plate that
+                    // sends two commands): `name_2`, for the game to read
+                    // as the same component.
+                    let mut key = name.clone();
+                    let mut n = 1;
+                    while desc.components.contains_key(&key) {
+                        n += 1;
+                        key = format!("{name}_{n}");
+                    }
+                    if n > 1 {
+                        report.skip(format!("a second `{name}` on one object, kept as `{key}`"));
+                    }
+                    desc.components.insert(key, raw);
                 }
                 Err(_) => report.skip(format!("component `{name}` whose fields did not make RON")),
             }
@@ -2211,7 +2246,10 @@ fn solid(desc: &mut EntityDesc, b: &Yaml) {
 /// The model a mesh reference names: Unity's builtins by fileID, anything
 /// else by its file's scrap name.
 fn model(r: &Ref, unity: &Unity) -> Option<String> {
-    let guid = r.guid.as_deref()?;
+    let Some(guid) = r.guid.as_deref() else {
+        // A mesh the file keeps inside itself (ProBuilder's).
+        return unity.local_meshes.get(&r.file_id).cloned();
+    };
     if guid == BUILTIN {
         return Some(
             match r.file_id {
@@ -2564,6 +2602,7 @@ mod tests {
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
+            local_meshes: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
@@ -2913,6 +2952,72 @@ MonoBehaviour:
         let roots = convert_file(&unity, scene, &mut report);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(roots[0].components.get("door").is_none(), "the prefab's own door counts: {:?}", roots[0].components);
+    }
+
+    #[test]
+    fn a_script_taken_off_an_instance_and_added_back_is_the_added_one() {
+        let dir = std::env::temp_dir().join(format!("scrap-back-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heap = dir.join("Heap.prefab");
+        std::fs::write(
+            &heap,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Heap
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!114 &102
+MonoBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 2
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("hhh".into(), heap);
+        unity.names.insert("hhh".into(), "Heap".into());
+        // Level1's way out: the prefab's TransitionPoint taken off, a
+        // change to it left behind, and the scene's own added.
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 102, guid: hhh, type: 3}
+      propertyPath: drops
+      value: 7
+      objectReference: {fileID: 0}
+    m_RemovedComponents:
+    - {fileID: 102, guid: hhh, type: 3}
+  m_SourcePrefab: {fileID: 100100000, guid: hhh, type: 3}
+--- !u!1 &902 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 100, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: hhh, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &903
+MonoBehaviour:
+  m_GameObject: {fileID: 902}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  drops: 1
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let door = roots[0].components.get("door").map(|v| v.get_ron().to_string()).unwrap_or_default();
+        assert!(door.contains("drops: 1"), "the scene's own: {door:?}");
+        let text = format!("{:?}", roots[0].overrides);
+        assert!(!text.contains("door"), "nothing of the removed one left: {text}");
     }
 
     #[test]

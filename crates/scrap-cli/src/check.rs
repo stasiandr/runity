@@ -66,6 +66,8 @@ struct Names {
     animators: HashSet<String>,
     /// The effect graphs in `shaders/` (`<name>.vfx.ron`), by name.
     effects: HashSet<String>,
+    /// The fullscreen graphs in `shaders/` (`<name>.post.ron`), by name.
+    fullscreens: HashSet<String>,
     /// Each graph's parameters, by its name: what a wire may pull.
     parameters: HashMap<String, std::collections::BTreeSet<String>>,
     /// The game's components, from `src/components/`; `None` when the
@@ -111,6 +113,18 @@ pub fn check(project: &Project) -> Vec<Finding> {
                 &scrap::scene::part_kinds(),
                 &mut out,
             );
+            if let Some(pass) = scene.part::<scrap::fullscreen::FullscreenPass>() {
+                if !names.fullscreens.contains(&pass.graph) {
+                    out.push(error(
+                        &file,
+                        format!(
+                            "the scene's `fullscreen` names graph `{}`, and there is no shaders/{0}.post.ron{}",
+                            pass.graph,
+                            suggest(&pass.graph, names.fullscreens.iter().map(String::as_str))
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -506,9 +520,15 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         .iter()
         .filter_map(|p| scrap::shader_graph::effect_name(&p.file_name()?.to_string_lossy()).map(str::to_string))
         .collect();
+    let fullscreens = project
+        .files(scrap::layout::Kind::Shader)
+        .iter()
+        .filter_map(|p| scrap::shader_graph::fullscreen_name(&p.file_name()?.to_string_lossy()).map(str::to_string))
+        .collect();
     Names {
         animators,
         effects,
+        fullscreens,
         parameters,
         models,
         materials,
@@ -1212,6 +1232,23 @@ fn shaders(project: &Project, out: &mut Vec<Finding>) {
         if file.ends_with(".subgraph.ron") {
             if let Err(e) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::subgraph::parse(&t)) {
                 out.push(error(&file, e));
+            }
+            continue;
+        }
+        if file.ends_with(".post.ron") {
+            match scrap::fullscreen::fullscreen_source(&path).and_then(|s| scrap::fullscreen::check_fullscreen(&s)) {
+                Err(e) => out.push(error(&file, e)),
+                Ok(()) => {
+                    if let Ok(graph) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| scrap::shader_graph::fullscreen::parse(&t)) {
+                        for problem in scrap::shader_graph::fullscreen::problems_with(&graph, &scrap::render::subgraphs_beside(&path)) {
+                            out.push(Finding {
+                                severity: Severity::Warning,
+                                file: file.clone(),
+                                message: problem,
+                            });
+                        }
+                    }
+                }
             }
             continue;
         }

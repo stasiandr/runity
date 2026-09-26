@@ -1,0 +1,22 @@
+// Fireflies over the whole garden: born anywhere in the emitter's box,
+// drifting on a slow turbulence, each blinking on a phase of its own
+// (`custom`, from its seed at birth).
+(
+    nodes: {
+        "phase": Multiply(a: "seed", b: 6.2831853),
+        "own": Combine(x: "phase", y: 0.0, z: 0.0),
+        "slow_time": Multiply(a: "time", b: 0.15),
+        "drift_at": Add(a: "position", b: "slow_time"),
+        "drift": Turbulence(at: "drift_at", scale: 0.4),
+        "wander": Multiply(a: "drift", b: 0.5),
+        "beat": Multiply(a: "time", b: 2.5),
+        "beat_own": Add(a: "beat", b: "custom.x"),
+        "wave": Sine(of: "beat_own"),
+        "blink": Smoothstep(low: 0.55, high: 1.0, of: "wave"),
+        "light": Multiply(a: (0.75, 1.0, 0.3), b: "blink"),
+        "bright": Multiply(a: "light", b: 5.0),
+    },
+    spawn: (velocity: (0.0, 0.0, 0.0), custom: "own"),
+    update: (velocity: "wander"),
+    output: (color: "bright", alpha: "blink", size: 0.06),
+)

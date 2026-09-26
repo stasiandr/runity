@@ -1,4 +1,5 @@
-//! Shader Graph: `*.graph.ron`, `*.vfx.ron` and `*.subgraph.ron`
+//! Shader Graph: `*.graph.ron`, `*.vfx.ron`, `*.post.ron` and
+//! `*.subgraph.ron`
 //! as boxes and arrows — each node a box, each read of one node by another
 //! an arrow into the reader, what the graph sets a box of its own at the
 //! right — on the same widget as the Animator and the Dialogues
@@ -184,6 +185,7 @@ impl ShaderGraphs {
             let glyph = match Kind::of(&path) {
                 Some(Kind::Effect) => "sparkles",
                 Some(Kind::Subgraph) => "package",
+                Some(Kind::Fullscreen) => "image",
                 _ => "palette",
             };
             icon(ui, row, glyph, MUTED);

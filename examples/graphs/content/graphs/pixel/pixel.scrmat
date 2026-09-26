@@ -1,0 +1,2 @@
+// Pixel art, texel by texel: shaders/pixel.graph.ron reads its `art`.
+(color: "#ffffff", shader: "pixel", textures: {"art": "pixel_mushroom"})

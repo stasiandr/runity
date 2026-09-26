@@ -1,0 +1,12 @@
+// Sparks drawn with the emitter's material's picture — a sheet of four
+// shapes — each one's shape picked at birth by the graph (`frame`), hot
+// orange to red as it dies.
+(
+    nodes: {
+        "four": Multiply(a: "seed", b: 4.0),
+        "shape": Floor(of: "four"),
+        "cooling": Lerp(a: (4.0, 1.8, 0.4), b: (1.2, 0.1, 0.02), t: "t"),
+        "fade": OneMinus(of: "t"),
+    },
+    output: (color: "cooling", alpha: "fade", frame: "shape"),
+)
