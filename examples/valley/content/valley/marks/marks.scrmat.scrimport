@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/marks/marks.scrmat",
+    hash: "2acb1b4d00b137ffe8e4c1ef33f97dfd",
+    id: Some("7d91ccd37252936dad8a709496152592"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

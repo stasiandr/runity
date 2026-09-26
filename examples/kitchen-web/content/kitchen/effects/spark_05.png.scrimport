@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/effects/spark_05.png",
+    hash: "80f306ad827b5db819a658d4aef67b3e",
+    id: Some("1ad84005a08bbbcffdf0b6166d8dce6c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -1,11 +1,14 @@
 //! `scrap add component NAME` and `scrap add system NAME`: the game's
 //! code, laid out the one way (DNA, postulate 7).
 //!
-//! A component is a file in `src/components/`, and that is all: the game's
-//! `build.rs` registers it under the file's name. A system is a file in
-//! `src/systems/` plus one call in `step`, where the order systems run in
-//! is written down — added at the end of that list, which is where a new
-//! system usually goes and where anyone reading the order will see it.
+//! Code lies by feature (docs/layout.md): `scrap add component cooking/pot`
+//! writes `src/cooking/pot.rs`, and the game's `build.rs` registers it
+//! under the file's name, `"pot"`. Without a feature, the file goes in a
+//! folder of its own name (`src/pot/pot.rs`) — or in `src/components/` of
+//! a project laid out before. A system is such a file plus one call in
+//! `step`, where the order systems run in is written down — added at the
+//! end of that list, which is where a new system usually goes and where
+//! anyone reading the order will see it.
 
 use std::path::PathBuf;
 
@@ -28,21 +31,50 @@ fn is_call(line: &str) -> bool {
 /// Where `step`'s list of systems is marked in `src/main.rs`.
 const MARKER: &str = "// systems, in order";
 
-/// Write `src/components/NAME.rs`.
-pub fn component(project: &Project, name: &str) -> Result<PathBuf> {
-    project::valid_name(name).map_err(anyhow::Error::msg)?;
-    let path = project
-        .root()
-        .join(project::COMPONENTS)
-        .join(format!("{name}.rs"));
+/// Where `spec` — `name` or `feature/name` — puts a new file, and its
+/// name. `legacy` is the folder a project laid out before keeps the kind in.
+fn place(project: &Project, spec: &str, legacy: &str) -> Result<(PathBuf, String)> {
+    let spec = spec.trim_matches('/').replace('\\', "/");
+    let (feature, name) = match spec.rsplit_once('/') {
+        Some((feature, name)) => (Some(feature.to_string()), name.to_string()),
+        None => (None, spec.clone()),
+    };
+    project::valid_name(&name).map_err(anyhow::Error::msg)?;
+    if let Some(feature) = &feature {
+        for part in feature.split('/') {
+            project::valid_name(part).map_err(anyhow::Error::msg)?;
+        }
+    }
+    let src = project.root().join(project::SRC);
+    let dir = match feature {
+        Some(feature) => src.join(feature),
+        None if project.root().join(legacy).is_dir() => project.root().join(legacy),
+        None => src.join(&name),
+    };
+    let path = dir.join(format!("{name}.rs"));
     if path.exists() {
         bail!(
             "{} is already there",
             project.relative(&path).unwrap_or_default()
         );
     }
+    if let Some((_, there)) = project::component_files(&src)
+        .into_iter()
+        .find(|(n, _)| *n == name)
+    {
+        bail!(
+            "a component is already called `{name}`: {}",
+            project.relative(&there).unwrap_or_default()
+        );
+    }
+    Ok((path, name))
+}
+
+/// Write the component `spec` names: `src/<feature>/NAME.rs`.
+pub fn component(project: &Project, spec: &str) -> Result<PathBuf> {
+    let (path, name) = place(project, spec, project::legacy::COMPONENTS)?;
     std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, project::component_file(name))?;
+    std::fs::write(&path, project::component_file(&name))?;
     Ok(path)
 }
 
@@ -50,28 +82,21 @@ pub fn component(project: &Project, name: &str) -> Result<PathBuf> {
 #[derive(Debug)]
 pub struct AddedSystem {
     pub file: PathBuf,
+    /// The system's name: its file's, what `step` calls it by.
+    pub name: String,
     /// Whether the call went into `step`. `false` when `src/main.rs` has no
     /// `// systems, in order` line to find the list by; the caller says
     /// where the call goes instead of guessing.
     pub called: bool,
 }
 
-/// Write `src/systems/NAME.rs` and run it last in the game's step (`tick`).
-pub fn system(project: &Project, name: &str) -> Result<AddedSystem> {
-    project::valid_name(name).map_err(anyhow::Error::msg)?;
-    let file = project
-        .root()
-        .join(project::SYSTEMS)
-        .join(format!("{name}.rs"));
-    if file.exists() {
-        bail!(
-            "{} is already there",
-            project.relative(&file).unwrap_or_default()
-        );
-    }
+/// Write the system `spec` names and run it last in the game's step
+/// (`tick`).
+pub fn system(project: &Project, spec: &str) -> Result<AddedSystem> {
+    let (file, name) = place(project, spec, project::legacy::SYSTEMS)?;
     let main = project.root().join(project::SRC).join("main.rs");
     let text = std::fs::read_to_string(&main).with_context(|| main.display().to_string())?;
-    let called = match insert_call(&text, name) {
+    let called = match insert_call(&text, &name) {
         Some(changed) => {
             std::fs::write(&main, changed)?;
             true
@@ -79,8 +104,8 @@ pub fn system(project: &Project, name: &str) -> Result<AddedSystem> {
         None => false,
     };
     std::fs::create_dir_all(file.parent().unwrap())?;
-    std::fs::write(&file, project::system_file(name))?;
-    Ok(AddedSystem { file, called })
+    std::fs::write(&file, project::system_file(&name))?;
+    Ok(AddedSystem { file, name, called })
 }
 
 /// `main.rs` with the call added after the last system call under the

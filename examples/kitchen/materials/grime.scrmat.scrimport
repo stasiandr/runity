@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/grime.scrmat",
-    hash: "d998e40f77a7c27f3dbd9aeb566a273b",
-    id: Some("c43436548ee25cf03f4a04f983c83b52"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

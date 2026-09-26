@@ -7,6 +7,16 @@
 use scrap_mcp::Server;
 use serde_json::{json, Value};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 struct Agent {
     server: Server,
     next: u64,
@@ -289,13 +299,13 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
 
     // And the file says what the edits said.
     agent.text("save_scene", json!({}));
-    let saved = std::fs::read_to_string(root.join("scenes/main.ron")).unwrap();
+    let saved = std::fs::read_to_string(scrap::Project::open(&root).unwrap().scene("main").unwrap()).unwrap();
     assert!(saved.contains(&format!("id: \"{crate_id}\"")), "{saved}");
     assert!(saved.contains("Dynamic"), "{saved}");
     // A component is a file of the game's: until there is one, check says so.
     let findings = agent.text("check", json!({}));
     assert!(findings.contains("no component `loot`"), "{findings}");
-    std::fs::write(
+    write_all(
         root.join("src/components/loot.rs"),
         "#[derive(serde::Deserialize)]\npub struct Loot { pub table: String }\n",
     )
@@ -316,7 +326,7 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         }
         Err(e) => panic!("{e}"),
     }
-    std::fs::write(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
+    write_all(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
     agent.text("reload", json!({}));
     let id = agent.text(
         "add_entity",
@@ -558,8 +568,8 @@ fn the_scene_and_the_project_files_are_readable_resources() {
         .iter()
         .map(|r| r["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"scenes/main.ron"), "{names:?}");
-    assert!(names.contains(&"configs/world.ron"), "{names:?}");
+    assert!(names.contains(&"content/scrap_mcp_resources/maps/main.scene.ron"), "{names:?}");
+    assert!(names.contains(&"content/scrap_mcp_resources/core/world.ron"), "{names:?}");
 
     let document = agent.request("resources/read", json!({ "uri": "scrap://document" }));
     let text = document["result"]["contents"][0]["text"].as_str().unwrap();
@@ -570,7 +580,7 @@ fn the_scene_and_the_project_files_are_readable_resources() {
 
     let uri = resources
         .iter()
-        .find(|r| r["name"] == "scenes/main.ron")
+        .find(|r| r["name"] == "content/scrap_mcp_resources/maps/main.scene.ron")
         .unwrap()["uri"]
         .as_str()
         .unwrap()
@@ -580,7 +590,7 @@ fn the_scene_and_the_project_files_are_readable_resources() {
     assert!(!text.contains("unsaved stone"), "the file, as saved");
 
     let secret = std::env::temp_dir().join("scrap-mcp-outside.txt");
-    std::fs::write(&secret, "not the project's").unwrap();
+    write_all(&secret, "not the project's").unwrap();
     let outside = agent.request(
         "resources/read",
         json!({ "uri": format!("file://{}", secret.display()) }),
@@ -605,12 +615,12 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
     let opened = agent.text("new_scene", json!({ "name": "cave" }));
     let said = agent.text("console", json!({ "clear": true }));
     assert!(
-        said.contains("info: opened") && said.contains("cave.ron"),
+        said.contains("info: opened") && said.contains("cave.scene.ron"),
         "{said}"
     );
     assert_eq!(agent.text("console", json!({})), "nothing said");
     assert!(
-        opened.contains("cave.ron") && opened.contains("scenes: cave, main"),
+        opened.contains("cave.scene.ron") && opened.contains("scenes: cave, main"),
         "{opened}"
     );
     let tree = agent.text("scene_tree", json!({}));
@@ -733,12 +743,12 @@ fn an_agent_reads_connects_and_renames_in_an_animator_graph() {
     }
     let dir = root.join("animators");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
+    write_all(
         dir.join("hero.ron"),
         "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\"),\n        \"walk\": (clip: \"walk\"),\n    },\n)\n",
     )
     .unwrap();
-    std::fs::write(
+    write_all(
         dir.join("hero.cases.ron"),
         "(cases: [(name: \"walks\", steps: [(set: {\"speed\": 1.0}, expect: \"walk\")])])\n",
     )
@@ -798,7 +808,7 @@ fn an_agent_balances_records_in_a_table() {
     }
     let file = root.join("configs/enemies.ron");
     let text = "{\n    \"goblin\": (hp: 10, speed: 2.5),\n    \"orc\": (hp: 30), // slow\n}\n";
-    std::fs::write(&file, text).unwrap();
+    write_all(&file, text).unwrap();
 
     let sources = agent.text("table", json!({}));
     assert!(sources.contains("configs/enemies.ron"), "{sources}");
@@ -827,9 +837,9 @@ fn an_agent_balances_records_in_a_table() {
     // The world's numbers: one struct, one row.
     agent.text(
         "set_cell",
-        json!({ "source": "configs/world.ron", "column": "gravity", "value": "-3.7" }),
+        json!({ "source": "content/scrap_mcp_table/core/world.ron", "column": "gravity", "value": "-3.7" }),
     );
-    let world = std::fs::read_to_string(root.join("configs/world.ron")).unwrap();
+    let world = std::fs::read_to_string(root.join("content/scrap_mcp_table/core/world.ron")).unwrap();
     assert!(world.contains("gravity: -3.7"), "{world}");
     assert!(
         world.starts_with("// The world's numbers."),
@@ -864,7 +874,7 @@ fn an_agent_writes_plays_and_renames_in_a_dialogue() {
         "dialogue_line",
         json!({ "name": "trader", "line": "bye", "entry": "(text: \"Bye.\")" }),
     );
-    let file = root.join("dialogues/trader.ron");
+    let file = root.join("content/scrap_mcp_dialogue/trader.dialogue.ron");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("start: \"hello\""), "{text}");
     assert!(
@@ -895,8 +905,8 @@ fn an_agent_writes_plays_and_renames_in_a_dialogue() {
     );
 
     // Cases follow a rename; check plays them.
-    std::fs::write(
-        root.join("dialogues/trader.cases.ron"),
+    write_all(
+        root.join("content/scrap_mcp_dialogue/trader.cases.ron"),
         "(cases: [(name: \"buys\", vars: {\"coins\": 3}, steps: [Choose(\"Yes\", \"sold\"), Told(\"sold\")])])\n",
     )
     .unwrap();
@@ -904,7 +914,7 @@ fn an_agent_writes_plays_and_renames_in_a_dialogue() {
         "dialogue_rename",
         json!({ "name": "trader", "from": "sold", "to": "done" }),
     );
-    let cases = std::fs::read_to_string(root.join("dialogues/trader.cases.ron")).unwrap();
+    let cases = std::fs::read_to_string(root.join("content/scrap_mcp_dialogue/trader.cases.ron")).unwrap();
     assert!(cases.contains("Choose(\"Yes\", \"done\")"), "{cases}");
     assert!(agent
         .text("dialogue", json!({ "name": "trader" }))
@@ -934,13 +944,13 @@ fn an_agent_reads_finds_and_sets_a_table_s_records() {
         }
         Err(e) => panic!("{e}"),
     }
-    std::fs::write(
+    write_all(
         root.join("configs/tools.ron"),
         "{\n    \"Палка\": (id: \"4c1e\", weight: 1.0),\n    \"Посох\": (base: \"Палка\", weight: 2.0),\n}\n",
     )
     .unwrap();
     let listed = agent.text("configs", json!({}));
-    assert!(listed.contains("configs/tools.ron") && listed.contains("configs/world.ron"), "{listed}");
+    assert!(listed.contains("configs/tools.ron") && listed.contains("content/scrap_mcp_configs/core/world.ron"), "{listed}");
     let found = agent.text("configs", json!({ "find": "по" }));
     assert_eq!(found.trim(), "configs/tools.ron: Посох", "{found}");
     let shown = agent.text("configs", json!({ "file": "configs/tools.ron" }));
@@ -957,9 +967,9 @@ fn an_agent_reads_finds_and_sets_a_table_s_records() {
     // A top-level field of a struct of numbers.
     agent.text(
         "config_set",
-        json!({ "file": "configs/world.ron", "field": "gravity", "value": "-3.7" }),
+        json!({ "file": "content/scrap_mcp_configs/core/world.ron", "field": "gravity", "value": "-3.7" }),
     );
-    assert!(std::fs::read_to_string(root.join("configs/world.ron")).unwrap().contains("-3.7"));
+    assert!(std::fs::read_to_string(root.join("content/scrap_mcp_configs/core/world.ron")).unwrap().contains("-3.7"));
     assert_eq!(agent.text("config_undo", json!({})), "undone: world.ron: gravity");
     let err = agent
         .call("config_set", json!({ "file": "configs/tools.ron", "record": "Кость", "field": "weight", "value": "1" }))

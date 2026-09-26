@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/models/pine_small.obj",
-    hash: "644844e918b615b6f00277ad002f0b0d",
-    id: Some("c563abdf4a5b415a7037200c822801cd"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

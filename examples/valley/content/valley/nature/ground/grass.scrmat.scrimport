@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/ground/grass.scrmat",
+    hash: "90281007c8fa9e83c4d5f27609b8b51b",
+    id: Some("cd595a84ab0898c69480360d4da61ea2"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

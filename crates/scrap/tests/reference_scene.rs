@@ -1,6 +1,6 @@
 //! The reference scene, rendered and checked.
 //!
-//! `examples/valley/scenes/first-light.ron` is what the engine is aimed at: it opens with no
+//! `examples/valley/content/valley/maps/first-light.scene.ron` is what the engine is aimed at: it opens with no
 //! library and no import step, and every object in it is checking something.
 //! This test renders it and asserts the properties that object was put there
 //! for. It is not a golden image — a software adapter does not produce a
@@ -25,7 +25,7 @@ fn scene_path() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .expect("crates/scrap is two levels down")
-        .join("examples/valley/scenes/first-light.ron")
+        .join("examples/valley/content/valley/maps/first-light.scene.ron")
 }
 
 struct Shot {

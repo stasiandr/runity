@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kitchen/effects/suds_fx.scrmat",
+    hash: "5672afab5d79d8d1549a0d3644722cbc",
+    id: Some("d6d6b0fea993db079517961e78333d48"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

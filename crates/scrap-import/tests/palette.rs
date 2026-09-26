@@ -15,6 +15,16 @@ use scrap::material::{Material, Shading};
 use scrap::render::MeshHandle;
 use scrap::{Library, Scene};
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("scrap-palette-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -25,7 +35,7 @@ fn temp(name: &str) -> PathBuf {
 /// Write a `.scrmat` source and import it into `library`.
 fn write_material(dir: &Path, library: &Path, stem: &str, body: &str) {
     let source = dir.join(format!("{stem}.scrmat"));
-    std::fs::write(&source, body).unwrap();
+    write_all(&source, body).unwrap();
     scrap_import::import_file(
         &source,
         library,
@@ -151,12 +161,12 @@ fn editing_the_hex_changes_what_the_scene_draws() {
     std::fs::remove_dir_all(&root).unwrap();
     let project = scrap::Project::create(&root, "edit").unwrap();
     let source = project.materials().join("clay.scrmat");
-    std::fs::write(&source, r##"(color: "#8a5a3c")"##).unwrap();
+    write_all(&source, r##"(color: "#8a5a3c")"##).unwrap();
     scrap_import::import_into(&project, &source, None).unwrap();
     let (mut library, _) = Library::open(project.library()).unwrap();
     let before = library.material_by_name("clay").unwrap();
 
-    std::fs::write(&source, r##"(color: "#3c5a8a")"##).unwrap();
+    write_all(&source, r##"(color: "#3c5a8a")"##).unwrap();
     touch_forward(&source);
     let done = scrap_import::sync(&project);
     assert_eq!(done.len(), 1, "the one changed material");
@@ -187,7 +197,7 @@ fn a_colour_that_is_not_a_colour_says_so_instead_of_importing_black() {
     // worse than an error: the scene would look deliberately dark.
     let dir = temp("bad");
     let source = dir.join("broken.scrmat");
-    std::fs::write(&source, r##"(color: "#12345")"##).unwrap();
+    write_all(&source, r##"(color: "#12345")"##).unwrap();
     let err = scrap_import::import_file(
         &source,
         dir.join("library"),
@@ -216,19 +226,14 @@ fn the_example_palette_stands_in_for_the_builtins() {
         .parent()
         .and_then(Path::parent)
         .expect("crates/scrap-import is two levels down");
-    let sources = root.join("examples/valley/materials");
+    // Wherever they lie in the example: each beside what it colours
+    // (docs/layout.md).
+    let valley = root.join("examples/valley");
     let library_dir = temp("examples").join("library");
 
     let mut imported = 0;
-    for entry in std::fs::read_dir(&sources).expect("the example palette") {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("scrmat") {
-            continue;
-        }
-        let relative = format!(
-            "examples/valley/materials/{}",
-            path.file_name().unwrap().to_string_lossy()
-        );
+    for path in scrap::layout::files(&valley, scrap::layout::Kind::Material) {
+        let relative = format!("examples/valley/{}", scrap::layout::relative(&valley, &path));
         // The sidecar goes beside the temporary library, not beside the
         // committed source: a test must not write into the repository.
         let sidecar = library_dir.parent().unwrap().join(format!(
@@ -274,7 +279,7 @@ fn the_example_palette_stands_in_for_the_builtins() {
 
     // The reference scene names materials the palette now answers for, so
     // rendering it with a library and without one should agree.
-    let scene = Scene::load(root.join("examples/valley/scenes/first-light.ron")).unwrap();
+    let scene = Scene::load(root.join("examples/valley/content/valley/maps/first-light.scene.ron")).unwrap();
     let named = scene
         .flatten()
         .iter()
@@ -312,7 +317,7 @@ fn a_library_from_an_older_format_is_rebuilt_by_sync() {
     std::fs::remove_dir_all(&root).unwrap();
     let project = scrap::Project::create(&root, "outdated").unwrap();
     let source = project.materials().join("clay.scrmat");
-    std::fs::write(&source, r##"(color: "#8a5a3c")"##).unwrap();
+    write_all(&source, r##"(color: "#8a5a3c")"##).unwrap();
     scrap_import::import_into(&project, &source, None).unwrap();
     let asset = scrap_import::built_for(&source, &project.library()).unwrap();
     assert!(scrap::asset::is_current(&asset));
@@ -322,7 +327,7 @@ fn a_library_from_an_older_format_is_rebuilt_by_sync() {
     let mut bytes = std::fs::read(&asset).unwrap();
     let old = scrap::asset::FORMAT_VERSION - 1;
     bytes[8..12].copy_from_slice(&old.to_le_bytes());
-    std::fs::write(&asset, &bytes).unwrap();
+    write_all(&asset, &bytes).unwrap();
     assert!(!scrap::asset::is_current(&asset));
 
     let done = scrap_import::sync(&project);
@@ -338,12 +343,12 @@ fn an_instance_is_its_parent_with_what_it_says_changed_and_follows_the_parent() 
     let _ = std::fs::remove_dir_all(&root);
     let project = scrap::Project::create(&root, "instances").unwrap();
     let materials = project.materials();
-    std::fs::write(
+    write_all(
         materials.join("stone.scrmat"),
         r##"(color: "#808080", smoothness: 0.2, metallic: 0.1)"##,
     )
     .unwrap();
-    std::fs::write(
+    write_all(
         materials.join("wet_stone.scrmat"),
         r#"// Stone after rain.
 (parent: "stone", smoothness: 0.8)"#,
@@ -364,7 +369,7 @@ fn an_instance_is_its_parent_with_what_it_says_changed_and_follows_the_parent() 
 
     // The parent changes colour: the instance follows, rebuilt by sync.
     let stone_file = materials.join("stone.scrmat");
-    std::fs::write(&stone_file, r##"(color: "#ff0000", smoothness: 0.2)"##).unwrap();
+    write_all(&stone_file, r##"(color: "#ff0000", smoothness: 0.2)"##).unwrap();
     touch_forward(&stone_file);
     let changed = scrap_import::sync(&project);
     assert!(
@@ -380,7 +385,7 @@ fn an_instance_is_its_parent_with_what_it_says_changed_and_follows_the_parent() 
     assert_eq!(wet.smoothness, 0.8);
 
     // A parent that is not there says so.
-    std::fs::write(materials.join("odd.scrmat"), r#"(parent: "nowhere")"#).unwrap();
+    write_all(materials.join("odd.scrmat"), r#"(parent: "nowhere")"#).unwrap();
     let said = scrap_import::sync(&project);
     let odd = said
         .iter()
@@ -419,12 +424,12 @@ fn a_materials_textures_for_its_shader_survive_the_rmat_and_the_asset() {
     let project = scrap::Project::create(&root, "shader-textures").unwrap();
     let road = project.assets().join("textures").join("T_Road_01.png");
     std::fs::create_dir_all(road.parent().unwrap()).unwrap();
-    std::fs::write(&road, b"not decoded by a material").unwrap();
+    write_all(&road, b"not decoded by a material").unwrap();
     let road_id =
         scrap_import::ImportSettings::for_source(project.relative(&road).unwrap()).asset_id();
     let noise_id = scrap::asset::AssetId(0x5eed);
     let source = project.materials().join("landscape.scrmat");
-    std::fs::write(
+    write_all(
         &source,
         format!(
             r##"(color: "#ffffff", shader: "landscape", textures: {{"_Road": "T_Road_01", "_SampleTexture2D_ab_Texture_1_Texture2D": "{noise_id}"}})"##
@@ -458,7 +463,7 @@ fn a_materials_textures_for_its_shader_survive_the_rmat_and_the_asset() {
     assert!(!plain.contains("textures"), "{plain}");
 
     // A name that is no texture is refused, and says which.
-    std::fs::write(
+    write_all(
         &source,
         r##"(color: "#ffffff", textures: {"_Road": "T_Raod_01"})"##,
     )

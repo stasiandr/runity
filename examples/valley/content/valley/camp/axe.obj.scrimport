@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/camp/axe.obj",
+    hash: "ee70d84599f56439c54acb270d35a13a",
+    id: Some("71f266482d7b480f9e0d8c12b35c58d7"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

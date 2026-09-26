@@ -11,6 +11,16 @@ use std::os::unix::fs::PermissionsExt;
 
 use scrap_editor::Session;
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 #[test]
 fn the_editor_lists_locks_and_takes_and_gives_them_back() {
     let root = std::env::temp_dir().join("scrap-editor-locks");
@@ -32,7 +42,7 @@ fn the_editor_lists_locks_and_takes_and_gives_them_back() {
         root = root.display()
     );
     let git = bin.join("git");
-    std::fs::write(&git, script).unwrap();
+    write_all(&git, script).unwrap();
     std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::env::var("PATH").unwrap_or_default();
     std::env::set_var("PATH", format!("{}:{path}", bin.display()));
@@ -44,12 +54,15 @@ fn the_editor_lists_locks_and_takes_and_gives_them_back() {
             return;
         }
     };
-    session.open_scene(root.join("scenes/main.ron")).unwrap();
+    session
+        .open_scene(scrap::Project::open(&root).unwrap().scene("main").unwrap())
+        .unwrap();
     let locks = session.locks().unwrap();
     assert_eq!(locks.len(), 1);
     assert_eq!(locks[0].path, "assets/rock.png");
     assert_eq!(locks[0].owner, "Ada");
 
+    std::fs::create_dir_all(root.join("assets")).unwrap();
     session
         .set_locked(root.join("assets/tree.png"), true)
         .unwrap();
@@ -61,8 +74,8 @@ fn the_editor_lists_locks_and_takes_and_gives_them_back() {
     assert!(asked.contains("lfs unlock tree.png"), "{asked}");
 
     // A material someone else holds is not renamed or deleted from under them.
-    std::fs::write(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
-    std::fs::write(root.join("materials/moss.scrmat"), "(color: \"#4a5a3c\")\n").unwrap();
+    write_all(root.join("materials/clay.scrmat"), "(color: \"#b4643c\")\n").unwrap();
+    write_all(root.join("materials/moss.scrmat"), "(color: \"#4a5a3c\")\n").unwrap();
     session.reload_assets();
     let e = session
         .rename_asset("materials/clay.scrmat", "materials/terracotta.scrmat")

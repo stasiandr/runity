@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/plants/grass_tuft.obj",
+    hash: "1dac09f149a8c044a64e2bc81f6b4315",
+    id: Some("e0c8ccf7db6afe5eb4e6022cbc5cadc1"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

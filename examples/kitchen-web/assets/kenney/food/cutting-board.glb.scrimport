@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/food/cutting-board.glb",
-    hash: "ab41fc78fc2a24842c1e9917a29bfec8",
-    id: Some("901576376a8e9e3327a9cae206d373c7"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

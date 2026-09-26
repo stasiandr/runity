@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/core/valley_atlas.png",
+    hash: "e6a7968f907d5d979baf845ffec0fb01",
+    id: Some("256abb869d5b27bf731b734395d0916c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

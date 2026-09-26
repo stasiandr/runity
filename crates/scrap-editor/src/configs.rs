@@ -49,26 +49,10 @@ pub struct Table {
     pub records: bool,
 }
 
-/// The RON files under `configs/`, folders and all, in order.
+/// The game's data files — every plain `.ron` that is no scene, screen or
+/// other kind, wherever it lies (docs/layout.md) — in order.
 pub fn files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    collect(&root.join(scrap::project::CONFIGS), &mut out);
-    out.sort();
-    out
-}
-
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect(&path, out);
-        } else if path.extension().is_some_and(|e| e == "ron") {
-            out.push(path);
-        }
-    }
+    scrap::layout::data_files(root)
 }
 
 /// The top of `text`, scanned: an error in words, with the line and

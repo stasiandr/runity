@@ -24,6 +24,16 @@ use scrap::render::{Camera, Draw, FogSettings, Frame, Lighting};
 use scrap::{Gpu, Library, MeshAsset, OffscreenTarget, Renderer};
 use scrap_import::ImportSettings;
 
+/// `std::fs::write`, the folders on the way made first: a new project has
+/// only the folders its layout needs (docs/layout.md).
+#[allow(dead_code)]
+fn write_all(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
 
@@ -282,7 +292,7 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
     )
     .unwrap();
     bytes[8] = 0;
-    std::fs::write(dir.join("stale.scrasset"), bytes).unwrap();
+    write_all(dir.join("stale.scrasset"), bytes).unwrap();
 
     let (library, problems) = Library::open(&dir).unwrap();
     assert_eq!(problems.len(), 1);

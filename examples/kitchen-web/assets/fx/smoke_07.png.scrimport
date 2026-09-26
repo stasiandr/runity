@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/fx/smoke_07.png",
-    hash: "380d97c501fa8f4b941f7d73235580bb",
-    id: Some("e0909662fadae817967d2ec16cb787a6"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

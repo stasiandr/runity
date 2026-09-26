@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/cooking-knife.glb",
+    hash: "4daa7ef6b6f48cc89d50dd7652b27219",
+    id: Some("0f95365175b6074b6f6bc7f96f404056"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

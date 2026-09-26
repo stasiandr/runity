@@ -96,6 +96,54 @@ impl Library for Folder {
     }
 }
 
+/// The subgraphs a graph can call: `<name>.subgraph.ron` beside it first,
+/// then of that name anywhere in its project (docs/layout.md) — a feature's
+/// graph calls a shared subgraph where it lies.
+pub struct InProject {
+    /// The graph's own folder.
+    pub beside: std::path::PathBuf,
+    /// The project's root, when the graph is in one.
+    pub root: Option<std::path::PathBuf>,
+}
+
+impl InProject {
+    /// For the graph at `path`: its folder, and the nearest folder above it
+    /// with a `scrap.ron`.
+    pub fn of(path: &std::path::Path) -> Self {
+        let beside = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let root = beside
+            .ancestors()
+            .find(|dir| scrap_core::files::is_file(dir.join(scrap_core::project::FILE)))
+            .map(std::path::Path::to_path_buf);
+        Self { beside, root }
+    }
+}
+
+impl Library for InProject {
+    fn subgraph(&self, name: &str) -> Result<SubGraph, String> {
+        let file = format!("{name}.subgraph.ron");
+        if scrap_core::files::is_file(self.beside.join(&file)) {
+            return Folder(self.beside.clone()).subgraph(name);
+        }
+        let Some(root) = &self.root else {
+            return Folder(self.beside.clone()).subgraph(name);
+        };
+        let all = scrap_core::layout::files(root, scrap_core::layout::Kind::Shader);
+        if let Some(path) = all.iter().find(|p| p.file_name().and_then(|f| f.to_str()) == Some(file.as_str())) {
+            let text = scrap_core::files::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            return parse(&text).map_err(|e| format!("{}: {e}", path.display()));
+        }
+        let known: Vec<String> = all
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|f| f.to_str()).and_then(subgraph_name).map(str::to_string))
+            .collect();
+        let hint = scrap_core::spelling::closest(name, known.iter().map(String::as_str))
+            .map(|n| format!(" — did you mean `{n}`?"))
+            .unwrap_or_default();
+        Err(format!("no subgraph `{name}`: no {file} beside the graph or anywhere in the project{hint}"))
+    }
+}
+
 /// A call's output node: what `call.output` reads.
 fn output_node(call: &str, output: &str) -> String {
     format!("{call}__out__{output}")

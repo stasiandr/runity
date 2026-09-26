@@ -99,19 +99,18 @@ fn stem(path: &Path) -> String {
 
 fn kind(project: &Project, path: &Path) -> Result<Kind> {
     let ext = extension(path);
-    let inside = |dir: PathBuf| normalize(path).starts_with(normalize(&dir));
-    if inside(project.prefabs()) && ext == "prefab" {
-        ensure!(
-            normalize(path.parent().unwrap_or(Path::new(""))) == normalize(&project.prefabs()),
-            "{}: prefabs sit directly in prefabs/, which is where scenes look for them",
-            shown(project, path)
-        );
+    // Anywhere in the project but what is derived or code (docs/layout.md).
+    let relative = project.relative(path).unwrap_or_default();
+    let first = relative.split('/').next().unwrap_or_default();
+    let content =
+        !relative.is_empty() && !scrap::layout::SKIPPED.contains(&first) && !first.starts_with('.');
+    if content && ext == "prefab" {
         return Ok(Kind::Prefab);
     }
-    if inside(project.materials()) && ext == "scrmat" {
+    if content && ext == "scrmat" {
         return Ok(Kind::Material);
     }
-    if inside(project.assets()) && importable(path) {
+    if content && importable(path) {
         return Ok(if MODEL_EXTENSIONS.contains(&ext.as_str()) {
             Kind::Model
         } else {
@@ -119,7 +118,7 @@ fn kind(project: &Project, path: &Path) -> Result<Kind> {
         });
     }
     bail!(
-        "{} is not an asset source: renaming works on models, textures and sounds in assets/, .scrmat in materials/ and .prefab in prefabs/",
+        "{} is not an asset source: renaming works on models, textures, sounds, .scrmat and .prefab in the project's content",
         shown(project, path)
     )
 }
@@ -291,7 +290,7 @@ fn target(
         kind(project, to).with_context(|| format!("{} as the new name", shown(project, to)))?;
     ensure!(
         kind_from == kind_to && extension(from) == extension(to),
-        "{} to {}: a different extension or folder kind makes it another asset, not a {doing}",
+        "{} to {}: a different extension makes it another asset, not a {doing}",
         shown(project, from),
         shown(project, to)
     );
@@ -349,19 +348,17 @@ pub struct Entry {
     pub uses: usize,
 }
 
-/// Every asset source in the project — models, textures and sounds in
-/// `assets/`, materials, prefabs — sorted by file, with how much each is
-/// used.
+/// Every asset source in the project — models, textures, sounds,
+/// materials, prefabs, wherever they lie — sorted by file, with how much
+/// each is used.
 pub fn list(project: &Project) -> Result<Vec<Entry>> {
     let documents = Documents::read(project)?;
     let mut files = Vec::new();
-    for root in [project.assets(), project.materials(), project.prefabs()] {
-        walk(&root, &mut |path| {
-            if kind(project, path).is_ok() {
-                files.push(path.to_path_buf());
-            }
-        });
-    }
+    walk(project.root(), &mut |path| {
+        if kind(project, path).is_ok() {
+            files.push(path.to_path_buf());
+        }
+    });
     files.sort();
     files.dedup();
     let mut out = Vec::new();
@@ -472,7 +469,7 @@ pub fn duplicate(project: &Project, from: &Path, to: &Path) -> Result<Vec<Reimpo
 fn painted_by(project: &Project, image: &Path) -> Vec<PathBuf> {
     let image = normalize(image);
     let mut found = Vec::new();
-    walk(&project.assets(), &mut |path| {
+    walk(project.root(), &mut |path| {
         if extension(path) != "scrterrain" {
             return;
         }
@@ -494,22 +491,8 @@ struct Documents {
 
 impl Documents {
     fn read(project: &Project) -> Result<Self> {
-        let mut scene_paths = Vec::new();
-        walk(&project.scenes(), &mut |path| {
-            if extension(path) == "ron" {
-                scene_paths.push(path.to_path_buf());
-            }
-        });
-        scene_paths.sort();
-        let mut prefab_paths = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(project.prefabs()) {
-            for entry in entries.flatten() {
-                if extension(&entry.path()) == "prefab" {
-                    prefab_paths.push(entry.path());
-                }
-            }
-        }
-        prefab_paths.sort();
+        let scene_paths = project.files(scrap::layout::Kind::Scene);
+        let prefab_paths = project.files(scrap::layout::Kind::Prefab);
 
         let mut scenes = Vec::new();
         for path in scene_paths {
@@ -557,13 +540,8 @@ impl Documents {
 
 /// Another source of the same kind already called `name`.
 fn same_stem(project: &Project, kind: Kind, name: &str, except: Option<&Path>) -> Option<PathBuf> {
-    let root = match kind {
-        Kind::Model => project.assets(),
-        Kind::Material => project.materials(),
-        _ => project.prefabs(),
-    };
     let mut found = None;
-    walk(&root, &mut |path| {
+    walk(project.root(), &mut |path| {
         let matches = match kind {
             Kind::Model => MODEL_EXTENSIONS.contains(&extension(path).as_str()),
             Kind::Material => extension(path) == "scrmat",

@@ -1,6 +1,6 @@
 //! The prefab scene, expanded and rendered.
 //!
-//! `examples/valley/scenes/camp.ron` places the same campfire three times and never spells
+//! `examples/valley/content/valley/maps/camp.scene.ron` places the same campfire three times and never spells
 //! one out. What has to hold is the whole reason prefabs exist: three lines
 //! in a scene produce three identical arrangements, standing in different
 //! places, and editing the one file moves all of them.
@@ -24,7 +24,7 @@ fn scene_path() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .expect("crates/scrap is two levels down")
-        .join("examples/valley/scenes/camp.ron")
+        .join("examples/valley/content/valley/maps/camp.scene.ron")
 }
 
 /// The scene as a tool sees it: loaded, then expanded with its project's

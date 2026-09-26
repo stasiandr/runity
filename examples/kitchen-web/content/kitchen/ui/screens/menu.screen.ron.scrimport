@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/kitchen/ui/screens/menu.screen.ron",
+    id: Some("037e3579f69b37c505177cc1bfe9fd3a"),
+)

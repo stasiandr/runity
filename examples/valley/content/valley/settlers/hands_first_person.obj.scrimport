@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/settlers/hands_first_person.obj",
+    hash: "72e0d99ec30b345edf51d419acd8e617",
+    id: Some("4ac69a86919ccea06bb4d76a3cee634a"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

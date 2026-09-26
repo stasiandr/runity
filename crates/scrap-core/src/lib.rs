@@ -31,6 +31,7 @@ pub mod hash;
 pub mod id;
 pub mod input;
 pub mod jobs;
+pub mod layout;
 pub mod layers;
 pub mod library;
 pub mod links;

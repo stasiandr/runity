@@ -12,6 +12,7 @@
 
 use scrap::post::PostProcess;
 
+use yaml_rust2::Yaml;
 use super::yaml::{self, Get};
 use super::{Report, Unity};
 
@@ -76,6 +77,35 @@ pub fn sky(unity: &Unity, text: &str) -> Option<scrap::render::Sky> {
             .map_or(default, |c| [c[0], c[1], c[2]]);
         c.map(|v| scrap::material::srgb_to_linear(v.clamp(0.0, 1.0)))
     };
+    // A skybox of the project's own shader that paints a gradient
+    // (3D Game Kit's SimpleSky: _AmbientSky, _AmbientHorizon,
+    // _AmbientGround): scrap's Gradient sky, its three colours.
+    if let Some(m) = material.as_ref().filter(|m| super::material::own_shader(unity, m).is_some()) {
+        let named = |words: &[&str]| {
+            m["m_SavedProperties"].list("m_Colors").iter().find_map(|item| {
+                let Yaml::Hash(h) = item else { return None };
+                let (k, _) = h.iter().next()?;
+                let key = k.as_str()?;
+                let lower = key.to_lowercase();
+                words.iter().any(|w| lower.contains(w)).then(|| key.to_string())
+            })
+        };
+        if let (Some(top), Some(middle), Some(bottom)) = (
+            named(&["sky", "zenith", "top"]),
+            named(&["horizon", "equator"]),
+            named(&["ground", "bottom"]),
+        ) {
+            return Some(scrap::render::Sky {
+                mode: scrap::render::SkyMode::Gradient,
+                zenith: colour(&top, [0.2, 0.4, 0.7]),
+                horizon: colour(&middle, [0.6, 0.7, 0.8]),
+                ground: colour(&bottom, [0.3, 0.3, 0.3]),
+                sun_size: 0.0,
+                reflection_intensity: b.f32("m_ReflectionIntensity").unwrap_or(1.0),
+                ..Default::default()
+            });
+        }
+    }
     // _SunSize is the disc's radius, as a length between unit
     // directions; scrap's is degrees across. _SunDisk 0 is none.
     let sun_size = if float("_SunDisk", 1.0) < 0.5 {

@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/models/broadleaf_small.obj",
-    hash: "99d26fde4d5a8a1e22457b54a2f7d9bb",
-    id: Some("2ed245bd60ca7f95e800b628e485a9fb"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

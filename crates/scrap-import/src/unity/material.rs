@@ -249,7 +249,7 @@ pub fn shader_textures(unity: &Unity, m: &Yaml, shader: &Path) -> Vec<(String, S
         unity.guids.get(guid).is_some_and(|p| {
             p.extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
-                .is_some_and(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp"))
+                .is_some_and(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp" | "tif" | "tiff"))
         })
     };
     let read = |property: &str| {
@@ -355,12 +355,25 @@ pub fn shader_look(path: &Path) -> ShaderLook {
         }
     } else {
         let lower = text.to_lowercase();
+        // The built-in pipeline's surface shaders (`#pragma surface surf
+        // Standard …`) and forward passes are lit as URP's are; their
+        // `alpha:fade`/`alpha:blend` is see-through.
+        let surface = lower
+            .lines()
+            .find(|l| l.trim_start().starts_with("#pragma surface"))
+            .map(str::to_string);
+        let lit_pass = ["universalforward", "forwardbase", "deferred"].iter().any(|mode| {
+            lower.contains(&format!("lightmode\"=\"{mode}"))
+                || lower.contains(&format!("lightmode\" = \"{mode}"))
+        });
         ShaderLook {
             transparent: lower.contains("\"queue\"=\"transparent")
-                || lower.contains("blend srcalpha"),
+                || lower.contains("blend srcalpha")
+                || surface.as_deref().is_some_and(|s| s.contains(" alpha")),
             face: lower.contains("cull off").then_some("BothAsFront"),
-            clip: false,
-            unlit: !lower.contains("lightmode\"=\"universalforward"),
+            // A surface shader that throws away what alpha says: cut out.
+            clip: lower.contains("clip(") && !lower.contains("\"queue\"=\"transparent"),
+            unlit: surface.is_none() && !lit_pass,
             on_top: lower.contains("ztest always"),
         }
     }
@@ -480,6 +493,21 @@ fn param_values(m: &Yaml, names: &[String]) -> Vec<f32> {
                     })
                     .unwrap_or(0.0)
             }
+            // A texture's tiling and offset, as Unity's `_Tex_ST` has
+            // them: x, y the scale, z, w the offset.
+            Some((st, channel))
+                if st.ends_with("_ST") && matches!(channel, "x" | "y" | "z" | "w") =>
+            {
+                let slot = &st[..st.len() - 3];
+                property(m, "m_TexEnvs", slot)
+                    .and_then(|t| match channel {
+                        "x" => t["m_Scale"].f32("x"),
+                        "y" => t["m_Scale"].f32("y"),
+                        "z" => t["m_Offset"].f32("x"),
+                        _ => t["m_Offset"].f32("y"),
+                    })
+                    .unwrap_or(if matches!(channel, "x" | "y") { 1.0 } else { 0.0 })
+            }
             _ => float(m, name).unwrap_or(0.0),
         })
         .collect()
@@ -551,8 +579,14 @@ pub fn convert_with(
     }
     // Blending said by its factors, where `_Surface` does not: a built-in
     // particle shader's (SrcAlpha, OneMinusSrcAlpha) is see-through, a
-    // (SrcAlpha or One, One) adds.
-    if !fields.iter().any(|f| f.starts_with("surface")) {
+    // (SrcAlpha or One, One) adds. A project's own `.shader` blends only
+    // if it reads the factors (`Blend [_SrcBlend] …`): a material keeps
+    // the numbers of every shader it once had.
+    let factors_read = own_shader(unity, m).is_none_or(|(_, path)| {
+        path.extension().is_some_and(|e| e == "shadergraph")
+            || std::fs::read_to_string(&path).is_ok_and(|t| t.contains("[_SrcBlend]"))
+    });
+    if factors_read && !fields.iter().any(|f| f.starts_with("surface")) {
         match (float(m, "_SrcBlend"), float(m, "_DstBlend")) {
             (Some(5.0) | Some(1.0), Some(10.0)) => {
                 fields.push("surface: Transparent".into());
@@ -798,6 +832,33 @@ Material:
             look.transparent && look.face == Some("BothAsFront") && !look.unlit,
             "{look:?}"
         );
+        // The built-in pipeline's surface shaders are lit; `alpha:fade`
+        // sees through. A pass with no light mode at all is not lit.
+        let moss = dir.join("Moss.shader");
+        std::fs::write(
+            &moss,
+            "Shader \"Custom/MossMask\" { SubShader { CGPROGRAM\n  #pragma surface surf Standard fullforwardshadows\n ENDCG } }",
+        )
+        .unwrap();
+        assert_eq!(shader_look(&moss), ShaderLook::default());
+        let glass = dir.join("Glass.shader");
+        std::fs::write(
+            &glass,
+            "Shader \"Glass\" { SubShader { CGPROGRAM\n\t\t#pragma surface surf StandardSpecular  alpha:fade\n ENDCG } }",
+        )
+        .unwrap();
+        let look = shader_look(&glass);
+        assert!(look.transparent && !look.unlit, "{look:?}");
+        let grass = dir.join("Grass.shader");
+        std::fs::write(
+            &grass,
+            "Shader \"Grass\" { SubShader { CGPROGRAM\n#pragma surface surf Standard addshadow\nvoid surf() { clip(c.a - 0.5); }\nENDCG } }",
+        )
+        .unwrap();
+        assert!(shader_look(&grass).clip);
+        let flat = dir.join("Flat.shader");
+        std::fs::write(&flat, "Shader \"Flat\" { SubShader { Pass { CGPROGRAM\n#pragma vertex v\n#pragma fragment f\nENDCG } } }").unwrap();
+        assert!(shader_look(&flat).unlit);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -845,6 +906,7 @@ Material:
             pieces: Default::default(),
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ggg", file("Landscape_Shader.shadergraph")),
@@ -925,6 +987,7 @@ Material:
             mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
             root: dir.clone(),
             guids: Default::default(),
             names: Default::default(),
@@ -966,6 +1029,7 @@ Material:
             mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
             root: dir.clone(),
             guids: Default::default(),
             names: Default::default(),
@@ -1011,6 +1075,7 @@ Material:
             mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ttt".to_string(), dir.join("stone_albedo.png")),
@@ -1040,6 +1105,7 @@ Material:
             mesh_pieces: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
             root: dir.clone(),
             guids: [("ttt".to_string(), dir.join("stone_albedo.png"))]
                 .into_iter()

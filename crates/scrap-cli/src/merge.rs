@@ -77,12 +77,32 @@ pub fn merge_files(
     })
 }
 
-/// Whether the file is in a project's `configs/`.
+/// Whether the file is the game's data — a table or tuned numbers: a
+/// plain `.ron` that is no scene, screen, graph or other kind
+/// (docs/layout.md), or one in an old `configs/`.
 fn is_config(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("ron")
-        && path
-            .components()
-            .any(|c| c.as_os_str() == scrap::project::CONFIGS)
+    let text = path.to_string_lossy().replace('\\', "/");
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let old = |folder: &str| path.components().any(|c| c.as_os_str() == folder);
+    text.ends_with(".ron")
+        && (old("configs")
+            || (scrap::layout::kind_of(&name).is_none()
+                && ![
+                    "scenes",
+                    "ui",
+                    "animators",
+                    "clips",
+                    "dialogues",
+                    "quests",
+                    "strings",
+                    "localization",
+                    "config",
+                ]
+                .into_iter()
+                .any(old)))
 }
 
 fn merge_config(base: &Path, ours: &Path, theirs: &Path) -> Result<Outcome> {

@@ -278,6 +278,24 @@ impl Clip {
             .map(|(i, j)| (bare_joint_name(&j.name), i))
             .collect();
         let mut channels = Vec::new();
+        // The same rig in another file — Unity's clips, a take an FBX,
+        // each file's rest its own first frame: every joint there by name
+        // under the same parent. Its keys are the pose itself, as Unity
+        // plays a generic rig's curves: taken as they are.
+        let parent_name = |s: &Skeleton, j: &Joint| j.parent.and_then(|p| s.joints.get(p as usize)).map(|p| bare_joint_name(&p.name).to_string());
+        let same_rig = from.joints.iter().all(|j| {
+            by_name
+                .get(bare_joint_name(&j.name))
+                .is_some_and(|&t| parent_name(to, &to.joints[t]) == parent_name(from, j))
+        });
+        if same_rig {
+            for channel in &self.channels {
+                let Some(source) = from.joints.get(channel.joint as usize) else { continue };
+                let Some(&target) = by_name.get(bare_joint_name(&source.name)) else { continue };
+                channels.push(Channel { joint: target as u16, ..channel.clone() });
+            }
+            return Clip { name: self.name.clone(), duration: self.duration, channels };
+        }
         for channel in &self.channels {
             let Some(source) = from.joints.get(channel.joint as usize) else {
                 continue;

@@ -1,4 +1,4 @@
-"""Write examples/valley/scenes/bazaar.ron: a desert market in the wind.
+"""Write examples/valley/content/valley/maps/bazaar.scene.ron: a desert market in the wind.
 
 Awnings bellying over two stalls, flags and banners, a washing line with
 sheets, bunting between the stalls, and a mud-brick wall that comes down:
@@ -84,6 +84,6 @@ head = """// Базар в пустыне на ветру (`cloth`, `rope` мо�
     ambient_occlusion: (bounce: 1.0),
     entities: [
 """
-out = pathlib.Path(__file__).resolve().parents[2] / "examples/valley/scenes/bazaar.ron"
+out = pathlib.Path(__file__).resolve().parents[2] / "examples/valley/content/valley/maps/bazaar.scene.ron"
 out.write_text(head + "\n".join(lines) + "\n    ],\n)\n")
 print(f"{out}: {len(lines)} entities")

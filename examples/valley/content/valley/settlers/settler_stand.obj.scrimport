@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/settlers/settler_stand.obj",
+    hash: "dedec439ec30238f240c95247934f2ce",
+    id: Some("2f63206a96f003a3a8badeea77110d8b"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

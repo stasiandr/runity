@@ -24,6 +24,7 @@ pub use scrap_core::impl_parts;
 pub use scrap_animation::animator;
 #[cfg(feature = "animation")]
 pub use scrap_animation::animgraph;
+pub use scrap_animation::rules;
 /// IK on an animated skeleton: feet on the ground, a look (a line's `ik`).
 #[cfg(feature = "animation")]
 pub use scrap_animation::ik as pose_ik;
@@ -199,6 +200,7 @@ pub use scrap_core::perf;
 pub use scrap_core::player;
 pub use scrap_core::player_prefs;
 pub use scrap_core::prefab;
+pub use scrap_core::layout;
 pub use scrap_core::project;
 #[cfg(feature = "navigation")]
 pub use scrap_navigation::navigation;

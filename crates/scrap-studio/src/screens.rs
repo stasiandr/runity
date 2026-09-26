@@ -170,33 +170,18 @@ impl Screens {
         self.listed = true;
         ui.clear(self.files_list);
         self.files.clear();
-        let Some(dir) = session
-            .project()
-            .map(|p| p.root().join(scrap::project::UI))
-        else {
+        let Some(paths) = session.project().map(|p| p.files(scrap::layout::Kind::Screen)) else {
             return;
         };
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .map(|r| {
-                r.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        paths.sort();
         if paths.is_empty() {
             ui.add_text(
                 self.files_list,
                 Style::default().text_size(11.5).text_color(MUTED),
-                "No screens in ui/ yet.",
+                "No screens yet (*.screen.ron).",
             );
         }
         for path in paths {
-            let name = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let name = scrap::layout::name_of(&path);
             let row = line(
                 ui,
                 self.files_list,

@@ -3685,6 +3685,7 @@ dependencies = [
  "hound",
  "image",
  "intel_tex_2",
+ "miniz_oxide 0.8.9",
  "rkyv",
  "ron",
  "scrap-core",
@@ -3693,7 +3694,9 @@ dependencies = [
  "serde_json",
  "symphonia",
  "texture2ddecoder",
+ "tiff",
  "tobj",
+ "weezl",
  "yaml-rust2",
  "zstd",
 ]

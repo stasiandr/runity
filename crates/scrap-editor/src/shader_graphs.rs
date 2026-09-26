@@ -198,18 +198,13 @@ pub fn base(input: &Input) -> Option<&str> {
     }
 }
 
-/// The graph files in a project's `shaders/`, by name.
+/// The graph files in a project, wherever they lie (docs/layout.md), by
+/// path.
 pub fn list(root: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(root.join(scrap::project::SHADERS))
-        .map(|r| {
-            r.flatten()
-                .map(|e| e.path())
-                .filter(|p| Kind::of(p).is_some())
-                .collect()
-        })
-        .unwrap_or_default();
-    paths.sort();
-    paths
+    scrap::layout::files(root, scrap::layout::Kind::Shader)
+        .into_iter()
+        .filter(|p| Kind::of(p).is_some())
+        .collect()
 }
 
 /// A graph named as a person would — `lava`, `embers.vfx`, `cracks.subgraph`,
@@ -217,19 +212,23 @@ pub fn list(root: &Path) -> Vec<PathBuf> {
 /// is one; else the names there are.
 pub fn find(root: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim().trim_start_matches("shaders/");
-    let dir = root.join(scrap::project::SHADERS);
     let tries = [
         name.to_string(),
         format!("{name}.ron"),
         format!("{name}.graph.ron"),
     ];
+    // A path from the root, or a file's own name wherever it lies.
+    let all = list(root);
     for t in &tries {
-        let p = dir.join(t);
+        let p = root.join(t);
         if Kind::of(&p).is_some() && p.is_file() {
             return Ok(p);
         }
+        if let Some(p) = all.iter().find(|p| p.file_name().is_some_and(|f| f.to_string_lossy() == *t)) {
+            return Ok(p.clone());
+        }
     }
-    let names: Vec<String> = list(root)
+    let names: Vec<String> = all
         .iter()
         .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
         .collect();
@@ -246,7 +245,7 @@ pub fn find(root: &Path, name: &str) -> Result<PathBuf, String> {
         .map(|n| format!(" — did you mean `{n}`?"))
         .unwrap_or_default();
     Err(format!(
-        "no graph `{name}` in shaders/{near} (there are: {})",
+        "no graph `{name}` in the project{near} (there are: {})",
         short.join(", ")
     ))
 }

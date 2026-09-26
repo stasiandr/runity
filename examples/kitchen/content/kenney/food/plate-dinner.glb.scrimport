@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/food/plate-dinner.glb",
+    hash: "e8660a28533f1b401f0bdae1fdd484d2",
+    id: Some("f620fe661ca68f95d57da62cb4c09ea7"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -45,7 +45,7 @@ use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
 
 /// The engine's reference scene: every builtin, no import step.
-pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
+pub const REFERENCE_SCENE: &str = "examples/valley/content/valley/maps/first-light.scene.ron";
 
 /// The Scene view's picture, as the renderer knows it.
 const SCENE: ImageId = ImageId(0);
@@ -981,8 +981,7 @@ impl Studio {
         let s = &self.session;
         let name = s
             .scene_path()
-            .and_then(|p| p.file_stem())
-            .map(|n| n.to_string_lossy().into_owned())
+            .map(scrap::layout::name_of)
             .unwrap_or_else(|| "untitled".into());
         let dot = if s.is_modified() { "• " } else { "" };
         let prefab = if s.is_prefab() { " (prefab)" } else { "" };
@@ -2537,7 +2536,13 @@ impl Studio {
                     self.session.entity_model(*id).is_some_and(|m| {
                         self.session
                             .project()
-                            .is_some_and(|p| p.assets().join(format!("{m}.scrterrain")).is_file())
+                            .is_some_and(|p| {
+                                let mut found = false;
+                                scrap_import::walk(p.root(), &mut |f| {
+                                    found |= f.extension().is_some_and(|e| e == "scrterrain") && f.file_stem().is_some_and(|s| *s.to_string_lossy() == *m);
+                                });
+                                found
+                            })
                     })
                 })
             });
@@ -3068,8 +3073,7 @@ impl Studio {
         let ui = &mut self.ui;
         let name = s
             .scene_path()
-            .and_then(|p| p.file_stem())
-            .map(|n| n.to_string_lossy().into_owned())
+            .map(scrap::layout::name_of)
             .unwrap_or_else(|| "untitled".into());
         ui.set_text(t.scene_name, &name);
         let modified = s.is_modified();
@@ -3140,8 +3144,7 @@ impl Studio {
         if prefab {
             let name = s
                 .scene_path()
-                .and_then(|p| p.file_stem())
-                .map(|n| n.to_string_lossy().into_owned())
+                .map(scrap::layout::name_of)
                 .unwrap_or_default();
             ui.set_text(self.prefab_name, &format!("Prefab: {name}"));
         }
@@ -3742,17 +3745,11 @@ impl Studio {
                     self.ask("New scene", "", Ask::NewScene);
                 }
                 Action::AssetRename(file) => {
-                    let stem = std::path::Path::new(&file)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                    let stem = scrap::layout::name_of(&file);
                     self.ask(&format!("Rename {file}"), &stem, Ask::RenameAsset(file));
                 }
                 Action::AssetDuplicate(file) => {
-                    let stem = std::path::Path::new(&file)
-                        .file_stem()
-                        .map(|s| format!("{}_copy", s.to_string_lossy()))
-                        .unwrap_or_default();
+                    let stem = format!("{}_copy", scrap::layout::name_of(&file));
                     self.ask(&format!("Copy {file} as"), &stem, Ask::DuplicateAsset(file));
                 }
                 Action::AssetDelete(file) => {
@@ -3888,7 +3885,7 @@ impl Studio {
                 }
                 Action::OpenSceneDialog => {
                     let mut dialog = rfd::FileDialog::new().add_filter("scene", &["ron"]);
-                    if let Some(dir) = s.project().map(|p| p.root().join("scenes")) {
+                    if let Some(dir) = s.project().map(|p| p.scenes()) {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(path) = dialog.pick_file() {
@@ -3897,7 +3894,7 @@ impl Studio {
                 }
                 Action::SaveAs => {
                     let mut dialog = rfd::FileDialog::new().add_filter("scene", &["ron"]);
-                    if let Some(dir) = s.project().map(|p| p.root().join("scenes")) {
+                    if let Some(dir) = s.project().map(|p| p.scenes()) {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(path) = dialog.save_file() {
@@ -4721,7 +4718,7 @@ impl Studio {
                 if !added.called {
                     s.say(
                         Level::Warning,
-                        format!("src/main.rs has no `// systems, in order` line: call {} from step yourself", scrap_cli::add::system_call(text)),
+                        format!("src/main.rs has no `// systems, in order` line: call {} from step yourself", scrap_cli::add::system_call(&added.name)),
                     );
                 }
             }
@@ -5435,10 +5432,9 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
 /// `file` renamed to `name`, in its folder, with its extension.
 fn sibling(file: &str, name: &str) -> String {
     let path = std::path::Path::new(file);
-    let ext = path
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    // The whole extension that says the kind: `cave.scene.ron` keeps `.scene.ron`.
+    let full = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = full.strip_prefix(&scrap::layout::name_of(path)).unwrap_or_default().to_string();
     let name = name.strip_suffix(&ext).unwrap_or(name);
     match path.parent().filter(|p| !p.as_os_str().is_empty()) {
         Some(dir) => format!("{}/{name}{ext}", dir.display()),

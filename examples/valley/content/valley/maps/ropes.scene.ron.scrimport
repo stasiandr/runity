@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/ropes.scene.ron",
+    id: Some("5d1fe8d31db53082db6aad253cc7fafc"),
+)

@@ -164,18 +164,14 @@ impl Server {
             return out;
         };
         let mut files = Vec::new();
-        for (dir, extension) in [
-            (project.scenes(), "ron"),
-            (project.prefabs(), "prefab"),
-            (project.materials(), "scrmat"),
-            (project.root().join(scrap::project::CONFIGS), "ron"),
+        for kind in [
+            scrap::layout::Kind::Scene,
+            scrap::layout::Kind::Prefab,
+            scrap::layout::Kind::Material,
         ] {
-            scrap_import::walk(&dir, &mut |path| {
-                if path.extension().is_some_and(|e| e == extension) {
-                    files.push(path.to_path_buf());
-                }
-            });
+            files.extend(project.files(kind));
         }
+        files.extend(scrap::layout::data_files(project.root()));
         files.sort();
         for path in files {
             let name = project.relative(&path).unwrap_or_default();

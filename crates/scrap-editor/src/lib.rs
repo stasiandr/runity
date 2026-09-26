@@ -543,12 +543,19 @@ impl Session {
 
     /// Open a prefab of the project by name: Prefab Mode.
     pub fn open_prefab(&mut self, name: &str) -> EditResult<Vec<String>> {
-        let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
-        let path = directory.join(format!("{name}.{}", scrap::prefab::EXTENSION));
-        if !path.is_file() {
-            return Err(EditError::UnknownPrefab(name.to_string()));
-        }
+        self.prefab_dir.as_ref().ok_or(EditError::NotInProject)?;
+        let path = self.prefab_path(name).ok_or_else(|| EditError::UnknownPrefab(name.to_string()))?;
         self.open_scene(path)
+    }
+
+    /// A prefab's file by name, wherever it lies in the project
+    /// (docs/layout.md), or under the folder prefabs were read from.
+    fn prefab_path(&self, name: &str) -> Option<PathBuf> {
+        let kind = scrap::layout::Kind::Prefab;
+        match &self.project {
+            Some(project) => project.file(kind, name),
+            None => scrap::layout::find(self.prefab_dir.as_ref()?, kind, name),
+        }
     }
 
     /// Whether the open document is a prefab rather than a scene.
@@ -582,9 +589,9 @@ impl Session {
         if is_prefab(Some(&target)) {
             // Everything placed from here on — and every instance in the
             // next scene opened — is what was just saved.
-            if let Some(name) = target.file_stem() {
+            if target.file_stem().is_some() {
                 self.prefabs.insert(
-                    name.to_string_lossy().into_owned(),
+                    scrap::layout::name_of(&target),
                     self.history.scene().entities[0].clone(),
                 );
             }
@@ -911,7 +918,7 @@ impl Session {
             .ok_or(EditError::NoEntity(terrain))?
             .clone();
         let mut source = None;
-        scrap_import::walk(&project.assets(), &mut |path| {
+        scrap_import::walk(project.root(), &mut |path| {
             let named = path
                 .file_stem()
                 .is_some_and(|s| *s.to_string_lossy() == *desc.model());
@@ -988,7 +995,7 @@ impl Session {
             return Ok(0);
         }
         let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
-        let path = directory.join(format!("{}.prefab", line.prefab));
+        let path = self.prefab_path(&line.prefab).unwrap_or_else(|| directory.join(format!("{}.prefab", line.prefab)));
         let (_, mut prefab) = scrap::Prefabs::read(&path).map_err(EditError::Io)?;
         fn find(desc: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
             if desc.id == id {
@@ -1060,6 +1067,8 @@ impl Session {
         }
         .with(scrap::scene::ModelRef(Default::default()));
         std::fs::create_dir_all(&directory)?;
+        // Beside its base: a variant belongs to the same feature.
+        let directory = self.prefab_path(&line.prefab).and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or(directory);
         let path = directory.join(format!("{name}.{}", scrap::prefab::EXTENSION));
         scrap::Prefabs::save(&variant, &path).map_err(EditError::Io)?;
         self.prefabs.insert(name.to_string(), variant);
@@ -1725,12 +1734,7 @@ impl Session {
         // An animator's parameters, read from its graph when a wire pulls
         // one: seldom, so from the file each time.
         let parameters = |graph: &str| -> Option<std::collections::BTreeSet<String>> {
-            let path = self
-                .project
-                .as_ref()?
-                .root()
-                .join(scrap::project::ANIMATORS)
-                .join(format!("{graph}.ron"));
+            let path = self.project.as_ref()?.file(scrap::layout::Kind::Animator, graph)?;
             let text = std::fs::read_to_string(path).ok()?;
             let graph: scrap::animgraph::Graph = scrap::ron::from_str(&text).ok()?;
             Some(graph.parameters())
@@ -2324,9 +2328,10 @@ impl Session {
         // Whatever way each was named — `studio scenes/main.ron` opens a
         // relative path, the project's root is absolute.
         let absolute = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        if !absolute(&path).starts_with(absolute(&project.scenes())) || is_prefab(Some(&path)) {
+        let is_scene = project.files(scrap::layout::Kind::Scene).iter().any(|p| absolute(p) == absolute(&path));
+        if !is_scene || is_prefab(Some(&path)) {
             return Err(EditError::Scene(
-                "the game plays scenes from scenes/; open one to play it".into(),
+                "the game plays scenes (*.scene.ron); open one to play it".into(),
             ));
         }
         // Saved when there is something to save: an untouched scene is
@@ -2334,10 +2339,7 @@ impl Session {
         if self.is_modified() {
             self.save_scene(None)?;
         }
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = scrap::layout::name_of(&path);
         // What the game watches is the editor's document as it stands, not
         // the saved file: an edit shows in the running game without a save
         // (see `game::Mirror`). One person's, so under `.scrap/`.
@@ -2371,12 +2373,15 @@ impl Session {
         };
         self.say(
             console::Level::Info,
-            format!("playing scenes/{name}.ron in the game"),
+            format!(
+                "playing {} in the game",
+                project.relative(&path).unwrap_or_else(|| name.clone())
+            ),
         );
         Ok(command)
     }
 
-    /// File → New Scene: make `scenes/NAME.ron` in the open project — a
+    /// File → New Scene: make the scene NAME in the open project's `maps/` — a
     /// ground to stand on — and open it. What was open is not saved first;
     /// save it before, as Unity asks.
     pub fn new_scene(&mut self, name: &str) -> EditResult<PathBuf> {
@@ -2464,7 +2469,7 @@ impl Session {
     pub fn layer_names(&self) -> Vec<String> {
         self.project
             .as_ref()
-            .map(|p| p.root().join(scrap::layers::FILE))
+            .map(|p| p.layers_file())
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| scrap::ron::from_str::<scrap::layers::Layers>(&text).ok())
             .map(|l| l.layers)
@@ -3025,24 +3030,12 @@ impl Session {
         out
     }
 
-    /// The animator graphs in `animators/`, by file stem.
+    /// The project's animator graphs, by name.
     fn animator_names(&self) -> Vec<String> {
         let Some(project) = self.project.as_ref() else {
             return Vec::new();
         };
-        std::fs::read_dir(project.root().join(scrap::project::ANIMATORS))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().is_some_and(|x| x == "ron") {
-                    Some(p.file_stem()?.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        project.files(scrap::layout::Kind::Animator).iter().map(scrap::layout::name_of).collect()
     }
 
     /// Whether a typed link finds its asset: by its ID, or by its name.
@@ -3067,14 +3060,11 @@ impl Session {
                 let named = project.scene_names().iter().any(|n| n == link.as_str());
                 named
                     || link.id.is_some_and(|id| {
-                        std::fs::read_dir(project.scenes())
+                        project
+                            .files(scrap::layout::Kind::Scene)
                             .into_iter()
-                            .flatten()
-                            .flatten()
-                            .any(|e| {
-                                let p = e.path();
-                                p.extension().is_some_and(|x| x == "ron")
-                                    && scrap::asset::sidecar_id(scrap::asset::sidecar_of(&p))
+                            .any(|p| {
+                                scrap::asset::sidecar_id(scrap::asset::sidecar_of(&p))
                                         == Some(id)
                             })
                     })
@@ -3110,7 +3100,7 @@ impl Session {
         let found = found.or_else(|| match kind {
             "prefab" => self.prefabs.id_of(name).map(|id| (id, name.to_string())),
             "scene" => {
-                let file = self.project.as_ref()?.scenes().join(format!("{name}.ron"));
+                let file = self.project.as_ref()?.scene(name)?;
                 scrap::asset::sidecar_id(scrap::asset::sidecar_of(&file))
                     .map(|id| (id, name.to_string()))
             }
@@ -3126,14 +3116,12 @@ impl Session {
     fn material_file(&self, name: &str) -> EditResult<PathBuf> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
         let mut found = None;
-        scrap_import::walk(&project.materials(), &mut |p| {
-            if p.extension().is_some_and(|e| e == "scrmat")
-                && p.file_stem().is_some_and(|s| s == name)
-            {
-                found = Some(p.to_path_buf());
+        for p in project.files(scrap::layout::Kind::Material) {
+            if found.is_none() && scrap::layout::name_of(&p) == name {
+                found = Some(p);
             }
-        });
-        found.ok_or_else(|| EditError::Scene(format!("no material `{name}` in materials/")))
+        }
+        found.ok_or_else(|| EditError::Scene(format!("no material `{name}` in the project")))
     }
 
     /// A material's parent and parameters: what each is and whether the
@@ -3445,7 +3433,7 @@ impl Session {
         // The project's material shaders, as they are saved.
         if self.shaders.is_none() {
             self.shaders = self.project().map(|p| {
-                scrap::render::MaterialShaders::new(p.root().join(scrap::project::SHADERS))
+                scrap::render::MaterialShaders::new(p.root())
             });
         }
         if let Some(shaders) = &mut self.shaders {

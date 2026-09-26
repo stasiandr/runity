@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/models/boulder_small.obj",
-    hash: "c928794ce5f9de7677329d124b0ddacc",
-    id: Some("b8b0be432c4020fe55e106db1634797a"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

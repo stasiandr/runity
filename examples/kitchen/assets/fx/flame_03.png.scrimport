@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/fx/flame_03.png",
-    hash: "eb9295a5a18a4a9dd0ad6b09baed676a",
-    id: Some("68fe5d984ecb6fe6ea793ea4f5d7aed4"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

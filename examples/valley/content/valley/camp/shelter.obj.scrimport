@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/camp/shelter.obj",
+    hash: "d83e26c124bbcaf1a701b48678e91b07",
+    id: Some("81c438baffb6ebe31e02e3ac418751ca"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

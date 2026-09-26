@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "content/valley/maps/pond.scene.ron",
+    id: Some("15d357889772b2bba3f5fe33c8048643"),
+)

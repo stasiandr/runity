@@ -148,6 +148,7 @@ fn an_effect_reads_its_emitters_numbers_keeps_its_own_and_is_born_in_its_shape()
     renderer.set_texture_asset(id, handle);
     write(&dir.join("sheet.vfx.ron"), r#"(output: (color: (1.0, 1.0, 1.0), frame: 1.0, size: 0.3))"#, 1);
     write(&dir.join("plain.vfx.ron"), r#"(output: (color: (1.0, 1.0, 1.0), size: 0.3))"#, 1);
+    shaders.look_again();
     for (name, put) in shaders.poll(&mut renderer, &gpu) {
         put.unwrap_or_else(|e| panic!("{name}: {e}"));
     }

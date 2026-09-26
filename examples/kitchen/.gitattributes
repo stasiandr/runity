@@ -4,9 +4,9 @@
 # Scenes and prefabs merge by entity and field, configs by record and field,
 # not by line. The driver is
 # `scrap merge`; `scrap git-setup` turns it on in a clone.
-scenes/**/*.ron merge=scrap
-prefabs/**/*.prefab merge=scrap
-configs/**/*.ron merge=scrap
+*.scene.ron merge=scrap
+*.prefab merge=scrap
+*.ron merge=scrap
 
 # Binary sources (models, textures, sounds) are plain git here, like the
 # rest of the engine's repository, which does not use Git LFS: they are a

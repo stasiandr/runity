@@ -236,7 +236,7 @@ impl LiveScene {
         renderer: &mut Renderer,
     ) -> Vec<crate::streaming::StreamEvent> {
         let scenes = match &self.project {
-            Some(project) => project.scenes(),
+            Some(project) => project.root().to_path_buf(),
             None => self
                 .path
                 .parent()
@@ -647,14 +647,13 @@ impl LiveScene {
             .project
             .clone()
             .ok_or_else(|| anyhow::anyhow!("a scene outside a project has no others to go to"))?;
-        let path = project.scenes().join(format!("{name}.ron"));
-        if !crate::files::is_file(&path) {
+        let Some(path) = project.scene(name) else {
             let names = project.scene_names();
             let near = crate::spelling::closest(name, names.iter().map(String::as_str))
                 .map(|n| format!(" — did you mean `{n}`?"))
                 .unwrap_or_default();
-            anyhow::bail!("no scenes/{name}.ron{near}");
-        }
+            anyhow::bail!("no scene called `{name}`{near}");
+        };
         // Read before anything is taken out: a level that does not parse
         // leaves the one being played.
         let (current, prefabs, problems) = read(&path, Some(&project))?;
@@ -906,18 +905,19 @@ pub type Stamps = Vec<(PathBuf, Option<SystemTime>)>;
 pub fn stamps(path: &Path, project: Option<&Project>) -> Stamps {
     let modified = |path: &Path| crate::files::modified(path);
     let mut out = vec![(path.to_path_buf(), modified(path))];
-    // Hand-written prefabs, then the ones imports built into the library.
-    for dir in project.into_iter().flat_map(|p| [p.prefabs(), p.library()]) {
-        let Ok(entries) = crate::files::read_dir(dir) else {
-            continue;
-        };
-        let mut prefabs: Vec<PathBuf> = entries
+    // Hand-written prefabs, wherever they lie, then the ones imports built
+    // into the library.
+    if let Some(project) = project {
+        let written = crate::layout::files(project.root(), crate::layout::Kind::Prefab);
+        let mut built: Vec<PathBuf> = crate::files::read_dir(project.library())
+            .into_iter()
+            .flatten()
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("prefab"))
             .collect();
-        prefabs.sort();
-        out.extend(prefabs.into_iter().map(|path| {
+        built.sort();
+        out.extend(written.into_iter().chain(built).map(|path| {
             let stamp = modified(&path);
             (path, stamp)
         }));

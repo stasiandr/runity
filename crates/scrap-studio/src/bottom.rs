@@ -49,10 +49,7 @@ impl Asset {
 
     pub fn label(&self) -> String {
         match self {
-            Asset::Scene(p) => p
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            Asset::Scene(p) => scrap::layout::name_of(p),
             Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) | Asset::Sound(n, _) => {
                 n.strip_prefix("builtin:").unwrap_or(n).to_string()
             }
@@ -85,6 +82,10 @@ pub struct Bottom {
     folder: String,
     /// Folders opened in the tree.
     open_folders: std::collections::HashSet<String>,
+    /// Whether the project's own folder has been opened in the tree yet:
+    /// `content/` and `content/<name>/` start open, so its features show at
+    /// once (docs/layout.md).
+    opened_content: bool,
     /// Each tree row's folder, and whether the click was on its arrow.
     folder_rows: HashMap<NodeId, (String, bool)>,
     /// Each folder tile in the grid.
@@ -410,6 +411,7 @@ impl Bottom {
             crumbs,
             folder: String::new(),
             open_folders: Default::default(),
+            opened_content: false,
             folder_rows: HashMap::new(),
             folder_tiles: HashMap::new(),
             crumb_nodes: HashMap::new(),
@@ -750,13 +752,8 @@ fn assets_of(session: &Session, entries: &[Entry]) -> Vec<Asset> {
     {
         let mut out = Vec::new();
         if let Some(project) = session.project() {
-            let dir = project.root().join("scenes");
-            if let Ok(read) = std::fs::read_dir(&dir) {
-                let mut scenes: Vec<PathBuf> = read
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
-                    .collect();
-                scenes.sort();
+            {
+                let scenes = project.files(scrap::layout::Kind::Scene);
                 out.extend(scenes.into_iter().map(Asset::Scene));
             }
         }
@@ -1477,6 +1474,16 @@ impl Bottom {
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        if !self.opened_content {
+            if let Some(project) = session.project() {
+                self.opened_content = true;
+                if !project.is_legacy() {
+                    let own = scrap::layout::relative(project.root(), &project.content());
+                    self.open_folders.insert(scrap::project::CONTENT.to_string());
+                    self.open_folders.insert(own);
+                }
+            }
+        }
         self.update_project(ui, session);
 
         // Console
@@ -1918,12 +1925,10 @@ fn asset_file(asset: &Asset, session: &Session) -> Option<String> {
         Asset::Scene(p) => rel(p.clone()),
         Asset::Model(_, file) => file.clone(),
         Asset::Prefab(n) => {
-            let p = root.join("prefabs").join(format!("{n}.prefab"));
-            p.is_file().then(|| rel(p)).flatten()
+            session.project()?.file(scrap::layout::Kind::Prefab, n).and_then(rel)
         }
         Asset::Material(n) => {
-            let p = root.join("materials").join(format!("{n}.scrmat"));
-            p.is_file().then(|| rel(p)).flatten()
+            session.project()?.file(scrap::layout::Kind::Material, n).and_then(rel)
         }
         Asset::Sound(_, file) => Some(file.clone()),
     }

@@ -74,7 +74,7 @@ impl Shot {
         let mut renderer = Renderer::new(&gpu, &target);
         // The project's materials' own shaders.
         if let Some(project) = &project {
-            let mut shaders = crate::render::MaterialShaders::new(project.root().join(crate::project::SHADERS));
+            let mut shaders = crate::render::MaterialShaders::new(project.root());
             for (name, result) in shaders.poll(&mut renderer, &gpu) {
                 if let Err(problem) = result {
                     problems.push(format!("shader {name}: {problem}"));

@@ -8,6 +8,7 @@
 mod animator;
 mod look;
 mod material;
+mod mesh;
 mod motion;
 mod scene;
 pub mod yaml;
@@ -115,6 +116,8 @@ pub struct Unity {
     /// A material's name → what its shader written again says its eight
     /// numbers are (`// scrap:params`): where a particle's custom data goes.
     pub declared_params: HashMap<String, Vec<String>>,
+    /// The `.asset` files that hold a Mesh: models, made without Blender.
+    pub mesh_assets: std::collections::HashSet<PathBuf>,
 }
 
 /// The kind a Unity file becomes in scrap, by its extension.
@@ -190,11 +193,23 @@ impl Unity {
                 }
             }
         }
+        let mesh_assets: std::collections::HashSet<PathBuf> = guids
+            .values()
+            .filter(|p| p.extension().is_some_and(|e| e == "asset") && mesh::is_mesh_asset(p))
+            .cloned()
+            .collect();
+        let kind_at = |path: &Path| {
+            if mesh_assets.contains(path) {
+                Some("model")
+            } else {
+                kind_of(path)
+            }
+        };
         // Names: the file's stem, and where two of one kind share it, the
         // folder before it too — `props_crate`, `tools_crate`.
         let mut by_kind: HashMap<(&str, String), Vec<String>> = HashMap::new();
         for (guid, path) in &guids {
-            let Some(kind) = kind_of(path) else { continue };
+            let Some(kind) = kind_at(path) else { continue };
             let stem = stem(path);
             by_kind.entry((kind, stem)).or_default().push(guid.clone());
         }
@@ -225,13 +240,24 @@ impl Unity {
             pieces: HashMap::new(),
             mesh_pieces: HashMap::new(),
             declared_params: HashMap::new(),
+            mesh_assets,
         })
     }
 
     /// The scrap name of the asset a GUID names, and its kind.
     pub fn named(&self, guid: &str) -> Option<(&'static str, &str)> {
         let path = self.guids.get(guid)?;
-        Some((kind_of(path)?, self.names.get(guid)?.as_str()))
+        Some((self.kind(path)?, self.names.get(guid)?.as_str()))
+    }
+
+    /// What a file becomes: by its extension, but a `.asset` holding a
+    /// Mesh is a model.
+    pub fn kind(&self, path: &Path) -> Option<&'static str> {
+        if self.mesh_assets.contains(path) {
+            Some("model")
+        } else {
+            kind_of(path)
+        }
     }
 
     /// Every asset of a kind: its GUID and file.
@@ -239,7 +265,7 @@ impl Unity {
         let mut out: Vec<(&str, &Path)> = self
             .guids
             .iter()
-            .filter(|(_, p)| kind_of(p) == Some(kind))
+            .filter(|(_, p)| self.kind(p) == Some(kind))
             .map(|(g, p)| (g.as_str(), p.as_path()))
             .collect();
         out.sort_by(|a, b| a.1.cmp(b.1));
@@ -311,10 +337,28 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
 
     // Models first: a scene's renderer names one mesh of a model, and
     // which ones there are is known once they are converted.
+    // Meshes kept as assets (exported terrain), made straight into glTF.
+    let out = project.assets().join("models");
+    for (guid, path) in unity.of_kind("model") {
+        if !unity.mesh_assets.contains(path) {
+            continue;
+        }
+        let to = out.join(format!("{}.glb", unity.names[guid]));
+        let _ = std::fs::create_dir_all(&out);
+        writable(&to);
+        match mesh::convert_asset(path).and_then(|glb| Ok(std::fs::write(&to, glb)?)) {
+            Ok(()) => report.models += 1,
+            Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
+        }
+    }
     if options.models {
         models(&unity, project, options, &mut report);
     } else {
-        let n = unity.of_kind("model").len();
+        let n = unity
+            .of_kind("model")
+            .iter()
+            .filter(|(_, p)| !unity.mesh_assets.contains(*p))
+            .count();
         if n > 0 {
             report.skip(format!(
                 "{n} models: pass --models to convert them through Blender"
@@ -324,6 +368,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     unity.pieces = pieces(&project.assets().join("models"));
     unity.mesh_pieces = mesh_pieces(&unity);
     keep_origins(&project.assets().join("models"))?;
+    clip_cuts(&unity, &project.assets().join("models"))?;
 
     if let Some((layers, _)) = unity_layers(&unity.root) {
         let text = ron::ser::to_string_pretty(&layers, ron::ser::PrettyConfig::new())?;
@@ -383,12 +428,16 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
                 .map_err(anyhow::Error::from)
         } else {
             // A TIFF, or a file whose name lies about it: made a PNG.
-            image::ImageReader::open(path)
-                .and_then(|r| r.with_guessed_format())
-                .map_err(image::ImageError::from)
-                .and_then(|r| r.decode())
-                .and_then(|picture| picture.save(&to))
-                .map_err(anyhow::Error::from)
+            let picture = if read_as == Some(image::ImageFormat::Tiff) {
+                tiff_picture(path)
+            } else {
+                image::ImageReader::open(path)
+                    .and_then(|r| r.with_guessed_format())
+                    .map_err(image::ImageError::from)
+                    .and_then(|r| r.decode())
+                    .map_err(anyhow::Error::from)
+            };
+            picture.and_then(|p| p.save(&to).map_err(anyhow::Error::from))
         };
         if let Err(e) = written {
             report.errors.push(format!("{}: {e}", path.display()));
@@ -462,7 +511,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
                 .iter()
                 .map(|d| d.join(&file))
                 .chain(std::iter::once(
-                    project.root().join(scrap::project::SHADERS).join(&file),
+                    project.default_dir(scrap::layout::Kind::Shader).join(&file),
                 ))
                 .find_map(|p| std::fs::read_to_string(p).ok())
         };
@@ -489,7 +538,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     unity.declared_params = declared_params;
     // The shaders those materials had: a stub each to write again, never
     // over one already written.
-    let dir = project.root().join(scrap::project::SHADERS);
+    let dir = project.default_dir(scrap::layout::Kind::Shader);
     for (name, path) in &shaders {
         let file = dir.join(format!("{name}.wgsl"));
         let stub =
@@ -544,7 +593,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
             ..Default::default()
         };
         let ambient = look::ambient(&text);
-        if let Some(mut sun) = scene::sun(&text) {
+        if let Some(mut sun) = scene::sun(&unity, &text) {
             sun.ambient = ambient;
             scene.set_part(&sun);
         } else if ambient.is_some() {
@@ -560,7 +609,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         scene.set_part_opt(look::ambient_occlusion(&unity).as_ref());
         let name = &unity.names[guid];
         scene
-            .save(project.scenes().join(format!("{name}.ron")))
+            .save(project.new_file(scrap::layout::Kind::Scene, name))
             .with_context(|| format!("scene {name}"))?;
         report.scenes += 1;
     }
@@ -579,7 +628,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     for path in tables {
         let Ok(text) = std::fs::read_to_string(path) else { continue };
         for (language, words) in string_table(&text) {
-            let file = project.root().join("strings").join(format!("{language}.ron"));
+            let file = project.strings_dir().join(format!("{language}.ron"));
             let mut all: BTreeMap<String, String> = std::fs::read_to_string(&file)
                 .ok()
                 .and_then(|t| scrap::ron::from_str(&t).ok())
@@ -607,9 +656,15 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     for (guid, path) in unity.of_kind("animator") {
         match animator::convert(&unity, path, &mut report) {
             Ok(text) => {
-                let dir = project.root().join(scrap::project::ANIMATORS);
                 let name = &unity.names[guid];
-                write(&dir.join(format!("{name}.ron")), &text)?;
+                let to = project.new_file(scrap::layout::Kind::Animator, name);
+                // Written again as rules (docs/animator.md): the project's
+                // own now, not the import's to overwrite.
+                if std::fs::read_to_string(&to).is_ok_and(|t| scrap::rules::RulesFile::is_rules(&t)) {
+                    report.skip("an animator the project rewrote as rules (kept)");
+                    continue;
+                }
+                write(&to, &text)?;
                 report.animators += 1;
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
@@ -619,9 +674,8 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
     for (guid, path) in unity.of_kind("motion") {
         match motion::convert(path, &mut report) {
             Ok(clip) => {
-                let dir = project.root().join(scrap::motion::DIR);
                 let name = &unity.names[guid];
-                write(&dir.join(format!("{name}.ron")), &motion::text(&clip))?;
+                write(&project.new_file(scrap::layout::Kind::Clip, name), &motion::text(&clip))?;
                 report.motions += 1;
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
@@ -644,10 +698,11 @@ fn keep_origins(dir: &Path) -> Result<()> {
         let sidecar = crate::sidecar_for(&path);
         let mut settings = match crate::ImportSettings::load(&sidecar) {
             Ok(settings) => settings,
-            Err(_) => crate::ImportSettings::for_source(format!(
-                "assets/models/{}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            )),
+            Err(_) => crate::ImportSettings::for_source(
+                scrap::Project::find(&path).ok().and_then(|p| p.relative(&path)).unwrap_or_else(|| {
+                    format!("assets/models/{}", path.file_name().unwrap_or_default().to_string_lossy())
+                }),
+            ),
         };
         // One mesh, whatever its nodes: a scene names a model as one
         // thing — its pieces are there for a renderer that names one.
@@ -656,6 +711,73 @@ fn keep_origins(dir: &Path) -> Result<()> {
             settings.origin_to_base = false;
             settings.scene = false;
             settings.keep_uvs = true;
+            settings.hash = String::new();
+            settings.save(&sidecar)?;
+        }
+    }
+    Ok(())
+}
+
+/// Each converted model's clips as Unity cuts them from its takes
+/// (`clipAnimations` in the model's `.meta`: a name, a take, a first and
+/// last frame), into its sidecar for the import to cut.
+fn clip_cuts(unity: &Unity, dir: &Path) -> Result<()> {
+    for (guid, path) in unity.of_kind("model") {
+        if unity.mesh_assets.contains(path) {
+            continue;
+        }
+        let Ok(meta) = std::fs::read_to_string(meta_of(path)) else {
+            continue;
+        };
+        let mut cuts: Vec<crate::ClipCut> = Vec::new();
+        let mut inside = false;
+        let mut cut: Option<crate::ClipCut> = None;
+        for line in meta.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("clipAnimations:") {
+                inside = !trimmed.ends_with("[]");
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            // The list ends where a key of the importer's own comes, less indented.
+            if !line.starts_with("    ") && !trimmed.is_empty() {
+                break;
+            }
+            if trimmed.starts_with("- serializedVersion:") || trimmed.starts_with("- name:") {
+                cuts.extend(cut.take());
+                cut = Some(crate::ClipCut { name: String::new(), take: String::new(), from: 0.0, to: 0.0 });
+            }
+            let Some(c) = cut.as_mut() else { continue };
+            let value = |key: &str| trimmed.strip_prefix(key).map(|v| v.trim().to_string());
+            if let Some(v) = value("- name:").or_else(|| value("name:")) {
+                if c.name.is_empty() {
+                    c.name = if v == "mixamo.com" { stem(path) } else { v };
+                }
+            } else if let Some(v) = value("takeName:") {
+                c.take = v;
+            } else if let Some(v) = value("firstFrame:") {
+                c.from = v.parse().unwrap_or(0.0);
+            } else if let Some(v) = value("lastFrame:") {
+                c.to = v.parse().unwrap_or(0.0);
+            }
+        }
+        cuts.extend(cut);
+        cuts.retain(|c| !c.name.is_empty() && c.to > c.from);
+        if cuts.is_empty() {
+            continue;
+        }
+        let file = dir.join(format!("{}.glb", unity.names[guid]));
+        if !file.is_file() {
+            continue;
+        }
+        let sidecar = crate::sidecar_for(&file);
+        let Ok(mut settings) = crate::ImportSettings::load(&sidecar) else {
+            continue;
+        };
+        if settings.clips != cuts {
+            settings.clips = cuts;
             settings.hash = String::new();
             settings.save(&sidecar)?;
         }
@@ -758,7 +880,11 @@ fn models(unity: &Unity, project: &scrap::Project, options: &Options, report: &m
         .unwrap_or_else(|| PathBuf::from("blender"));
     let out = project.assets().join("models");
     let _ = std::fs::create_dir_all(&out);
-    let all = unity.of_kind("model");
+    let all: Vec<_> = unity
+        .of_kind("model")
+        .into_iter()
+        .filter(|(_, p)| !unity.mesh_assets.contains(*p))
+        .collect();
     let count = all.len();
     for (i, (guid, path)) in all.into_iter().enumerate() {
         let name = &unity.names[guid];
@@ -1067,5 +1193,202 @@ mod tests {
         assert_eq!(snake("HTTPClient"), "http_client");
         assert_eq!(snake("Item3D"), "item3_d");
         assert_eq!(clean("Big Rock (1)"), "Big_Rock_1");
+    }
+}
+
+/// A TIFF as a picture. Photoshop's RGBA TIFFs mark the fourth channel an
+/// unspecified extra sample, which the `tiff` crate reads as RGB with a
+/// stride of three — stripes, and no alpha — so the common case (8 bits a
+/// channel, interleaved strips, none, LZW or Deflate, with or without the
+/// horizontal predictor) is read here by the file's own SamplesPerPixel;
+/// anything else goes to the crate.
+fn tiff_picture(path: &Path) -> Result<image::DynamicImage> {
+    let data = std::fs::read(path)?;
+    if let Some(picture) = tiff_strips(&data) {
+        return picture;
+    }
+    use tiff::decoder::{Decoder, DecodingResult};
+    let mut decoder = Decoder::new(std::io::Cursor::new(&data))?;
+    let (w, h) = decoder.dimensions()?;
+    let bytes: Vec<u8> = match decoder.read_image()? {
+        DecodingResult::U8(b) => b,
+        DecodingResult::U16(b) => b.into_iter().map(|v| (v >> 8) as u8).collect(),
+        _ => anyhow::bail!("{}: a TIFF of a number type not read", path.display()),
+    };
+    picture_of(w, h, bytes).with_context(|| format!("{}", path.display()))
+}
+
+fn picture_of(w: u32, h: u32, bytes: Vec<u8>) -> Result<image::DynamicImage> {
+    let pixels = (w as usize * h as usize).max(1);
+    let picture = match bytes.len() / pixels {
+        1 => image::GrayImage::from_raw(w, h, bytes).map(image::DynamicImage::from),
+        2 => image::GrayAlphaImage::from_raw(w, h, bytes).map(image::DynamicImage::from),
+        3 => image::RgbImage::from_raw(w, h, bytes).map(image::DynamicImage::from),
+        4 => image::RgbaImage::from_raw(w, h, bytes).map(image::DynamicImage::from),
+        n => anyhow::bail!("a picture of {n} channels"),
+    };
+    picture.context("its pixels do not fill it")
+}
+
+/// [`tiff_picture`]'s own reading: `None` when the file is not the case
+/// it knows.
+fn tiff_strips(data: &[u8]) -> Option<Result<image::DynamicImage>> {
+    let little = match data.get(..4)? {
+        [b'I', b'I', 42, 0] => true,
+        [b'M', b'M', 0, 42] => false,
+        _ => return None,
+    };
+    let u16_at = |o: usize| -> Option<u32> {
+        let b = data.get(o..o + 2)?;
+        Some(if little { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) } as u32)
+    };
+    let u32_at = |o: usize| -> Option<u32> {
+        let b = data.get(o..o + 4)?;
+        let b = [b[0], b[1], b[2], b[3]];
+        Some(if little { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
+    };
+    let ifd = u32_at(4)? as usize;
+    let mut tags: HashMap<u32, Vec<u32>> = HashMap::new();
+    for i in 0..u16_at(ifd)? as usize {
+        let e = ifd + 2 + i * 12;
+        let (tag, kind, count) = (u16_at(e)?, u16_at(e + 2)?, u32_at(e + 4)? as usize);
+        let size = match kind {
+            3 => 2,
+            4 => 4,
+            _ => continue,
+        };
+        let at = if size * count <= 4 { e + 8 } else { u32_at(e + 8)? as usize };
+        let values = (0..count)
+            .map(|k| if size == 2 { u16_at(at + k * 2) } else { u32_at(at + k * 4) })
+            .collect::<Option<Vec<u32>>>()?;
+        tags.insert(tag, values);
+    }
+    let one = |tag: u32, default: u32| tags.get(&tag).and_then(|v| v.first().copied()).unwrap_or(default);
+    let (w, h) = (one(256, 0), one(257, 0));
+    let spp = one(277, 1) as usize;
+    let compression = one(259, 1);
+    let predictor = one(317, 1);
+    if tags.get(&258).is_some_and(|b| b.iter().any(|&b| b != 8))
+        || one(284, 1) != 1
+        || tags.contains_key(&322)
+        || !matches!(compression, 1 | 5 | 8 | 32946)
+        || !matches!(predictor, 1 | 2)
+        || !(1..=4).contains(&spp)
+        || w == 0
+        || h == 0
+    {
+        return None;
+    }
+    let (offsets, counts) = (tags.get(&273)?, tags.get(&279)?);
+    let rows_per_strip = one(278, h) as usize;
+    let row = w as usize * spp;
+    let mut pixels = Vec::with_capacity(row * h as usize);
+    for (strip, (&o, &n)) in offsets.iter().zip(counts).enumerate() {
+        let raw = data.get(o as usize..o as usize + n as usize)?;
+        let rows = rows_per_strip.min(h as usize - (strip * rows_per_strip).min(h as usize));
+        let mut bytes = match compression {
+            1 => raw.to_vec(),
+            5 => {
+                // TIFF's LZW switches code size one code early; some
+                // writers do not. Whatever reads the whole strip is taken,
+                // else the crate is left to try.
+                let whole = |mut lzw: weezl::decode::Decoder| {
+                    let mut out = Vec::new();
+                    let _ = lzw.into_vec(&mut out).decode(raw);
+                    out
+                };
+                [
+                    whole(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)),
+                    whole(weezl::decode::Decoder::new(weezl::BitOrder::Msb, 8)),
+                ]
+                .into_iter()
+                .find(|b| b.len() >= rows * row)?
+            }
+            _ => match miniz_oxide::inflate::decompress_to_vec_zlib(raw) {
+                Ok(b) => b,
+                Err(e) => return Some(Err(anyhow::anyhow!("Deflate: {e:?}"))),
+            },
+        };
+        bytes.resize(rows * row, 0);
+        if predictor == 2 {
+            for r in bytes.chunks_mut(row) {
+                for i in spp..r.len() {
+                    r[i] = r[i].wrapping_add(r[i - spp]);
+                }
+            }
+        }
+        pixels.extend_from_slice(&bytes);
+    }
+    pixels.resize(row * h as usize, 0);
+    Some(picture_of(w, h, pixels))
+}
+
+#[cfg(test)]
+mod tiff_tests {
+    /// Photoshop's RGBA TIFF: four samples, the fourth an unspecified
+    /// extra sample, the horizontal predictor. Read as RGBA, not stripes.
+    #[test]
+    fn an_rgba_tiff_with_an_unspecified_extra_sample_reads_whole() {
+        let (w, h) = (3u32, 2u32);
+        let pixels: Vec<[u8; 4]> = vec![
+            [10, 20, 30, 255], [40, 50, 60, 128], [70, 80, 90, 0],
+            [1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12],
+        ];
+        // Horizontal differencing, per row, per sample.
+        let mut strip = Vec::new();
+        for row in pixels.chunks(w as usize) {
+            for (x, p) in row.iter().enumerate() {
+                for s in 0..4 {
+                    strip.push(if x == 0 { p[s] } else { p[s].wrapping_sub(row[x - 1][s]) });
+                }
+            }
+        }
+        let entries: Vec<(u16, u16, u32, u32)> = vec![
+            (256, 3, 1, w),
+            (257, 3, 1, h),
+            (258, 3, 4, 0), // offset filled below
+            (259, 3, 1, 1),
+            (262, 3, 1, 2),
+            (273, 4, 1, 0), // strip offset below
+            (277, 3, 1, 4),
+            (278, 3, 1, h),
+            (279, 4, 1, strip.len() as u32),
+            (284, 3, 1, 1),
+            (317, 3, 1, 2),
+            (338, 3, 1, 0),
+        ];
+        let ifd = 8u32;
+        let after_ifd = ifd + 2 + entries.len() as u32 * 12 + 4;
+        let bps_at = after_ifd;
+        let strip_at = bps_at + 8;
+        let mut file = b"II*\0".to_vec();
+        file.extend(ifd.to_le_bytes());
+        file.extend((entries.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in entries {
+            let value = match tag {
+                258 => bps_at,
+                273 => strip_at,
+                _ => value,
+            };
+            file.extend(tag.to_le_bytes());
+            file.extend(kind.to_le_bytes());
+            file.extend(count.to_le_bytes());
+            if kind == 3 && count == 1 {
+                file.extend((value as u16).to_le_bytes());
+                file.extend([0, 0]);
+            } else {
+                file.extend(value.to_le_bytes());
+            }
+        }
+        file.extend(0u32.to_le_bytes());
+        for _ in 0..4 {
+            file.extend(8u16.to_le_bytes());
+        }
+        file.extend(&strip);
+        let picture = super::tiff_strips(&file).unwrap().unwrap().to_rgba8();
+        assert_eq!(picture.dimensions(), (w, h));
+        for (i, p) in pixels.iter().enumerate() {
+            assert_eq!(picture.get_pixel(i as u32 % w, i as u32 / w).0, *p, "pixel {i}");
+        }
     }
 }

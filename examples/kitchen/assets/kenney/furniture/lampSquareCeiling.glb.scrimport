@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "assets/kenney/furniture/lampSquareCeiling.glb",
-    hash: "2a4b8ba2a24e7a79f7ded409c26a273f",
-    id: Some("5d9d0caad26bfa3c9666e3e1270cf674"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

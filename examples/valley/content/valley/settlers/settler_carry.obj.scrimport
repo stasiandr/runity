@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/settlers/settler_carry.obj",
+    hash: "22e754a76cf6e937149f544fdfe14d29",
+    id: Some("08b13ba36da676987a23aa2ca9ded46c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

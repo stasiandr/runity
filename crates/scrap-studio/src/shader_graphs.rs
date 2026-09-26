@@ -1,4 +1,4 @@
-//! Shader Graph: `shaders/*.graph.ron`, `*.vfx.ron`, `*.post.ron` and
+//! Shader Graph: `*.graph.ron`, `*.vfx.ron`, `*.post.ron` and
 //! `*.subgraph.ron`
 //! as boxes and arrows — each node a box, each read of one node by another
 //! an arrow into the reader, what the graph sets a box of its own at the
@@ -152,12 +152,16 @@ impl ShaderGraphs {
     fn list(&mut self, ui: &mut Ui, session: &Session) {
         ui.clear(self.files_list);
         self.parts.retain(|_, p| !matches!(p, Part::File(_)));
-        let paths = session.project().map(|p| graphs::list(p.root())).unwrap_or_default();
+        // Wherever they lie (docs/layout.md).
+        let paths: Vec<PathBuf> = session
+            .project()
+            .map(|p| p.files(scrap::layout::Kind::Shader).into_iter().filter(|p| Kind::of(p).is_some()).collect())
+            .unwrap_or_default();
         if paths.is_empty() {
             ui.add_text(
                 self.files_list,
                 Style::default().text_size(11.5).text_color(MUTED),
-                "No graphs yet: shaders/<name>.graph.ron is one (docs/shadergraph.md).",
+                "No graphs yet: a <name>.graph.ron anywhere in the project is one (docs/shadergraph.md).",
             );
         }
         for path in paths {
@@ -393,7 +397,7 @@ impl ShaderGraphs {
             if let Some(node) = doc.nodes().get(&name).cloned() {
                 self.small(ui, &format!("{name}: {}", node.kind()), LABEL);
                 if let Node::Subgraph { name: sub, inputs } = &node {
-                    self.small(ui, &format!("calls shaders/{sub}.subgraph.ron"), MUTED);
+                    self.small(ui, &format!("calls {sub}.subgraph.ron, beside it"), MUTED);
                     let given = inputs.iter().map(|(k, v)| format!("\"{k}\": {}", written(v))).collect::<Vec<_>>().join(", ");
                     let r = ui.add(side, Style::row().full_width().gap(SPACE_2).center_items());
                     ui.add_text(r, Style::default().width(80.0).fixed().text_size(12.0).text_color(LABEL).nowrap(), "inputs");

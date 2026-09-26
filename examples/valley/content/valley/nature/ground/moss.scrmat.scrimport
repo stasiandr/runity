@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/ground/moss.scrmat",
+    hash: "a382b39e1d69120f981ba0e752d3d1bd",
+    id: Some("878e9181e79b8e5a163ff1f04e63b91e"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

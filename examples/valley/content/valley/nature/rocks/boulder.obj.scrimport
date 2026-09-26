@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/valley/nature/rocks/boulder.obj",
+    hash: "c9643c5a950e9fc2f9e163945535ff73",
+    id: Some("6642a99f478ce715346aa00378df55f2"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

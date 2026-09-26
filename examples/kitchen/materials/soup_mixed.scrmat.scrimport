@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/soup_mixed.scrmat",
-    hash: "af4167f7c3fac7718fdde8649143f0c2",
-    id: Some("87e460e6e53de7e94e141eb33a70c609"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

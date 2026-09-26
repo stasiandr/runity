@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "content/kenney/furniture/kitchenBar.glb",
+    hash: "433a5ed1a595dc4b8db03baf8ba5db7a",
+    id: Some("89a0150f64961423416f86904d92aac7"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

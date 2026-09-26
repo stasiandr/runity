@@ -1768,21 +1768,39 @@ pub fn has_vertex_stage(shader: &str) -> bool {
     shader.contains("fn vertex(")
 }
 
-/// Every material shader in a folder — `shaders/water.wgsl` for
-/// `shader: "water"`, `shaders/lava.graph.ron` for `shader: "lava"` — and
-/// every particle effect graph — `shaders/sparks.vfx.ron` for an emitter's
-/// `graph: "sparks"` — put into a renderer, and again when one changes.
+/// Every material shader under a folder, wherever it lies — `water.wgsl`
+/// for `shader: "water"`, `lava.graph.ron` for `shader: "lava"` — and every
+/// particle effect graph — `sparks.vfx.ron` for an emitter's `graph:
+/// "sparks"` — put into a renderer, and again when one changes. The folder
+/// is a project's root, usually (docs/layout.md).
 pub struct MaterialShaders {
     dir: std::path::PathBuf,
     stamps: std::collections::HashMap<std::path::PathBuf, Option<std::time::SystemTime>>,
+    /// The shader files last found, and how many polls ago: the project is
+    /// walked again every [`MaterialShaders::WALK_EVERY`] polls, not every
+    /// frame.
+    found: Vec<std::path::PathBuf>,
+    since_walk: Option<u32>,
 }
 
 impl MaterialShaders {
+    /// How many polls a walk of the project is good for: at a frame a poll,
+    /// about a second — how soon a new shader file shows up.
+    pub const WALK_EVERY: u32 = 60;
+
     pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
             dir: dir.into(),
             stamps: Default::default(),
+            found: Vec::new(),
+            since_walk: None,
         }
+    }
+
+    /// Walk the project again at the next poll rather than when the last
+    /// walk runs out: a file just written is found at once.
+    pub fn look_again(&mut self) {
+        self.since_walk = None;
     }
 
     /// Put in whatever is new or changed since the last call: each one's
@@ -1792,21 +1810,21 @@ impl MaterialShaders {
         renderer: &mut Renderer,
         gpu: &Gpu,
     ) -> Vec<(String, Result<(), String>)> {
-        let Ok(entries) = scrap_core::files::read_dir(&self.dir) else {
-            return Vec::new();
-        };
+        if self.since_walk.is_none_or(|n| n >= Self::WALK_EVERY) {
+            self.found = scrap_core::layout::files(&self.dir, scrap_core::layout::Kind::Shader);
+            self.since_walk = Some(0);
+        }
+        self.since_walk = self.since_walk.map(|n| n + 1);
         // What is new or changed, read; then built all together.
         let mut out = Vec::new();
         let mut read = Vec::new();
-        let entries: Vec<_> = entries.flatten().collect();
         // A subgraph changed: every graph may call it, and is built again.
         let mut subgraph_changed = false;
-        for entry in &entries {
-            let path = entry.path();
+        for path in &self.found {
             if path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::subgraph::subgraph_name).is_some() {
-                let stamp = scrap_core::files::modified(&path);
-                if self.stamps.get(&path) != Some(&stamp) {
-                    self.stamps.insert(path, stamp);
+                let stamp = scrap_core::files::modified(path);
+                if self.stamps.get(path) != Some(&stamp) {
+                    self.stamps.insert(path.clone(), stamp);
                     subgraph_changed = true;
                 }
             }
@@ -1817,8 +1835,7 @@ impl MaterialShaders {
                 !(f.ends_with(".graph.ron") || f.ends_with(".vfx.ron") || f.ends_with(".post.ron"))
             });
         }
-        for entry in entries {
-            let path = entry.path();
+        for path in self.found.clone() {
             let effect = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::effect_name).map(str::to_string);
             let screen = path.file_name().and_then(|f| f.to_str()).and_then(scrap_shadergraph::fullscreen_name).map(str::to_string);
             let Some(name) = material_shader_name(&path).or(effect.clone()).or(screen.clone()) else {
@@ -1865,7 +1882,7 @@ impl MaterialShaders {
 pub fn effect_source(path: &std::path::Path) -> Result<String, String> {
     let text = scrap_core::files::read_to_string(path).map_err(|e| e.to_string())?;
     let graph = scrap_shadergraph::effect::parse(&text)?;
-    let from = path.file_name().map(|f| format!("shaders/{}", f.to_string_lossy())).unwrap_or_default();
+    let from = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     scrap_shadergraph::effect::to_wgsl_with(&graph, &from, &subgraphs_beside(path))
 }
 
@@ -1887,9 +1904,8 @@ pub fn check_material_shader(surface: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The shader a file in `shaders/` is, by name: `water.wgsl` and
-/// `lava.graph.ron` (a shader graph) are `water` and `lava`. `None` for
-/// anything else there.
+/// The shader a file is, by name: `water.wgsl` and `lava.graph.ron` (a
+/// shader graph) are `water` and `lava`. `None` for anything else.
 pub fn material_shader_name(path: &std::path::Path) -> Option<String> {
     let file = path.file_name()?.to_str()?;
     if let Some(name) = scrap_shadergraph::shader_name(file) {
@@ -1916,7 +1932,7 @@ pub fn material_shader_source(path: &std::path::Path) -> Result<String, String> 
         ));
     }
     let graph = scrap_shadergraph::surface::parse(&text)?;
-    scrap_shadergraph::surface::to_wgsl_with(&graph, &format!("shaders/{file}"), &subgraphs_beside(path))
+    scrap_shadergraph::surface::to_wgsl_with(&graph, file, &subgraphs_beside(path))
 }
 
 /// What a property of a material's shader is, for an inspector.
@@ -1938,12 +1954,16 @@ pub struct Property {
     pub kind: PropertyKind,
 }
 
-/// The properties of the material shader called `name` in `dir` (a
-/// project's `shaders/`): a graph's as it types them; a hand-written one's
-/// from its `// scrap:params` line, `tint.r tint.g tint.b` read as a
-/// colour and `wind.x wind.y` as a vector.
+/// The properties of the material shader called `name` under `dir` (a
+/// project's root: wherever it lies, docs/layout.md): a graph's as it types
+/// them; a hand-written one's from its `// scrap:params` line, `tint.r
+/// tint.g tint.b` read as a colour and `wind.x wind.y` as a vector.
 pub fn material_properties(dir: &std::path::Path, name: &str) -> Vec<Property> {
-    let graph = dir.join(format!("{name}.graph.ron"));
+    let shaders = scrap_core::layout::files(dir, scrap_core::layout::Kind::Shader);
+    let named = |suffix: &str| {
+        shaders.iter().find(|p| p.file_name().and_then(|f| f.to_str()) == Some(&format!("{name}{suffix}"))).cloned()
+    };
+    let graph = named(".graph.ron").unwrap_or_else(|| dir.join(format!("{name}.graph.ron")));
     if let Ok(text) = scrap_core::files::read_to_string(&graph) {
         let Ok(g) = scrap_shadergraph::surface::parse(&text) else {
             return Vec::new();
@@ -1966,7 +1986,8 @@ pub fn material_properties(dir: &std::path::Path, name: &str) -> Vec<Property> {
             })
             .collect();
     }
-    let Ok(text) = scrap_core::files::read_to_string(dir.join(format!("{name}.wgsl"))) else {
+    let wgsl = named(".wgsl").unwrap_or_else(|| dir.join(format!("{name}.wgsl")));
+    let Ok(text) = scrap_core::files::read_to_string(wgsl) else {
         return Vec::new();
     };
     let Some(line) = text.lines().find_map(|l| l.trim().strip_prefix("// scrap:params")) else {
@@ -2000,9 +2021,10 @@ pub fn material_properties(dir: &std::path::Path, name: &str) -> Vec<Property> {
     out
 }
 
-/// The subgraphs a graph file calls: `<name>.subgraph.ron` in its folder.
-pub fn subgraphs_beside(path: &std::path::Path) -> scrap_shadergraph::subgraph::Folder {
-    scrap_shadergraph::subgraph::Folder(path.parent().map(std::path::Path::to_path_buf).unwrap_or_default())
+/// The subgraphs a graph file calls: `<name>.subgraph.ron` in its folder,
+/// or of that name anywhere in its project (docs/layout.md).
+pub fn subgraphs_beside(path: &std::path::Path) -> scrap_shadergraph::subgraph::InProject {
+    scrap_shadergraph::subgraph::InProject::of(path)
 }
 
 /// A shader source file, reloaded into a renderer when it changes. DNA,
