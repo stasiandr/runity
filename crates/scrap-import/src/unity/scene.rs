@@ -51,20 +51,80 @@ fn axis(v: [f32; 3]) -> Vec3 {
 }
 
 /// A scene's directional light as scrap's sun: the hour whose sun
-/// shines the way it does, and how bright.
-pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
+/// shines the way it does, and how bright. The light may be the scene's
+/// own or one inside a prefab placed in it (a level's lights prefab),
+/// turned as the instance turns it.
+pub fn sun(unity: &Unity, text: &str) -> Option<scrap::scene::Sun> {
     let docs = yaml::documents(text);
-    let light = docs
-        .iter()
-        .find(|d| d.kind == "Light" && d.body.i64("m_Type") == Some(1))?;
-    let object = light.body.reference("m_GameObject")?.file_id;
-    let transform = docs.iter().find(|d| {
-        matches!(d.class, TRANSFORM)
-            && d.body
-                .reference("m_GameObject")
-                .is_some_and(|r| r.file_id == object)
+    if let Some(sun) = sun_in(&docs, &HashMap::new()) {
+        return Some(sun);
+    }
+    for instance in docs.iter().filter(|d| d.kind == "PrefabInstance") {
+        let Some(prefab) = instance
+            .body
+            .reference("m_SourcePrefab")
+            .and_then(|r| r.guid)
+            .and_then(|g| unity.guids.get(&g))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+        else {
+            continue;
+        };
+        // What the instance changes on the prefab's objects: by fileID
+        // and property path.
+        let mut changed: HashMap<(i64, String), Yaml> = HashMap::new();
+        for m in instance.body["m_Modification"].list("m_Modifications") {
+            let (Some(target), Some(path)) = (m.reference("target"), m.str("propertyPath")) else {
+                continue;
+            };
+            changed.insert((target.file_id, path.to_string()), m["value"].clone());
+        }
+        if let Some(sun) = sun_in(&yaml::documents(&prefab), &changed) {
+            return Some(sun);
+        }
+    }
+    None
+}
+
+/// [`sun`] among `docs`, an instance's `changed` properties over theirs.
+fn sun_in(docs: &[Doc], changed: &HashMap<(i64, String), Yaml>) -> Option<scrap::scene::Sun> {
+    let number = |id: i64, path: &str| changed.get(&(id, path.to_string())).and_then(yaml::number).map(|n| n as f32);
+    let light = docs.iter().find(|d| {
+        d.kind == "Light"
+            && d.body.i64("m_Type") == Some(1)
+            && number(d.file_id, "m_Enabled").map_or(d.body.i64("m_Enabled") != Some(0), |v| v != 0.0)
     })?;
-    let turn = transform.body.quat("m_LocalRotation").map(rotation)?;
+    let object = light.body.reference("m_GameObject")?.file_id;
+    let transform_of = |object: i64| {
+        docs.iter().find(|d| {
+            matches!(d.class, TRANSFORM)
+                && d.body
+                    .reference("m_GameObject")
+                    .is_some_and(|r| r.file_id == object)
+        })
+    };
+    let local = |t: &Doc| -> Option<Quat> {
+        let own = t.body.quat("m_LocalRotation")?;
+        let q = [
+            number(t.file_id, "m_LocalRotation.x").unwrap_or(own[0]),
+            number(t.file_id, "m_LocalRotation.y").unwrap_or(own[1]),
+            number(t.file_id, "m_LocalRotation.z").unwrap_or(own[2]),
+            number(t.file_id, "m_LocalRotation.w").unwrap_or(own[3]),
+        ];
+        Some(rotation(q))
+    };
+    // Up the chain of fathers: the light's turn in the file's frame.
+    let mut transform = transform_of(object)?;
+    let mut turn = local(transform)?;
+    for _ in 0..64 {
+        let Some(father) = transform.body.reference("m_Father").filter(|r| r.file_id != 0) else {
+            break;
+        };
+        let Some(up) = docs.iter().find(|d| d.file_id == father.file_id) else {
+            break;
+        };
+        turn = local(up).unwrap_or(Quat::IDENTITY) * turn;
+        transform = up;
+    }
     // Unity's light shines along its +z; mirrored, scrap's −z.
     let travel = turn * Vec3::NEG_Z;
     let up = (-travel.y).clamp(-1.0, 1.0).asin().max(0.05);
@@ -74,10 +134,18 @@ pub fn sun(text: &str) -> Option<scrap::scene::Sun> {
     } else {
         std::f32::consts::PI - up
     };
-    let tint = light.body.color("m_Color").map(|c| [c[0], c[1], c[2]]);
+    let tint = light.body.color("m_Color").map(|c| {
+        [
+            number(light.file_id, "m_Color.r").unwrap_or(c[0]),
+            number(light.file_id, "m_Color.g").unwrap_or(c[1]),
+            number(light.file_id, "m_Color.b").unwrap_or(c[2]),
+        ]
+    });
     Some(scrap::scene::Sun {
         hour: 6.0 + angle / std::f32::consts::PI * 12.0,
-        intensity: light.body.f32("m_Intensity").unwrap_or(1.0),
+        intensity: number(light.file_id, "m_Intensity")
+            .or(light.body.f32("m_Intensity"))
+            .unwrap_or(1.0),
         // Exactly where Unity's stood, and its colour: the hour is only
         // near it.
         toward: Some(travel),
@@ -221,7 +289,15 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 // drawn either: its mesh is not brought over to be drawn.
                 let own = || components.get(&d.file_id).into_iter().flatten();
                 let renderer = |c: &&Doc| matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer");
+                // A renderer that only casts shadows (a light blocker) is
+                // not drawn: scrap has no shadow-only draw, so its shadow
+                // is lost rather than the blocker shown.
+                let shadows_only = own().any(|c| renderer(&c) && c.body.i64("m_CastShadows") == Some(3));
+                if shadows_only {
+                    report.skip("a shadows-only renderer (not drawn; its shadow is lost)");
+                }
                 let hidden = own().any(|c| renderer(&c) && c.body.i64("m_Enabled") == Some(0))
+                    || shadows_only
                     || (own().any(|c| c.kind == "MeshFilter") && !own().any(|c| renderer(&c)));
                 // A mesh collider keeps its mesh as its collision model.
                 if hidden {
@@ -1261,6 +1337,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 if let Some(model) = model(&r, refs.unity) {
                     let model = piece_of(refs.unity, model, &desc.name, &r);
                     desc.set_part(&scrap::scene::ModelRef(AssetLink::named(model)));
+                } else if r.guid.is_none() && r.file_id != 0 {
+                    report.skip("a mesh kept inside the scene (ProBuilder's)");
+                } else if !r.is_none() {
+                    report.skip("a mesh the import has no model for");
                 }
             }
         }
@@ -2470,6 +2550,7 @@ mod tests {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
             declared_params: Default::default(),
+            mesh_assets: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
