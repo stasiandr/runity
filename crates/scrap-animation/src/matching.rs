@@ -2209,7 +2209,7 @@ mod tests {
         assert_eq!(db.clips.len(), 6, "three and their mirror images");
         let mut matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
         let dt = 1.0 / 60.0;
-        let ask = Ask { velocity: Vec3::Z * 1.2, facing: None };
+        let ask = Ask { velocity: Vec3::Z * 1.2, ..Default::default() };
         for _ in 0..120 {
             matcher.advance(&db, &ask, dt);
         }
@@ -2235,7 +2235,7 @@ mod tests {
     fn a_turned_ask_turns_the_character() {
         let db = Database::build(&legs(), &clips(), Setup::default()).unwrap();
         let mut matcher = Matcher::new(&db, Vec3::ZERO, Vec3::Z);
-        let ask = Ask { velocity: Vec3::X * 1.2, facing: None };
+        let ask = Ask { velocity: Vec3::X * 1.2, ..Default::default() };
         for _ in 0..180 {
             matcher.advance(&db, &ask, 1.0 / 60.0);
         }

@@ -1,0 +1,53 @@
+[
+    (
+        path: "configs/materials.ron",
+        record: "Material",
+        shape: Struct([
+            ("tags", Map(Enum([
+                "Fibrous",
+                "Burns",
+                "Hard",
+                "Sharp",
+                "Warm",
+                "Oily",
+                "Malleable",
+                "Edible",
+            ]), Tuple([
+                Int,
+                Int,
+            ]))),
+        ]),
+    ),
+    (
+        path: "configs/recipes.ron",
+        record: "Recipe",
+        shape: Struct([
+            ("steps", List(Struct([
+                ("part", Text),
+                ("need", Enum([
+                    "Fibrous",
+                    "Burns",
+                    "Hard",
+                    "Sharp",
+                    "Warm",
+                    "Oily",
+                    "Malleable",
+                    "Edible",
+                ])),
+                ("units", Int),
+                ("min_grade", Int),
+                ("tool", Option(Enum([
+                    "Fibrous",
+                    "Burns",
+                    "Hard",
+                    "Sharp",
+                    "Warm",
+                    "Oily",
+                    "Malleable",
+                    "Edible",
+                ]))),
+            ]))),
+            ("makes", Option(Record("Material"))),
+        ]),
+    ),
+]
