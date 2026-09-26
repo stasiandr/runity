@@ -1924,14 +1924,58 @@ fn asset_file(asset: &Asset, session: &Session) -> Option<String> {
     match asset {
         Asset::Scene(p) => rel(p.clone()),
         Asset::Model(_, file) => file.clone(),
-        Asset::Prefab(n) => {
-            session.project()?.file(scrap::layout::Kind::Prefab, n).and_then(rel)
-        }
-        Asset::Material(n) => {
-            session.project()?.file(scrap::layout::Kind::Material, n).and_then(rel)
-        }
+        Asset::Prefab(n) => file_of(&root, scrap::layout::Kind::Prefab, n).and_then(rel),
+        Asset::Material(n) => file_of(&root, scrap::layout::Kind::Material, n).and_then(rel),
         Asset::Sound(_, file) => Some(file.clone()),
     }
+}
+
+/// How long a walk of the project answers [`file_of`]: a file made or
+/// moved shows in the Project panel this soon.
+const INDEX_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Every file of the project by its kind and name, from one walk.
+struct Index {
+    root: PathBuf,
+    made: std::time::Instant,
+    files: HashMap<(scrap::layout::Kind, String), PathBuf>,
+}
+
+thread_local! {
+    static INDEX: std::cell::RefCell<Option<Index>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The file of `kind` a name names, as [`scrap::layout::find`] finds it,
+/// but from one walk of the project every [`INDEX_FOR`] rather than one a
+/// call: the panel asks for every prefab and material of the project each
+/// update, and a walk of a big one (Dacha's four thousand files) each time
+/// was seconds a frame.
+fn file_of(root: &std::path::Path, kind: scrap::layout::Kind, name: &str) -> Option<PathBuf> {
+    if name.contains('/') {
+        return scrap::layout::find(root, kind, name);
+    }
+    INDEX.with(|index| {
+        let mut index = index.borrow_mut();
+        let stale = index
+            .as_ref()
+            .is_none_or(|i| i.root != root || i.made.elapsed() > INDEX_FOR);
+        if stale {
+            let mut files = HashMap::new();
+            // Sorted, as `find` walks: the first of a name is the one.
+            for path in scrap::layout::walk(root) {
+                let Some(kind) = scrap::layout::kind_of(&scrap::layout::relative(root, &path)) else {
+                    continue;
+                };
+                files.entry((kind, scrap::layout::name_of(&path))).or_insert(path);
+            }
+            *index = Some(Index {
+                root: root.to_path_buf(),
+                made: std::time::Instant::now(),
+                files,
+            });
+        }
+        index.as_ref()?.files.get(&(kind, name.to_string())).cloned()
+    })
 }
 
 /// A right click on a Project entry: Unity's asset context menu.

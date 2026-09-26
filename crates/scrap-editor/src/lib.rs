@@ -122,6 +122,14 @@ pub struct Session {
     library_dir: Option<PathBuf>,
     /// Where `.scrmat` sources go: the project's `materials/`.
     material_dir: Option<PathBuf>,
+    /// [`Session::assets`] as last listed, and what the project's files
+    /// were then: listing reads every scene and prefab, which a big project
+    /// (Dacha's twelve hundred prefabs) cannot afford each time a panel
+    /// updates.
+    assets_listed: std::sync::Mutex<Option<(u64, Vec<scrap_import::assets::Entry>)>>,
+    /// When the last library update finished: the next waits a moment
+    /// rather than walking the project again straight away.
+    synced_at: Option<std::time::Instant>,
     /// A library update running beside the frame ([`Session::poll_assets`]):
     /// a `.blend` takes Blender a second or more, and the editor keeps
     /// drawing meanwhile.
@@ -370,6 +378,8 @@ impl Session {
             library_dir: None,
             material_dir: None,
             syncing: None,
+            assets_listed: std::sync::Mutex::new(None),
+            synced_at: None,
             blender: None,
             prefabs: scrap::Prefabs::new(),
             prefab_dir: None,
@@ -2845,7 +2855,18 @@ impl Session {
     /// built, and how many lines use it: the Project window's list.
     pub fn assets(&self) -> EditResult<Vec<scrap_import::assets::Entry>> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
-        scrap_import::assets::list(project).map_err(|e| EditError::Import(format!("{e:#}")))
+        // Listed again only when a file of the project, or what the library
+        // holds, is not as it was: a walk and a stat a file, not a parse.
+        let seen = files_as_they_are(project);
+        let mut listed = self.assets_listed.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((was, entries)) = listed.as_ref() {
+            if *was == seen {
+                return Ok(entries.clone());
+            }
+        }
+        let entries = scrap_import::assets::list(project).map_err(|e| EditError::Import(format!("{e:#}")))?;
+        *listed = Some((seen, entries.clone()));
+        Ok(entries)
     }
 
     /// Delete an asset source nothing uses — on disk, or in the open scene's
@@ -3179,12 +3200,15 @@ impl Session {
         match self.syncing.take() {
             Some((job, _)) if job.is_finished() => {
                 let synced = job.join().unwrap_or_default();
+                self.synced_at = Some(std::time::Instant::now());
                 Some(self.apply_synced(synced))
             }
             Some(running) => {
                 self.syncing = Some(running);
                 None
             }
+            // Looked a moment ago: a file saved since is found at the next.
+            None if self.synced_at.is_some_and(|t| t.elapsed() < SYNC_EVERY) => None,
             None => {
                 // A .blend an open Blender just saved is on its way over
                 // the link; this leaves it a moment to arrive.
@@ -5402,4 +5426,36 @@ fn find_in(tree: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
         return Some(tree);
     }
     tree.children.iter_mut().find_map(|c| find_in(c, id))
+}
+
+/// How long after one library update the next starts: each walks the
+/// whole project, and back to back they kept a core busy on a big one.
+const SYNC_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Every file of the project as it is — where, when changed, how long —
+/// and the library's folders (a built asset added or taken out changes
+/// theirs), as one number: what [`Session::assets`] lists from.
+fn files_as_they_are(project: &scrap::project::Project) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    let stamp = |path: &Path, hash: &mut std::collections::hash_map::DefaultHasher| {
+        path.hash(hash);
+        if let Ok(meta) = std::fs::metadata(path) {
+            meta.len().hash(hash);
+            meta.modified().ok().hash(hash);
+        }
+    };
+    for path in scrap::layout::walk(project.root()) {
+        stamp(&path, &mut hash);
+    }
+    let library = project.library();
+    stamp(&library, &mut hash);
+    if let Ok(entries) = std::fs::read_dir(&library) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stamp(&entry.path(), &mut hash);
+            }
+        }
+    }
+    hash.finish()
 }
