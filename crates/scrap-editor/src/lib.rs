@@ -28,7 +28,7 @@ pub mod console;
 mod embedded;
 mod error;
 mod game;
-pub use game::MAX_PLAYERS;
+pub use game::{FAST_GAME_LEVEL, FAST_GAME_VAR, MAX_PLAYERS};
 mod grouping;
 mod import_settings;
 pub use import_settings::IMPORT_FIELDS;
@@ -2356,6 +2356,14 @@ impl Session {
             .env("SCRAP_SCENE", &name)
             .env(game::LIVE_VAR, &live)
             .env(scrap::live::STATE_VAR, &state);
+        // The game's own code optimized, when this person asked: the
+        // engine's crates are the game's dependencies, which a project
+        // builds optimized anyway (`[profile.dev.package."*"]`).
+        if self.fast_game() {
+            command.env(game::FAST_GAME_VAR, game::FAST_GAME_LEVEL);
+        } else {
+            command.env_remove(game::FAST_GAME_VAR);
+        }
         match start {
             Some(start) => command.env(scrap::player::START_VAR, start.to_env()),
             None => command.env_remove(scrap::player::START_VAR),

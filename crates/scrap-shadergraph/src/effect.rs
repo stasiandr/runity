@@ -423,4 +423,29 @@ mod tests {
         let g = parse(r#"(nodes: { "velocity": Random() })"#).unwrap();
         assert!(to_wgsl(&g, "x").unwrap_err().contains("would hide"));
     }
+
+    #[test]
+    fn what_needs_pixels_is_refused_in_a_particles_graph_and_the_rest_is_there() {
+        let g = parse(r#"(nodes: { "soft": Ddx(of: "age") }, output: (size: "soft"))"#).unwrap();
+        let e = to_wgsl(&g, "x").unwrap_err();
+        assert!(
+            e.contains("node `soft` (Ddx)") && e.contains("no pixels"),
+            "{e}"
+        );
+        let g = parse(
+            r#"(nodes: {
+                "hue": Hue(of: "color", offset: "seed"),
+                "warm": Blend(base: "hue", blend: (1.0, 0.5, 0.0), mode: Multiply),
+                "fade": InverseLerp(a: 1.0, b: 0.0, of: "t"),
+                "late": Comparison(a: "t", b: 0.8, op: Greater),
+                "out": Branch(when: "late", yes: 0.0, no: "fade"),
+            }, output: (color: "warm", alpha: "out"))"#,
+        )
+        .unwrap();
+        let wgsl = to_wgsl(&g, "x").unwrap();
+        assert!(
+            wgsl.contains("fn sg_hsv_to_rgb") && wgsl.contains("select("),
+            "{wgsl}"
+        );
+    }
 }

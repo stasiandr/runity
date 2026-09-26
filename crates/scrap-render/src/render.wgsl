@@ -713,6 +713,47 @@ fn world_normal(model: mat4x4<f32>, n: vec3<f32>) -> vec3<f32> {
 }
 @group(0) @binding(3) var<uniform> caster: Caster;
 
+// What a material's own vertex stage is given: where the vertex is in the
+// world as placed (after the wind), its normal there, where it is in the
+// model's own space, where the model is, its texture coordinates, the
+// clock, the material's numbers and the colour painted on it.
+struct VertexIn {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    object: vec3<f32>,
+    origin: vec3<f32>,
+    uv: vec2<f32>,
+    time: f32,
+    params: array<vec4<f32>, 2>,
+    vertex_color: vec4<f32>,
+};
+
+// What it sets: where the vertex is in the world, and its normal.
+struct Vertex {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+};
+
+// A material's shader may bring its own `vertex` — everything between the
+// two marks is left out when it does — to move what it draws: grass in its
+// own wind, a wave, a flag. It runs in the colour pass and the shadows'.
+// It reads only what it is given: the shadow passes know no `frame`.
+// scrap:vertex {
+fn vertex(in: VertexIn, out: Vertex) -> Vertex {
+    return out;
+}
+// scrap:vertex }
+
+/// A vertex through its material's `vertex`.
+fn material_vertex(in: VertexInput, object: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, time: f32) -> Vertex {
+    // Of length one: a world normal is scaled with the model.
+    let n = normalize(normal);
+    return vertex(
+        VertexIn(world, n, object, in.model_3.xyz, in.uv * in.uv_transform.xy + in.uv_transform.zw, time, array<vec4<f32>, 2>(in.params_0, in.params_1), in.vertex_color),
+        Vertex(world, n),
+    );
+}
+
 // maps: begin
 // The surface's own image. Every draw binds one; an untextured material
 // binds a single white pixel, so the shader never needs a branch and an
@@ -938,10 +979,11 @@ fn skinned_vertex(in: VertexInput, skin: SkinInput) -> VertexOutput {
     let posed = skinning * vec4<f32>(in.position, 1.0);
     let world = model * posed;
 
+    let moved = material_vertex(in, posed.xyz, world.xyz, world_normal(model, (skinning * vec4<f32>(in.normal, 0.0)).xyz), frame.foliage.wind.w);
     var out: VertexOutput;
-    out.clip_position = frame.view_projection * world;
-    out.world_position = world.xyz;
-    out.normal = world_normal(model, (skinning * vec4<f32>(in.normal, 0.0)).xyz);
+    out.clip_position = frame.view_projection * vec4<f32>(moved.position, 1.0);
+    out.world_position = moved.position;
+    out.normal = moved.normal;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -1047,7 +1089,8 @@ fn trampled(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    let biased = shadow_biased(world, world_normal(model, in.normal));
+    let moved = material_vertex(in, in.position, world, world_normal(model, in.normal), caster.foliage.wind.w);
+    let biased = shadow_biased(moved.position, moved.normal);
     return caster.view_projection * vec4<f32>(biased, 1.0);
 }
 
@@ -1065,7 +1108,8 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     var out: ClipOut;
     let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
-    let biased = shadow_biased(world, world_normal(model, in.normal));
+    let moved = material_vertex(in, in.position, world, world_normal(model, in.normal), caster.foliage.wind.w);
+    let biased = shadow_biased(moved.position, moved.normal);
     out.position = caster.view_projection * vec4<f32>(biased, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
@@ -2255,10 +2299,11 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
         1.0,
     );
 
+    let moved = material_vertex(in, in.position, world.xyz, world_normal(model, in.normal), frame.foliage.wind.w);
     var out: VertexOutput;
-    out.clip_position = frame.view_projection * world;
-    out.world_position = world.xyz;
-    out.normal = world_normal(model, in.normal);
+    out.clip_position = frame.view_projection * vec4<f32>(moved.position, 1.0);
+    out.world_position = moved.position;
+    out.normal = moved.normal;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
@@ -2802,7 +2847,64 @@ struct SurfaceIn {
     // COLOR_0, Unity's Vertex Color), between them; white where the mesh
     // has none. The standard shader does not use it, as URP Lit does not.
     vertex_color: vec4<f32>,
+    // The pixel it is drawn at, from the top left.
+    screen: vec2<f32>,
+    // 1 on the side the surface faces, 0 seen from behind.
+    front: f32,
 };
+
+// What a material's shader can ask of where it is drawn — the shader
+// graph's `screen`, `scene_depth`, `SceneColor`, `tangent`… — beside what
+// SurfaceIn has.
+
+/// Where it is on the screen, 0 to 1 from the top left.
+fn surface_screen(in: SurfaceIn) -> vec2<f32> {
+    return in.screen / frame.cluster_depth.zw;
+}
+
+/// How deep it is along the view, in metres.
+fn surface_depth(in: SurfaceIn) -> f32 {
+    return -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0));
+}
+
+/// How deep the solid scene behind it is along the view, in metres: from
+/// the prepass, so what is see-through sees what is under it.
+fn surface_scene_depth(in: SurfaceIn) -> f32 {
+    let size = vec2<i32>(frame.cluster_depth.zw);
+    return scene_view_depth(clamp(vec2<i32>(in.screen), vec2<i32>(0), size - vec2<i32>(1)));
+}
+
+/// What was drawn at `at` on the screen (0 to 1): the last frame's picture.
+fn surface_scene_color(at: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(last_frame, fog_sampler, at, 0.0).rgb;
+}
+
+/// The way the texture's u runs across the surface, in the world: from how
+/// the position and the UVs change from pixel to pixel.
+fn surface_tangent(in: SurfaceIn) -> vec3<f32> {
+    let dp1 = dpdx(in.world_position);
+    let dp2 = dpdy(in.world_position);
+    let duv1 = dpdx(in.uv);
+    let duv2 = dpdy(in.uv);
+    let t = -(cross(dp2, in.normal) * duv1.x + cross(in.normal, dp1) * duv2.x);
+    let size = dot(t, t);
+    if size < 1e-12 {
+        return normalize(cross(in.normal, vec3<f32>(0.0, 0.0, 1.0)) + vec3<f32>(1e-4, 0.0, 0.0));
+    }
+    return t * inverseSqrt(size);
+}
+
+/// The normal bent as if `height` metres raised the surface: bump mapping
+/// from how the height changes from pixel to pixel (Mikkelsen).
+fn surface_normal_from_height(in: SurfaceIn, height: f32, strength: f32) -> vec3<f32> {
+    let dp1 = dpdx(in.world_position);
+    let dp2 = dpdy(in.world_position);
+    let r1 = cross(dp2, in.normal);
+    let r2 = cross(in.normal, dp1);
+    let det = dot(dp1, r1);
+    let grad = sign(det) * (dpdx(height) * r1 + dpdy(height) * r2);
+    return normalize(abs(det) * in.normal - strength * grad);
+}
 
 // What the standard shader worked out for the fragment, before the light:
 // what a material's shader changes.
@@ -2872,7 +2974,7 @@ fn fs_unlit(slimmed: VertexSlim, @builtin(front_facing) front: bool) -> @locatio
         discard;
     }
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color, in.clip_position.xy, select(0.0, 1.0, seen_front(in, front))),
         Surface(in.base_color * sampled.rgb, alpha, in.surface.x, in.surface.y, geometric, in.emission.rgb * emitted),
     );
     return unlit_seen(shaped.albedo + shaped.emission, shaped.alpha, in, screen_flags);
@@ -3008,7 +3110,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 
     // The material's own shader has its say, before the light.
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps, in.vertex_color, in.clip_position.xy, select(0.0, 1.0, seen_front(in, front))),
         Surface(albedo, alpha, in.surface.x * mask.r * weather.metal, smoothness, normal, in.emission.rgb * emitted),
     );
     albedo = shaped.albedo;
