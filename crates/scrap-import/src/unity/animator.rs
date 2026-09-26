@@ -682,7 +682,7 @@ AnimatorStateTransition:
                 .collect(),
             names: Default::default(),
         };
-        let text = convert(&unity, &path).unwrap();
+        let text = convert(&unity, &path, &mut Default::default()).unwrap();
         let graph: Graph = ron::from_str(&text.lines().filter(|l| !l.starts_with("//")).collect::<Vec<_>>().join("\n")).unwrap();
         assert_eq!(graph.states["mixamo_com"].time_from.as_deref(), Some("speed"), "the first keeps the name");
         assert_eq!(graph.states["mixamo_com 1"].clip, "Run", "the second is a state of its own");
