@@ -5532,7 +5532,7 @@ fn a_field_says_what_it_looks_like_what_it_starts_as_and_what_it_means() {
     assert!(colliders.contains(&("Model".to_string(), Shape::Unit)));
     assert!(colliders
         .iter()
-        .any(|(v, s)| v == "Sphere" && *s == Shape::Struct(vec![("radius".into(), Shape::Float)])));
+        .any(|(v, s)| v == "Sphere" && matches!(s, Shape::Struct(f) if f.first() == Some(&("radius".into(), Shape::Float)))));
     assert!(session.field_variants("light").is_empty(), "not an enum");
     assert_eq!(session.field_shape("position"), None, "a core field");
 

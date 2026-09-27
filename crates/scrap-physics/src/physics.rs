@@ -901,7 +901,13 @@ impl PhysicsWorld {
             let dynamic = kind == Body::Dynamic;
             let mine = parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]);
             let own = build_collider(shape.0, placed.0, mesh, dynamic, &self.mesh_shapes);
-            if own.is_none() && mine.is_empty() && kind != Body::Kinematic {
+            // A dynamic one with no shape but a mass of its own is Unity's
+            // Rigidbody with no collider: it falls, weighs, and holds what
+            // is jointed to it (a ragdoll's root, its limbs hung on it).
+            let weighed = (own.is_none() && mine.is_empty() && dynamic)
+                .then(|| props.mass.filter(|m| *m > 0.0))
+                .flatten();
+            if own.is_none() && mine.is_empty() && kind != Body::Kinematic && weighed.is_none() {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
                 // bounds is the kind of default that is wrong quietly. A
@@ -912,7 +918,7 @@ impl PhysicsWorld {
                 continue;
             }
             // Its own collider, or — for a body made only of its parts — none.
-            let mut collider = own.unwrap_or_else(|| ColliderBuilder::ball(1e-3).sensor(true).build());
+            let mut collider = own.unwrap_or_else(|| ColliderBuilder::ball(1e-3).sensor(true).density(0.0).build());
             // rapier sweeps any dynamic body fast for its size, asked or
             // not: an unswept one is made of shapes too thick to sweep.
             let unswept = dynamic && props.unswept;
@@ -942,7 +948,7 @@ impl PhysicsWorld {
             collider.set_collision_groups(layered);
             collider.set_solver_groups(layered);
             collider.set_density(props.density.max(1e-3));
-            if let Some(mass) = props.mass.filter(|m| *m > 0.0) {
+            if let Some(mass) = props.mass.filter(|m| *m > 0.0 && weighed.is_none()) {
                 collider.set_mass(mass);
             }
             if kind == Body::Trigger {
@@ -973,6 +979,15 @@ impl PhysicsWorld {
             .locked_axes(locked(&props))
             .build();
             let mut body = body;
+            // Shapeless, its mass on its own: turning as a ball half a
+            // metre round would (Unity gives such a body a unit tensor
+            // scaled by its mass).
+            if let Some(mass) = weighed {
+                body.set_additional_mass_properties(
+                    rapier3d::dynamics::MassProperties::new(rv(Vec3::ZERO), mass, rv(Vec3::splat(0.1 * mass))),
+                    true,
+                );
+            }
             body.user_data = entity.to_bits().get() as u128;
             if let Some((linear, angular, seconds)) = self.sleep {
                 let a = body.activation_mut();
