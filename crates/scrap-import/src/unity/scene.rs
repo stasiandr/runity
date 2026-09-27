@@ -1320,10 +1320,10 @@ fn audio_source(desc: &mut EntityDesc, b: &Yaml, unity: &Unity, report: &mut Rep
         .filter_map(|key| b.reference(key))
         .find_map(|r| unity.named(r.guid.as_deref()?))
         .filter(|(kind, _)| *kind == "sound");
-    let Some((_, clip)) = clip else {
-        report.skip("an AudioSource with no clip (the game gives it one)");
-        return;
-    };
+    // With no clip (the game gives it one — a random player's, a synth's
+    // sound) it is brought all the same, silent until the game does: how
+    // loud, how far and through which group it plays are still its own.
+    let clip = clip.map(|(_, c)| c.to_string()).unwrap_or_default();
     if desc.sound().is_some() {
         report.skip("a second AudioSource on one object (one sound an entity)");
         return;
@@ -1349,12 +1349,12 @@ fn audio_source(desc: &mut EntityDesc, b: &Yaml, unity: &Unity, report: &mut Rep
         })
         .unwrap_or_default();
     desc.set_part(&scrap::scene::SoundSource {
-        clip: AssetLink::named(clip),
+        clip: AssetLink::named(clip.clone()),
         volume: b.f32("m_Volume").unwrap_or(1.0),
         looped: b.i64("Loop") == Some(1),
         pitch: b.f32("m_Pitch").unwrap_or(1.0),
         // A switched-off AudioSource plays only when the game says so.
-        on_start: b.i64("m_PlayOnAwake") != Some(0) && b.i64("m_Enabled") != Some(0),
+        on_start: !clip.is_empty() && b.i64("m_PlayOnAwake") != Some(0) && b.i64("m_Enabled") != Some(0),
         group,
         spatial: blend >= 0.5,
         near: b.f32("MinDistance").unwrap_or(1.0),
