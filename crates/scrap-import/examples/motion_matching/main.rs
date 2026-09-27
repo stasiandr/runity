@@ -12,14 +12,13 @@
 //! character to be a third, two thirds and one second on; a foot turns
 //! orange while it is locked to the ground.
 //!
-//! The clips are LAFAN1's (Ubisoft La Forge, CC BY-NC-ND 4.0), read from
-//! `$SCRAP_LAFAN1` or `~/.cache/scrap/lafan1` — kept out of the repository
-//! and out of every build.
+//! The clips are LAFAN1's (Ubisoft La Forge, CC BY-NC-ND 4.0), or with
+//! `MM_SOURCE=100style` 100STYLE's (CC BY 4.0), read from a local cache —
+//! kept out of the repository and out of every build; see `takes.rs`.
 
 mod dacha;
 mod eval;
-
-use std::path::PathBuf;
+mod takes;
 
 use scrap::glam::{Mat4, Quat, Vec3};
 use scrap::matching::{Among, Ask, Database, Matcher, Setup};
@@ -27,76 +26,19 @@ use scrap::render::{Camera, Draw, Frame, MeshHandle, TextureHandle};
 use scrap::shell::{run, Context, Game, StepContext, WindowConfig};
 use scrap::{builtin, Gpu, Key, Material, Renderer};
 
-/// Walking, running, and every take of getting over things: stairs,
-/// boxes, ledges.
-const CLIPS: &[&str] = &[
-    "walk1_subject1",
-    "walk1_subject2",
-    "walk1_subject5",
-    "run1_subject2",
-    "run1_subject5",
-    "sprint1_subject2",
-    "obstacles*",
-    "jumps1*",
-    "multipleActions1*",
-];
-
-fn lafan1() -> PathBuf {
-    std::env::var_os("SCRAP_LAFAN1")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/scrap/lafan1"))
-}
-
 fn database() -> anyhow::Result<Database> {
     let started = std::time::Instant::now();
-    let (skeleton, clips) = lafan_clips()?;
-    let mut setup = Setup::default();
+    let takes = takes::load()?;
+    let mut setup = Setup { jump_only: takes.jump_only.clone(), ..Setup::default() };
     // `MM_WEIGHTS=0.75,1,1,1,1.5,1.5,0.5,0.4`: the feature groups' weights.
     if let Ok(weights) = std::env::var("MM_WEIGHTS") {
         for (w, v) in setup.weights.iter_mut().zip(weights.split(',')) {
             *w = v.parse().unwrap_or(*w);
         }
     }
-    let db = Database::build(&skeleton, &clips, setup).map_err(anyhow::Error::msg)?;
-    eprintln!("{} frames of {} clips in {:.1?}", db.len(), clips.len(), started.elapsed());
+    let db = Database::build(&takes.skeleton, &takes.clips, setup).map_err(anyhow::Error::msg)?;
+    eprintln!("{} frames of {} {} clips in {:.1?}", db.len(), takes.clips.len(), takes.source, started.elapsed());
     Ok(db)
-}
-
-/// LAFAN1's takes the database is made of, on LAFAN1's skeleton.
-fn lafan_clips() -> anyhow::Result<(scrap::animation::Skeleton, Vec<scrap::animation::Clip>)> {
-    let dir = lafan1();
-    let mut skeleton = None;
-    let mut clips = Vec::new();
-    let mut names: Vec<String> = Vec::new();
-    let asked = std::env::var("MM_CLIPS").ok();
-    let chosen: Vec<&str> = match &asked {
-        Some(list) => list.split(',').collect(),
-        None => CLIPS.to_vec(),
-    };
-    for name in &chosen {
-        match name.strip_suffix('*') {
-            Some(prefix) => {
-                let mut found: Vec<String> = std::fs::read_dir(&dir)?
-                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
-                    .filter(|n| n.starts_with(prefix) && n.ends_with(".bvh"))
-                    .map(|n| n.trim_end_matches(".bvh").to_string())
-                    .collect();
-                found.sort();
-                names.extend(found);
-            }
-            None => names.push(name.to_string()),
-        }
-    }
-    for name in &names {
-        let path = dir.join(format!("{name}.bvh"));
-        let text = std::fs::read_to_string(&path).map_err(|e| {
-            anyhow::anyhow!("{}: {e} — LAFAN1 goes in ~/.cache/scrap/lafan1 (or $SCRAP_LAFAN1)", path.display())
-        })?;
-        let (s, clip) = scrap_import::bvh::read(&text, name, 0.01)?;
-        skeleton.get_or_insert(s);
-        clips.push(clip);
-    }
-    Ok((skeleton.ok_or_else(|| anyhow::anyhow!("no takes"))?, clips))
 }
 
 /// The yard: a wall across the way, a flight of stairs up to a landing
@@ -211,7 +153,11 @@ impl Walker {
     }
 
     pub fn step_jumping(&mut self, velocity: Vec3, jump: bool, dt: f32) {
-        self.ask = Ask { velocity, facing: None, jump };
+        self.step_facing(velocity, None, jump, dt);
+    }
+
+    pub fn step_facing(&mut self, velocity: Vec3, facing: Option<Vec3>, jump: bool, dt: f32) {
+        self.ask = Ask { velocity, facing, jump };
         let pose = self.matcher.advance_in(&self.db, &self.ask, dt, &Among(&self.physics));
         self.world = self.matcher.world(&self.db, &pose);
         self.pose = pose;
@@ -362,7 +308,7 @@ fn video(
     let target = scrap::OffscreenTarget::new(&gpu, width, height);
     let mut renderer = Renderer::new(&gpu, &target);
     let meshes = Meshes::upload(&gpu, &mut renderer);
-    // Dressed as Dacha's robot: its rig, LAFAN1 retargeted onto it, its
+    // Dressed as Dacha's robot: its rig, the takes retargeted onto it, its
     // pieces in a world of their own.
     let mut dressed = None;
     let db = match (db, dacha_dir) {
@@ -371,8 +317,7 @@ fn video(
             let mut live = dacha::open(dir)?;
             let mut world = scrap::hecs::World::new();
             let mut robot = dacha::Robot::spawn(dir, &mut live, &mut world, &gpu, &mut renderer)?;
-            let (from_skeleton, clips) = lafan_clips()?;
-            let db = std::sync::Arc::new(dacha::database(&mut robot, &from_skeleton, &clips)?);
+            let db = std::sync::Arc::new(dacha::database(&mut robot, &takes::load()?)?);
             dressed = Some((robot, world, live));
             db
         }
@@ -406,7 +351,7 @@ fn video(
         for sub in 0..2 {
             let t = (frame * 2 + sub) as f32 * dt;
             let clock = std::time::Instant::now();
-            walker.step_jumping((course.stick)(t, walker.matcher.root.0), course.jumps_at(t, dt), dt);
+            walker.step_facing((course.stick)(t, walker.matcher.root.0), course.facing, course.jumps_at(t, dt), dt);
             stepping += clock.elapsed();
         }
         if (frame as f32) < from * fps as f32 {
@@ -486,7 +431,7 @@ fn main() -> anyhow::Result<()> {
     let walker = Walker::new(db, yard(), Vec3::ZERO);
     println!("WASD walks, shift runs, the left mouse button turns the view, Escape quits.");
     run(
-        WindowConfig { title: "scrap — motion matching (LAFAN1)".into(), ..Default::default() },
+        WindowConfig { title: "scrap — motion matching".into(), ..Default::default() },
         Drive { walker, meshes: None, yaw: 0.0 },
     )
 }

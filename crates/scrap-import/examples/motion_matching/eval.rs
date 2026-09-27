@@ -23,6 +23,9 @@ pub struct Course {
     /// When the hands hold on to something, and where: from, until, the
     /// thing's middle and half its width.
     pub grabs: Vec<(f32, f32, Vec3, f32)>,
+    /// Which way the character is asked to face whatever way it goes, as
+    /// a shooter's aim holds it; `None` faces the way it goes.
+    pub facing: Option<Vec3>,
 }
 
 impl Course {
@@ -106,8 +109,29 @@ fn courses() -> Vec<Course> {
     for (i, h) in [0.3f32, 0.5, 0.8, 1.0, 1.2].into_iter().enumerate() {
         row.push((Vec3::new(0.0, h / 2.0, 5.0 + 7.0 * i as f32), Vec3::new(1.5, h / 2.0, 0.6)));
     }
+    // Facing ahead the whole way: forwards, the diagonals, sideways and
+    // backwards, walking then running, back to the middle between.
+    let mut strafe = Vec::new();
+    for speed in [1.3f32, 3.0] {
+        for i in 0..8 {
+            let a = i as f32 * std::f32::consts::FRAC_PI_4;
+            strafe.push(([3.0 * a.sin(), 3.0 * a.cos()], speed, 3.0));
+            strafe.push(([0.0, 0.0], speed, 3.0));
+        }
+    }
+    strafe.push(([0.0, 0.0], 0.0, 3.0));
     vec![
-        Course { name: "flat", boxes: Vec::new(), start: Vec3::ZERO, seconds: 90.0, stick: wander(), jumps: Vec::new(), grabs: Vec::new() },
+        Course {
+            name: "strafe",
+            boxes: Vec::new(),
+            start: Vec3::ZERO,
+            seconds: strafe.iter().map(|l| l.2).sum(),
+            stick: follow(strafe),
+            jumps: Vec::new(),
+            grabs: Vec::new(),
+            facing: Some(Vec3::Z),
+        },
+        Course { name: "flat", boxes: Vec::new(), start: Vec3::ZERO, seconds: 90.0, stick: wander(), jumps: Vec::new(), grabs: Vec::new(), facing: None },
         Course {
             name: "walls",
             boxes: vec![(Vec3::new(0.0, 1.5, 4.25), Vec3::new(10.0, 1.5, 0.25))],
@@ -124,6 +148,7 @@ fn courses() -> Vec<Course> {
             ]),
             jumps: Vec::new(),
             grabs: Vec::new(),
+            facing: None,
         },
         Course {
             name: "stairs",
@@ -139,9 +164,10 @@ fn courses() -> Vec<Course> {
             ]),
             jumps: Vec::new(),
             grabs: Vec::new(),
+            facing: None,
         },
-        Course { name: "boxes", boxes: row, start: Vec3::ZERO, seconds: 40.0, stick: follow(vec![([0.0, 40.0], 1.3, 40.0)]), jumps: Vec::new(), grabs: Vec::new() },
-        Course { name: "yard", boxes: crate::yard(), start: Vec3::ZERO, seconds: crate::LEGS.iter().map(|l| l.2).sum(), stick: follow(crate::LEGS.to_vec()), jumps: Vec::new(), grabs: Vec::new() },
+        Course { name: "boxes", boxes: row, start: Vec3::ZERO, seconds: 40.0, stick: follow(vec![([0.0, 40.0], 1.3, 40.0)]), jumps: Vec::new(), grabs: Vec::new(), facing: None },
+        Course { name: "yard", boxes: crate::yard(), start: Vec3::ZERO, seconds: crate::LEGS.iter().map(|l| l.2).sum(), stick: follow(crate::LEGS.to_vec()), jumps: Vec::new(), grabs: Vec::new(), facing: None },
         Course {
             name: "jumps",
             boxes: vec![(Vec3::new(0.0, 0.25, 40.0), Vec3::new(2.0, 0.25, 1.5))],
@@ -156,6 +182,7 @@ fn courses() -> Vec<Course> {
             // Running, walking, standing, and onto a box.
             jumps: vec![2.0, 4.0, 5.2, 6.4, 9.0, 11.0, 13.5, 15.0, 16.0, 18.9],
             grabs: Vec::new(),
+            facing: None,
         },
         Course {
             name: "grab",
@@ -176,6 +203,7 @@ fn courses() -> Vec<Course> {
             ]),
             jumps: Vec::new(),
             grabs: vec![(3.8, 5.8, Vec3::new(0.0, 0.25, 4.0), 0.2), (10.5, 12.5, Vec3::new(3.0, 1.05, 6.5), 0.15)],
+            facing: None,
         },
     ]
 }
@@ -213,6 +241,8 @@ struct Score {
     sharp_joints: Vec<(f32, usize)>,
     into_joints: std::collections::BTreeMap<String, usize>,
     speed_off: Vec<f32>,
+    /// How far the body turned from the way it was asked to face, degrees.
+    facing_off: Vec<f32>,
     moments: Vec<(f32, f32, String)>,
 }
 
@@ -286,7 +316,11 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
                 }
             }
             let started = std::time::Instant::now();
-            walker.step_jumping(ask, course.jumps_at(t, dt), dt);
+            walker.step_facing(ask, course.facing, course.jumps_at(t, dt), dt);
+            if let Some(want) = course.facing {
+                let have = walker.matcher.root.1 * Vec3::Z;
+                score.facing_off.push(Vec3::new(have.x, 0.0, have.z).normalize_or_zero().dot(want).clamp(-1.0, 1.0).acos().to_degrees());
+            }
             clock += started.elapsed();
             if let (false, Some((warp, stretch))) = (was_climbing, walker.matcher.climb()) {
                 if std::env::var_os("MM_CLIMBS").is_some() {
@@ -429,6 +463,10 @@ pub fn run(db: Arc<Database>, verbose: bool) -> anyhow::Result<()> {
         let (p50, p95, p99) = percentiles(&mut score.jerk);
         let (o50, o95, o99) = percentiles(&mut score.feet_off);
         println!("{:8} jerk {p50:.0} / {p95:.0} / {p99:.0}, bent {:.1} s, feet off {o50:.2} / {o95:.2} / {o99:.2} m", "", score.bent);
+        if !score.facing_off.is_empty() {
+            let (f50, f95, f99) = percentiles(&mut score.facing_off);
+            println!("{:8} facing off {f50:.0}° / {f95:.0}° / {f99:.0}°", "");
+        }
         if verbose {
             score.sharp_joints.sort_by(|a, b| b.0.total_cmp(&a.0));
             let top = &score.sharp_joints[..score.sharp_joints.len() / 50];

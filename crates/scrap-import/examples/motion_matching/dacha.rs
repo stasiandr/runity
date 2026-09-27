@@ -1,6 +1,6 @@
 //! `--dacha DIR`: the Dacha robot walking and jumping by motion matching —
-//! its Mixamo rig (`A_BreathingIdle`) with LAFAN1 retargeted onto it
-//! through the two T-poses, and its pieces hung on the bones as the game's
+//! its Mixamo rig (`A_BreathingIdle`) with the takes (LAFAN1's or
+//! 100STYLE's) retargeted onto it through the two T-poses, and its pieces hung on the bones as the game's
 //! pawn prefab hangs them (after `dacha-runity/src/own_body.rs`).
 
 use std::path::Path;
@@ -39,7 +39,7 @@ enum Frame {
 /// what places them.
 pub struct Robot {
     pub skeleton: Skeleton,
-    /// How tall it stands against LAFAN1's actors: its hips' height over
+    /// How tall it stands against the takes' actors: its hips' height over
     /// theirs, set when the takes are retargeted.
     pub height_ratio: f32,
     /// The rig's scale: pieces hang in the rig's own units.
@@ -298,23 +298,23 @@ impl Robot {
     }
 }
 
-/// LAFAN1's clips on the robot's rig: each retargeted through the takes'
+/// The takes on the robot's rig: each retargeted through the takes'
 /// opening T-pose and the rig's bind, and the database of them.
-pub fn database(robot: &mut Robot, from: &Skeleton, clips: &[scrap::animation::Clip]) -> anyhow::Result<Database> {
+pub fn database(robot: &mut Robot, takes: &crate::takes::Takes) -> anyhow::Result<Database> {
     let started = std::time::Instant::now();
-    // The takes open standing in a T-pose, as the rig binds.
-    let t_pose = clips.first().map(|c| c.sample(from, 0.0, false)).ok_or_else(|| anyhow::anyhow!("no clips"))?;
+    // The takes' actors stand in a T-pose, as the rig binds.
+    let (from, clips, t_pose) = (&takes.skeleton, &takes.clips, &takes.t_pose);
     let hips = |s: &Skeleton, pose: &[PoseTransform]| {
         let root = s.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
         s.world_matrices(pose)[root].w_axis.y
     };
-    robot.height_ratio = hips(&robot.skeleton, &robot.skeleton.rest_pose()) / hips(from, &t_pose);
+    robot.height_ratio = hips(&robot.skeleton, &robot.skeleton.rest_pose()) / hips(from, t_pose);
     eprintln!("the robot stands {:.2} of the takes' height", robot.height_ratio);
     let robot = &robot.skeleton;
     let aliases = [("LeftToe", "LeftToeBase"), ("RightToe", "RightToeBase")];
     let rest = robot.rest_pose();
-    let retargeted: Vec<_> = clips.iter().map(|c| c.retarget_through(from, &t_pose, robot, &rest, &aliases, 30.0)).collect();
-    let db = Database::build(robot, &retargeted, Setup::default()).map_err(anyhow::Error::msg)?;
+    let retargeted: Vec<_> = clips.iter().map(|c| c.retarget_through(from, t_pose, robot, &rest, &aliases, 30.0)).collect();
+    let db = Database::build(robot, &retargeted, Setup { jump_only: takes.jump_only.clone(), ..Setup::default() }).map_err(anyhow::Error::msg)?;
     eprintln!("{} frames retargeted onto the robot in {:.1?}", db.len(), started.elapsed());
     Ok(db)
 }
