@@ -314,7 +314,7 @@ pub fn database(robot: &mut Robot, takes: &crate::takes::Takes) -> anyhow::Resul
     let aliases = [("LeftToe", "LeftToeBase"), ("RightToe", "RightToeBase")];
     let rest = robot.rest_pose();
     let retargeted: Vec<_> = clips.iter().map(|c| c.retarget_through(from, t_pose, robot, &rest, &aliases, 30.0)).collect();
-    let db = Database::build(robot, &retargeted, Setup::default()).map_err(anyhow::Error::msg)?;
+    let db = Database::build(robot, &retargeted, Setup { jump_only: takes.jump_only.clone(), ..Setup::default() }).map_err(anyhow::Error::msg)?;
     eprintln!("{} frames retargeted onto the robot in {:.1?}", db.len(), started.elapsed());
     Ok(db)
 }

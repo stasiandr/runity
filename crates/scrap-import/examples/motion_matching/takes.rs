@@ -9,7 +9,14 @@
 //!   each walked and run forwards, backwards and sideways, stood still
 //!   and changed between; no jumps or climbs. Shippable with a credit.
 //!
-//! Both come out on LAFAN1's joint names, so the rest of the example —
+//! * CMU (Carnegie Mellon's motion capture database: free for commercial
+//!   products, the data itself not to be resold) — `$SCRAP_CMU` or
+//!   `~/.cache/scrap/cmu/subjects`, ASF/AMC. Jumps, stops, turns, steps
+//!   and ledges, one actor's bones per subject. `MM_SOURCE=mix` puts the
+//!   takes `picked.txt` lists (or `CMU`, below) onto 100STYLE's
+//!   skeleton beside its gaits: what a game can ship.
+//!
+//! All come out on LAFAN1's joint names, so the rest of the example —
 //! the setup's feet and hands, the robot's aliases — reads either.
 
 use std::path::PathBuf;
@@ -61,6 +68,8 @@ pub struct Takes {
     /// retargeting goes through.
     pub t_pose: Vec<PoseTransform>,
     pub source: &'static str,
+    /// Takes, by the start of their name, looked in only for jumps.
+    pub jump_only: Vec<String>,
 }
 
 fn cache(var: &str, dir: &str) -> PathBuf {
@@ -83,6 +92,7 @@ fn chosen(default: &[&str]) -> Vec<String> {
 pub fn load() -> anyhow::Result<Takes> {
     match std::env::var("MM_SOURCE").as_deref() {
         Ok("100style") => hundred_styles(),
+        Ok("mix") => mix(),
         _ => lafan1(),
     }
 }
@@ -126,6 +136,7 @@ fn lafan1() -> anyhow::Result<Takes> {
         clips,
         t_pose,
         source: "LAFAN1",
+        jump_only: vec!["jumps".into(), "multipleActions".into()],
     })
 }
 
@@ -247,5 +258,119 @@ fn hundred_styles() -> anyhow::Result<Takes> {
         clips,
         t_pose,
         source: "100STYLE",
+        jump_only: Vec::new(),
     })
+}
+
+/// CMU's takes worth having when `picked.txt` is not there: jumps, stops,
+/// turns, steps and ledges.
+const CMU: &[&str] = &[
+    "13_11", "13_13", "13_19", "13_32", "13_35", "13_36", "13_37", "13_38", "13_39", "13_40", "13_41", "13_42",
+    "16_01", "16_02", "16_05", "16_06", "16_07", "16_08", "16_09", "16_10", "16_33", "16_34", "16_57",
+    "49_02", "49_03", "75_01", "75_02", "75_03", "75_12", "82_02", "82_03", "82_04",
+    "83_02", "83_03", "83_27", "83_28", "83_29", "83_30", "83_31", "83_32", "83_33", "83_34", "83_35",
+    "91_39", "91_40", "91_41", "91_42", "91_43", "91_44", "91_45",
+];
+
+/// CMU's takes that are a jump, by the start of their trial's name.
+const CMU_JUMPS: &[&str] = &[
+    "13_11", "13_13", "13_19", "13_32", "13_39", "13_40", "13_41", "13_42", "16_01", "16_02", "16_05", "16_06", "16_07",
+    "16_09", "16_10", "49_", "75_", "82_", "91_",
+];
+
+/// CMU's bones by LAFAN1's names, less the side.
+const CMU_NAMES: &[(&str, &str)] = &[
+    ("root", "Hips"),
+    ("hipjoint", "HipJoint"),
+    ("femur", "UpLeg"),
+    ("tibia", "Leg"),
+    ("foot", "Foot"),
+    ("toes", "Toe"),
+    ("lowerback", "Spine"),
+    ("upperback", "Spine1"),
+    ("thorax", "Spine2"),
+    ("lowerneck", "Neck"),
+    ("upperneck", "Neck1"),
+    ("head", "Head"),
+    ("clavicle", "Shoulder"),
+    ("humerus", "Arm"),
+    ("radius", "ForeArm"),
+    ("wrist", "Hand"),
+    ("hand", "Palm"),
+    ("fingers", "Fingers"),
+    ("thumb", "Thumb"),
+];
+
+/// A CMU take on its actor's skeleton, under LAFAN1's names, and the pose
+/// it goes through to another rig: the T-pose the skeleton rests in, the
+/// thighs straightened from the 20° the rest spreads them, the hips as
+/// high as the take opens standing.
+fn cmu_take(dir: &std::path::Path, trial: &str, rate: f32) -> anyhow::Result<(Skeleton, Clip, Vec<PoseTransform>)> {
+    use scrap::glam::{Quat, Vec3};
+    let subject = trial.split('_').next().unwrap_or("");
+    let read = |path: std::path::PathBuf| {
+        std::fs::read_to_string(&path).map_err(|e| {
+            anyhow::anyhow!("{}: {e} — CMU goes in ~/.cache/scrap/cmu/subjects (or $SCRAP_CMU)", path.display())
+        })
+    };
+    let asf = read(dir.join(format!("{subject}.asf")))?;
+    let amc = read(dir.join(format!("{trial}.amc")))?;
+    let (mut skeleton, clip) = scrap_import::asf::read(&asf, &amc, &format!("cmu_{trial}"), 0.0254 / 0.45, rate)?;
+    for joint in &mut skeleton.joints {
+        let (side, bare) = match joint.name.split_at(1) {
+            ("l", rest) if CMU_NAMES.iter().any(|(a, _)| *a == rest) => ("Left", rest),
+            ("r", rest) if CMU_NAMES.iter().any(|(a, _)| *a == rest) => ("Right", rest),
+            _ => ("", joint.name.as_str()),
+        };
+        if let Some((_, name)) = CMU_NAMES.iter().find(|(a, _)| *a == bare) {
+            joint.name = format!("{side}{name}");
+        }
+    }
+    let mut t_pose = skeleton.rest_pose();
+    let world = skeleton.world_matrices(&t_pose);
+    let turn_of = |m: &scrap::glam::Mat4| m.to_scale_rotation_translation().1;
+    for side in ["Left", "Right"] {
+        let find = |n: &str| skeleton.joints.iter().position(|j| j.name == format!("{side}{n}"));
+        let (Some(thigh), Some(knee)) = (find("UpLeg"), find("Leg")) else { continue };
+        let Some(parent) = skeleton.joints[thigh].parent.map(|p| p as usize) else { continue };
+        let down = (world[knee].w_axis - world[thigh].w_axis).truncate().normalize_or_zero();
+        let straight = Quat::from_rotation_arc(down, -Vec3::Y) * turn_of(&world[thigh]);
+        t_pose[thigh].rotation = (turn_of(&world[parent]).inverse() * straight).normalize().to_array();
+    }
+    let root = skeleton.joints.iter().position(|j| j.parent.is_none()).unwrap_or(0);
+    let height = clip.sample(&skeleton, 0.0, false)[root].translation[1];
+    t_pose[root].translation = [0.0, height, 0.0];
+    Ok((skeleton, clip, t_pose))
+}
+
+/// 100STYLE's gaits and CMU's picked takes, all on 100STYLE's skeleton.
+fn mix() -> anyhow::Result<Takes> {
+    let mut takes = hundred_styles()?;
+    let dir = cache("SCRAP_CMU", "cmu/subjects");
+    let root = dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    // Each trial's frame rate, from the index when there is one.
+    let mut rates = std::collections::HashMap::new();
+    if let Ok(index) = std::fs::read_to_string(root.join("index.tsv")) {
+        for line in index.lines() {
+            let mut cells = line.split('\t');
+            if let (Some(trial), Some(rate)) = (cells.next(), cells.next().and_then(|r| r.parse::<f32>().ok())) {
+                rates.insert(trial.to_string(), rate);
+            }
+        }
+    }
+    let trials: Vec<String> = match std::fs::read_to_string(root.join("picked.txt")) {
+        Ok(list) => list.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+        Err(_) => CMU.iter().map(|s| s.to_string()).collect(),
+    };
+    let rest = takes.t_pose.clone();
+    let aliases: [(&str, &str); 0] = [];
+    for trial in &trials {
+        let rate = rates.get(trial).copied().unwrap_or(120.0);
+        let (skeleton, clip, t_pose) = cmu_take(&dir, trial, rate)?;
+        takes.clips.push(clip.retarget_through(&skeleton, &t_pose, &takes.skeleton, &rest, &aliases, 60.0));
+    }
+    takes.source = "100STYLE + CMU";
+    // Their run-ups end in a leap: never run on in them unasked.
+    takes.jump_only = CMU_JUMPS.iter().map(|t| format!("cmu_{t}")).collect();
+    Ok(takes)
 }

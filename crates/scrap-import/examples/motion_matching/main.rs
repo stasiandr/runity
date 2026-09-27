@@ -29,7 +29,7 @@ use scrap::{builtin, Gpu, Key, Material, Renderer};
 fn database() -> anyhow::Result<Database> {
     let started = std::time::Instant::now();
     let takes = takes::load()?;
-    let mut setup = Setup::default();
+    let mut setup = Setup { jump_only: takes.jump_only.clone(), ..Setup::default() };
     // `MM_WEIGHTS=0.75,1,1,1,1.5,1.5,0.5,0.4`: the feature groups' weights.
     if let Ok(weights) = std::env::var("MM_WEIGHTS") {
         for (w, v) in setup.weights.iter_mut().zip(weights.split(',')) {
