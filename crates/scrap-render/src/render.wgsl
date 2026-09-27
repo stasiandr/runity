@@ -384,7 +384,11 @@ fn field_sky(p: vec3<f32>, n: vec3<f32>) -> f32 {
             if d > 1e3 {
                 break;
             }
-            seen = min(seen, 3.0 * d / t);
+            // At the edge of what the field tells apart it says only
+            // "far": nothing near to narrow the cone.
+            if d < frame.distance[1].w * 0.9 {
+                seen = min(seen, 3.0 * d / t);
+            }
             if seen < 0.02 {
                 seen = 0.0;
                 break;
@@ -3219,7 +3223,11 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // The scene's distance field softens the sun's shadow where the map
     // is coarse and adds what the map missed.
     let field_on = frame.distance[0].w > 0.5 && unlit < 0.5;
-    if field_on && shadow > 0.0 && (flags & 4u) != 0u && sun_matters {
+    // A field that shades the sky is a whole level's, its cells metres
+    // wide: too coarse for a crease or the sun's edge, which it leaves to
+    // the shadow map and the screen's occlusion.
+    let field_fine = field_on && frame.distance[0].w < 1.5;
+    if field_fine && shadow > 0.0 && (flags & 4u) != 0u && sun_matters {
         shadow = min(shadow, field_shadow(in.world_position, geometric, to_sun));
     }
     // Under a cloud: in its shadow.
@@ -3244,15 +3252,16 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         ao = gathered.a;
         bounce = gathered.rgb;
     }
-    if field_on {
+    if field_fine {
         ao *= field_occlusion(in.world_position, geometric);
-        // The sky it sees, for a field that asks (`distance[0].w` 2):
-        // what GI would have darkened.
-        if frame.distance[0].w > 1.5 {
-            ao *= mix(0.15, 1.0, field_sky(in.world_position, geometric));
-        }
     }
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
+    // The sky it sees, for a field that asks (`distance[0].w` 2): what GI
+    // would have darkened — the light from all round and its reflection,
+    // not the sun.
+    if field_on && frame.distance[0].w > 1.5 {
+        ao *= mix(0.15, 1.0, field_sky(in.world_position, geometric));
+    }
     var color = direct(b, normal, to_sun, to_eye, highlights)
         * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow * direct_ao;
     // A grain of sand turned just so throws the sun straight at the eye.
