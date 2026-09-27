@@ -4093,9 +4093,10 @@ impl Session {
             .find(|(s, _, _)| s.0 == id)
             .map(|(_, l, w)| (l.0, w.0))?;
         let (_, rotation, position) = placed.to_scale_rotation_translation();
+        let along = if lens.looks_back { Vec3::NEG_Z } else { Vec3::Z };
         Some(Camera {
             position,
-            target: position + rotation * Vec3::Z,
+            target: position + rotation * along,
             up: rotation * Vec3::Y,
             fov_y_degrees: lens.fov_deg,
             ortho: lens.ortho,

@@ -175,12 +175,14 @@ pub fn blend(a: &Camera, b: &Camera, w: f32) -> Camera {
     }
 }
 
-/// What the camera on an entity sees: from where it is, along its +z.
+/// What the camera on an entity sees: from where it is, along its +z
+/// (its −z, for one that looks back).
 pub(crate) fn lens_camera(lens: crate::scene::Lens, placed: glam::Mat4) -> Camera {
     let (_, rotation, position) = placed.to_scale_rotation_translation();
+    let along = if lens.looks_back { Vec3::NEG_Z } else { Vec3::Z };
     Camera {
         position,
-        target: position + rotation * Vec3::Z,
+        target: position + rotation * along,
         up: rotation * Vec3::Y,
         fov_y_degrees: lens.fov_deg,
         ortho: lens.ortho,
@@ -382,6 +384,15 @@ mod tests {
     use super::*;
     use crate::scene::{Blend, Lens};
 
+    #[test]
+    fn a_camera_that_looks_back_looks_along_its_minus_z() {
+        let placed = glam::Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
+        let back = lens_camera(Lens { looks_back: true, ..lens(0, None) }, placed);
+        assert!((back.target - back.position).abs_diff_eq(Vec3::NEG_Z, 1e-6), "a Unity camera, mirrored");
+        let own = lens_camera(lens(0, None), placed);
+        assert!((own.target - own.position).abs_diff_eq(Vec3::Z, 1e-6));
+    }
+
     fn lens(priority: i32, blend: Option<Blend>) -> Lens {
         Lens {
             fov_deg: 60.0,
@@ -389,6 +400,7 @@ mod tests {
             ortho: None,
             follow: None,
             blend,
+            looks_back: false,
         }
     }
 

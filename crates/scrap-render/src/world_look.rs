@@ -623,6 +623,8 @@ pub fn follow_cameras(world: &mut World, dt: f32) {
                 let right = up.cross(ahead).normalize();
                 let turn =
                     glam::Quat::from_mat3(&glam::Mat3::from_cols(right, ahead.cross(right), ahead));
+                // One that looks along its −z turns that way to it.
+                let turn = if lens.0.looks_back { turn * glam::Quat::from_rotation_y(std::f32::consts::PI) } else { turn };
                 let turn = if follow.look_damping > 0.0 {
                     turn.slerp(transform.rotation(), keep(follow.look_damping))
                 } else {

@@ -13,7 +13,7 @@ use crate::material::Material;
 use crate::scene::{EntityDesc, Override, Scene};
 
 /// A camera on an entity: what the game sees through, looking along the
-/// entity's +z with its y up — Unity's Camera component, and like it,
+/// entity's +z (or −z, `looks_back`) with its y up — Unity's Camera component, and like it,
 /// carried by whatever the entity is under: a camera that is a child of
 /// the player follows the player.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub struct Lens {
     /// Real seconds: slow motion does not stretch it (docs/feel.md).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub blend: Option<Blend>,
+    /// Looks along the entity's −z instead: a camera brought from Unity,
+    /// whose forward the scene's mirror turned round.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub looks_back: bool,
 }
 
 /// How a camera comes in when it takes over.

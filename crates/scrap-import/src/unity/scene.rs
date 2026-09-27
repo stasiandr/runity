@@ -1588,6 +1588,8 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             // the rest: that one is what the player sees (a 3D skybox's
             // camera is shallower than the main one).
             lens.priority = b.f32("m_Depth").unwrap_or(0.0).round() as i32;
+            // Unity's camera looks along its +z, the mirrored scene's −z.
+            lens.looks_back = true;
             desc.set_part(&lens);
         }
         "HingeJoint" | "FixedJoint" | "CharacterJoint" | "ConfigurableJoint" | "SpringJoint" => {

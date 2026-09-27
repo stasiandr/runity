@@ -622,6 +622,7 @@ mod tests {
                 ortho: Some(8.0),
                 follow: None,
                 blend: None,
+                looks_back: false,
             }),
             WorldTransform(glam::Mat4::IDENTITY),
         ));
@@ -651,6 +652,7 @@ mod tests {
                 dead_zone: 0.0,
             }),
             blend: None,
+            looks_back: false,
         };
         world.spawn((
             CameraLens(lens),

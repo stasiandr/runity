@@ -83,6 +83,7 @@ fn a_mirror_shows_what_its_camera_sees() {
             ortho: None,
             follow: None,
             blend: None,
+            looks_back: false,
         }),
         ToTexture(RenderTexture {
             name: "mirror".into(),

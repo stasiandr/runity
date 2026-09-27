@@ -1660,6 +1660,8 @@ pub fn camera_draws(
     material: Material,
 ) -> Vec<Draw> {
     let (_, rotation, translation) = placed.to_scale_rotation_translation();
+    // One that looks back is drawn opening along its −z.
+    let rotation = if lens.looks_back { rotation * Quat::from_rotation_y(std::f32::consts::PI) } else { rotation };
     let frame = Mat4::from_rotation_translation(rotation, translation);
     let (near_half, far_half) = match lens.ortho {
         Some(half) => (half, half),
@@ -2179,6 +2181,7 @@ mod tests {
             ortho: None,
             follow: None,
             blend: None,
+            looks_back: false,
         };
         // Turned round: it looks along the world's −z.
         let placed = Mat4::from_rotation_translation(
