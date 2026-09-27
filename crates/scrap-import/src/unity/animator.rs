@@ -518,6 +518,7 @@ AnimatorStateTransition:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),
@@ -569,6 +570,7 @@ AnimatorStateTransition:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),
@@ -598,6 +600,7 @@ AnimatorStateTransition:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),
@@ -621,6 +624,7 @@ AnimatorStateTransition:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),
@@ -682,6 +686,7 @@ AnimatorStateTransition:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),

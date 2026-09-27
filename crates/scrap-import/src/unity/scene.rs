@@ -649,6 +649,15 @@ fn instance(
     };
     if kind == "model" {
         desc.set_part(&scrap::scene::ModelRef(AssetLink::named(name)));
+        // Its materials as the model's importer maps them: none of its
+        // own on the line, a placed FBX draws with those.
+        if let Some(mut materials) = source.guid.as_deref().and_then(|g| model_materials(unity, g, name)) {
+            let first = materials.remove(0);
+            desc.set_part(&first);
+            if !materials.is_empty() {
+                desc.set_part(&scrap::scene::MoreMaterials(materials));
+            }
+        }
     } else {
         desc.prefab = AssetLink::named(name);
     }
@@ -1796,6 +1805,44 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     }
 }
 
+/// A converted model's materials, a run each, as its `.meta` maps the
+/// file's material names (`externalObjects`), else the project's material
+/// of that name (Unity's search by name). `None` for a model not
+/// converted, or none of whose names is found.
+fn model_materials(unity: &Unity, guid: &str, model: &str) -> Option<Vec<MaterialRef>> {
+    let names = unity.model_materials.get(model)?;
+    let meta = unity.guids.get(guid).and_then(|p| std::fs::read_to_string(p.with_extension(format!("{}.meta", p.extension()?.to_string_lossy()))).ok());
+    let mut mapped: HashMap<String, String> = HashMap::new();
+    if let Some(meta) = meta.and_then(|t| yaml_rust2::YamlLoader::load_from_str(&t).ok()) {
+        for doc in &meta {
+            for entry in doc["ModelImporter"]["externalObjects"].as_vec().into_iter().flatten() {
+                let (Some(name), Some(target)) = (entry["first"]["name"].as_str(), entry["second"]["guid"].as_str()) else { continue };
+                if let Some(("material", m)) = unity.named(target) {
+                    mapped.insert(name.to_string(), m.to_string());
+                }
+            }
+        }
+    }
+    let by_name: std::collections::HashSet<&str> = unity.of_kind("material").iter().filter_map(|(g, _)| unity.names.get(*g).map(String::as_str)).collect();
+    let refs: Vec<Option<MaterialRef>> = names
+        .iter()
+        .map(|n| {
+            // Blender's copies of one material are `Name.001`.
+            let bare = n.split('.').next().unwrap_or(n);
+            mapped
+                .get(n)
+                .or_else(|| mapped.get(bare))
+                .cloned()
+                .or_else(|| by_name.contains(bare).then(|| bare.to_string()))
+                .map(|m| MaterialRef::Named(AssetLink::named(m)))
+        })
+        .collect();
+    if refs.iter().all(Option::is_none) {
+        return None;
+    }
+    Some(refs.into_iter().map(Option::unwrap_or_default).collect())
+}
+
 /// Timeline's ActivationTrack, by its script (`fileID` in Unity's
 /// Timeline package).
 const ACTIVATION_TRACK: i64 = 46519060;
@@ -2914,6 +2961,7 @@ AnimationClip:
         Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),

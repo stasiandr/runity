@@ -113,6 +113,8 @@ pub struct Unity {
     /// prefabs that draw it on an object named as one of the model's
     /// pieces — and only where they all agree.
     pub mesh_pieces: HashMap<(String, i64), String>,
+    /// Each converted model's material names by run ([`model_materials`]).
+    pub model_materials: HashMap<String, Vec<String>>,
     /// A material's name → what its shader written again says its eight
     /// numbers are (`// scrap:params`): where a particle's custom data goes.
     pub declared_params: HashMap<String, Vec<String>>,
@@ -242,6 +244,7 @@ impl Unity {
             layers,
             pieces: HashMap::new(),
             mesh_pieces: HashMap::new(),
+            model_materials: HashMap::new(),
             declared_params: HashMap::new(),
             mesh_assets,
             local_meshes: HashMap::new(),
@@ -370,6 +373,7 @@ pub fn import_unity(unity: &Path, project: &scrap::Project, options: &Options) -
         }
     }
     unity.pieces = pieces(&project.assets().join("models"));
+    unity.model_materials = model_materials(&project.assets().join("models"));
     unity.mesh_pieces = mesh_pieces(&unity);
     keep_origins(&project.assets().join("models"))?;
     clip_cuts(&unity, &project.assets().join("models"))?;
@@ -798,6 +802,37 @@ fn clip_cuts(unity: &Unity, dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Each converted model's material names, a run (primitive) each, in the
+/// order the glTF loader walks them into submeshes: from the scene's
+/// nodes, the last first, each node's children after it.
+fn model_materials(dir: &Path) -> HashMap<String, Vec<String>> {
+    let mut out = HashMap::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        if path.extension().is_none_or(|e| e != "glb") || stem.contains('@') {
+            continue;
+        }
+        let Ok(gltf) = gltf::Gltf::open(&path) else { continue };
+        let document = &gltf.document;
+        let mut stack: Vec<gltf::Node> = document
+            .default_scene()
+            .map(|s| s.nodes().collect())
+            .unwrap_or_else(|| document.nodes().collect());
+        let mut names = Vec::new();
+        while let Some(node) = stack.pop() {
+            if let Some(mesh) = node.mesh() {
+                for p in mesh.primitives() {
+                    names.push(p.material().name().unwrap_or_default().to_string());
+                }
+            }
+            stack.extend(node.children());
+        }
+        out.insert(stem, names);
+    }
+    out
 }
 
 /// The pieces converted models have, from the files: `<model>@<object>.glb`.

@@ -927,6 +927,7 @@ Material:
             layers: Default::default(),
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
             local_meshes: Default::default(),
@@ -1008,6 +1009,7 @@ Material:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
@@ -1051,6 +1053,7 @@ Material:
         let mut unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
@@ -1098,6 +1101,7 @@ Material:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
@@ -1129,6 +1133,7 @@ Material:
         let unity = Unity {
             pieces: Default::default(),
             mesh_pieces: Default::default(),
+            model_materials: Default::default(),
             layers: Default::default(),
             declared_params: Default::default(),
             mesh_assets: Default::default(),
