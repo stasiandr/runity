@@ -1575,6 +1575,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 // URP's lamps fall off as the square of the distance.
                 falloff: scrap::render::Falloff::InverseSquare,
                 temperature: temperature(b),
+                off: b.i64("m_Enabled") == Some(0),
             });
         }
         "Camera" => {

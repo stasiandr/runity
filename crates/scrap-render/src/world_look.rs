@@ -809,7 +809,7 @@ fn build_frame_seen(
     let lights = world
         .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&crate::world::Shown>, Option<&SceneId>)>()
         .iter()
-        .filter(|(entity, _, _, _, line)| on(*entity) && keep(line.map(|l| l.0)))
+        .filter(|(entity, light, _, _, line)| !light.0.off && on(*entity) && keep(line.map(|l| l.0)))
         .map(|(_, light, placed, shown, _)| {
             let placed = WorldTransform(crate::world::drawn_at(placed, shown));
             let l = light.0;
@@ -854,7 +854,7 @@ fn build_frame_seen(
     let flares = world
         .query::<(hecs::Entity, &LightSource, &WorldTransform, Option<&crate::world::Shown>, Option<&SceneId>)>()
         .iter()
-        .filter(|(entity, light, _, _, line)| light.0.flare > 0.0 && on(*entity) && keep(line.map(|l| l.0)))
+        .filter(|(entity, light, _, _, line)| !light.0.off && light.0.flare > 0.0 && on(*entity) && keep(line.map(|l| l.0)))
         .map(|(_, light, placed, shown, _)| {
             let placed = WorldTransform(crate::world::drawn_at(placed, shown));
             let l = light.0;

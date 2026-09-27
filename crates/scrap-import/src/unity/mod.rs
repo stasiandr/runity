@@ -933,7 +933,9 @@ fn models(unity: &Unity, project: &scrap::Project, options: &Options, report: &m
         // mirror — so the piece is those vertices turned half about up,
         // put through the matrix that undoes glTF's own Z-up to Y-up, and
         // in metres as Unity reads the file's units (its UnitScaleFactor,
-        // centimetres to the unit).
+        // centimetres to the unit). A mesh the file animates (a swish's
+        // own clip) lets go of its action while it is written: Blender
+        // would write it where the clip puts it, not in that frame.
         let pieces_dir = to.with_file_name("");
         // What Blender writes over: the model and its pieces.
         writable(&to);
@@ -972,11 +974,14 @@ fn models(unity: &Unity, project: &scrap::Project, options: &Options, report: &m
              \x20   arm = next((m.object for m in o.modifiers if m.type == 'ARMATURE' and m.object), None)\n\
              \x20   if arm: arm.select_set(True)\n\
              \x20   o.parent = None\n\
+             \x20   act = o.animation_data.action if o.animation_data else None\n\
+             \x20   if act: o.animation_data.action = None\n\
              \x20   o.matrix_world = frame\n\
              \x20   piece = re.sub(r'[^A-Za-z0-9_-]', '_', o.name)\n\
              \x20   bpy.ops.export_scene.gltf(filepath={:?} + '/' + {:?} + '@' + piece + '.glb', export_format='GLB', use_selection=True, export_animations=False, export_skins=bool(arm), **colors)\n\
              \x20   o.parent = parent\n\
              \x20   o.matrix_world = placed\n\
+             \x20   if act: o.animation_data.action = act\n\
              for x in scene.objects: x.select_set(False)\n\
              roots = [o for o in bpy.context.scene.objects if o.parent is None]\n\
              turn = bpy.data.objects.new('unity_turn', None)\n\

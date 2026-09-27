@@ -135,6 +135,15 @@ pub struct Light {
     /// Temperature ([`color_temperature`]). None is white light.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub temperature: Option<f32>,
+    /// Switched off: kept, not lit, for the game to switch on — Unity's
+    /// Light component disabled (a staff's glow that lights only as it
+    /// swings).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub off: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// The colour of a black body `kelvin` hot, linear, its brightest channel
