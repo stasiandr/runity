@@ -151,7 +151,11 @@ pub fn ambient(text: &str) -> Option<scrap::scene::Ambient> {
 /// The value of an override that is on, from a profile's component.
 fn value<'a>(component: &'a yaml_rust2::Yaml, key: &str) -> Option<&'a yaml_rust2::Yaml> {
     let field = &component[key];
-    (field.i64("m_OverrideState") == Some(1)).then(|| &field["m_Value"])
+    // URP's, and the Post-processing Stack's (v2) of the built-in pipeline.
+    if field.i64("m_OverrideState") == Some(1) {
+        return Some(&field["m_Value"]);
+    }
+    (field.i64("overrideState") == Some(1)).then(|| &field["value"])
 }
 
 fn number(component: &yaml_rust2::Yaml, key: &str) -> Option<f32> {
@@ -231,7 +235,9 @@ fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
 fn apply_profile(post: &mut PostProcess, text: &str, report: &mut Report) {
     for doc in yaml::documents(text) {
         let c = &doc.body;
-        if c.i64("active") == Some(0) {
+        // Switched off: URP's `active`, the Post-processing Stack's
+        // `enabled` override.
+        if c.i64("active") == Some(0) || value(c, "enabled").and_then(yaml::integer) == Some(0) {
             continue;
         }
         match c.str("m_Name").unwrap_or("") {
@@ -241,7 +247,32 @@ fn apply_profile(post: &mut PostProcess, text: &str, report: &mut Report) {
                 b.threshold = number(c, "threshold").unwrap_or(b.threshold);
                 b.scatter = number(c, "scatter").unwrap_or(b.scatter);
                 b.clamp = number(c, "clamp").unwrap_or(b.clamp);
-                b.tint = rgb(c, "tint").unwrap_or(b.tint);
+                b.tint = rgb(c, "tint").or_else(|| rgb(c, "color")).unwrap_or(b.tint);
+            }
+            // The Post-processing Stack's grading, in one: its tonemapper,
+            // exposure, white balance, colour and the trackballs.
+            "ColorGrading" => {
+                post.tonemapping = match value(c, "tonemapper").and_then(yaml::integer) {
+                    Some(1) => scrap::post::Tonemapping::Neutral,
+                    Some(2) => scrap::post::Tonemapping::Aces,
+                    Some(_) => scrap::post::Tonemapping::None,
+                    None => post.tonemapping,
+                };
+                post.exposure = number(c, "postExposure").unwrap_or(post.exposure);
+                post.contrast = number(c, "contrast").unwrap_or(post.contrast);
+                post.saturation = number(c, "saturation").unwrap_or(post.saturation);
+                post.hue_shift = number(c, "hueShift").unwrap_or(post.hue_shift);
+                post.color_filter = rgb(c, "colorFilter").unwrap_or(post.color_filter);
+                post.temperature = number(c, "temperature").unwrap_or(post.temperature);
+                post.tint = number(c, "tint").unwrap_or(post.tint);
+                let neutral = [1.0, 1.0, 1.0, 0.0];
+                if ["lift", "gamma", "gain"].iter().any(|k| value(c, k).is_some()) {
+                    post.lift_gamma_gain = lift_gamma_gain(
+                        vec4(c, "lift").unwrap_or(neutral),
+                        vec4(c, "gamma").unwrap_or(neutral),
+                        vec4(c, "gain").unwrap_or(neutral),
+                    );
+                }
             }
             "Tonemapping" => {
                 post.tonemapping = match value(c, "mode").and_then(yaml::integer) {
@@ -359,6 +390,30 @@ pub fn post(unity: &Unity, text: &str, report: &mut Report) -> Option<PostProces
             .filter(|r| r.file_id != 0)?
             .guid?;
         read(&guid)
+    });
+    // Else a global Volume a placed prefab brings (Game Kit's camera
+    // rig), with the profile the scene gives it or its own.
+    let profile = profile.or_else(|| {
+        docs.iter().find_map(|d| {
+            d.body["m_Modification"]["m_Modifications"]
+                .as_vec()?
+                .iter()
+                .find(|m| m.str("propertyPath") == Some("sharedProfile"))
+                .and_then(|m| m.reference("objectReference"))
+                .and_then(|r| r.guid)
+        })
+    });
+    let profile = profile.or_else(|| {
+        docs.iter().filter_map(|d| d.body.reference("m_SourcePrefab")?.guid).find_map(|g| {
+            let text = read(&g)?;
+            yaml::documents(&text).into_iter().find_map(|d| {
+                let b = &d.body;
+                (d.kind == "MonoBehaviour" && b.i64("isGlobal").or_else(|| b.i64("m_IsGlobal")) == Some(1))
+                    .then(|| b.reference("sharedProfile"))
+                    .flatten()
+                    .and_then(|r| r.guid)
+            })
+        })
     });
     let scene = profile.as_ref().and_then(read);
     if pipeline.is_none() && scene.is_none() {
