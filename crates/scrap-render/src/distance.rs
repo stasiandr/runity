@@ -19,17 +19,20 @@ pub struct DistanceField {
     pub size: [u32; 3],
     pub range: f32,
     pub cells: std::sync::Arc<Vec<u8>>,
+    /// Darken the light from all round by how much of the sky each point
+    /// sees past it (`field_sky`): what baked or realtime GI does indoors.
+    pub sky: bool,
 }
 
 /// The largest field the render takes along each way.
 pub const MOST: u32 = 256;
 
-/// The field as the shader reads it: its box, 1 when there is one, and
-/// its range.
+/// The field as the shader reads it: its box, 1 when there is one (2 when
+/// it shades the sky too), and its range.
 pub(crate) fn uniform(field: Option<&DistanceField>) -> [[f32; 4]; 2] {
     match field {
         Some(f) => [
-            [f.low.x, f.low.y, f.low.z, 1.0],
+            [f.low.x, f.low.y, f.low.z, if f.sky { 2.0 } else { 1.0 }],
             [f.high.x, f.high.y, f.high.z, f.range],
         ],
         None => [[0.0; 4]; 2],

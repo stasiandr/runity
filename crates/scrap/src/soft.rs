@@ -173,6 +173,7 @@ pub fn bake_fields(world: &mut World) {
                 size: [x as u32, y as u32, z as u32],
                 range: FIELD_RANGE,
                 cells: std::sync::Arc::new(sdf.bytes(FIELD_RANGE)),
+                sky: field.sky,
             };
             let _ = world.insert_one(entity, crate::world_look::DistanceFieldLook(look));
         }

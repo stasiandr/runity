@@ -61,6 +61,29 @@ impl Sdf {
         }
     }
 
+    /// A shape in, only over the points within `band` of its box (`low`
+    /// to `high`): past that its distance is no nearer than the band's
+    /// edge, and a level of small shapes is baked a shape's box at a
+    /// time, not the whole grid each.
+    pub fn add_within(&mut self, low: Vec3, high: Vec3, band: f32, distance: impl Fn(Vec3) -> f32) {
+        let from = ((low - Vec3::splat(band) - self.low) / self.cell).floor().max(Vec3::ZERO);
+        let to = ((high + Vec3::splat(band) - self.low) / self.cell).ceil();
+        if to.x < 0.0 || to.y < 0.0 || to.z < 0.0 {
+            return;
+        }
+        for z in from.z as usize..=(to.z as usize).min(self.size[2] - 1) {
+            for y in from.y as usize..=(to.y as usize).min(self.size[1] - 1) {
+                for x in from.x as usize..=(to.x as usize).min(self.size[0] - 1) {
+                    let i = self.index(x, y, z);
+                    let d = distance(self.point(x, y, z));
+                    if d < self.values[i] {
+                        self.values[i] = d;
+                    }
+                }
+            }
+        }
+    }
+
     /// A mesh's triangles in, within `band` metres of them: each point near
     /// a triangle the distance to the nearest, negative on the side its
     /// normal does not face.

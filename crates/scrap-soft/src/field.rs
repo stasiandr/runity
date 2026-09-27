@@ -27,11 +27,15 @@ pub struct DistanceField {
     pub cell: f32,
     /// Whether the render draws occlusion and soft shadows by it.
     pub draw: bool,
+    /// Whether the render also darkens the light from all round by how
+    /// much of the sky a point sees (a level's interiors, as GI would).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub sky: bool,
 }
 
 impl Default for DistanceField {
     fn default() -> Self {
-        Self { size: Vec3::new(16.0, 6.0, 16.0), cell: 0.1, draw: true }
+        Self { size: Vec3::new(16.0, 6.0, 16.0), cell: 0.1, draw: true, sky: false }
     }
 }
 
@@ -91,19 +95,25 @@ pub fn bake(field: &DistanceField, placed: Mat4, obstacles: &[Obstacle], meshes:
     // No finer than the texture takes.
     let cell = field.cell.max(half.max_element() * 2.0 / (MOST - 1) as f32);
     let (low, high) = (centre - half, centre + half);
-    let mut sdf = Sdf::new(low, high, cell, BAND);
+    // Two cells at least either side of a surface: a coarse field (a whole
+    // level's) still holds every wall.
+    let band = BAND.max(cell * 2.0);
+    let mut sdf = Sdf::new(low, high, cell, band);
     for o in obstacles {
-        if matches!(o, Obstacle::Field(_) | Obstacle::Sheet(_)) || !o.near(low - Vec3::splat(BAND), high + Vec3::splat(BAND)) {
+        if matches!(o, Obstacle::Field(_) | Obstacle::Sheet(_)) || !o.near(low - Vec3::splat(band), high + Vec3::splat(band)) {
             continue;
         }
-        sdf.add(|p| o.distance(p));
+        match o.bounds() {
+            Some((a, b)) => sdf.add_within(a, b, band, |p| o.distance(p)),
+            None => sdf.add(|p| o.distance(p)),
+        }
     }
     for m in meshes {
         let world: Vec<Vec3> = m.vertices.iter().map(|v| m.placed.transform_point3(*v)).collect();
         // A mirrored mesh's triangles face in: turned back.
         let flip = m.placed.determinant() < 0.0;
         let triangles: Vec<[u32; 3]> = m.triangles.iter().map(|t| if flip { [t[0], t[2], t[1]] } else { *t }).collect();
-        sdf.add_triangles(&world, &triangles, BAND.min(cell * 6.0));
+        sdf.add_triangles(&world, &triangles, band.min(cell * 6.0));
     }
     sdf
 }
@@ -145,7 +155,7 @@ mod tests {
         let ball = scrap_geometry::builtin::sphere(0.5, 24, 12);
         let vertices: Vec<Vec3> = ball.vertices.iter().map(|v| Vec3::from_array(v.position)).collect();
         let triangles: Vec<[u32; 3]> = ball.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
-        let field = DistanceField { size: Vec3::new(4.0, 2.0, 2.0), cell: 0.05, draw: false };
+        let field = DistanceField { size: Vec3::new(4.0, 2.0, 2.0), cell: 0.05, draw: false, sky: false };
         let meshes = [WorldMesh { vertices: &vertices, triangles: &triangles, placed: Mat4::from_translation(Vec3::new(1.0, 0.5, 0.0)) }];
         let sdf = Arc::new(bake(&field, Mat4::from_translation(Vec3::new(0.0, 0.5, 0.0)), &[crate_box, Obstacle::ground(0.0)], &meshes));
         let solid = Obstacle::Field(sdf.clone());

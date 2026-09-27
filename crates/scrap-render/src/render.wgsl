@@ -363,6 +363,42 @@ fn field_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>) -> f32 {
     return smoothstep(0.0, 1.0, seen);
 }
 
+/// How much of the sky a point sees past what the field holds: marched
+/// out toward the sky along two ways — up past the surface's normal, and
+/// straight up — each a wide soft cone, the nearest a ray passes to
+/// anything over how far it has gone. Under a roof or deep in a cave, it
+/// is little: the light from all round is what a baked or realtime GI
+/// (Unity's Enlighten) would have darkened there.
+fn field_sky(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    if LEAN { return 1.0; }
+    let up = vec3<f32>(0.0, 1.0, 0.0);
+    let ways = array<vec3<f32>, 2>(normalize(n + up * 1.5), normalize(n * 0.25 + up));
+    var sum = 0.0;
+    for (var w = 0; w < 2; w++) {
+        let dir = ways[w];
+        var seen = 1.0;
+        var t = 0.4;
+        let start = p + n * 0.3;
+        for (var i = 0; i < 24; i++) {
+            let d = scene_distance(start + dir * t);
+            if d > 1e3 {
+                break;
+            }
+            seen = min(seen, 3.0 * d / t);
+            if seen < 0.02 {
+                seen = 0.0;
+                break;
+            }
+            t += clamp(d, 0.3, 2.0);
+            if t > 40.0 {
+                break;
+            }
+        }
+        sum += seen;
+    }
+    return smoothstep(0.0, 1.0, sum * 0.5);
+}
+
 /// Whether any of the dust wall can lie between the eye and a point: the
 /// point is past where the ray enters the wall's side of its front (its
 /// bulges included).
@@ -3210,6 +3246,11 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     }
     if field_on {
         ao *= field_occlusion(in.world_position, geometric);
+        // The sky it sees, for a field that asks (`distance[0].w` 2):
+        // what GI would have darkened.
+        if frame.distance[0].w > 1.5 {
+            ao *= mix(0.15, 1.0, field_sky(in.world_position, geometric));
+        }
     }
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)
