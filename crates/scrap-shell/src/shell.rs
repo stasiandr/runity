@@ -322,6 +322,7 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         proxy: Some(event_loop.create_proxy()),
         time,
         input: Input::new(),
+        script: scrap_core::input::InputScript::from_env().map(|s| (s, None)),
         render_thread,
         stepped_ahead: false,
         last_steps: Duration::ZERO,
@@ -444,6 +445,9 @@ struct Shell<G: Game> {
     proxy: Option<EventLoopProxy<Running>>,
     time: Time,
     input: Input,
+    /// Input played from a file (`SCRAP_INPUT_SCRIPT`), and when it began:
+    /// the first frame drawn, the game loaded.
+    script: Option<(scrap_core::input::InputScript, Option<Instant>)>,
     /// Draw on a render thread when the steps are worth it (never in the
     /// browser).
     render_thread: bool,
@@ -639,6 +643,12 @@ impl<G: Game> Shell<G> {
         }
 
         let mut quit = false;
+        // A script's input due by now, as if the keys were pressed.
+        if let Some((script, began)) = self.script.as_mut() {
+            let seconds = began.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
+            script.play(seconds, &mut self.input);
+            quit |= script.over(seconds);
+        }
         // The pointer the game asked for, captured or free, applied once the
         // frame is done.
         let mut wanted: Option<bool> = None;

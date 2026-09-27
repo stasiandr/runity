@@ -580,3 +580,90 @@ mod tests {
         assert_eq!(input.text(), "ф", "what was typed is not");
     }
 }
+
+/// Input played from a file instead of the hands: `SCRAP_INPUT_SCRIPT`
+/// names a RON file of `(seconds, event)` pairs, from when the game
+/// started — `[(2.0, KeyDown(W)), (4.0, KeyUp(W)), (5.0, MouseDown(Left))]`
+/// — and, with `SCRAP_INPUT_QUIT`, the game ends that many seconds after
+/// the last. The shell hands them to the same [`Input`] the keyboard
+/// does, so what a script plays is played through the real window, the
+/// real frame and the real loop: what a test harness beside the game
+/// cannot vouch for.
+#[derive(Debug, Clone, Default)]
+pub struct InputScript {
+    events: Vec<(f32, InputEvent)>,
+    next: usize,
+    quit_after: Option<f32>,
+}
+
+/// The variable naming the script.
+pub const SCRIPT_VAR: &str = "SCRAP_INPUT_SCRIPT";
+
+impl InputScript {
+    /// The script `SCRAP_INPUT_SCRIPT` names, if any; what does not read is
+    /// said and ignored.
+    pub fn from_env() -> Option<Self> {
+        let path = std::env::var_os(SCRIPT_VAR)?;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{}: {e}", std::path::Path::new(&path).display());
+                return None;
+            }
+        };
+        match Self::parse(&text) {
+            Ok(mut s) => {
+                s.quit_after = std::env::var("SCRAP_INPUT_QUIT").ok().and_then(|q| q.parse().ok());
+                Some(s)
+            }
+            Err(e) => {
+                eprintln!("{}: {e}", std::path::Path::new(&path).display());
+                None
+            }
+        }
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut events: Vec<(f32, InputEvent)> = ron::from_str(text).map_err(|e| e.to_string())?;
+        events.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Ok(Self { events, next: 0, quit_after: None })
+    }
+
+    /// The events due by `seconds` since the start, into `input`.
+    pub fn play(&mut self, seconds: f32, input: &mut Input) {
+        while let Some((at, event)) = self.events.get(self.next) {
+            if *at > seconds {
+                break;
+            }
+            input.handle(event);
+            self.next += 1;
+        }
+    }
+
+    /// Whether the script says the game is over by `seconds`.
+    pub fn over(&self, seconds: f32) -> bool {
+        let last = self.events.last().map_or(0.0, |e| e.0);
+        self.quit_after.is_some_and(|q| seconds >= last + q)
+    }
+}
+
+#[cfg(test)]
+mod script_tests {
+    use super::*;
+
+    #[test]
+    fn a_script_plays_its_events_when_they_are_due() {
+        let mut s = InputScript::parse("[(1.0, KeyDown(W)), (0.5, MouseDown(Left)), (2.0, KeyUp(W))]").unwrap();
+        let mut input = Input::new();
+        s.play(0.6, &mut input);
+        assert!(input.mouse_held(MouseButton::Left) && !input.held(Key::W));
+        input.begin_frame();
+        s.play(1.5, &mut input);
+        assert!(input.pressed(Key::W));
+        input.begin_frame();
+        s.play(2.5, &mut input);
+        assert!(!input.held(Key::W));
+        s.quit_after = Some(1.0);
+        assert!(!s.over(2.5) && s.over(3.0));
+    }
+}
