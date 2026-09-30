@@ -742,6 +742,7 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
         .query::<(hecs::Entity, &SkinOf)>()
         .without::<&BoundSkin>()
         .without::<&Animator>()
+        .without::<&SharesPose>()
         .iter()
         .map(|(e, s)| (e, s.0.clone()))
         .collect();
@@ -760,12 +761,16 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
             gone.push(entity);
             continue;
         };
+        // Under a line with an animator, whose skeleton poses it when it
+        // has no bones of the scene to follow ([`SharesPose`]).
+        let animated_above = animated_ancestor(world, entity).is_some();
         let root = world.get::<&Parent>(entity).map(|p| p.0).unwrap_or(entity);
         // The things under the root, by name; the nearest of a name wins.
+        // Not the model itself: a line named `head` is no head bone.
         let mut named: std::collections::HashMap<String, hecs::Entity> = Default::default();
         let mut queue = std::collections::VecDeque::from([root]);
         while let Some(e) = queue.pop_front() {
-            if let Ok(name) = world.get::<&LineName>(e) {
+            if let (Ok(name), true) = (world.get::<&LineName>(e), e != entity) {
                 named.entry(name.0.clone()).or_insert(e);
             }
             queue.extend(children.get(&e).into_iter().flatten().copied());
@@ -780,7 +785,9 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
         // are): undone from where each bone stands in the model's pose.
         let root_at = world_of(world, entity).unwrap_or(Mat4::IDENTITY);
         if bones.iter().all(Option::is_none) {
-            gone.push(entity);
+            if !animated_above {
+                gone.push(entity);
+            }
             continue;
         }
         let at: Vec<Option<Mat4>> = bones.iter().map(|b| b.and_then(|b| world_of(world, b))).collect();
@@ -795,6 +802,210 @@ pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option
         let _ = world.insert_one(entity, skin);
     }
     pose_bound_skins(world);
+}
+
+/// The nearest line above `entity` that has an animator, or one waiting
+/// to start (a line's `animator` not attached yet).
+fn animated_ancestor(world: &World, entity: hecs::Entity) -> Option<hecs::Entity> {
+    use crate::world::Parent;
+    let mut at = world.get::<&Parent>(entity).ok().map(|p| p.0);
+    // A hierarchy that loops is a broken file; stop rather than spin.
+    for _ in 0..256 {
+        let e = at?;
+        if world.get::<&Animator>(e).is_ok() || world.get::<&crate::motion::Animates>(e).is_ok() {
+            return Some(e);
+        }
+        at = world.get::<&Parent>(e).ok().map(|p| p.0);
+    }
+    None
+}
+
+/// A skinned model posed by the animator of a line above it, joint by
+/// joint of the same name: the body, the hair and the outfit of one
+/// villager under one animator, as Unity's SkinnedMeshRenderers share one
+/// rig's bones. Each joint moves as the animator's joint of its name does
+/// (a joint that has none, as its nearest ancestor that has one), bound
+/// where its own skin binds it — so an outfit made on a slimmer rig fits
+/// the body that carries the animator.
+#[derive(Debug, Clone)]
+pub struct SharesPose {
+    /// The line whose animator poses it.
+    pub from: hecs::Entity,
+    /// Per joint of its skin: the animator's joint, and where that joint
+    /// stands at rest in the animator's model undone into this joint's
+    /// bind (`B_from · IB_own`). `None` a joint that stays as bound.
+    pub joints: Vec<Option<(usize, Mat4)>>,
+    /// From the animator's model's frame to this one's, found where their
+    /// first shared joint is bound.
+    pub frame: Mat4,
+    /// A line's `only_joints`: its first joint, where it is bound, and
+    /// every joint not under those named — folded into that one.
+    pub fold: Option<(usize, Mat4, Vec<bool>)>,
+}
+
+/// `only_joints: ["neck_01"]` on a skinned model posed by an animator above
+/// it ([`SharesPose`]): only what those joints and the joints under them
+/// move is drawn, the rest of its skin folded into the first of them — the
+/// head of a whole body under an outfit (Quaternius' base characters come
+/// with no head of their own, and their body shows through the clothes).
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct OnlyJoints(pub Vec<String>);
+
+impl OnlyJoints {
+    /// Its first joint in `skeleton` and which joints it hides; `None`
+    /// when it names none of them.
+    pub fn fold(&self, skeleton: &crate::animation::Skeleton) -> Option<(usize, Mat4, Vec<bool>)> {
+        use crate::animation::bare_joint_name;
+        let named = |j: &crate::animation::Joint| self.0.iter().any(|n| bare_joint_name(n) == bare_joint_name(&j.name));
+        let first = self.0.iter().find_map(|n| {
+            skeleton.joints.iter().position(|j| bare_joint_name(&j.name) == bare_joint_name(n))
+        })?;
+        let mut shown = vec![false; skeleton.joints.len()];
+        for (j, joint) in skeleton.joints.iter().enumerate() {
+            shown[j] = named(joint) || joint.parent.is_some_and(|p| shown[usize::from(p)]);
+        }
+        let bind = Mat4::from_cols_array_2d(&skeleton.joints[first].inverse_bind).inverse();
+        Some((first, bind, shown.into_iter().map(|s| !s).collect()))
+    }
+
+    /// The names it has that no joint of `skeleton` has, with the nearest.
+    pub fn problems(&self, skeleton: &crate::animation::Skeleton) -> Vec<String> {
+        use crate::animation::bare_joint_name;
+        let joints: Vec<&str> = skeleton.joints.iter().map(|j| j.name.as_str()).collect();
+        self.0
+            .iter()
+            .filter(|n| !joints.iter().any(|j| bare_joint_name(j) == bare_joint_name(n)))
+            .map(|n| {
+                let near = crate::spelling::closest(n, joints.iter().copied())
+                    .map(|j| format!(" — did you mean `{j}`?"))
+                    .unwrap_or_default();
+                format!("only_joints: no joint `{n}` in the skeleton{near}")
+            })
+            .collect()
+    }
+}
+
+impl SharesPose {
+    /// Bind `own`'s joints to `from`'s by name, less a rig's prefix;
+    /// `None` when none of them is there.
+    pub fn bind(from: hecs::Entity, animator: &crate::animation::Skeleton, own: &crate::animation::Skeleton) -> Option<Self> {
+        use crate::animation::bare_joint_name;
+        let by_name: std::collections::HashMap<&str, usize> = animator
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(i, j)| (bare_joint_name(&j.name), i))
+            .collect();
+        let bind = |s: &crate::animation::Skeleton, j: usize| Mat4::from_cols_array_2d(&s.joints[j].inverse_bind).inverse();
+        // Each joint: the animator's joint it moves with, and its own joint
+        // bound to that one — itself, or for a joint the animator lacks its
+        // nearest ancestor the animator has, which it rides unbent.
+        let mut matched: Vec<Option<(usize, usize)>> = own
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(j, joint)| by_name.get(bare_joint_name(&joint.name)).map(|&m| (m, j)))
+            .collect();
+        let first = matched.iter().find_map(|m| *m)?;
+        let frame = bind(own, first.1) * bind(animator, first.0).inverse();
+        // Parents come first, so theirs is settled already.
+        for j in 0..matched.len() {
+            if matched[j].is_none() {
+                matched[j] = own.joints[j].parent.and_then(|p| matched[usize::from(p)]);
+            }
+        }
+        let joints = matched
+            .iter()
+            .map(|m| {
+                m.map(|(m, k)| {
+                    let own_inverse = Mat4::from_cols_array_2d(&own.joints[k].inverse_bind);
+                    (m, bind(animator, m) * own_inverse)
+                })
+            })
+            .collect();
+        Some(Self { from, joints, frame, fold: None })
+    }
+
+    /// Its skinning matrices from the animator's (`posed`).
+    pub fn pose(&self, posed: &[Mat4]) -> Vec<Mat4> {
+        let mut out: Vec<Mat4> = self
+            .joints
+            .iter()
+            .map(|joint| match joint {
+                Some((m, rest)) => posed.get(*m).map_or(Mat4::IDENTITY, |s| self.frame * *s * *rest),
+                None => Mat4::IDENTITY,
+            })
+            .collect();
+        // What it hides, drawn as nothing: folded into where its first
+        // shown joint stands now, a thousandth of its size — not none, or
+        // its normals would have no direction and shade as NaN, which the
+        // bloom spreads over the screen.
+        if let Some((first, bind, hidden)) = &self.fold {
+            let at = (out[*first] * *bind).w_axis.truncate();
+            let folded = Mat4::from_translation(at) * Mat4::from_scale(glam::Vec3::splat(1e-3)) * Mat4::from_translation(-bind.w_axis.truncate());
+            for (m, hide) in out.iter_mut().zip(hidden) {
+                if *hide {
+                    *m = folded;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Give every skinned model under a line with an animator, that follows
+/// no bones of the scene, the animator's pose ([`SharesPose`]). One whose
+/// animator has not started yet waits for it.
+pub fn bind_shared_poses(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>) -> Vec<String> {
+    let waiting: Vec<(hecs::Entity, crate::AssetLink)> = world
+        .query::<(hecs::Entity, &SkinOf)>()
+        .without::<&BoundSkin>()
+        .without::<&Animator>()
+        .without::<&SharesPose>()
+        .iter()
+        .map(|(e, s)| (e, s.0.clone()))
+        .collect();
+    let mut bound = Vec::new();
+    let mut problems = Vec::new();
+    for (entity, link) in waiting {
+        let Some(from) = animated_ancestor(world, entity) else { continue };
+        let Ok(animator) = world.get::<&Animator>(from) else { continue };
+        let Some(skin) = skins(&link) else { continue };
+        if let Some(mut shared) = SharesPose::bind(from, &animator.skeleton, &skin.skeleton) {
+            if let Ok(only) = world.get::<&OnlyJoints>(entity) {
+                for problem in only.problems(&skin.skeleton) {
+                    let problem = format!("`{}`: {problem}", link.name);
+                    if !problems.contains(&problem) {
+                        problems.push(problem);
+                    }
+                }
+                shared.fold = only.fold(&skin.skeleton);
+            }
+            bound.push((entity, shared));
+        }
+    }
+    for (entity, shared) in bound {
+        let _ = world.insert_one(entity, shared);
+    }
+    problems
+}
+
+/// Pose every [`SharesPose`] as its animator's pose stands now.
+pub fn pose_shared(world: &mut World) {
+    let mut posed: Vec<(hecs::Entity, Vec<Mat4>)> = Vec::new();
+    for (entity, shared) in world.query::<(hecs::Entity, &SharesPose)>().iter() {
+        if let Ok(from) = world.get::<&Posed>(shared.from) {
+            posed.push((entity, shared.pose(&from.0)));
+        }
+    }
+    for (entity, matrices) in posed {
+        if let Ok(was) = world.query_one_mut::<&mut Posed>(entity) {
+            was.0 = matrices;
+        } else {
+            let _ = world.insert_one(entity, Posed(matrices));
+        }
+    }
 }
 
 /// Where each bone stood when its model was made, from where the bones
@@ -945,6 +1156,7 @@ pub fn advance_animations_on(world: &mut World, dt: f32, ground: crate::ik::Grou
             let _ = world.insert_one(entity, Posed(matrices));
         }
     }
+    pose_shared(world);
     drive_bone_rigs(world);
     pose_bound_skins(world);
     hold_on_bones(world);

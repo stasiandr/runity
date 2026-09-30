@@ -518,6 +518,17 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         if let Some(id) = scrap::asset::sidecar_id(scrap::asset::sidecar_of(&source)) {
             ids.insert(id);
         }
+        // The materials an import builds — a scene's, a character's runs'
+        // — by the name it gives them, `<file>/<material>`.
+        let sidecar = scrap::asset::sidecar_of(&source);
+        if let (Ok(settings), Some(stem)) = (scrap_import::ImportSettings::load(&sidecar), source.file_stem()) {
+            for key in settings.parts.keys() {
+                if let Some(material) = key.strip_prefix("material:") {
+                    let name = format!("{}/{material}", stem.to_string_lossy());
+                    materials.entry(name).or_default().push(relative(project, &source));
+                }
+            }
+        }
     }
     let graphs: Vec<PathBuf> = project.files(scrap::layout::Kind::Animator);
     let animators = graphs.iter().map(scrap::layout::name_of).collect();
