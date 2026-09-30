@@ -93,7 +93,7 @@ impl Shot {
             .or_else(|| project.as_ref().map(|p| p.library()).filter(|dir| dir.is_dir()));
         let library = match &library_dir {
             Some(dir) => {
-                let (library, skipped) = Library::open(dir)?;
+                let (library, skipped) = Library::open_lazy(dir)?;
                 for (path, e) in &skipped {
                     problems.push(format!("skipped {}: {e}", path.display()));
                 }

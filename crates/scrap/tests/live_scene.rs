@@ -558,3 +558,41 @@ fn played_from_here_the_line_marked_player_start_stands_where_the_editor_said() 
     assert!(at("a1").distance(start.position) < 1e-4, "{}", at("a1"));
     assert!(at("b2").distance(scrap::glam::Vec3::new(3.0, 0.0, 0.0)) < 1e-4);
 }
+
+/// A game's library holds every level's assets — tens of gigabytes for a
+/// kit of textured models — and a scene uses a few: opening it reads the
+/// headers, and a body only when the scene asks for it. What is re-imported
+/// while nobody has read it stays unread, and is the new one when read.
+#[test]
+fn opening_a_scene_reads_only_the_assets_it_uses() {
+    let project = project("lazy");
+    rock(&project, 1.0);
+    let plain = project.scenes().join("plain.scene.ron");
+    write(&plain, r#"(entities: [(id: "c1", name: "crate", model: "builtin:cube")])"#);
+
+    let (mut live, problems) = LiveScene::open(&plain).unwrap();
+    assert!(problems.is_empty(), "{problems:?}");
+    let mut world = hecs::World::new();
+    live.spawn_headless(&mut world);
+    let library = live.library().expect("the project's library");
+    assert_eq!(library.len(), 1, "the rock is known");
+    assert_eq!(library.resident_bytes(), 0, "and not read");
+
+    let (mut live, _) = LiveScene::open(project.scenes().join("main.scene.ron")).unwrap();
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping the rest: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, 8, 8);
+    let mut renderer = Renderer::new(&gpu, &target);
+    rock(&project, 3.0);
+    let done = live.reload(&mut world, &gpu, &mut renderer);
+    assert_eq!(done.assets.len(), 1, "{done:?}");
+    assert_eq!(live.library().unwrap().resident_bytes(), 0, "a re-import unread stays unread");
+    let mut world = hecs::World::new();
+    live.spawn(&mut world, &gpu, &mut renderer);
+    assert!(world.get::<&Model>(entity(&world, "b2")).is_ok(), "the rock is drawn");
+    let library = live.library().unwrap();
+    assert!(library.resident_bytes() > 0, "read now it is used");
+    assert_eq!(library.mesh_by_name("rock").unwrap().bounds.max[0].to_native(), 1.5, "the new one");
+}
