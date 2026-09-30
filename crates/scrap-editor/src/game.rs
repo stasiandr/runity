@@ -63,10 +63,10 @@ pub(crate) fn write_live(scene: &scrap::Scene, file: &Path) -> EditResult<()> {
 
 /// Which document the game shows, where it reads it, and what it was last
 /// given.
-struct Mirror {
-    document: PathBuf,
-    file: PathBuf,
-    given: scrap::Scene,
+pub(crate) struct Mirror {
+    pub(crate) document: PathBuf,
+    pub(crate) file: PathBuf,
+    pub(crate) given: scrap::Scene,
 }
 
 /// The most windows that play together from the editor, as in Unity.
@@ -84,7 +84,10 @@ pub const FAST_GAME_LEVEL: &str = "1";
 pub(crate) struct Running {
     child: Child,
     lines: Receiver<String>,
-    mirror: Option<Mirror>,
+    pub(crate) mirror: Option<Mirror>,
+    /// Its own mute file, when it was started ahead of Play
+    /// ([`crate::warm`]): kept saying what the editor's Mute Game does.
+    pub(crate) mute: Option<PathBuf>,
     /// Where the game says what its world is like.
     state: Option<PathBuf>,
     /// The entry being put together: a message whose details — a stack
@@ -121,13 +124,13 @@ const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Players who start once the host is: `cargo run` on the build the host
 /// ran, each with what makes it that player.
-struct Waiting {
+pub(crate) struct Waiting {
     root: PathBuf,
     players: Vec<(u32, Vec<(OsString, OsString)>)>,
 }
 
 impl Running {
-    fn start(command: &mut Command) -> EditResult<Self> {
+    pub(crate) fn start(command: &mut Command) -> EditResult<Self> {
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -150,6 +153,7 @@ impl Running {
             child,
             lines,
             mirror: None,
+            mute: None,
             state,
             pending: None,
             label: None,
@@ -163,6 +167,11 @@ impl Running {
                 checked: std::time::Instant::now(),
             },
         })
+    }
+
+    /// Whether it has ended.
+    pub(crate) fn has_ended(&mut self) -> bool {
+        self.child.try_wait().ok().flatten().is_some()
     }
 
     /// What it printed since last asked, as whole entries, and how it
@@ -341,18 +350,56 @@ impl Session {
     /// Here, [`Session::start_game_from_here`]): `SCRAP_START`, which every
     /// player's game is given, as it is given the scene.
     pub fn start_game_at(&mut self, start: Option<scrap::player::Start>) -> EditResult<()> {
-        let mut command = self.game_command_at(start)?;
+        // From the scene's own start: the game started ahead, if it is
+        // still the game Play would start.
+        if start.is_none() && self.play_warm()? {
+            return Ok(());
+        }
+        let (command, embed, waiting) = self.play_command(start, false)?;
+        self.run_in_console(command)?;
+        if let Some(host) = self.game.as_mut() {
+            host.embed = Some(embed);
+        }
+        self.host_waits(waiting);
+        Ok(())
+    }
+
+    /// The host, when several play, told who is to join it once it is up
+    /// — and the person told so.
+    pub(crate) fn host_waits(&mut self, waiting: Option<(Waiting, String)>) {
+        let Some((waiting, address)) = waiting else {
+            return;
+        };
+        let count = waiting.players.len() + 1;
+        if let Some(host) = self.game.as_mut() {
+            host.label = Some("player 1".into());
+            host.waiting = Some(waiting);
+        }
+        self.say(
+            Level::Info,
+            format!("{count} players: player 1 hosts on {address}, the others join once it is up"),
+        );
+    }
+
+    /// What Play starts: the host's command, drawing in the Game view
+    /// through the connection returned, and — when several play — the
+    /// others who join it once it is up, with the address it hosts on.
+    /// `ahead`: for the game started before Play is pressed
+    /// ([`crate::warm`]).
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn play_command(
+        &mut self,
+        start: Option<scrap::player::Start>,
+        ahead: bool,
+    ) -> EditResult<(Command, crate::embedded::Embedded, Option<(Waiting, String)>)> {
+        let mut command = self.game_command_with(start, ahead)?;
         // The host plays in the Game view; the others, when several play,
         // each in a window of its own.
         let (embed, address) = crate::embedded::Embedded::listen()?;
         command.env(scrap::embed::EMBED_VAR, address);
         let count = self.players();
         if count == 1 {
-            self.run_in_console(command)?;
-            if let Some(host) = self.game.as_mut() {
-                host.embed = Some(embed);
-            }
-            return Ok(());
+            return Ok((command, embed, None));
         }
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let root = project.root().to_path_buf();
@@ -373,7 +420,7 @@ impl Session {
         // What every player shares with the host: the scene, the file it
         // watches, where the player starts, whether it is heard. What is
         // each one's own: its window, its state, its folder.
-        let shared: Vec<(OsString, OsString)> = command
+        let mut shared: Vec<(OsString, OsString)> = command
             .get_envs()
             .filter(|(k, _)| {
                 *k == "SCRAP_SCENE"
@@ -384,6 +431,13 @@ impl Session {
             })
             .filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string())))
             .collect();
+        // A host started ahead is silent until Play; the others start at
+        // Play, heard as the editor says.
+        if ahead {
+            if let Some(mute) = self.mute_file() {
+                shared.push((scrap::sound::MUTE_VAR.into(), mute.into()));
+            }
+        }
         let state = command
             .get_envs()
             .find(|(k, _)| *k == scrap::live::STATE_VAR)
@@ -420,17 +474,7 @@ impl Session {
                 (number, envs)
             })
             .collect();
-        self.run_in_console(command)?;
-        if let Some(host) = self.game.as_mut() {
-            host.embed = Some(embed);
-            host.label = Some("player 1".into());
-            host.waiting = Some(Waiting { root, players });
-        }
-        self.say(
-            Level::Info,
-            format!("{count} players: player 1 hosts on {address}, the others join once it is up"),
-        );
-        Ok(())
+        Ok((command, embed, Some((Waiting { root, players }, address))))
     }
 
     /// Start any command with its output going to the Console, as the game
@@ -456,6 +500,7 @@ impl Session {
     /// Bring what the game printed into the Console. `Some(code)` the call
     /// it is seen to have ended — its last lines are in by then.
     pub fn poll_game(&mut self) -> Option<i32> {
+        self.keep_warm();
         self.mirror_to_game();
         self.follow_game();
         self.poll_embedded();

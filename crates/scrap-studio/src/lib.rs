@@ -59,7 +59,8 @@ pub fn open(scene: &Path) -> Result<Session, String> {
 
 /// [`open`] for a window a person works in: the scene is drawn as its
 /// meshes and pipelines come in rather than after all of them are built
-/// ([`Session::draw_while_building`]).
+/// ([`Session::draw_while_building`]), and the game is started ahead of
+/// Play ([`Session::set_play_ahead`]; `SCRAP_PLAY_AHEAD=0` does not).
 pub fn open_live(scene: &Path) -> Result<Session, String> {
     open_with(scene, true)
 }
@@ -71,7 +72,14 @@ pub fn open_empty() -> Result<Session, String> {
         format!("no renderer: {e}\nSCRAP_RENDERER and a working adapter are what this needs.")
     })?;
     session.draw_while_building();
+    session.set_play_ahead(play_ahead());
     Ok(session)
+}
+
+/// Whether a window starts the game ahead of Play: unless
+/// `SCRAP_PLAY_AHEAD=0`.
+fn play_ahead() -> bool {
+    std::env::var("SCRAP_PLAY_AHEAD").map_or(true, |v| v != "0")
 }
 
 fn open_with(scene: &Path, live: bool) -> Result<Session, String> {
@@ -80,6 +88,7 @@ fn open_with(scene: &Path, live: bool) -> Result<Session, String> {
     })?;
     if live {
         session.draw_while_building();
+        session.set_play_ahead(play_ahead());
     }
     let missing = session
         .open_scene(scene)

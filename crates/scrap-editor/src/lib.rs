@@ -45,6 +45,7 @@ pub mod shader_graphs;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
 mod visibility;
+mod warm;
 mod watch;
 
 pub use views::{Pivot, Side, Space};
@@ -279,6 +280,13 @@ pub struct Session {
     console: console::Console,
     /// The game started from here, its output on its way to the Console.
     game: Option<game::Running>,
+    /// The game started ahead of Play, held until it is pressed.
+    warm: Option<warm::Warm>,
+    /// Whether games are started ahead ([`Session::set_play_ahead`]).
+    play_ahead: bool,
+    /// The scene whose game failed to start ahead: not tried again until
+    /// Play is pressed.
+    warm_failed: Option<PathBuf>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -454,6 +462,9 @@ impl Session {
             nav_shown: None,
             console: Default::default(),
             game: None,
+            warm: None,
+            play_ahead: false,
+            warm_failed: None,
         })
     }
 
@@ -2388,6 +2399,17 @@ impl Session {
         &mut self,
         start: Option<scrap::player::Start>,
     ) -> EditResult<std::process::Command> {
+        self.game_command_with(start, false)
+    }
+
+    /// [`Session::game_command_at`]; `ahead`: for a game started before
+    /// Play is pressed ([`crate::warm`]) — nothing saved, nothing said, and
+    /// no mute given, which the one started ahead has its own of.
+    pub(crate) fn game_command_with(
+        &mut self,
+        start: Option<scrap::player::Start>,
+        ahead: bool,
+    ) -> EditResult<std::process::Command> {
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         if !project.root().join("Cargo.toml").is_file() {
             return Err(EditError::Scene(format!(
@@ -2407,7 +2429,7 @@ impl Session {
         }
         // Saved when there is something to save: an untouched scene is
         // left as it is on disk, byte for byte.
-        if self.is_modified() {
+        if self.is_modified() && !ahead {
             self.save_scene(None)?;
         }
         let name = scrap::layout::name_of(&path);
@@ -2432,9 +2454,11 @@ impl Session {
             .env(scrap::live::STATE_VAR, &state);
         // Muted or heard as the editor's Mute Game says, from the first
         // sample, and following it as it changes while the game plays.
-        self.write_mute_file();
-        if let Some(mute) = self.mute_file() {
-            command.env(scrap::sound::MUTE_VAR, mute);
+        if !ahead {
+            self.write_mute_file();
+            if let Some(mute) = self.mute_file() {
+                command.env(scrap::sound::MUTE_VAR, mute);
+            }
         }
         // The game's own code optimized, when this person asked: the
         // engine's crates are the game's dependencies, which a project
@@ -2448,13 +2472,15 @@ impl Session {
             Some(start) => command.env(scrap::player::START_VAR, start.to_env()),
             None => command.env_remove(scrap::player::START_VAR),
         };
-        self.say(
-            console::Level::Info,
-            format!(
-                "playing {} in the game",
-                project.relative(&path).unwrap_or_else(|| name.clone())
-            ),
-        );
+        if !ahead {
+            self.say(
+                console::Level::Info,
+                format!(
+                    "playing {} in the game",
+                    project.relative(&path).unwrap_or_else(|| name.clone())
+                ),
+            );
+        }
         Ok(command)
     }
 

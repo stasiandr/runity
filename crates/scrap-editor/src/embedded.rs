@@ -33,6 +33,10 @@ pub(crate) struct Embedded {
     /// The view size last told.
     told: Option<(u32, u32)>,
     captured: bool,
+    /// Play, said to a game started held once it has connected.
+    play: bool,
+    /// The game started held says it is ready.
+    pub(crate) held: bool,
 }
 
 impl Embedded {
@@ -51,6 +55,8 @@ impl Embedded {
                 shown: false,
                 told: None,
                 captured: false,
+                play: false,
+                held: false,
             },
             address,
         ))
@@ -58,7 +64,7 @@ impl Embedded {
 
     /// Take the game's connection if it came, what it said, and tell it
     /// the view's size if that changed.
-    fn poll(&mut self, view: (u32, u32)) {
+    pub(crate) fn poll(&mut self, view: (u32, u32)) {
         if self.stream.is_none() {
             if let Ok((stream, _)) = self.listener.accept() {
                 let _ = stream.set_nonblocking(false);
@@ -73,6 +79,7 @@ impl Embedded {
             while let Ok(message) = messages.try_recv() {
                 match message {
                     ToEditor::Capture(on) => self.captured = on,
+                    ToEditor::Held => self.held = true,
                 }
             }
         }
@@ -80,6 +87,15 @@ impl Embedded {
             self.told = Some(view);
             let _ = self.send(&ToGame::Size(view.0, view.1));
         }
+        if self.play && self.send(&ToGame::Play) {
+            self.play = false;
+        }
+    }
+
+    /// Let a game started held ([`scrap::embed::HOLD_VAR`]) go: now, or
+    /// as soon as it has connected.
+    pub(crate) fn play(&mut self) {
+        self.play = !self.send(&ToGame::Play);
     }
 
     /// `false` when there is no game to hear it: not connected yet, or
@@ -366,5 +382,32 @@ mod tests {
             Packet::Message(ToGame::Command("give 3".into()))
         );
         assert!(session.stop_game());
+    }
+
+    /// A game started held: Play said before it has connected reaches it
+    /// once it has, after the view's size; its word that it is ready is
+    /// heard.
+    #[test]
+    fn play_said_to_a_held_game_before_it_connects_reaches_it() {
+        let (mut embed, address) = Embedded::listen().unwrap();
+        embed.play();
+        embed.poll((8, 4));
+        let game = TcpStream::connect(&address).unwrap();
+        let mut from_editor = BufReader::new(game.try_clone().unwrap());
+        embed::write_message(&mut &game, &ToEditor::Held).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !embed.held {
+            assert!(Instant::now() < deadline, "the game's word never came");
+            std::thread::sleep(Duration::from_millis(10));
+            embed.poll((8, 4));
+        }
+        assert_eq!(
+            embed::read_packet::<ToGame>(&mut from_editor).unwrap(),
+            Packet::Message(ToGame::Size(8, 4))
+        );
+        assert_eq!(
+            embed::read_packet::<ToGame>(&mut from_editor).unwrap(),
+            Packet::Message(ToGame::Play)
+        );
     }
 }

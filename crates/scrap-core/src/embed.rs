@@ -33,7 +33,17 @@ pub enum ToGame {
     /// ([`crate::console`]): the game answers on its output, which the
     /// Console shows.
     Command(String),
+    /// Play: a game started held ([`HOLD_VAR`]) goes from here.
+    Play,
 }
+
+/// Set, the game starts held: everything up to its first frame is done —
+/// the library read, the device and renderer made, the scene spawned and
+/// drawn once so its pipelines are built — and then it waits, sending
+/// nothing and running no step, until the editor says [`ToGame::Play`].
+/// The editor starts one ahead of the person pressing Play, so pressing it
+/// costs a frame rather than the whole start.
+pub const HOLD_VAR: &str = "SCRAP_HOLD";
 
 /// What the game tells the editor, beside its frames.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +51,9 @@ pub enum ToEditor {
     /// The game wants the pointer captured (hidden, reporting motion) or
     /// let go — `Context::capture_cursor`.
     Capture(bool),
+    /// A game started held ([`HOLD_VAR`]) is ready: Play from here costs
+    /// a frame.
+    Held,
 }
 
 /// One thing read off the wire.

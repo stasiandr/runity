@@ -23,6 +23,11 @@ notify = "8"
 [dev-dependencies]
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 
+# How long Play takes with the game started ahead, and cold.
+[[example]]
+name = "play_ahead"
+path = "examples/play_ahead.rs"
+
 # Renders a scene with the gizmo on the selection, headlessly, to a PNG.
 [[example]]
 name = "gizmo_shot"

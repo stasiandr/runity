@@ -107,10 +107,12 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
     sender(stream, outbox.clone());
 
     let gpu = Gpu::headless_blocking(false).map_err(anyhow::Error::msg)?;
+    super::startup("device");
     // The configured size until the editor says how big its view is —
     // which it does first thing.
     let mut target = OffscreenTarget::new(&gpu, config.width.max(1), config.height.max(1));
     let mut renderer = Renderer::new(&gpu, &target);
+    super::startup("renderer");
     let mut overlay = crate::ui_render::UiRenderer::new(&gpu, &target);
     let mut time = Time::new(config.time);
     let mut input = Input::new();
@@ -139,9 +141,46 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         };
     }
 
+    // Held (`HOLD_VAR`): started and drawn once, unseen, then waiting for
+    // Play; the clock starts then, so no step is owed for the wait.
+    if std::env::var_os(embed::HOLD_VAR).is_some() {
+        {
+            let mut ctx = ctx!();
+            game.start(&mut ctx);
+        }
+        let mut ctx = ctx!();
+        let frame = hot(|| game.frame(&mut ctx));
+        renderer.draw_ui_pictures(&gpu, &mut overlay, &frame);
+        renderer.render(&gpu, &target, &frame);
+        overlay.render(&gpu, &target, game.overlay());
+        let _ = target.read_rgba(&gpu);
+        super::startup("held: started and drawn once");
+        post(&outbox, |o| o.messages.push(ToEditor::Held));
+        loop {
+            match from_editor.recv() {
+                Ok(ToGame::Play) => break,
+                Ok(ToGame::Size(w, h)) => {
+                    let (w, h) = (w.max(1), h.max(1));
+                    if (w, h) != (target.width, target.height) {
+                        target = OffscreenTarget::new(&gpu, w, h);
+                    }
+                }
+                Ok(ToGame::Input(event)) => input.handle(&event),
+                Ok(ToGame::Command(line)) => commands.push(line),
+                Err(_) => {
+                    post(&outbox, |o| o.closed = true);
+                    return Ok(());
+                }
+            }
+        }
+        super::startup("held: playing");
+        time = Time::new(config.time);
+        input.begin_frame();
+    }
+
     // The frames are paced here: nothing waits for a display.
     let pace = Duration::from_secs_f32(1.0 / 60.0);
-    let mut started = false;
+    let mut started = std::env::var_os(embed::HOLD_VAR).is_some();
     loop {
         let began = Instant::now();
         loop {
@@ -154,6 +193,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 }
                 Ok(ToGame::Input(event)) => input.handle(&event),
                 Ok(ToGame::Command(line)) => commands.push(line),
+                Ok(ToGame::Play) => {}
                 Err(TryRecvError::Empty) => break,
                 // The editor stopped playing, or went.
                 Err(TryRecvError::Disconnected) => {
@@ -173,6 +213,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         let mut quit = false;
         let mut wanted: Option<bool> = None;
         if !started {
+            super::startup("the game starts");
             let mut ctx = ctx!();
             game.start(&mut ctx);
             wanted = ctx.capture;
@@ -212,6 +253,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         let size = (target.width, target.height);
         post(&outbox, |o| o.frame = Some((size.0, size.1, pixels)));
         input.begin_frame();
+        quit |= super::startup_frame();
 
         if quit {
             post(&outbox, |o| o.closed = true);

@@ -185,17 +185,19 @@ impl Session {
     /// on the project may have changed it, so this is also what keeps a
     /// playing game in step with the setting as it is on disk.
     pub fn write_mute_file(&self) {
-        let Some(file) = self.mute_file() else {
-            return;
-        };
         let text = format!("{}\n", self.mute_game());
-        if std::fs::read_to_string(&file).ok().as_deref() == Some(text.as_str()) {
-            return;
+        // And the playing game's own, when it was started ahead of Play
+        // (`crate::warm`) with a file saying mute until then.
+        let ahead = self.game.as_ref().and_then(|g| g.mute.clone());
+        for file in self.mute_file().into_iter().chain(ahead) {
+            if std::fs::read_to_string(&file).ok().as_deref() == Some(text.as_str()) {
+                continue;
+            }
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&file, &text);
         }
-        if let Some(parent) = file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&file, text);
     }
 
     /// Whether this person has the Inspector in Debug mode: every field as
