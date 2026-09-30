@@ -251,6 +251,94 @@ fn a_gltf_of_one_object_is_still_one_model() {
     assert!(!scrap_import::scene::is_scene(&fixture).unwrap());
 }
 
+/// One object — a tree — whose mesh has two materials, bark and leaves,
+/// each painting with `images[material]`: an image each, or one shared.
+fn tree(dir: &Path, images: [usize; 2]) -> PathBuf {
+    let mut bin = Vec::new();
+    for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for v in [[0.0f32, 0.0], [3.0, 0.0], [0.0, 3.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for i in [0u16, 1, 2, 0] {
+        bin.extend(i.to_le_bytes());
+    }
+    std::fs::create_dir_all(dir).unwrap();
+    write_all(dir.join("tree.bin"), &bin).unwrap();
+    for (name, rgba) in [("bark.png", [120, 60, 20, 255]), ("leaves.png", [30, 160, 40, 255])] {
+        image::RgbaImage::from_pixel(1, 1, image::Rgba(rgba)).save(dir.join(name)).unwrap();
+    }
+    let prim = |m: usize| {
+        format!(r#"{{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1}}, "indices": 2, "material": {m}}}"#)
+    };
+    let gltf = format!(
+        r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [{{"name": "tree", "mesh": 0}}],
+  "meshes": [{{"name": "tree", "primitives": [{p0}, {p1}]}}],
+  "materials": [
+    {{"name": "bark", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": {t0}}}}}}},
+    {{"name": "leaves", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": {t1}}}}}}}
+  ],
+  "images": [{{"uri": "bark.png"}}, {{"uri": "leaves.png"}}],
+  "textures": [{{"source": 0}}, {{"source": 1}}],
+  "buffers": [{{"uri": "tree.bin", "byteLength": {len}}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 24}},
+    {{"buffer": 0, "byteOffset": 60, "byteLength": 6}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}},
+    {{"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}}
+  ]
+}}"#,
+        p0 = prim(0),
+        p1 = prim(1),
+        t0 = images[0],
+        t1 = images[1],
+        len = bin.len(),
+    );
+    let path = dir.join("tree.gltf");
+    write_all(&path, gltf).unwrap();
+    path
+}
+
+#[test]
+fn one_object_painted_with_two_images_is_a_scene_each_material_with_its_own() {
+    let (project, _root) = project("two-images");
+    let source = tree(&project.assets(), [0, 1]);
+    assert!(scrap_import::scene::is_scene(&source).unwrap());
+    scrap_import::import_into(&project, &source, None).unwrap();
+    assert!(ImportSettings::load(sidecar_for(&source)).unwrap().scene);
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    for (material, rgba) in [("tree/bark", [120, 60, 20, 255]), ("tree/leaves", [30, 160, 40, 255])] {
+        let material = library.material_by_name(material).unwrap();
+        let base = library.texture(material.base_map.expect("a base map")).unwrap();
+        assert_eq!(&base.pixels[..4], &rgba, "its own picture, not white");
+    }
+    let (prefabs, _) = Prefabs::of(&project);
+    assert!(prefabs.get("tree").is_some(), "placed as `prefab: \"tree\"`");
+}
+
+#[test]
+fn one_object_whose_materials_share_one_image_is_still_one_model() {
+    let (project, _root) = project("one-image");
+    let source = tree(&project.assets(), [0, 0]);
+    assert!(!scrap_import::scene::is_scene(&source).unwrap());
+    scrap_import::import_into(&project, &source, None).unwrap();
+    assert!(!ImportSettings::load(sidecar_for(&source)).unwrap().scene);
+}
+
 #[test]
 fn a_scenes_maps_become_textures_and_metal_roughness_packs_into_the_mask() {
     let (project, _root) = project("maps");

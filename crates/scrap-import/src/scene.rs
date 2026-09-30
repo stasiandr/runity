@@ -131,10 +131,18 @@ pub struct AssetData {
 }
 
 /// Whether a glTF is a scene rather than a model: more than one node with
-/// a mesh. Decided once, on the first import, and kept in the sidecar
-/// (`scene: true`), so a file that grows a second object does not quietly
-/// turn from the model scenes name into a prefab they do not. A `.blend`
-/// is always a scene.
+/// a mesh — or one object whose materials paint with more than one
+/// base-colour image (a tree's bark and leaves, a wall's plaster and
+/// trim). A model is drawn with one look, and several pictures do not fit
+/// in one: their UVs tile, so no atlas holds them, and the palette of
+/// base colours [`crate::mesh_from_gltf`] falls back to is white for a
+/// textured kit. As a scene each material is a material of its own. A
+/// skinned file stays a model even so: the scene's models carry no skin,
+/// and a character that moves in the wrong colours is better than one
+/// that stands still. Decided once, on the first import, and kept in the
+/// sidecar (`scene: true`), so a file that grows a second object does not
+/// quietly turn from the model scenes name into a prefab they do not. A
+/// `.blend` is always a scene.
 pub fn is_scene(path: &Path) -> Result<bool> {
     if path
         .extension()
@@ -151,7 +159,17 @@ pub fn is_scene(path: &Path) -> Result<bool> {
         }
         stack.extend(node.children());
     }
-    Ok(count > 1)
+    Ok(count > 1 || (document.skins().len() == 0 && base_images(&document.document) > 1))
+}
+
+/// How many distinct images the materials' base colours read.
+fn base_images(document: &gltf::Document) -> usize {
+    document
+        .materials()
+        .filter_map(|m| m.pbr_metallic_roughness().base_color_texture())
+        .map(|t| t.texture().source().index())
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 fn roots(document: &gltf::Document) -> Vec<gltf::Node<'_>> {
