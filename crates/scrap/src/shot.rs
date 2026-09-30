@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use crate::prelude::*;
-use crate::render::{FogSettings, Frame, MeshHandle};
+use crate::render::{FogSettings, Frame};
 use crate::{Gpu, Library, OffscreenTarget, Renderer, Scene};
 
 /// A scene ready to draw.
@@ -103,25 +103,15 @@ impl Shot {
         };
 
         let mut world = hecs::World::new();
-        let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
+        // As a live scene resolves them: by link, a model's run
+        // (`model#1`) a mesh of its own, a material by link — a run's the
+        // one its import gave it.
+        let mut uploaded = std::collections::HashMap::new();
         let missing = crate::spawn_scene_with(
             &scene,
             &mut world,
-            |name| {
-                let name: &str = name;
-                if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
-                    return Some(found.1);
-                }
-                let handle = if let Some(mesh) = crate::builtin::by_name(name) {
-                    renderer.upload_mesh_owned(&gpu, &mesh)
-                } else {
-                    let mesh = library.as_ref()?.mesh_by_name(name)?;
-                    renderer.upload_mesh(&gpu, mesh)
-                };
-                uploaded.push((name.to_string(), handle));
-                Some(handle)
-            },
-            |name| library.as_ref()?.material_by_name(name),
+            crate::live::resolver(&mut uploaded, library.as_ref(), &gpu, &mut renderer),
+            |link| library.as_ref()?.material_link(link),
         );
         for m in &missing {
             problems.push(format!("{}: no model named {}", m.entity_name, m.model));

@@ -723,6 +723,69 @@ fn an_animators_cases_are_played_by_check() {
     );
 }
 
+/// A graph's `clips_from` names models of the project, and every clip it
+/// plays is in one of them — or in the model of a line that plays it: a
+/// model that is none and a clip in none are named with the nearest.
+#[test]
+fn a_clip_in_none_of_an_animators_clips_from_is_named() {
+    let project = project("clips-from");
+    let root = project.root();
+    let gltf = |clips: &[&str]| {
+        let animations: Vec<String> = clips
+            .iter()
+            .map(|c| format!(r#"{{"name": "{c}", "channels": [], "samplers": []}}"#))
+            .collect();
+        format!(r#"{{"asset": {{"version": "2.0"}}, "animations": [{}]}}"#, animations.join(", "))
+    };
+    write(&root.join("people/ual1.gltf"), &gltf(&["Walk_Loop", "Idle_Loop"]));
+    write(&root.join("people/ual2.gltf"), &gltf(&["TreeChopping_Loop"]));
+    write(&root.join("people/outfit.gltf"), &gltf(&["Wave"]));
+    write(
+        &root.join("people/villager.animator.ron"),
+        r#"(clips_from: ["ual1", "ual2", "ual"], start: "walk", states: {
+            "walk": (clip: "Walk_Loop", transitions: [(to: "chop", when: [Trigger("chop")])]),
+            "chop": (clip: "TreeChopping_Lop", transitions: [(to: "wave", when: [Trigger("wave")])]),
+            "wave": (clip: "Wave"),
+        })"#,
+    );
+    write(
+        &root.join("maps/main.scene.ron"),
+        r#"(entities: [(id: "00000000000000a1", name: "villager", model: "outfit", animator: "villager")])"#,
+    );
+    let found = errors(&check(&project));
+    let model = one_containing(&found, "clips_from `ual`");
+    assert!(model.contains("villager.animator.ron") && model.contains("is no model"), "{model}");
+    let clip = one_containing(&found, "`TreeChopping_Lop`");
+    assert!(
+        clip.contains("in none of `ual1`, `ual2`, `ual`") && clip.contains("did you mean `TreeChopping_Loop`"),
+        "{clip}"
+    );
+    assert!(!found.iter().any(|l| l.contains("`Walk_Loop`") || l.contains("`Wave`")), "{found:#?}");
+}
+
+/// A material an import builds — a character's run's, a scene's — is
+/// named `<file>/<material>`, and a line may draw with it.
+#[test]
+fn a_material_an_import_built_is_a_name_a_line_may_use() {
+    let project = project("import-materials");
+    let root = project.root();
+    write(&root.join("people/Peasant.gltf"), r#"{"asset": {"version": "2.0"}}"#);
+    write(
+        &root.join("people/Peasant.gltf.scrimport"),
+        r#"ImportSettings(source: "people/Peasant.gltf", parts: {"material:MI_Peasant": "923aa724a2f3d2c61994ea53beefe55f"})"#,
+    );
+    write(
+        &root.join("maps/main.scene.ron"),
+        r#"(entities: [
+            (id: "00000000000000a1", name: "a", model: "Peasant", material: "Peasant/MI_Peasant"),
+            (id: "00000000000000a2", name: "b", model: "Peasant", material: "Peasant/MI_Peasent"),
+        ])"#,
+    );
+    let found = errors(&check(&project));
+    let line = one_containing(&found, "no material named");
+    assert!(line.contains("`Peasant/MI_Peasent`") && line.contains("did you mean `Peasant/MI_Peasant`"), "{line}");
+}
+
 #[test]
 fn a_field_no_module_reads_is_kept_and_named_and_one_that_does_not_fit_is_an_error() {
     // DNA, postulate 3: a disabled module's component is not lost. A field

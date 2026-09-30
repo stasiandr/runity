@@ -160,6 +160,10 @@ pub struct Slot {
 /// A whole animator of rules, as its file is written.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RulesFile {
+    /// Models whose every clip the model plays too, retargeted by joint
+    /// names, as a graph's `clips_from`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips_from: Vec<String>,
     #[serde(default)]
     pub params: BTreeMap<String, Kind>,
     pub modes: Vec<Mode>,

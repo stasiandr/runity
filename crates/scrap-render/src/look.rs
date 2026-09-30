@@ -550,7 +550,7 @@ impl Default for MaterialRef {
 }
 
 impl MaterialRef {
-    fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == MaterialRef::default()
     }
 }
