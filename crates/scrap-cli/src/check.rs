@@ -471,7 +471,7 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         ));
     }
     let prefab_files = project.files(scrap::layout::Kind::Prefab);
-    let prefabs = prefab_files.iter().map(scrap::layout::name_of).collect();
+    let mut prefabs: HashSet<String> = prefab_files.iter().map(scrap::layout::name_of).collect();
     let mut ids = HashSet::new();
     let mut sources = prefab_files;
     scrap_import::walk(project.root(), &mut |path| {
@@ -479,6 +479,22 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             sources.push(path.to_path_buf());
         }
     });
+    // Prefabs an import builds — a glTF or `.blend` that is a scene — are
+    // found as the game finds them (`Prefabs::of`): in the library, by
+    // their root's name. And by the file's name from its sidecar's
+    // `scene: true`, for a clone whose library is not built yet.
+    let (built, _) = scrap::Prefabs::of(project);
+    prefabs.extend(built.names().into_iter().map(str::to_string));
+    for source in &sources {
+        let sidecar = scrap::asset::sidecar_of(source);
+        if sidecar.exists()
+            && scrap_import::ImportSettings::load(&sidecar).is_ok_and(|s| s.scene)
+        {
+            if let Some(stem) = source.file_stem() {
+                prefabs.insert(stem.to_string_lossy().into_owned());
+            }
+        }
+    }
     let scene_files = project.files(scrap::layout::Kind::Scene);
     sources.extend(scene_files.iter().cloned());
     let (mut sounds, mut textures) = (HashSet::new(), HashSet::new());
