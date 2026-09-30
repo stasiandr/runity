@@ -429,6 +429,7 @@ pub fn convert(unity: &Unity, path: &Path, report: &mut super::Report) -> Result
         }
     }
     let graph = Graph {
+        clips_from: Vec::new(),
         start,
         states,
         transitions,

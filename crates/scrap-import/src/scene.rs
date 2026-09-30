@@ -179,11 +179,30 @@ pub fn is_scene(path: &Path) -> Result<bool> {
 /// Reads the file's JSON only, not its buffers: `sync` asks it of every
 /// glTF its sidecar calls a scene.
 pub fn is_character(path: &Path) -> Result<bool> {
+    let document = gltf::Gltf::from_slice_without_validation(&gltf_json(path)?)
+        .with_context(|| format!("{}", path.display()))?;
+    Ok(character(&document.document))
+}
+
+/// The clips a glTF model's import gives it, without importing it: its
+/// animations by name, and the clips its sidecar cuts from them. Reads
+/// the file's JSON only.
+pub fn clip_names(path: &Path) -> Result<Vec<String>> {
+    let document = gltf::Gltf::from_slice_without_validation(&gltf_json(path)?)
+        .with_context(|| format!("{}", path.display()))?;
+    let mut names: Vec<String> = document.animations().filter_map(|a| a.name().map(str::to_string)).collect();
+    if let Ok(settings) = ImportSettings::load(crate::sidecar_for(path)) {
+        names.extend(settings.clips.into_iter().map(|c| c.name));
+    }
+    Ok(names)
+}
+
+/// A glTF's JSON: the file, or a `.glb`'s JSON chunk after its header.
+fn gltf_json(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).with_context(|| format!("{}", path.display()))?;
     let mut head = [0u8; 20];
-    let json = match file.read_exact(&mut head) {
-        // A `.glb`: its JSON chunk, after the header.
+    Ok(match file.read_exact(&mut head) {
         Ok(()) if &head[..4] == b"glTF" => {
             let length = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
             let mut json = vec![0; length];
@@ -191,9 +210,7 @@ pub fn is_character(path: &Path) -> Result<bool> {
             json
         }
         _ => std::fs::read(path)?,
-    };
-    let document = gltf::Gltf::from_slice_without_validation(&json).with_context(|| format!("{}", path.display()))?;
-    Ok(character(&document.document))
+    })
 }
 
 fn character(document: &gltf::Document) -> bool {

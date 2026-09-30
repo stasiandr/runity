@@ -183,6 +183,10 @@ pub struct Transition {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "file::Graph", into = "file::Graph")]
 pub struct Graph {
+    /// Models whose every clip this graph's model plays too, retargeted by
+    /// joint names — `["ual1", "ual2"]`, Quaternius' animation library on
+    /// an outfit of the same rig: a state then says `clip: "Walk_Loop"`.
+    pub clips_from: Vec<String>,
     pub start: String,
     pub states: BTreeMap<String, State>,
     pub transitions: Vec<Transition>,
@@ -250,6 +254,8 @@ mod file {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct Graph {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub clips_from: Vec<String>,
         pub start: String,
         pub states: BTreeMap<String, State>,
         /// Any State's transitions.
@@ -298,6 +304,7 @@ mod file {
                 weight: l.weight,
                 weight_from: l.weight_from,
                 graph: Graph {
+                    clips_from: Vec::new(),
                     start: l.start,
                     states: l.states,
                     any: l.any,
@@ -356,6 +363,7 @@ mod file {
             }
             transitions.extend(f.transitions);
             let mut graph = super::Graph {
+                clips_from: f.clips_from,
                 start: f.start,
                 states,
                 transitions,
@@ -384,6 +392,7 @@ mod file {
                     .collect()
             };
             Graph {
+                clips_from: g.clips_from.clone(),
                 start: g.start.clone(),
                 states: g
                     .states
@@ -517,6 +526,28 @@ impl Graph {
             out.extend(layer.graph.clips());
         }
         out
+    }
+
+    /// The clips the graph names that none of `clips` is, each said with
+    /// where it was looked for (`looked_in`) and the nearest there is. A
+    /// clip is found as [`crate::animator::Animator::clip_named`] finds it:
+    /// by its name, or as the take of a Blender file (`Armature|Walk`).
+    pub fn missing_clips(&self, clips: &[&str], looked_in: &str) -> Vec<String> {
+        let found = |name: &str| {
+            clips
+                .iter()
+                .any(|c| *c == name || c.strip_suffix(name).is_some_and(|head| head.ends_with('|')))
+        };
+        self.clips()
+            .into_iter()
+            .filter(|clip| !found(clip))
+            .map(|clip| {
+                let near = crate::spelling::closest(&clip, clips.iter().copied())
+                    .map(|n| format!(" — did you mean `{n}`?"))
+                    .unwrap_or_default();
+                format!("clip `{clip}` is in none of {looked_in}{near}")
+            })
+            .collect()
     }
 
     /// The layers' masks against the skeleton's joints: a name no joint
