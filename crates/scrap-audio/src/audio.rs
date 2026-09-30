@@ -494,13 +494,17 @@ fn same_sound(a: &crate::scene::SoundSource, b: &crate::scene::SoundSource) -> b
 
 /// Linear gain to decibels, which is what a mixer actually works in.
 ///
-/// Silence is not "minus a lot", it is negative infinity — and `log10(0)`
-/// gives exactly that, so the special case is only there to say so out loud.
+/// Silence is kira's [`Decibels::SILENCE`], not negative infinity: kira
+/// already plays anything at or below it as exactly zero, and it tweens a
+/// volume by interpolating decibels — from minus infinity that is
+/// `-inf + t * inf`, NaN, and one NaN voice turns the whole mix, and every
+/// other app's sound on the device with it, to silence until the game quits.
+/// A gain that is not a number is silence too, for the same reason.
 fn gain_to_decibels(gain: f32) -> Decibels {
-    if gain <= 0.0 {
-        return Decibels(f32::NEG_INFINITY);
+    if gain.is_nan() || gain <= 0.0 {
+        return Decibels::SILENCE;
     }
-    Decibels(20.0 * gain.clamp(0.0, 1.0).log10())
+    Decibels((20.0 * gain.min(1.0).log10()).max(Decibels::SILENCE.0))
 }
 
 /// A long sound's compressed bytes, to be streamed.
@@ -777,10 +781,17 @@ mod tests {
     }
 
     #[test]
-    fn silence_is_negative_infinity_and_not_a_very_small_number() {
-        // A mixer works in decibels. Clamping silence to, say, -80 dB leaves
-        // every stopped sound faintly audible in a quiet scene.
-        assert_eq!(gain_to_decibels(0.0).0, f32::NEG_INFINITY);
+    fn silence_is_kiras_silence_and_tweens_without_nan() {
+        // Kira plays its SILENCE as exactly zero, so nothing stays faintly
+        // audible; minus infinity would make every tween out of it NaN.
+        use kira::Tweenable;
+        for gain in [0.0, -1.0, f32::NAN, 1e-9] {
+            let db = gain_to_decibels(gain);
+            assert_eq!(db, Decibels::SILENCE, "{gain}");
+            assert_eq!(db.as_amplitude(), 0.0);
+            let halfway = Decibels::interpolate(db, gain_to_decibels(0.5), 0.5);
+            assert!(halfway.0.is_finite(), "{gain} -> {halfway:?}");
+        }
         assert_eq!(gain_to_decibels(1.0).0, 0.0);
         assert!((gain_to_decibels(0.5).0 - -6.02).abs() < 0.01);
     }
