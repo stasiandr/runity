@@ -17,6 +17,7 @@
 //! [`Studio`] is the whole editor without a window: the tests and the
 //! `shot` example drive it off-screen. [`window::run`] is winit around it.
 
+mod agents;
 mod animator;
 pub mod appearance;
 mod bottom;

@@ -11,7 +11,7 @@ use scrap::scene::{Collider, MaterialRef};
 use scrap::{Body, EntityDesc, EntityId, Material, Project};
 use serde_json::{json, Value};
 
-use crate::{image, text, Server};
+use crate::{image, text, Call};
 
 type Answer = Result<Vec<Value>, String>;
 
@@ -325,7 +325,7 @@ fn action_args(
     Ok(out)
 }
 
-pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
+pub fn call(server: &mut Call<'_>, name: &str, args: &Value) -> Answer {
     // An editor action: the same one the menu runs.
     if let Some(action) = scrap_editor::actions::find(name) {
         let args = action_args(&action, args)?;
@@ -1868,7 +1868,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
     }
 }
 
-fn new_project(server: &mut Server, args: &Value) -> Answer {
+fn new_project(server: &mut Call<'_>, args: &Value) -> Answer {
     let path = PathBuf::from(string(args, "path")?);
     let name = match optional_string(args, "name")? {
         Some(name) => name,
@@ -1892,7 +1892,7 @@ fn new_project(server: &mut Server, args: &Value) -> Answer {
     Ok(out)
 }
 
-fn open_scene(server: &mut Server, path: &str) -> Answer {
+fn open_scene(server: &mut Call<'_>, path: &str) -> Answer {
     let session = server.session()?;
     let problems = session.open_scene(path).map_err(|e| e.to_string())?;
     let mut out = format!("opened {path}: {} entities", session.entity_count());
@@ -1915,7 +1915,7 @@ fn open_scene(server: &mut Server, path: &str) -> Answer {
     Ok(vec![text(out)])
 }
 
-fn tree(server: &mut Server) -> Result<String, String> {
+fn tree(server: &mut Call<'_>) -> Result<String, String> {
     fn line(out: &mut String, desc: &EntityDesc, depth: usize, expanded: &scrap::Scene) {
         let _ = write!(out, "{}{} {:?}", "  ".repeat(depth), desc.id, desc.name);
         if !desc.prefab.is_empty() {
@@ -1990,11 +1990,11 @@ fn tree(server: &mut Server) -> Result<String, String> {
     Ok(out)
 }
 
-fn triple(v: Vec3) -> String {
+pub(crate) fn triple(v: Vec3) -> String {
     format!("({:.2}, {:.2}, {:.2})", v.x, v.y, v.z)
 }
 
-fn add_entity(server: &mut Server, args: &Value) -> Answer {
+fn add_entity(server: &mut Call<'_>, args: &Value) -> Answer {
     let parent = optional_id(args, "parent")?;
     let desc = match optional_string(args, "ron")? {
         Some(text) => ron::from_str::<EntityDesc>(&text).map_err(|e| format!("ron: {e}"))?,
@@ -2025,7 +2025,7 @@ fn add_entity(server: &mut Server, args: &Value) -> Answer {
     Ok(vec![text(id.to_string())])
 }
 
-fn update_entity(server: &mut Server, args: &Value) -> Answer {
+fn update_entity(server: &mut Call<'_>, args: &Value) -> Answer {
     let id = id(args, "id")?;
     // Parsed before the session is touched, so a bad argument does not
     // leave an empty step on the undo stack.
@@ -2257,7 +2257,7 @@ fn hex(color: &str) -> Result<Material, String> {
 
 /// Move the view as asked. Not an edit: the camera is the editor's, not
 /// the document's.
-fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
+fn camera(server: &mut Call<'_>, args: &Value) -> Result<(), String> {
     let width = optional_integer(args, "width")?;
     let height = optional_integer(args, "height")?;
     let focus = optional_id(args, "focus")?;
@@ -2319,7 +2319,11 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn render(server: &mut Server) -> Answer {
+fn render(server: &mut Call<'_>) -> Answer {
+    // The studio's own view: drawn at the window's size, not resized.
+    if let Some(wanted) = server.live_size() {
+        return crate::live_tools::render(server.session()?, wanted);
+    }
     let session = server.session()?;
     session.render();
     let (width, height) = session.size();
@@ -2343,7 +2347,7 @@ fn render(server: &mut Server) -> Answer {
     ])
 }
 
-fn simulate(server: &mut Server, args: &Value) -> Answer {
+fn simulate(server: &mut Call<'_>, args: &Value) -> Answer {
     let seconds = args
         .get("seconds")
         .and_then(Value::as_f64)
@@ -2422,7 +2426,7 @@ kept where they fell: {}",
 // --- arguments ----------------------------------------------------------
 
 /// The animator graph tools: read one, connect, disconnect, rename a state.
-fn shader_graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+fn shader_graph_tool(server: &mut Call<'_>, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
     use scrap_editor::shader_graphs::{self as graphs, Doc, Edit};
     let root = project_root(server)?;
     let name = string(args, "name")?;
@@ -2478,7 +2482,7 @@ fn shader_graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Ve
     }
 }
 
-fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+fn graph_tool(server: &mut Call<'_>, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
     use scrap::animgraph::{Condition, Graph, Transition, ANY};
     let session = server.session()?;
     let project = session.project().ok_or("the open scene is in no project")?;
@@ -2658,7 +2662,7 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
 
 /// The dialogue tools: read one, write a line, rename a line, play it,
 /// and the sheets of what they all say.
-fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+fn dialogue_tool(server: &mut Call<'_>, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
     use scrap::dialogue::{describe, named_twice, Cases, Conversation, Dialogue, State};
     let session = server.session()?;
     let project = session.project().ok_or("the open scene is in no project")?;
@@ -2945,7 +2949,7 @@ fn git_branch_line(status: &scrap_editor::Status) -> String {
 }
 
 /// The open project's folder: where configs/ is.
-fn project_root(server: &mut Server) -> Result<PathBuf, String> {
+fn project_root(server: &mut Call<'_>) -> Result<PathBuf, String> {
     server
         .session()?
         .project()
