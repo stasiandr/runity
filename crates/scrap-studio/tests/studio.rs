@@ -454,6 +454,21 @@ fn the_menus_leave_the_toolbar_for_the_system_and_say_their_state() {
     s.run(Action::FastGame);
     assert!(s.session.fast_game());
     assert!(s.menu_state(&Action::FastGame, "Optimized Game Code").checked);
+    // And whether the game is heard: muted until someone turns it on,
+    // said to the games in a file of their own, the toolbar's button too.
+    assert!(play
+        .iter()
+        .any(|i| i.label == "Mute Game" && i.action == Some(Action::MuteGame)));
+    assert!(s.menu_state(&Action::MuteGame, "Mute Game").checked);
+    assert!(clickable(&mut s, "mute game"));
+    s.run(Action::MuteGame);
+    assert!(!s.session.mute_game());
+    assert!(!s.menu_state(&Action::MuteGame, "Mute Game").checked);
+    let file = s.session.mute_file().unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), "false");
+    s.run(Action::MuteGame);
+    assert!(s.session.mute_game());
+    assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), "true");
 
     // The system's menus: none in the toolbar, the play buttons stay.
     s.set_native_menu(true);

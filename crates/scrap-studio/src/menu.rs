@@ -154,6 +154,9 @@ pub enum Action {
     /// clones of it joining in windows of their own (Unity's Multiplayer
     /// Play Mode).
     Players(u32),
+    /// The game played from here silent, or heard: the host and every
+    /// clone, now and from the next Play.
+    MuteGame,
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
     /// A material that is another one with nothing changed yet.
@@ -428,6 +431,7 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Keep Simulation Changes", Action::KeepSimulation),
                 MenuItem::separator(),
                 item("Optimized Game Code", Action::FastGame),
+                item("Mute Game", Action::MuteGame),
                 MenuItem::separator(),
             ]
             .into_iter()

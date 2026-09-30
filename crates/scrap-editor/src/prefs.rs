@@ -43,6 +43,10 @@ pub(crate) struct Prefs {
     /// an edit, several times quicker to run (a game's systems at
     /// `opt-level` 0 are three or four times slower than at 1).
     fast_game: bool,
+    /// The game played from the editor heard: off unless this person
+    /// turned it on, so Play does not start sounding over what they
+    /// listen to. Every editor on the project reads it from here.
+    game_sound: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -149,6 +153,49 @@ impl Session {
         let mut prefs = self.read_prefs();
         prefs.fast_game = on;
         write_prefs(&path, &prefs);
+    }
+
+    /// Whether the game played from the editor is silent — the host in
+    /// the Game view and every clone alike. Muted unless this person
+    /// turned the sound on.
+    pub fn mute_game(&self) -> bool {
+        !self.read_prefs().game_sound
+    }
+
+    /// Mute the game, or let it be heard: kept for the next Play, and
+    /// said at once to the games already playing (see
+    /// [`Session::mute_file`]). Outside a project it is not kept.
+    pub fn set_mute_game(&mut self, on: bool) {
+        let Some(path) = self.prefs_path() else {
+            return;
+        };
+        let mut prefs = self.read_prefs();
+        prefs.game_sound = !on;
+        write_prefs(&path, &prefs);
+        self.write_mute_file();
+    }
+
+    /// The file the games from this editor read their mute from
+    /// ([`scrap::sound::MUTE_VAR`]); `None` outside a project.
+    pub fn mute_file(&self) -> Option<PathBuf> {
+        Some(self.project.as_ref()?.root().join(".scrap/live/mute"))
+    }
+
+    /// Say [`Session::mute_game`] where the games read it. Another editor
+    /// on the project may have changed it, so this is also what keeps a
+    /// playing game in step with the setting as it is on disk.
+    pub fn write_mute_file(&self) {
+        let Some(file) = self.mute_file() else {
+            return;
+        };
+        let text = format!("{}\n", self.mute_game());
+        if std::fs::read_to_string(&file).ok().as_deref() == Some(text.as_str()) {
+            return;
+        }
+        if let Some(parent) = file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&file, text);
     }
 
     /// Whether this person has the Inspector in Debug mode: every field as

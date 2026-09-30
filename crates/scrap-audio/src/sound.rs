@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::asset::{Asset, AssetId, AssetKind};
 
+/// The variable naming the file that says whether a game is muted, which
+/// the mixer watches as the game plays ([`crate::audio::Audio::new`]): the
+/// editor's Mute Game, reaching the game in its view and every clone in a
+/// window of its own, and changing while they play. The file holds `true`
+/// or `false`; a game started without the variable plays as it would.
+pub const MUTE_VAR: &str = "SCRAP_MUTE_FILE";
+
 /// A sound's kind in an asset's header: this module's.
 pub const SOUND: AssetKind = AssetKind::new(3, "sound");
 use crate::library::Library;

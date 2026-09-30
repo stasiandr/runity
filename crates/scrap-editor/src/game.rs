@@ -371,8 +371,8 @@ impl Session {
                 scrap::party::tile(0, count, size),
             );
         // What every player shares with the host: the scene, the file it
-        // watches, where the player starts. What is each one's own: its
-        // window, its state, its folder.
+        // watches, where the player starts, whether it is heard. What is
+        // each one's own: its window, its state, its folder.
         let shared: Vec<(OsString, OsString)> = command
             .get_envs()
             .filter(|(k, _)| {
@@ -380,6 +380,7 @@ impl Session {
                     || *k == LIVE_VAR
                     || *k == scrap::player::START_VAR
                     || *k == FAST_GAME_VAR
+                    || *k == scrap::sound::MUTE_VAR
             })
             .filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string())))
             .collect();

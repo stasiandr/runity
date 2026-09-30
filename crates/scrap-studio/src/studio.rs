@@ -176,6 +176,8 @@ struct Toolbar {
     layout: NodeId,
     /// How many play: alone, or with clones (a dropdown by Play).
     players: NodeId,
+    /// Mute Game, beside the play buttons.
+    mute: NodeId,
 }
 
 struct Status {
@@ -242,6 +244,7 @@ struct MenuStamp {
     panels: [bool; 3],
     maximized: bool,
     players: u32,
+    muted: bool,
     /// The keymap's generation: a key rebound shows in the menus.
     keys: u64,
 }
@@ -326,6 +329,11 @@ pub struct Studio {
     /// How many Play starts, as the project's prefs say (read with the
     /// disk twice a second, not every frame).
     players: u32,
+    /// Whether the game played from here is muted, as `.scrap/editor.ron`
+    /// says it: kept here because the menus ask every frame, and read
+    /// again with the disk, since another editor on the project may turn
+    /// it.
+    mute_game: bool,
     /// The Console line in the status bar.
     status_line: Option<StatusLine>,
 
@@ -493,6 +501,7 @@ impl Studio {
     /// The editor over a session with a document open, laid out for a
     /// window `width` × `height` logical pixels at `scale`.
     pub fn new(mut session: Session, width: f32, height: f32, scale: f32) -> Self {
+        let mute_game = session.mute_game();
         let mut ui = Ui::new();
         ui.set_viewport(width, height, scale);
         let root = ui.root();
@@ -734,6 +743,7 @@ impl Studio {
             menu_seen: None,
             menu_revision: 0,
             players: 1,
+            mute_game,
             status_line: None,
             snap,
 
@@ -1050,6 +1060,7 @@ impl Studio {
             Action::Step | Action::KeepSimulation => (playing, false),
             Action::FastGame => (true, s.fast_game()),
             Action::Players(n) => (true, self.players == *n),
+            Action::MuteGame => (true, self.mute_game),
             Action::Play => (true, playing),
             Action::ToggleGrid => (true, s.show_grid()),
             Action::ToggleSnap => (true, s.snap().meters > 0.0),
@@ -1103,6 +1114,7 @@ impl Studio {
             panels: self.panels,
             maximized: self.maximized.is_some(),
             players: self.players,
+            muted: self.mute_game,
             keys: self.keymap.generation,
         }
     }
@@ -2864,6 +2876,8 @@ impl Studio {
         self.polled = Instant::now();
         // The agent may have chosen another count (start_game's players).
         self.players = self.session.players();
+        // Another editor on the project may have muted the game.
+        self.mute_game = self.session.mute_game();
         self.save_layout();
         if self.personal_dirty {
             self.save_personal();
@@ -3162,6 +3176,13 @@ impl Studio {
                 2 => "+1 clone".to_string(),
                 n => format!("+{} clones", n - 1),
             },
+        );
+        set_icon_button(
+            ui,
+            t.mute,
+            if self.mute_game { "volume-x" } else { "volume-2" },
+            false,
+            true,
         );
         ui.restyle(t.play_group, |st| {
             st.border(1.0, if playing { ACCENT.alpha(60) } else { DIVIDER })
@@ -3643,6 +3664,8 @@ impl Studio {
             Action::Pause
         } else if node == t.step {
             Action::Step
+        } else if node == t.mute {
+            Action::MuteGame
         } else if node == t.undo {
             Action::Editor("undo")
         } else if node == t.redo {
@@ -4494,6 +4517,19 @@ impl Studio {
                         },
                     );
                 }
+                Action::MuteGame => {
+                    let on = !self.mute_game;
+                    s.set_mute_game(on);
+                    self.mute_game = on;
+                    s.say(
+                        Level::Info,
+                        if on {
+                            "the game plays muted"
+                        } else {
+                            "the game plays with its sound"
+                        },
+                    );
+                }
                 Action::KeepSimulation => {
                     if !s.is_playing() {
                         return Err("Keep Simulation Changes works while playing".into());
@@ -5174,6 +5210,10 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     ui.set_name(players, "players");
     ui.add_text(players, text().text_color(LABEL).nowrap(), "Alone");
     icon(ui, players, "chevron-down", MUTED);
+    // Whether the game is heard, beside how many play rather than in the
+    // play group, so Play keeps the middle: muted unless turned on, as
+    // Unity's Game view has Mute Audio.
+    let mute = icon_button(ui, right, "mute game", "volume-x", false);
     spacer(ui, right);
     // The document beside what saves it: its name, and a dot while it
     // has changes.
@@ -5229,6 +5269,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             save,
             layout,
             players,
+            mute,
         },
         bar,
     )

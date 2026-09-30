@@ -74,6 +74,34 @@ fn an_optimized_game_is_this_persons_choice_and_kept() {
     assert!(again.fast_game(), "kept in .scrap/, with the view");
 }
 
+/// The game played from the editor is muted until this person turns its
+/// sound on; the game is told through a file it watches, so the choice
+/// reaches a game already playing, and another editor on the project
+/// shares it.
+#[test]
+fn a_game_is_muted_until_its_sound_is_turned_on_and_every_editor_agrees() {
+    let Some((mut session, project)) = project("mute") else {
+        return;
+    };
+    let file = |command: &std::process::Command| {
+        command
+            .get_envs()
+            .find(|(k, _)| *k == scrap::sound::MUTE_VAR)
+            .and_then(|(_, v)| v)
+            .map(std::path::PathBuf::from)
+            .expect("the game is told where its mute is")
+    };
+    assert!(session.mute_game(), "muted, until chosen");
+    let mute = file(&session.game_command().unwrap());
+    assert_eq!(std::fs::read_to_string(&mute).unwrap().trim(), "true");
+
+    let mut other = Session::offscreen(64, 64).unwrap();
+    other.open_scene(project.scenes().join("main.scene.ron")).unwrap();
+    other.set_mute_game(false);
+    assert_eq!(std::fs::read_to_string(&mute).unwrap().trim(), "false", "a playing game hears at once");
+    assert!(!session.mute_game(), "the first editor sees the second's choice");
+}
+
 /// The whole thing: the editor builds the project's game, starts it as the
 /// host, then a second player from the same build, and each says it sees
 /// the other. Compiles a game, so it is not in every run:

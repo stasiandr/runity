@@ -2430,6 +2430,12 @@ impl Session {
             .env("SCRAP_SCENE", &name)
             .env(game::LIVE_VAR, &live)
             .env(scrap::live::STATE_VAR, &state);
+        // Muted or heard as the editor's Mute Game says, from the first
+        // sample, and following it as it changes while the game plays.
+        self.write_mute_file();
+        if let Some(mute) = self.mute_file() {
+            command.env(scrap::sound::MUTE_VAR, mute);
+        }
         // The game's own code optimized, when this person asked: the
         // engine's crates are the game's dependencies, which a project
         // builds optimized anyway (`[profile.dev.package."*"]`).

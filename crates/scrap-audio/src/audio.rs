@@ -17,6 +17,8 @@ use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Decibels, Tween};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::asset::ArchivedSoundAsset;
 
@@ -123,6 +125,10 @@ pub struct Audio<B: Backend = CpalBackend> {
     /// settings screen. Unity's Audio Mixer groups. Made the first time a
     /// group is named.
     groups: std::collections::HashMap<String, (TrackHandle, f32)>,
+    /// Everything silenced, apart from the volumes: the editor's Mute
+    /// Game. Read by the mixer's own thread, so shared rather than a field
+    /// it is sent.
+    muted: Arc<AtomicBool>,
 }
 
 impl<B: Backend> Audio<B>
@@ -140,15 +146,39 @@ where
     /// tests, for headless runs, and for a build server, which never has a
     /// sound card. A game that cannot start without an audio device is a
     /// game that cannot be tested.
+    ///
+    /// When [`crate::sound::MUTE_VAR`] names a file, the mixer is muted as
+    /// the file says, from the first sample and whenever it changes.
     pub fn new() -> Result<Self, String> {
-        let manager = AudioManager::<B>::new(AudioManagerSettings::default())
-            .map_err(|e| format!("{e:?}"))?;
+        let muted = Arc::new(AtomicBool::new(false));
+        let mut settings = AudioManagerSettings::<B>::default();
+        settings.main_track_builder.add_effect(Mute {
+            muted: muted.clone(),
+            gain: 1.0,
+            step: 0.0,
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(file) = std::env::var_os(crate::sound::MUTE_VAR) {
+            watch_mute(std::path::PathBuf::from(file), &muted);
+        }
+        let manager = AudioManager::<B>::new(settings).map_err(|e| format!("{e:?}"))?;
         Ok(Self {
             manager,
             listener: Vec3::ZERO,
             master: 1.0,
             groups: Default::default(),
+            muted,
         })
+    }
+
+    /// Silence everything, or let it be heard again, keeping every volume
+    /// as it was: a mute button, not a slider at zero.
+    pub fn set_muted(&self, on: bool) {
+        self.muted.store(on, Ordering::Relaxed);
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
     }
 
     /// Everything's volume, what is playing now included.
@@ -492,6 +522,76 @@ fn same_sound(a: &crate::scene::SoundSource, b: &crate::scene::SoundSource) -> b
         && a.on_start == b.on_start
 }
 
+/// The main track's mute: the mix times a gain that slides to zero and
+/// back over a few milliseconds, since a signal cut dead between two
+/// samples is a click.
+struct Mute {
+    muted: Arc<AtomicBool>,
+    gain: f32,
+    /// How far the gain moves in a frame: a fade of [`MUTE_FADE`] seconds.
+    step: f32,
+}
+
+/// How long muting and unmuting take.
+const MUTE_FADE: f32 = 0.02;
+
+impl kira::effect::Effect for Mute {
+    fn init(&mut self, sample_rate: u32, _internal_buffer_size: usize) {
+        self.on_change_sample_rate(sample_rate);
+    }
+
+    fn on_change_sample_rate(&mut self, sample_rate: u32) {
+        self.step = 1.0 / (MUTE_FADE * sample_rate.max(1) as f32);
+    }
+
+    fn process(&mut self, input: &mut [kira::Frame], _dt: f64, _info: &kira::info::Info) {
+        let target = if self.muted.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
+        if self.gain == target && target == 1.0 {
+            return;
+        }
+        for frame in input {
+            self.gain = if self.gain < target {
+                (self.gain + self.step).min(target)
+            } else {
+                (self.gain - self.step).max(target)
+            };
+            *frame *= self.gain;
+        }
+    }
+}
+
+impl kira::effect::EffectBuilder for Mute {
+    type Handle = ();
+
+    fn build(self) -> (Box<dyn kira::effect::Effect>, ()) {
+        (Box::new(self), ())
+    }
+}
+
+/// Mute as `file` says (`true` or `false`) now, then look again four times
+/// a second for as long as the mixer is there. No file is not muted: the
+/// editor writes it before the game starts, so missing means no editor.
+#[cfg(not(target_arch = "wasm32"))]
+fn watch_mute(file: std::path::PathBuf, muted: &Arc<AtomicBool>) {
+    let read = move || {
+        std::fs::read_to_string(&file)
+            .map(|text| text.trim() == "true")
+            .unwrap_or(false)
+    };
+    muted.store(read(), Ordering::Relaxed);
+    let weak = Arc::downgrade(muted);
+    let spawned = std::thread::Builder::new()
+        .name("scrap mute".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let Some(muted) = weak.upgrade() else { return };
+            muted.store(read(), Ordering::Relaxed);
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("the editor's Mute will not reach this game: {e}");
+    }
+}
+
 /// Linear gain to decibels, which is what a mixer actually works in.
 ///
 /// Silence is kira's [`Decibels::SILENCE`], not negative infinity: kira
@@ -778,6 +878,49 @@ mod tests {
             let gain = broken.gain(distance);
             assert!(gain.is_finite() && (0.0..=1.0).contains(&gain), "{gain}");
         }
+    }
+
+    #[test]
+    fn muting_fades_the_mix_out_and_back_in_without_a_click() {
+        use kira::effect::Effect;
+        let muted = Arc::new(AtomicBool::new(false));
+        let mut mute = Mute { muted: muted.clone(), gain: 1.0, step: 0.0 };
+        mute.init(1000, 64);
+        let info = kira::info::MockInfoBuilder::new().build();
+        let one = kira::Frame { left: 1.0, right: 1.0 };
+        let mut frames = [one; 40];
+        mute.process(&mut frames, 0.001, &info);
+        assert!(frames.iter().all(|f| f.left == 1.0), "unmuted is untouched");
+
+        muted.store(true, Ordering::Relaxed);
+        let mut frames = [one; 40];
+        mute.process(&mut frames, 0.001, &info);
+        // 20 ms at 1 kHz: twenty frames down, every one a small step.
+        assert!(frames.windows(2).all(|w| w[0].left - w[1].left <= 0.051));
+        assert!(frames[19..].iter().all(|f| f.left == 0.0), "{:?}", &frames[..21]);
+
+        muted.store(false, Ordering::Relaxed);
+        let mut frames = [one; 40];
+        mute.process(&mut frames, 0.001, &info);
+        assert!(frames[0].left < 0.1 && frames[39].left == 1.0);
+    }
+
+    #[test]
+    fn a_game_is_muted_as_the_editors_file_says_and_follows_it() {
+        let dir = std::env::temp_dir().join(format!("scrap-mute-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mute");
+        std::fs::write(&file, "true\n").unwrap();
+        let muted = Arc::new(AtomicBool::new(false));
+        watch_mute(file.clone(), &muted);
+        assert!(muted.load(Ordering::Relaxed), "muted from the first sample");
+        std::fs::write(&file, "false\n").unwrap();
+        let heard = (0..40).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            !muted.load(Ordering::Relaxed)
+        });
+        assert!(heard, "unmuted while playing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
