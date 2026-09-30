@@ -121,6 +121,11 @@ pub struct ImportSettings {
     /// 1 to 19. The takes themselves are kept beside them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clips: Vec<ClipCut>,
+    /// The largest a picture comes in, in pixels on its longer side —
+    /// Unity's Max Size: a 4K map on a low-poly kit halved until it fits.
+    /// For an image, and for a scene's textures. `None` keeps the size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u32>,
 }
 
 /// A clip cut from a take: frames `from` to `to` of the take `take` (its
@@ -162,6 +167,7 @@ impl Default for ImportSettings {
             materials: BTreeMap::new(),
             alpha_from: None,
             clips: Vec::new(),
+            max_size: None,
         }
     }
 }
@@ -1144,7 +1150,7 @@ pub fn texture_from_image(
             texel[3] = texel[from];
         }
     }
-    let mips = build_mips(width, height, &pixels, settings.srgb);
+    let (width, height, pixels, mips) = capped(width, height, pixels, settings.srgb, settings.max_size);
     Ok(TextureAsset {
         id: settings.asset_id(),
         name: path
@@ -1158,6 +1164,28 @@ pub fn texture_from_image(
         srgb: settings.srgb,
         coding: Default::default(),
     })
+}
+
+/// An image and its mips, halved first until neither side is over `max`
+/// ([`ImportSettings::max_size`]): its top level is the first mip that
+/// fits, averaged as a mip is.
+pub(crate) fn capped(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    srgb: bool,
+    max: Option<u32>,
+) -> (u32, u32, Vec<u8>, Vec<TextureLevel>) {
+    let mut mips = build_mips(width, height, &pixels, srgb);
+    let Some(max) = max.filter(|m| width > *m || height > *m) else {
+        return (width, height, pixels, mips);
+    };
+    let Some(fits) = mips.iter().position(|l| l.width <= max.max(1) && l.height <= max.max(1)) else {
+        return (width, height, pixels, mips);
+    };
+    let rest = mips.split_off(fits + 1);
+    let top = mips.pop().expect("the level that fits");
+    (top.width, top.height, top.pixels, rest)
 }
 
 /// Halve an image repeatedly, down to one pixel.

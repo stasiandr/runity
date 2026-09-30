@@ -476,6 +476,7 @@ pub fn parse(bytes: &[u8]) -> Result<SceneData> {
             width: image.width,
             height: image.height,
             rgba,
+            file: None,
         });
     }
     for m in header.materials {

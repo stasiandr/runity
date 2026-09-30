@@ -339,6 +339,86 @@ fn one_object_whose_materials_share_one_image_is_still_one_model() {
     assert!(!ImportSettings::load(sidecar_for(&source)).unwrap().scene);
 }
 
+/// A kit: models in one folder painting with the same pictures beside
+/// them. Each picture is one texture, whichever model it is read by —
+/// not one per model (a kit of 340 models sharing 4K maps was 28 GB of
+/// copies).
+#[test]
+fn models_that_share_a_picture_share_its_texture() {
+    let (project, _root) = project("shared");
+    let dir = project.assets();
+    let tree_gltf = tree(&dir, [0, 1]);
+    let text = std::fs::read_to_string(&tree_gltf).unwrap();
+    // The bush's bark also packs its metal and roughness from a file of
+    // its own; the tree's the same file.
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 64, 255, 255]))
+        .save(dir.join("orm.png"))
+        .unwrap();
+    let with_mask = text
+        .replace(
+            r#""baseColorTexture": {"index": 0}}"#,
+            r#""baseColorTexture": {"index": 0}, "metallicRoughnessTexture": {"index": 2}}"#,
+        )
+        .replace(
+            r#"{"uri": "leaves.png"}]"#,
+            r#"{"uri": "leaves.png"}, {"uri": "orm.png"}]"#,
+        )
+        .replace(r#"{"source": 1}]"#, r#"{"source": 1}, {"source": 2}]"#);
+    assert_ne!(with_mask, text);
+    write_all(&tree_gltf, &with_mask).unwrap();
+    write_all(dir.join("bush.gltf"), &with_mask).unwrap();
+    sync(&project);
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    let bark = |file: &str| library.material_by_name(&format!("{file}/bark")).unwrap().clone();
+    let (tree_bark, bush_bark) = (bark("tree"), bark("bush"));
+    assert!(tree_bark.base_map.is_some());
+    assert_eq!(tree_bark.base_map, bush_bark.base_map, "one texture of bark.png");
+    assert!(tree_bark.mask_map.is_some());
+    assert_eq!(tree_bark.mask_map, bush_bark.mask_map, "one mask of orm.png");
+    let base = library.texture(tree_bark.base_map.unwrap()).unwrap();
+    assert_eq!(base.name.as_str(), "bark", "named after its picture");
+    let textures = std::fs::read_dir(project.library())
+        .unwrap()
+        .flatten()
+        .filter(|e| scrap::asset::read_head(e.path()).is_ok_and(|(kind, _, _)| kind == scrap::asset::TEXTURE))
+        .count();
+    // bark, leaves, the mask; and the pictures' own imports, as images of
+    // the project (bark.png, leaves.png, orm.png).
+    assert_eq!(textures, 6);
+
+    // The bush no longer paints with bark.png: what the tree draws with
+    // stays.
+    let bush = dir.join("bush.gltf");
+    write_all(&bush, with_mask.replace(r#"{"uri": "bark.png"}"#, r#"{"uri": "leaves.png"}"#)).unwrap();
+    scrap_import::import_into(&project, &bush, None).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert_ne!(library.material_by_name("bush/bark").unwrap().base_map, tree_bark.base_map);
+    assert!(library.texture(tree_bark.base_map.unwrap()).is_some(), "the tree's bark is still there");
+}
+
+/// `max_size` in a sidecar halves a scene's pictures until they fit.
+#[test]
+fn a_scenes_pictures_come_in_no_larger_than_its_max_size() {
+    let (project, _root) = project("max-size");
+    let dir = project.assets();
+    let source = tree(&dir, [0, 1]);
+    image::RgbaImage::from_pixel(8, 4, image::Rgba([120, 60, 20, 255]))
+        .save(dir.join("bark.png"))
+        .unwrap();
+    let settings = ImportSettings {
+        max_size: Some(2),
+        ..ImportSettings::for_source("")
+    };
+    scrap_import::import_into(&project, &source, Some(&settings)).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    let bark = library.material_by_name("tree/bark").unwrap();
+    let base = library.texture(bark.base_map.unwrap()).unwrap();
+    assert_eq!((base.width.to_native(), base.height.to_native()), (2, 1));
+    assert_eq!(&base.pixels[..4], &[120, 60, 20, 255]);
+    assert_eq!(base.mips.len(), 1, "and its mips below");
+}
+
 #[test]
 fn a_scenes_maps_become_textures_and_metal_roughness_packs_into_the_mask() {
     let (project, _root) = project("maps");
