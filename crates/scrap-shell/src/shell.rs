@@ -336,6 +336,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
             }
         },
         captured: false,
+        wants_capture: false,
+        focused: true,
         touch_pad: None,
         #[cfg(target_os = "android")]
         suspended: false,
@@ -466,6 +468,11 @@ struct Shell<G: Game> {
     pads: Option<gilrs::Gilrs>,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
+    /// What the game last asked of the pointer: captured only while the
+    /// window has the focus, as Unity's cursor lock — another window (a
+    /// second player's, the editor) must be reachable with the mouse.
+    wants_capture: bool,
+    focused: bool,
     /// The pad on the screen, where there is one.
     touch_pad: Option<crate::touch_pad::TouchPad>,
     /// On Android, between the Activity going to the background and
@@ -680,7 +687,10 @@ impl<G: Game> Shell<G> {
         let asked = ctx.asked;
         self.time.ask(asked);
         self.loop_times.record("frame", start.elapsed());
-        if let Some(on) = wanted.filter(|on| *on != self.captured) {
+        if let Some(on) = wanted {
+            self.wants_capture = on;
+        }
+        if let Some(on) = wanted.map(|on| on && self.focused).filter(|on| *on != self.captured) {
             set_captured(&state.window, on);
             self.captured = on;
             if let (false, Some(pad)) = (on, self.touch_pad.as_mut()) {
@@ -837,7 +847,7 @@ impl<G: Game> Shell<G> {
                 set_captured(&state.window, false);
                 self.captured = false;
             }
-        } else if self.debugger.was_captured {
+        } else if self.debugger.was_captured && self.focused {
             set_captured(&state.window, true);
             self.captured = true;
         }
@@ -1072,6 +1082,24 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                 }
             }
             WindowEvent::RedrawRequested => self.draw(event_loop),
+            // The pointer goes free with the focus, and is taken again when
+            // the window has it back, if the game still wants it.
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                let on = focused && self.wants_capture && !self.debugger.open;
+                if on != self.captured {
+                    set_captured(&state.window, on);
+                    self.captured = on;
+                    if let (false, Some(pad)) = (on, self.touch_pad.as_mut()) {
+                        for event in pad.release_all() {
+                            self.input.handle(&event);
+                        }
+                    }
+                }
+                for event in translate(&event) {
+                    self.input.handle(&event);
+                }
+            }
             // Captured, the pointer's position means nothing: only how far
             // it moves counts, and that comes as device motion.
             WindowEvent::CursorMoved { .. } if self.captured => {}

@@ -70,6 +70,9 @@ struct Running {
     last_commit: Option<(String, Instant)>,
     /// The pointer is held for the game in the view, as it asked.
     captured: bool,
+    /// The window has the focus: the pointer is held only then, so another
+    /// window — a second player's — can be reached with the mouse.
+    focused: bool,
 }
 
 /// A panel's own window: the same UI tree, drawn from the panel's frame.
@@ -257,6 +260,7 @@ impl ApplicationHandler<Chosen> for App {
             last_key_text: None,
             last_commit: None,
             captured: false,
+            focused: true,
         });
     }
 
@@ -305,6 +309,13 @@ impl ApplicationHandler<Chosen> for App {
                     .resize(size.width as f32 / scale, size.height as f32 / scale, scale);
             }
             WindowEvent::DroppedFile(path) => run.studio.drop_file(path),
+            WindowEvent::Focused(focused) => {
+                run.focused = *focused;
+                if !focused && run.captured {
+                    set_captured(&run.window, false);
+                    run.captured = false;
+                }
+            }
             WindowEvent::Ime(ime) => {
                 match ime {
                     winit::event::Ime::Preedit(text, _) => run.studio.ime_preedit(text),
@@ -339,7 +350,7 @@ impl ApplicationHandler<Chosen> for App {
                 };
                 run.window.set_cursor(cursor);
                 // The game in the view looks around with the pointer held.
-                let capture = run.studio.captures_cursor();
+                let capture = run.focused && run.studio.captures_cursor();
                 if capture != run.captured {
                     set_captured(&run.window, capture);
                     run.captured = capture;

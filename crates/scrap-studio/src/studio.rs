@@ -174,6 +174,8 @@ struct Toolbar {
     save: NodeId,
     /// The Layout dropdown: presets, Save, Delete.
     layout: NodeId,
+    /// How many play: alone, or with clones (a dropdown by Play).
+    players: NodeId,
 }
 
 struct Status {
@@ -239,6 +241,7 @@ struct MenuStamp {
     game_view: bool,
     panels: [bool; 3],
     maximized: bool,
+    players: u32,
     /// The keymap's generation: a key rebound shows in the menus.
     keys: u64,
 }
@@ -320,6 +323,9 @@ pub struct Studio {
     /// changes whenever that does.
     menu_seen: Option<MenuStamp>,
     menu_revision: u64,
+    /// How many Play starts, as the project's prefs say (read with the
+    /// disk twice a second, not every frame).
+    players: u32,
     /// The Console line in the status bar.
     status_line: Option<StatusLine>,
 
@@ -727,6 +733,7 @@ impl Studio {
             native_menu: false,
             menu_seen: None,
             menu_revision: 0,
+            players: 1,
             status_line: None,
             snap,
 
@@ -828,6 +835,7 @@ impl Studio {
         studio.ui.set_clipboard(Box::new(SystemClipboard::new()));
         studio.ui.focus(Some(viewport));
         studio.restore_layout();
+        studio.players = studio.session.players();
         studio.update_layout_button();
         studio.sync_visible();
         for e in key_errors.into_iter().chain(personal_error) {
@@ -1041,6 +1049,7 @@ impl Studio {
             Action::Pause => (playing, s.is_paused()),
             Action::Step | Action::KeepSimulation => (playing, false),
             Action::FastGame => (true, s.fast_game()),
+            Action::Players(n) => (true, self.players == *n),
             Action::Play => (true, playing),
             Action::ToggleGrid => (true, s.show_grid()),
             Action::ToggleSnap => (true, s.snap().meters > 0.0),
@@ -1093,6 +1102,7 @@ impl Studio {
             game_view: s.is_game_view(),
             panels: self.panels,
             maximized: self.maximized.is_some(),
+            players: self.players,
             keys: self.keymap.generation,
         }
     }
@@ -2852,6 +2862,8 @@ impl Studio {
             return;
         }
         self.polled = Instant::now();
+        // The agent may have chosen another count (start_game's players).
+        self.players = self.session.players();
         self.save_layout();
         if self.personal_dirty {
             self.save_personal();
@@ -3142,6 +3154,15 @@ impl Studio {
         );
         set_icon_button(ui, t.pause, "pause", s.is_paused(), true);
         set_icon_button(ui, t.step, "step-forward", false, true);
+        set_word(
+            ui,
+            t.players,
+            &match self.players {
+                1 => "Alone".to_string(),
+                2 => "+1 clone".to_string(),
+                n => format!("+{} clones", n - 1),
+            },
+        );
         ui.restyle(t.play_group, |st| {
             st.border(1.0, if playing { ACCENT.alpha(60) } else { DIVIDER })
         });
@@ -3567,6 +3588,21 @@ impl Studio {
             }
             requests.action = Some(Action::GameView(node == self.tab_game));
             requests.keyboard_to_scene = true;
+            return true;
+        }
+        if node == self.toolbar.players {
+            let r = self.ui.rect(node);
+            let items = crate::menu::players_items()
+                .into_iter()
+                .map(|item| {
+                    let on = item
+                        .action
+                        .as_ref()
+                        .is_some_and(|a| self.menu_state(a, &item.label).checked);
+                    item.checked(on)
+                })
+                .collect();
+            requests.menu = Some((items, r.x, r.y + r.height + 4.0));
             return true;
         }
         if node == self.toolbar.layout {
@@ -4438,6 +4474,26 @@ impl Studio {
                         },
                     );
                 }
+                Action::Players(n) => {
+                    let n = s.set_players(n);
+                    self.players = n;
+                    let running = if s.is_game_running() {
+                        " from the next Play"
+                    } else {
+                        ""
+                    };
+                    s.say(
+                        Level::Info,
+                        if n == 1 {
+                            format!("Play starts the game alone{running}")
+                        } else {
+                            format!(
+                                "Play starts the host in the Game view and {} joining it in windows of their own{running}",
+                                if n == 2 { "a clone".to_string() } else { format!("{} clones", n - 1) }
+                            )
+                        },
+                    );
+                }
                 Action::KeepSimulation => {
                     if !s.is_playing() {
                         return Err("Keep Simulation Changes works while playing".into());
@@ -5101,6 +5157,23 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let pause = icon_button(ui, play_group, "pause", "pause", false);
     let step = icon_button(ui, play_group, "step", "step-forward", false);
     let right = side(ui);
+    // Beside Play, how many it starts: Unity's Multiplayer Play Mode. First on the
+    // right, so Play keeps the middle.
+    let players = ui.add(
+        right,
+        Style::row()
+            .height(26.0)
+            .fixed()
+            .padding_x(SPACE_2)
+            .gap(4.0)
+            .center_items()
+            .radius(6.0)
+            .hover(HOVER)
+            .pressed(PRESSED),
+    );
+    ui.set_name(players, "players");
+    ui.add_text(players, text().text_color(LABEL).nowrap(), "Alone");
+    icon(ui, players, "chevron-down", MUTED);
     spacer(ui, right);
     // The document beside what saves it: its name, and a dot while it
     // has changes.
@@ -5155,6 +5228,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             redo,
             save,
             layout,
+            players,
         },
         bar,
     )
@@ -5371,6 +5445,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "git restore" => "Put the scene back as it was at this commit, as one undo step",
         "status console" => "The Console's newest line: click to show the Console",
         "play" => "Play the game in the Game view / Stop",
+        "players" => "How many Play starts: alone, or with clones joining in windows of their own",
         "pause" => "Simulate physics here, paused",
         "step" => "One step of physics simulated here",
         "undo" => "Undo",

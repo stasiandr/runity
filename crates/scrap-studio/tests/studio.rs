@@ -1429,6 +1429,29 @@ fn play_pause_and_step_stand_in_the_middle_of_the_window() {
 }
 
 #[test]
+fn the_players_button_by_play_starts_clones_with_the_host() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let word = |s: &mut Studio| {
+        s.frame();
+        let b = s.ui.find("players").unwrap();
+        s.ui.text(s.ui.children(b)[0]).unwrap().to_string()
+    };
+    assert_eq!(word(&mut s), "Alone");
+    click(&mut s, "players");
+    click(&mut s, "menu Play + 1 Clone");
+    assert_eq!(s.session.players(), 2, "Play starts the host and one clone");
+    assert_eq!(word(&mut s), "+1 clone");
+    // Right of Play, which keeps the middle.
+    let play = rect(&mut s, "step");
+    let players = rect(&mut s, "players");
+    assert!(players.x > play.x + play.width, "{players:?} right of {play:?}");
+    click(&mut s, "players");
+    click(&mut s, "menu Play Alone");
+    assert_eq!(s.session.players(), 1);
+    assert_eq!(word(&mut s), "Alone");
+}
+
+#[test]
 fn the_hierarchy_collapses_and_expands_every_line_at_once() {
     let Some((mut s, _dir)) = studio() else { return };
     s.ui.paint();

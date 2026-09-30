@@ -89,7 +89,6 @@ pub fn players(
     if !build.status()?.success() {
         return Ok(false);
     }
-    let exe = crate::build::find_executable(project, release)?;
     let size = scrap::project::GameSettings::load(&project.root().to_string_lossy())
         .map(|(_, s)| (s.width, s.height))
         .unwrap_or((1280, 720));
@@ -97,7 +96,7 @@ pub fn players(
     println!("{count} players: player 1 hosts on {address}");
     let mut children = Vec::new();
     for peer in 0..count {
-        let mut command = player_command(&exe, project, peer, count, &address, size);
+        let mut command = player_command(project, release, peer, count, &address, size);
         if let Some(scene) = scene {
             command.env(SCENE_VAR, scene);
         }
@@ -146,15 +145,21 @@ pub fn players(
 
 /// Player `peer` (0 hosts) of `count`, from the built game at `exe`.
 pub fn player_command(
-    exe: &Path,
     project: &Project,
+    release: bool,
     peer: u32,
     count: u32,
     address: &str,
     size: (u32, u32),
 ) -> Command {
     use scrap::party;
-    let mut command = Command::new(exe);
+    // `cargo run` on the build just made, not the bare executable: cargo
+    // finds the libraries a crate links from its build folder (Steam's).
+    let mut command = Command::new("cargo");
+    command.arg("run");
+    if release {
+        command.arg("--release");
+    }
     command
         .current_dir(project.root())
         .env(party::PLAYER_VAR, format!("Player {}", peer + 1))
@@ -217,14 +222,15 @@ mod tests {
     #[test]
     fn each_player_is_told_who_it_is_and_where_the_host_is() {
         let project = project("players");
-        let exe = Path::new("/game/bin");
         let env = |c: &Command, k: &str| {
             c.get_envs()
                 .find(|(key, _)| *key == k)
                 .and_then(|(_, v)| v)
                 .map(|v| v.to_string_lossy().into_owned())
         };
-        let host = player_command(exe, &project, 0, 3, "127.0.0.1:4000", (1280, 720));
+        let host = player_command(&project, false, 0, 3, "127.0.0.1:4000", (1280, 720));
+        assert_eq!(host.get_program(), "cargo");
+        assert_eq!(args(&host), ["run"]);
         assert_eq!(
             env(&host, "SCRAP_NET").as_deref(),
             Some("host:127.0.0.1:4000")
@@ -238,7 +244,7 @@ mod tests {
             None,
             "the host is the person's own"
         );
-        let third = player_command(exe, &project, 2, 3, "127.0.0.1:4000", (1280, 720));
+        let third = player_command(&project, false, 2, 3, "127.0.0.1:4000", (1280, 720));
         assert_eq!(
             env(&third, "SCRAP_NET").as_deref(),
             Some("join:127.0.0.1:4000")

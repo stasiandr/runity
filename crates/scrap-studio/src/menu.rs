@@ -150,6 +150,10 @@ pub enum Action {
     KeepSimulation,
     /// Play builds the game's own code optimized, or as a debug build.
     FastGame,
+    /// Play starts this many players: the host in the Game view, and
+    /// clones of it joining in windows of their own (Unity's Multiplayer
+    /// Play Mode).
+    Players(u32),
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
     /// A material that is another one with nothing changed yet.
@@ -424,9 +428,30 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Keep Simulation Changes", Action::KeepSimulation),
                 MenuItem::separator(),
                 item("Optimized Game Code", Action::FastGame),
-            ],
+                MenuItem::separator(),
+            ]
+            .into_iter()
+            .chain(players_items())
+            .collect(),
         ),
     ]
+}
+
+/// The choice of how many play: alone, or with clones joining the host.
+/// The Play menu and the toolbar's players button both list these.
+pub fn players_items() -> Vec<MenuItem> {
+    (1..=scrap_editor::MAX_PLAYERS)
+        .map(|n| item(&players_label(n), Action::Players(n)))
+        .collect()
+}
+
+/// "Play Alone", "Play + 1 Clone", "Play + 2 Clones".
+pub fn players_label(count: u32) -> String {
+    match count {
+        0 | 1 => "Play Alone".into(),
+        2 => "Play + 1 Clone".into(),
+        n => format!("Play + {} Clones", n - 1),
+    }
 }
 
 fn create_items(with_group: bool) -> Vec<MenuItem> {

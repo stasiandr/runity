@@ -119,8 +119,8 @@ struct Follow {
 /// How often the game's report is read for the scene it is in.
 const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Players who start once the host is: from the build the host ran, each
-/// with what makes it that player.
+/// Players who start once the host is: `cargo run` on the build the host
+/// ran, each with what makes it that player.
 struct Waiting {
     root: PathBuf,
     players: Vec<(u32, Vec<(OsString, OsString)>)>,
@@ -238,19 +238,17 @@ impl Running {
         let Some(waiting) = self.waiting.take() else {
             return Vec::new();
         };
-        let exe = match executable(&waiting.root) {
-            Ok(exe) => exe,
-            Err(e) => {
-                return vec![(
-                    Level::Error,
-                    format!("the other players could not start: {e}"),
-                )]
-            }
-        };
         let mut said = Vec::new();
         for (number, envs) in waiting.players {
-            let mut command = Command::new(&exe);
-            command.current_dir(&waiting.root).envs(envs);
+            // `cargo run` as the host was, on the build it finished: cargo
+            // finds the libraries a crate links from its build folder
+            // (Steam's), which the bare executable does not.
+            let mut command = Command::new("cargo");
+            command
+                .arg("run")
+                .current_dir(&waiting.root)
+                .env_remove(FAST_GAME_VAR)
+                .envs(envs);
             match Running::start(&mut command) {
                 Ok(mut guest) => {
                     guest.label = Some(format!("player {number}"));
@@ -260,42 +258,6 @@ impl Running {
             }
         }
         said
-    }
-}
-
-/// The game's executable, as `cargo run` built it for the host: from
-/// `cargo metadata`, which knows the target folder wherever it is.
-fn executable(root: &Path) -> Result<PathBuf, String> {
-    let out = Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .current_dir(root)
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| format!("cargo metadata: {e}"))?;
-    let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("cargo metadata said something unreadable: {e}"))?;
-    let target = meta["target_directory"]
-        .as_str()
-        .ok_or("cargo metadata named no target folder")?;
-    let bin = meta["packages"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .flat_map(|p| p["targets"].as_array().into_iter().flatten())
-        .find(|t| {
-            t["kind"]
-                .as_array()
-                .is_some_and(|k| k.iter().any(|k| k == "bin"))
-        })
-        .and_then(|t| t["name"].as_str())
-        .ok_or("the game crate has no executable")?;
-    let exe = Path::new(target)
-        .join("debug")
-        .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-    if exe.is_file() {
-        Ok(exe)
-    } else {
-        Err(format!("{} is not built", exe.display()))
     }
 }
 
@@ -414,7 +376,10 @@ impl Session {
         let shared: Vec<(OsString, OsString)> = command
             .get_envs()
             .filter(|(k, _)| {
-                *k == "SCRAP_SCENE" || *k == LIVE_VAR || *k == scrap::player::START_VAR
+                *k == "SCRAP_SCENE"
+                    || *k == LIVE_VAR
+                    || *k == scrap::player::START_VAR
+                    || *k == FAST_GAME_VAR
             })
             .filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string())))
             .collect();
