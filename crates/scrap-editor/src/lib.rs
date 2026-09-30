@@ -5177,6 +5177,11 @@ impl Session {
         scrap::wires::run_wires(world, fixed);
         scrap::routes::run_routes(world, fixed);
         scrap::motion::run(world, fixed);
+        // Characters' graphs pick their clips, as the game's animation
+        // module does in its step: without it an animator's start state
+        // is never entered and a skeleton stands in its bind pose.
+        scrap::animgraph::run_controllers(world);
+        scrap::rules::run_rules(world, fixed);
         scrap::world::apply_hierarchy(world);
         scrap::fluid::float(world, physics);
         scrap::character::step(world, physics, fixed);

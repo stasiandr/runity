@@ -2360,6 +2360,7 @@ fn simulate(server: &mut Server, args: &Value) -> Answer {
         .filter(|(desc, _)| desc.body() != Body::None)
         .map(|(desc, _)| (desc.id, desc.name.clone()))
         .collect();
+    let said_before = session.console().len();
     session.play();
     // In frame-sized slices: the clock caps how many steps one call may
     // catch up, so a single call for three seconds would simulate a few
@@ -2379,6 +2380,13 @@ fn simulate(server: &mut Server, args: &Value) -> Answer {
     }
     if bodies.is_empty() {
         report.push_str("\nno entity has a body, so nothing moves");
+    }
+    // What play could not start — an animator without its graph, a model
+    // without a skeleton — is said here, not only in the Console.
+    for line in session.console().iter().skip(said_before) {
+        if line.level != scrap_editor::console::Level::Info {
+            let _ = write!(report, "\nwarning: {}", line.text);
+        }
     }
     let keep: Vec<EntityId> = match args.get("keep").and_then(Value::as_array) {
         Some(ids) => ids

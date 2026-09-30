@@ -330,7 +330,7 @@ pub fn attach(
         }
         let Some(graph) = motions.graphs.get(&animates.graph) else {
             problems.push(format!(
-                "animator `{}`: no such graph in animators/",
+                "animator `{}`: no such graph in the project (`*.animator.ron`)",
                 animates.graph
             ));
             // Not asked again every frame.
@@ -370,7 +370,7 @@ pub fn attach(
                     let _ = world.insert(entity, (animator, Controller::new(graph.clone())));
                 }
                 None => problems.push(format!(
-                    "animator `{}`: none of its clips is in clips/, and `{}` has no skeleton",
+                    "animator `{}`: none of its clips is a `*.clip.ron`, and `{}` has no skeleton",
                     animates.graph, animates.model
                 )),
             }

@@ -23,6 +23,11 @@ pub struct Shot {
     /// [`Shot::build`]).
     pub world: hecs::World,
     scene: Scene,
+    /// The project's root, where its animators are found.
+    root: Option<std::path::PathBuf>,
+    library: Option<Library>,
+    /// Whether the scene's animators are started ([`Shot::play`]).
+    animated: bool,
     camera: crate::render::Camera,
     lighting: crate::render::Lighting,
     fog: FogSettings,
@@ -168,6 +173,9 @@ impl Shot {
             entities: scene.entities.len(),
             world,
             scene,
+            root: project.as_ref().map(|p| p.root().to_path_buf()),
+            library,
+            animated: false,
             camera,
             lighting,
             fog,
@@ -219,6 +227,45 @@ impl Shot {
         physics
             .get_or_insert_with(|| crate::physics::PhysicsWorld::new(seconds))
             .run(world);
+    }
+
+    /// The scene played for `seconds`, as the game's loop plays it: its
+    /// animators started (a character in the pose of its clip rather than
+    /// its bind pose), then fixed steps of every module's systems
+    /// (`player_loop::modules`: wires, routes, motion clips, characters'
+    /// animation, the hierarchy, ropes, water) and physics, and the frame
+    /// built again. What its animators could not do is added to
+    /// [`Shot::problems`] and returned. Nothing but the frame for no time.
+    pub fn play(&mut self, seconds: f32) -> Vec<String> {
+        let mut said = Vec::new();
+        #[cfg(feature = "animation")]
+        if !self.animated {
+            self.animated = true;
+            let (motions, problems) = self
+                .root
+                .as_ref()
+                .map(crate::motion::Motions::load)
+                .unwrap_or_default();
+            said.extend(problems);
+            let library = self.library.as_ref();
+            let skins = |model: &crate::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+            said.extend(crate::motion::attach(&mut self.world, &motions, skins));
+        }
+        let dt = 1.0 / 60.0;
+        let steps = (seconds.max(0.0) / dt).round() as u32;
+        if steps > 0 {
+            let mut player_loop = crate::player_loop::modules();
+            for _ in 0..steps {
+                player_loop.run(crate::player_loop::Phase::FixedUpdate, &mut self.world, dt, None);
+                #[cfg(feature = "physics")]
+                self.physics
+                    .get_or_insert_with(|| crate::physics::PhysicsWorld::new(dt))
+                    .run(&mut self.world);
+            }
+        }
+        self.build();
+        self.problems.extend(said.iter().cloned());
+        said
     }
 
     /// The frame built again from the world, as a game builds it each
