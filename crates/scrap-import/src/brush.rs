@@ -271,6 +271,7 @@ pub fn mesh_from_brushes(path: &Path, settings: &ImportSettings) -> Result<MeshA
         skin: None,
         colors: Vec::new(),
         look: None,
+        baked: None,
     })
 }
 

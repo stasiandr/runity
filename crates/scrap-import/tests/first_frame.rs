@@ -286,6 +286,7 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
             skin: None,
             colors: Vec::new(),
             look: None,
+            baked: None,
             bounds: scrap::Bounds::of(&[]),
         },
         scrap::asset::MESH,

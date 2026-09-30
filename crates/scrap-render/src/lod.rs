@@ -109,6 +109,26 @@ pub const FROM_TRIANGLES: usize = 600;
 /// for — below the next one's, the next one is drawn.
 pub const LEVELS: [(f32, f32); 2] = [(1.0 / 28.0, 0.25), (1.0 / 11.0, 0.08)];
 
+/// A mesh's coarser levels, finest first: for each, the share of the
+/// screen's height it is drawn below, its vertices, colours and
+/// triangles. None for a mesh of fewer than [`FROM_TRIANGLES`].
+#[allow(clippy::type_complexity)]
+pub fn levels(vertices: &[Vertex], colors: &[[u8; 4]], indices: &[u32]) -> Vec<(f32, Vec<Vertex>, Vec<[u8; 4]>, Vec<u32>)> {
+    let mut levels = Vec::new();
+    if indices.len() / 3 < FROM_TRIANGLES {
+        return levels;
+    }
+    let bounds = crate::asset::Bounds::of(vertices);
+    let diagonal = (Vec3::from_array(bounds.max) - Vec3::from_array(bounds.min)).length();
+    for (share, below) in LEVELS {
+        let Some((v, c, i)) = simplify(vertices, colors, indices, diagonal * share) else {
+            break;
+        };
+        levels.push((below, v, c, i));
+    }
+    levels
+}
+
 /// Below this share of the screen's height a thing is not drawn at all.
 pub const TOO_SMALL: f32 = 0.004;
 

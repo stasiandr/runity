@@ -4417,7 +4417,7 @@ impl Renderer {
     /// asset format exists.
     pub fn upload_mesh(&mut self, gpu: &Gpu, mesh: &ArchivedMeshAsset) -> MeshHandle {
         let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
-        let handle = self.upload(gpu, vertex_slice(mesh), mesh.colors.as_slice(), &indices);
+        let handle = self.upload(gpu, vertex_slice(mesh), mesh.colors.as_slice(), &indices, mesh.baked.as_ref());
         self.mesh_names.insert(handle.0, mesh.name.as_str().into());
         if mesh.submeshes.len() > 1 {
             let runs = mesh
@@ -4505,18 +4505,47 @@ impl Renderer {
         Some(handle)
     }
 
+    /// `baked`: the clusters and coarser levels the import cut
+    /// ([`crate::cluster::bake`]), taken as they are when cut the way this
+    /// renderer cuts; else they are worked out here.
     fn upload(
         &mut self,
         gpu: &Gpu,
         vertices: &[crate::asset::Vertex],
         colors: &[[u8; 4]],
         indices: &[u32],
+        baked: Option<&crate::asset::ArchivedMeshBaked>,
     ) -> MeshHandle {
-        let mesh = self.gpu_mesh(gpu, vertices, colors, indices, true, false);
+        let baked = baked.filter(|b| b.recipe.to_native() == crate::cluster::RECIPE);
+        let cut = baked.map(|b| b.clusters.as_ref().map(crate::cluster::unbake));
+        let mesh = self.gpu_mesh_cut(gpu, vertices, colors, indices, true, false, cut);
         let handle = self.take_slot(mesh);
         self.cluster_later(handle, vertices, indices);
-        self.make_lods(gpu, handle, vertices, colors, indices);
+        match baked {
+            Some(baked) => self.baked_lods(gpu, handle, baked),
+            None => self.make_lods(gpu, handle, vertices, colors, indices),
+        }
         handle
+    }
+
+    /// The coarser levels the import made ([`Renderer::make_lods`]'s, cut
+    /// ahead of time).
+    fn baked_lods(&mut self, gpu: &Gpu, handle: MeshHandle, baked: &crate::asset::ArchivedMeshBaked) {
+        self.lods.remove(&handle.0);
+        let mut levels = Vec::new();
+        for level in baked.levels.iter() {
+            let vertices = archived_vertices(level.vertices.as_slice());
+            let indices: Vec<u32> = level.indices.iter().map(|i| i.to_native()).collect();
+            let cut = Some(level.clusters.as_ref().map(crate::cluster::unbake));
+            let mesh = self.gpu_mesh_cut(gpu, vertices, level.colors.as_slice(), &indices, false, false, cut);
+            self.lod_meshes.push(mesh);
+            let lod = MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1));
+            self.cluster_later(lod, vertices, &indices);
+            levels.push((lod, level.below.to_native()));
+        }
+        if !levels.is_empty() {
+            self.lods.insert(handle.0, levels);
+        }
     }
 
     /// A mesh the game rewrites as it goes ([`LiveMeshDraw`]): no
@@ -4598,16 +4627,8 @@ impl Renderer {
         indices: &[u32],
     ) {
         self.lods.remove(&handle.0);
-        if indices.len() / 3 < crate::lod::FROM_TRIANGLES {
-            return;
-        }
-        let bounds = crate::asset::Bounds::of(vertices);
-        let diagonal = (Vec3::from_array(bounds.max) - Vec3::from_array(bounds.min)).length();
         let mut levels = Vec::new();
-        for (share, below) in crate::lod::LEVELS {
-            let Some((v, c, i)) = crate::lod::simplify(vertices, colors, indices, diagonal * share) else {
-                break;
-            };
+        for (below, v, c, i) in crate::lod::levels(vertices, colors, indices) {
             let mesh = self.gpu_mesh(gpu, &v, &c, &i, false, false);
             self.lod_meshes.push(mesh);
             let lod = MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1));
@@ -4630,6 +4651,23 @@ impl Renderer {
         indices: &[u32],
         traced: bool,
         live: bool,
+    ) -> GpuMesh {
+        self.gpu_mesh_cut(gpu, vertices, colors, indices, traced, live, None)
+    }
+
+    /// [`Renderer::gpu_mesh`] with its clusters already cut (`Some`: by the
+    /// import, `Some(None)` when it had none to cut) rather than cut here
+    /// or by the worker.
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_mesh_cut(
+        &mut self,
+        gpu: &Gpu,
+        vertices: &[crate::asset::Vertex],
+        colors: &[[u8; 4]],
+        indices: &[u32],
+        traced: bool,
+        live: bool,
+        cut: Option<Option<(Vec<u32>, Vec<crate::cluster::ClusterRaw>)>>,
     ) -> GpuMesh {
         let bounds = crate::asset::Bounds::of(vertices);
         use wgpu::util::DeviceExt;
@@ -4659,7 +4697,11 @@ impl Renderer {
         // Cut here where frames wait for what they draw; else by the worker
         // (`cluster_later`), the mesh drawn whole meanwhile.
         let dense = self.clusters.can && !live && indices.len() / 3 >= crate::cluster::FROM_TRIANGLES && !vertices.is_empty();
-        let clustered = if dense && self.wait_for_pipelines { crate::cluster::build(vertices, indices) } else { None };
+        let clustered = match cut {
+            Some(cut) => cut.filter(|_| dense),
+            None if dense && self.wait_for_pipelines => crate::cluster::build(vertices, indices),
+            None => None,
+        };
         if dense {
             usage |= wgpu::BufferUsages::STORAGE;
         }
@@ -5062,7 +5104,7 @@ impl Renderer {
     /// entry point: an import is a decision, and making it as easy to skip
     /// as to do is how a codebase ends up parsing OBJ at startup again.
     pub fn upload_mesh_owned(&mut self, gpu: &Gpu, mesh: &crate::asset::MeshAsset) -> MeshHandle {
-        let handle = self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices);
+        let handle = self.upload(gpu, &mesh.vertices, &mesh.colors, &mesh.indices, None);
         if !mesh.name.is_empty() {
             self.mesh_names.insert(handle.0, mesh.name.as_str().into());
         }
@@ -9168,7 +9210,11 @@ fn extend(v: Vec3, w: f32) -> [f32; 4] {
 /// form of such a type is byte-identical to the native one, which is exactly
 /// what makes the format zero-copy.
 fn vertex_slice(mesh: &ArchivedMeshAsset) -> &[crate::asset::Vertex] {
-    let archived = mesh.vertices.as_slice();
+    archived_vertices(mesh.vertices.as_slice())
+}
+
+/// Archived vertices as the vertex buffer's (see [`vertex_slice`]).
+fn archived_vertices(archived: &[crate::asset::ArchivedVertex]) -> &[crate::asset::Vertex] {
     // SAFETY: `ArchivedVertex` and `Vertex` are both `repr(C)` over `[f32; N]`
     // with identical layout and no padding; rkyv archives `f32` unchanged on
     // little-endian targets, which every platform we ship on is. The asserts

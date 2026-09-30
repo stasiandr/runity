@@ -348,7 +348,7 @@ pub fn build(
             if settings.recompute_normals || !primitive.has_normals {
                 recompute_normals(&mut primitive.vertices, &primitive.indices);
             }
-            let asset = MeshAsset {
+            let mut asset = MeshAsset {
                 id,
                 name: name.clone(),
                 bounds: Bounds::of(&primitive.vertices),
@@ -362,8 +362,9 @@ pub fn build(
                 skin: None,
                 colors: Vec::new(),
                 look: None,
+                baked: None,
             };
-            written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::MESH)?));
+            written.push((id, crate::mesh_bytes(&mut asset)?));
             these.push((AssetLink::to(name, id), primitive.material));
         }
         models.push(these);

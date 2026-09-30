@@ -108,7 +108,8 @@ fn encode_level(coding: TextureCoding, alpha: bool, srgb: bool, width: u32, heig
 pub fn snap_mesh(mesh: &mut MeshAsset) {
     let (turn, texel) = (2f32.powi(-12), 2f32.powi(-16));
     let snap = |v: f32, step: f32| (v / step).round() * step;
-    for v in &mut mesh.vertices {
+    let levels = mesh.baked.iter_mut().flat_map(|b| b.levels.iter_mut()).flat_map(|l| l.vertices.iter_mut());
+    for v in mesh.vertices.iter_mut().chain(levels) {
         v.normal = v.normal.map(|n| snap(n, turn));
         v.uv = v.uv.map(|u| snap(u, texel));
     }
@@ -334,6 +335,7 @@ mod tests {
             skin: None,
             colors: Vec::new(),
             look: None,
+            baked: None,
         };
         snap_mesh(&mut mesh);
         for (a, b) in mesh.vertices.iter().zip(&vertices) {

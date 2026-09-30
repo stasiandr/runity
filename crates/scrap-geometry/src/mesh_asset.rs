@@ -232,6 +232,58 @@ pub struct MeshAsset {
     /// What it is drawn with when the entity's material has no map of its
     /// own — a Kenney kit's model looks as it did in its maker's tool.
     pub look: Option<TextureAsset>,
+    /// What loading would otherwise work out from the triangles, worked
+    /// out once at import: `None` for a mesh built in code, or one small
+    /// enough that there is nothing to work out. See [`MeshBaked`].
+    pub baked: Option<MeshBaked>,
+}
+
+/// A mesh's clusters and coarser levels, cut when it is imported rather
+/// than each time a game loads it — which for a scene of dense models was
+/// seconds before the first frame.
+///
+/// Worked out by the renderer (`scrap::cluster::bake`), which alone knows
+/// how; kept here as plain numbers. `recipe` says which way of cutting
+/// made them: a renderer that cuts another way ignores them and cuts
+/// itself, so a library built before a change to the cutting draws as
+/// before, only loads slower.
+#[derive(Debug, Clone, PartialEq, Default, Archive, Serialize, Deserialize)]
+pub struct MeshBaked {
+    pub recipe: u32,
+    /// The mesh's own clusters, when it is dense enough to have them.
+    pub clusters: Option<BakedClusters>,
+    /// Its coarser levels, finest first.
+    pub levels: Vec<BakedLevel>,
+}
+
+/// A mesh cut into clusters: its indices in the clusters' order (then its
+/// clusters' coarser levels'), and the clusters.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct BakedClusters {
+    pub indices: Vec<u32>,
+    pub clusters: Vec<BakedCluster>,
+}
+
+/// One cluster, as the renderer's GPU buffer has it.
+#[derive(Debug, Clone, Copy, PartialEq, Archive, Serialize, Deserialize)]
+pub struct BakedCluster {
+    pub sphere: [f32; 4],
+    pub cone: [f32; 4],
+    pub first: u32,
+    pub count: u32,
+    pub error: [f32; 2],
+    pub lod: [[f32; 4]; 2],
+}
+
+/// A coarser version of the mesh, drawn where it is smaller on the screen
+/// than `below` of it.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct BakedLevel {
+    pub below: f32,
+    pub vertices: Vec<Vertex>,
+    pub colors: Vec<[u8; 4]>,
+    pub indices: Vec<u32>,
+    pub clusters: Option<BakedClusters>,
 }
 
 impl Asset for MeshAsset {

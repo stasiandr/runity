@@ -25,6 +25,7 @@ mod tests {
             skin: None,
             colors: Vec::new(),
             look: None,
+            baked: None,
             submeshes: vec![Submesh {
                 first_index: 0,
                 index_count: 12,

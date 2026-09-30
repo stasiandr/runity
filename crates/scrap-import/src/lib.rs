@@ -398,6 +398,7 @@ pub fn mesh_from_obj(path: impl AsRef<Path>, settings: &ImportSettings) -> Resul
         skin: None,
         colors: Vec::new(),
         look: None,
+        baked: None,
     })
 }
 
@@ -642,6 +643,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         skin,
         colors,
         look,
+        baked: None,
     })
 }
 
@@ -1956,41 +1958,41 @@ pub fn import_to(
     }
     let (bytes, id, kind) = match extension.as_str() {
         "gltf" | "glb" => {
-            let mesh = mesh_from_gltf(source, &settings)?;
+            let mut mesh = mesh_from_gltf(source, &settings)?;
             (
-                scrap::asset::to_bytes(&mesh, scrap::asset::MESH)?,
+                mesh_bytes(&mut mesh)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
         }
         "obj" => {
-            let mesh = mesh_from_obj(source, &settings)?;
+            let mut mesh = mesh_from_obj(source, &settings)?;
             (
-                scrap::asset::to_bytes(&mesh, scrap::asset::MESH)?,
+                mesh_bytes(&mut mesh)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
         }
         "scrpoly" => {
-            let mesh = poly::mesh_from_poly(source, &settings)?;
+            let mut mesh = poly::mesh_from_poly(source, &settings)?;
             (
-                scrap::asset::to_bytes(&mesh, scrap::asset::MESH)?,
+                mesh_bytes(&mut mesh)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
         }
         "scrbrush" => {
-            let mesh = brush::mesh_from_brushes(source, &settings)?;
+            let mut mesh = brush::mesh_from_brushes(source, &settings)?;
             (
-                scrap::asset::to_bytes(&mesh, scrap::asset::MESH)?,
+                mesh_bytes(&mut mesh)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
         }
         "scrterrain" => {
-            let mesh = terrain::mesh_from_terrain(source, &settings)?;
+            let mut mesh = terrain::mesh_from_terrain(source, &settings)?;
             (
-                scrap::asset::to_bytes(&mesh, scrap::asset::MESH)?,
+                mesh_bytes(&mut mesh)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
@@ -2509,6 +2511,14 @@ fn touch(path: &Path) {
     }
 }
 
+/// A mesh's bytes for the library: cut into its clusters and coarser
+/// levels first, as a game loading it would cut it
+/// (`scrap::cluster::bake`), so the game does not have to.
+pub(crate) fn mesh_bytes(mesh: &mut MeshAsset) -> Result<Vec<u8>> {
+    scrap::cluster::bake(mesh);
+    Ok(scrap::asset::to_bytes(&*mesh, scrap::asset::MESH)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2998,3 +3008,4 @@ f 1 4 3
         assert!(err.contains("blend"), "{err}");
     }
 }
+

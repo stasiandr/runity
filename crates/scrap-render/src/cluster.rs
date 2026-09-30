@@ -56,6 +56,65 @@ pub(crate) struct ClusterRaw {
     pub lod: [[f32; 4]; 2],
 }
 
+/// Which way of cutting [`bake`] does. Bumped whenever [`build`],
+/// `cluster_lod` or [`crate::lod`] would cut a mesh otherwise, so a
+/// library baked the old way is cut again at load rather than drawn wrong.
+pub const RECIPE: u32 = 1;
+
+/// Cut `mesh` at import, as loading would: its clusters, its coarser
+/// levels and theirs, kept in the asset ([`crate::asset::MeshBaked`]) so a
+/// game loads them rather than working them out before its first frame.
+pub fn bake(mesh: &mut crate::asset::MeshAsset) {
+    mesh.baked = baked(&mesh.vertices, &mesh.colors, &mesh.indices);
+}
+
+/// What [`bake`] keeps for these triangles: `None` when there is nothing
+/// to keep — a mesh too small for clusters or coarser levels.
+pub fn baked(vertices: &[Vertex], colors: &[[u8; 4]], indices: &[u32]) -> Option<crate::asset::MeshBaked> {
+    use crate::asset::{BakedCluster, BakedClusters, BakedLevel, MeshBaked};
+    let keep = |cut: Option<(Vec<u32>, Vec<ClusterRaw>)>| {
+        cut.map(|(indices, clusters)| BakedClusters {
+            indices,
+            clusters: clusters
+                .iter()
+                .map(|c| BakedCluster { sphere: c.sphere, cone: c.cone, first: c.first, count: c.count, error: c.error, lod: c.lod })
+                .collect(),
+        })
+    };
+    let clusters = keep(build(vertices, indices));
+    let levels: Vec<BakedLevel> = crate::lod::levels(vertices, colors, indices)
+        .into_iter()
+        .map(|(below, vertices, colors, indices)| BakedLevel {
+            below,
+            clusters: keep(build(&vertices, &indices)),
+            vertices,
+            colors,
+            indices,
+        })
+        .collect();
+    (clusters.is_some() || !levels.is_empty()).then_some(MeshBaked { recipe: RECIPE, clusters, levels })
+}
+
+/// Clusters out of a library's asset, as [`build`] gives them.
+pub(crate) fn unbake(baked: &crate::asset::ArchivedBakedClusters) -> (Vec<u32>, Vec<ClusterRaw>) {
+    let f4 = |v: &[rkyv::rend::f32_le; 4]| v.map(|x| x.to_native());
+    (
+        baked.indices.iter().map(|i| i.to_native()).collect(),
+        baked
+            .clusters
+            .iter()
+            .map(|c| ClusterRaw {
+                sphere: f4(&c.sphere),
+                cone: f4(&c.cone),
+                first: c.first.to_native(),
+                count: c.count.to_native(),
+                error: c.error.map(|x| x.to_native()),
+                lod: [f4(&c.lod[0]), f4(&c.lod[1])],
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn morton(p: Vec3) -> u32 {
     fn spread(v: u32) -> u32 {
         let mut x = v & 0x3ff;
@@ -934,6 +993,40 @@ mod tests {
         // Too few triangles: not cut.
         let small = crate::builtin::sphere(1.0, 16, 8);
         assert!(build(&small.vertices, &small.indices).is_none());
+    }
+
+    #[test]
+    fn what_the_import_bakes_loads_as_what_loading_would_cut() {
+        let mut sphere = crate::builtin::sphere(1.0, 96, 48);
+        bake(&mut sphere);
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&sphere).unwrap();
+        let archived = rkyv::access::<crate::asset::ArchivedMeshAsset, rkyv::rancor::Error>(&bytes).unwrap();
+        let baked = archived.baked.as_ref().expect("a dense mesh is baked");
+        assert_eq!(baked.recipe.to_native(), RECIPE);
+        let raw = |c: &[ClusterRaw]| c.iter().map(bytemuck::bytes_of).map(<[u8]>::to_vec).collect::<Vec<_>>();
+        let same = |baked: &crate::asset::ArchivedBakedClusters, cut: (Vec<u32>, Vec<ClusterRaw>)| {
+            let (indices, clusters) = unbake(baked);
+            assert_eq!(indices, cut.0);
+            assert_eq!(raw(&clusters), raw(&cut.1));
+        };
+        same(baked.clusters.as_ref().unwrap(), build(&sphere.vertices, &sphere.indices).unwrap());
+        let levels = crate::lod::levels(&sphere.vertices, &sphere.colors, &sphere.indices);
+        assert!(!levels.is_empty());
+        assert_eq!(baked.levels.len(), levels.len());
+        for (level, (below, vertices, _, indices)) in baked.levels.iter().zip(levels) {
+            assert_eq!(level.below.to_native(), below);
+            assert_eq!(level.indices.iter().map(|i| i.to_native()).collect::<Vec<_>>(), indices);
+            assert_eq!(level.vertices.len(), vertices.len());
+            match (level.clusters.as_ref(), build(&vertices, &indices)) {
+                (Some(baked), Some(cut)) => same(baked, cut),
+                (None, None) => {}
+                _ => panic!("a level cut at import and not at load, or the other way"),
+            }
+        }
+        // Nothing to keep for a small mesh.
+        let mut small = crate::builtin::cube(1.0);
+        bake(&mut small);
+        assert!(small.baked.is_none());
     }
 }
 

@@ -31,6 +31,7 @@ pub fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset
         skin: None,
         colors: Vec::new(),
         look: None,
+        baked: None,
     }
 }
 

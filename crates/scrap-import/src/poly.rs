@@ -113,6 +113,7 @@ pub fn mesh_from_poly(path: &Path, settings: &ImportSettings) -> Result<MeshAsse
         skin: None,
         colors: Vec::new(),
         look: None,
+        baked: None,
     })
 }
 
