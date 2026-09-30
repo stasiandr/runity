@@ -466,7 +466,22 @@ fn recompute_normals(vertices: &mut [Vertex], indices: &[u32]) {
 /// an importer that scatters it makes a scene author reassemble what the
 /// artist already assembled.
 pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<MeshAsset> {
-    let path = path.as_ref();
+    Ok(gltf_model(path.as_ref(), settings)?.0)
+}
+
+/// A glTF model's runs painted each with its own material: the file's
+/// pictures and materials, and each run's material by its index among
+/// them.
+pub struct Painted {
+    pub pictures: scene::SceneData,
+    pub runs: Vec<Option<usize>>,
+}
+
+/// [`mesh_from_gltf`], and — for a model whose materials paint with more
+/// than one base-colour picture, which one look cannot hold (a skinned
+/// character's outfit and skin) — what its runs paint with, instead of a
+/// look.
+pub fn gltf_model(path: &Path, settings: &ImportSettings) -> Result<(MeshAsset, Option<Painted>)> {
     let (document, buffers, images) =
         gltf::import(path).with_context(|| format!("{}", path.display()))?;
     // Which vertices each primitive made, and its material: for the look.
@@ -614,7 +629,10 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     if settings.recompute_normals || missing_normals {
         recompute_normals(&mut vertices, &indices);
     }
-    if settings.origin_to_base {
+    // Not a skinned one: its origin is its rig's, and its vertices moved
+    // without its bones would bend about the wrong places — hair rigged to
+    // the head would stand at the feet.
+    if settings.origin_to_base && document.skins().len() == 0 {
         let base = Bounds::of(&vertices).min[1];
         for v in &mut vertices {
             v.position[1] -= base;
@@ -630,13 +648,17 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     if let Some(skin) = &mut skin {
         skin.clips = cut_clips(merge_takes(std::mem::take(&mut skin.clips)), &settings.clips);
     }
-    let look = if settings.keep_uvs {
+    let own = (scene::base_images(&document) > 1).then(|| Painted {
+        pictures: scene::pictures_of(&document, &images),
+        runs: painted.iter().map(|(_, m)| *m).collect(),
+    });
+    let look = if settings.keep_uvs || own.is_some() {
         None
     } else {
         gltf_look(&document, &images, &mut vertices, &painted, path)
     };
 
-    Ok(MeshAsset {
+    let mesh = MeshAsset {
         id: settings.asset_id(),
         name: path
             .file_stem()
@@ -650,7 +672,8 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         colors,
         look,
         baked: None,
-    })
+    };
+    Ok((mesh, own))
 }
 
 /// Every node's place in the file's world: its ancestors' transforms and
@@ -1974,6 +1997,10 @@ pub fn import_to(
         settings.scene = true;
     } else if matches!(extension.as_str(), "gltf" | "glb") && first && !settings.scene {
         settings.scene = scene::is_scene(source)?;
+    } else if matches!(extension.as_str(), "gltf" | "glb") && settings.scene && scene::is_character(source)? {
+        // Imported as a scene before characters were models: its pieces
+        // stood in their bind pose. A model now, which moves.
+        settings.scene = false;
     }
     if settings.scene {
         let id = scene::import_scene(source, library, &mut settings)?;
@@ -1986,7 +2013,16 @@ pub fn import_to(
     }
     let (bytes, id, kind) = match extension.as_str() {
         "gltf" | "glb" => {
-            let mut mesh = mesh_from_gltf(source, &settings)?;
+            let (mut mesh, painted) = gltf_model(source, &settings)?;
+            let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let own = scene::model_materials(painted.as_ref().map(|p| &p.pictures), &stem, source, library, &mut settings)?;
+            // Each run with its own material, found by the line that draws
+            // the model (`model#1`) when it names none.
+            if let Some(painted) = &painted {
+                for (run, material) in mesh.submeshes.iter_mut().zip(&painted.runs) {
+                    run.material = material.and_then(|m| own.get(m).copied());
+                }
+            }
             (
                 mesh_bytes(&mut mesh)?,
                 mesh.id,
@@ -2253,6 +2289,13 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
         let change = if !asset.is_file() {
             Some(Change::Built)
         } else if outdated(&settings, &asset, &library) {
+            Some(Change::Outdated)
+        } else if settings.scene
+            && source.extension().is_some_and(|e| e.eq_ignore_ascii_case("gltf") || e.eq_ignore_ascii_case("glb"))
+            && scene::is_character(&source).unwrap_or(false)
+        {
+            // A character imported as a scene before characters were
+            // models: built again, as the model it is (`import_to`).
             Some(Change::Outdated)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
             // The clock says maybe; the hash decides.

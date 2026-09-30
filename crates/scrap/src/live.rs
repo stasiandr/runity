@@ -513,6 +513,12 @@ impl LiveScene {
                 }
             }
             let _ = world.remove_one::<crate::appearance::MeshPending>(*entity);
+            // Its runs, each with its own material.
+            if let Ok(runs) = world.remove_one::<crate::appearance::RunsPending>(*entity) {
+                if let Some(parts) = crate::appearance::surface_parts(link, &runs.0, &mut resolve) {
+                    let _ = world.insert_one(*entity, parts);
+                }
+            }
         }
         for (entity, link) in &emitters {
             if let Some(mesh) = resolve(link) {
@@ -935,7 +941,7 @@ pub fn stamps(path: &Path, project: Option<&Project>) -> Stamps {
 
 /// Turn a model name into an uploaded mesh: a builtin first, then the
 /// library, each uploaded once.
-fn resolver<'a>(
+pub(crate) fn resolver<'a>(
     meshes: &'a mut HashMap<String, MeshHandle>,
     library: Option<&'a Library>,
     gpu: &'a Gpu,

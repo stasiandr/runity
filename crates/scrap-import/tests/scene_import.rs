@@ -339,6 +339,188 @@ fn one_object_whose_materials_share_one_image_is_still_one_model() {
     assert!(!ImportSettings::load(sidecar_for(&source)).unwrap().scene);
 }
 
+/// A character as Quaternius' outfits come: an `Armature` with one joint,
+/// and two pieces — a shirt and bare arms — each its own node and mesh,
+/// both skinned by the one skin, each painting with its own picture.
+fn character(dir: &Path, name: &str) -> PathBuf {
+    let mut bin = Vec::new();
+    // Positions, UVs, indices (padded to four), joints, weights, and the
+    // joint's inverse bind.
+    for v in [[0.0f32, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 2.0, 0.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for v in [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for i in [0u16, 1, 2, 0] {
+        bin.extend(i.to_le_bytes());
+    }
+    bin.extend([0u8; 12]);
+    for _ in 0..3 {
+        for w in [1.0f32, 0.0, 0.0, 0.0] {
+            bin.extend(w.to_le_bytes());
+        }
+    }
+    for c in glam::Mat4::IDENTITY.to_cols_array() {
+        bin.extend(c.to_le_bytes());
+    }
+    std::fs::create_dir_all(dir).unwrap();
+    write_all(dir.join(format!("{name}.bin")), &bin).unwrap();
+    for (file, rgba) in [("shirt.png", [150, 90, 40, 255]), ("skin.png", [230, 180, 150, 255])] {
+        image::RgbaImage::from_pixel(1, 1, image::Rgba(rgba)).save(dir.join(file)).unwrap();
+    }
+    let gltf = format!(
+        r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [
+    {{"name": "Armature", "children": [1, 2, 3]}},
+    {{"name": "root"}},
+    {{"name": "{name}_Body", "mesh": 0, "skin": 0}},
+    {{"name": "{name}_Arms", "mesh": 1, "skin": 0}}
+  ],
+  "skins": [{{"joints": [1], "inverseBindMatrices": 5}}],
+  "meshes": [
+    {{"name": "{name}_Body", "primitives": [{{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1, "JOINTS_0": 3, "WEIGHTS_0": 4}}, "indices": 2, "material": 0}}]}},
+    {{"name": "{name}_Arms", "primitives": [{{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1, "JOINTS_0": 3, "WEIGHTS_0": 4}}, "indices": 2, "material": 1}}]}}
+  ],
+  "materials": [
+    {{"name": "shirt", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}}},
+    {{"name": "skin", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 1}}}}}}
+  ],
+  "images": [{{"uri": "shirt.png"}}, {{"uri": "skin.png"}}],
+  "textures": [{{"source": 0}}, {{"source": 1}}],
+  "buffers": [{{"uri": "{name}.bin", "byteLength": {len}}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 24}},
+    {{"buffer": 0, "byteOffset": 60, "byteLength": 6}},
+    {{"buffer": 0, "byteOffset": 68, "byteLength": 12}},
+    {{"buffer": 0, "byteOffset": 80, "byteLength": 48}},
+    {{"buffer": 0, "byteOffset": 128, "byteLength": 64}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 1, 0], "max": [1, 2, 0]}},
+    {{"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}},
+    {{"bufferView": 3, "componentType": 5121, "count": 3, "type": "VEC4"}},
+    {{"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC4"}},
+    {{"bufferView": 5, "componentType": 5126, "count": 1, "type": "MAT4"}}
+  ]
+}}"#,
+        len = bin.len(),
+    );
+    let path = dir.join(format!("{name}.gltf"));
+    write_all(&path, gltf).unwrap();
+    path
+}
+
+/// A skinned character painted with two pictures is a model that keeps
+/// its skeleton, each run drawn with its own textured material — found
+/// by the line that draws it when it names none — not a palette's white,
+/// nor a prefab of pieces standing in their bind pose.
+#[test]
+fn a_skinned_character_of_two_pictures_is_a_model_each_run_with_its_own_material() {
+    use scrap::material::MaterialLibrary;
+    use scrap::mesh_asset::MeshLibrary;
+    let (project, _root) = project("character");
+    let source = character(&project.assets(), "Peasant");
+    assert!(!scrap_import::scene::is_scene(&source).unwrap(), "one thing its skeleton moves");
+    scrap_import::import_into(&project, &source, None).unwrap();
+    let settings = ImportSettings::load(sidecar_for(&source)).unwrap();
+    assert!(!settings.scene);
+    assert!(settings.parts.contains_key("material:shirt"), "{:?}", settings.parts);
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    let mesh = library.mesh_by_name("Peasant").unwrap();
+    assert!(mesh.skin.is_some(), "its skeleton kept");
+    assert!(mesh.look.is_none(), "no palette: its runs have materials");
+    assert_eq!(mesh.submeshes.len(), 2);
+    let colour = |m: &scrap::material::Material| library.texture(m.base_map.expect("a base map")).unwrap().pixels[..4].to_vec();
+    let model = scrap::AssetLink::to("Peasant", settings.id.unwrap());
+    let run = |r: usize| library.material_link(&scrap::AssetLink { name: format!("Peasant#{r}"), id: model.id });
+    // The shirt and the arms, each its own picture, in the order the
+    // runs were read.
+    let mut colours = vec![colour(&run(0).unwrap()), colour(&run(1).unwrap())];
+    colours.sort();
+    assert_eq!(colours, [vec![150, 90, 40, 255], vec![230, 180, 150, 255]]);
+    assert!(run(2).is_none());
+    assert!(library.material_by_name("Peasant/shirt").is_some(), "named as a scene's are");
+    // Not left at the palette's origin: its rig's.
+    assert!(mesh.bounds.min[1].to_native() > 0.5, "its vertices where its bones are");
+
+    // A line that names no material draws each run with its own; one
+    // that names one, whole with it.
+    let palette = |l: &scrap::AssetLink| library.material_link(l);
+    let mut line = EntityDesc::default();
+    line.set_model(model.clone());
+    let runs = scrap::appearance::run_materials(&line, &model, &palette).expect("drawn apart");
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|m| m.is_some_and(|m| m.base_map.is_some())));
+    let mut handles = 0;
+    let parts = scrap::appearance::surface_parts(&model, &runs, &mut |l| {
+        (l.name == format!("Peasant#{handles}") && handles < 2).then(|| {
+            handles += 1;
+            scrap::render::MeshHandle::TEST
+        })
+    })
+    .unwrap();
+    assert_eq!(parts.0.len(), 2);
+    assert_eq!(parts.0[1].1, runs[1]);
+    line.set_material(MaterialRef::Named(scrap::AssetLink::named("red")));
+    assert!(scrap::appearance::run_materials(&line, &model, &palette).is_none());
+}
+
+/// A character imported as a scene before characters were models — its
+/// sidecar says `scene: true` — comes in as a model, and the prefab of
+/// its pieces is gone. Its pictures are the textures every other source
+/// naming them draws with.
+#[test]
+fn a_character_once_a_scene_is_a_model_and_shares_its_pictures() {
+    use scrap::mesh_asset::MeshLibrary;
+    let (project, _root) = project("character-was-scene");
+    let dir = project.assets();
+    let source = character(&dir, "Ranger");
+    let settings = ImportSettings {
+        scene: true,
+        ..ImportSettings::for_source("")
+    };
+    scrap_import::import_into(&project, &source, Some(&settings)).unwrap();
+    assert!(!ImportSettings::load(sidecar_for(&source)).unwrap().scene);
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert!(library.mesh_by_name("Ranger").is_some_and(|m| m.skin.is_some()));
+    let (prefabs, _) = Prefabs::of(&project);
+    assert!(prefabs.get("Ranger").is_none(), "no prefab of pieces");
+
+    // Unchanged since, its prefab of pieces still in the library: `sync`
+    // builds it again, as the model it is.
+    let sidecar = sidecar_for(&source);
+    let mut was = ImportSettings::load(&sidecar).unwrap();
+    was.scene = true;
+    was.save(&sidecar).unwrap();
+    let prefab = scrap_import::scene::prefab_for(was.id.unwrap(), &project.library());
+    let mut pieces = EntityDesc::default();
+    pieces.name = "Ranger".into();
+    Prefabs::save(&pieces, &prefab).unwrap();
+    sync(&project);
+    assert!(!ImportSettings::load(&sidecar).unwrap().scene);
+    assert!(!prefab.exists());
+
+    let other = character(&dir, "Farmer");
+    scrap_import::import_into(&project, &other, None).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert_eq!(
+        library.material_by_name("Ranger/shirt").unwrap().base_map,
+        library.material_by_name("Farmer/shirt").unwrap().base_map,
+        "one texture of shirt.png"
+    );
+}
+
 /// A kit: models in one folder painting with the same pictures beside
 /// them. Each picture is one texture, whichever model it is read by —
 /// not one per model (a kit of 340 models sharing 4K maps was 28 GB of
