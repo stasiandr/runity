@@ -4699,6 +4699,74 @@ mod tests {
         assert!(grounded, "on the floor");
     }
 
+    /// Walks a capsule as small-world's player (feet on a thin floor, 5 m/s
+    /// along +z, a little down while grounded) at `obstacle`, a scene
+    /// line's `body`, `collider` and `transform`, and gives where it ends
+    /// and the highest its feet got.
+    fn walk_at(obstacle: &str) -> (Vec3, f32) {
+        let (mut physics, mut world, _) = scene_world(&format!(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "ground", model: "m", body: Static,
+                 collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0)), transform: (scale: (80.0, 1.0, 80.0))),
+                (id: "00000000000000f2", name: "obstacle", model: "m", body: Static, {obstacle}),
+                (id: "00000000000000f4", name: "player", model: "m", body: Kinematic,
+                 collider: Capsule(half_height: 0.55, radius: 0.35, center: (0.0, 0.9, 0.0)), transform: (position: (0.0, 0.02, 0.0))),
+            ])"#
+        ));
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let player = by_id(&world, "00000000000000f4".parse().unwrap());
+        let mut highest: f32 = 0.0;
+        for _ in 0..240 {
+            let (moved, _) = physics
+                .move_character(&world, player, Vec3::new(0.0, -1.0 / 60.0, 5.0 / 60.0), 0.3, 40.0)
+                .unwrap();
+            world.get::<&mut Transform>(player).unwrap().position += moved;
+            crate::world::apply_hierarchy(&mut world);
+            physics.run(&mut world);
+            crate::world::apply_hierarchy(&mut world);
+            highest = highest.max(world.get::<&Transform>(player).unwrap().position.y);
+        }
+        let at = world.get::<&Transform>(player).unwrap().position;
+        (at, highest)
+    }
+
+    /// small-world's gym stairs (five 0.24 m steps), turned to rise away
+    /// from the walker, are climbed with a 0.3 m step; turned to face it
+    /// with their 1.2 m top, they are a wall.
+    #[test]
+    fn a_character_climbs_stairs_rising_away_and_is_stopped_by_their_tall_end() {
+        let flight = "collider: Stairs(half: (0.5, 0.5, 0.5), steps: 5), transform: (position: (0.0, 0.6, 5.0), rotation_deg: (0.0, 180.0, 0.0), scale: (2.0, 1.2, 2.5))";
+        let (_, highest) = walk_at(flight);
+        assert!(highest > 1.15, "up the 1.2 m flight: {highest}");
+        let (at, highest) = walk_at(&flight.replace("180.0", "0.0"));
+        assert!(highest < 0.1 && at.z < 3.75 - 0.3, "stopped before the tall end at z 3.75: {at}, highest {highest}");
+    }
+
+    /// A 14° ramp, rising away from the walker, is walked up under a 40°
+    /// limit; its 1 m high end, turned to face the walker, stops it.
+    #[test]
+    fn a_character_walks_up_a_gentle_ramp_and_is_stopped_by_its_tall_end() {
+        let ramp = "collider: Ramp(half: (0.5, 0.5, 0.5)), transform: (position: (0.0, 0.5, 6.0), rotation_deg: (0.0, 180.0, 0.0), scale: (2.0, 1.0, 4.0))";
+        let (_, highest) = walk_at(ramp);
+        assert!(highest > 0.9, "up the 1 m ramp: {highest}");
+        let (at, highest) = walk_at(&ramp.replace("180.0", "0.0"));
+        assert!(highest < 0.1 && at.z < 4.0 - 0.3, "stopped before the tall end at z 4: {at}, highest {highest}");
+    }
+
+    /// A 45° ramp is not walked up under a 40° limit, and is not walked
+    /// through either: the walker stops at its foot. A box stops it too.
+    #[test]
+    fn a_character_is_stopped_by_a_steep_ramp_and_a_box() {
+        let (at, highest) = walk_at(
+            "collider: Ramp(half: (0.5, 0.5, 0.5)), transform: (position: (0.0, 1.5, 5.5), rotation_deg: (0.0, 180.0, 0.0), scale: (2.0, 3.0, 3.0))",
+        );
+        assert!(highest < 0.1 && at.z < 4.0, "stopped at the 45° ramp's foot at z 4: {at}, highest {highest}");
+        let (at, highest) =
+            walk_at("collider: Box(half: (0.5, 0.5, 0.5)), transform: (position: (0.0, 0.4, 4.0), scale: (1.6, 0.8, 4.0))");
+        assert!(highest < 0.1 && at.z < 2.0 - 0.3, "stopped at the 0.8 m box's face at z 2: {at}, highest {highest}");
+    }
+
     /// A platform sliding sideways under a character leaves it where it
     /// stands, as Unity's CharacterController does: riding is the game's.
     #[test]
