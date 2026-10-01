@@ -75,10 +75,10 @@ pub fn axes(part: Part) -> [Property; 3] {
 }
 
 /// Which part of a bone a property is of, and which axis.
-pub fn part_of(what: Property) -> Option<(Part, usize)> {
+pub fn part_of(what: &Property) -> Option<(Part, usize)> {
     [Part::Translation, Part::Rotation, Part::Scale]
         .into_iter()
-        .find_map(|p| axes(p).iter().position(|a| *a == what).map(|i| (p, i)))
+        .find_map(|p| axes(p).iter().position(|a| a == what).map(|i| (p, i)))
 }
 
 /// A rotation as a line's three angles, in degrees.
@@ -113,7 +113,7 @@ pub fn channel_tracks(channel: &Channel, joint: &str) -> [Track; 3] {
     let axes = axes(channel.path);
     columns.map(|keys| keys).into_iter().enumerate().map(|(a, keys)| Track {
         path: joint.to_string(),
-        what: axes[a],
+        what: axes[a].clone(),
         keys,
         ease: Default::default(),
     }).collect::<Vec<_>>().try_into().expect("three axes")
@@ -157,7 +157,7 @@ pub fn bake(name: &str, motion: &Motion, base: &Clip, skeleton: &Skeleton, probl
     let mut channels = base.channels.clone();
     let mut parts: Vec<(usize, Part)> = Vec::new();
     for track in &motion.tracks {
-        let Some((part, _)) = part_of(track.what) else {
+        let Some((part, _)) = part_of(&track.what) else {
             problems.push(format!("clip `{name}`: `{:?}` is not a bone's", track.what));
             continue;
         };
@@ -186,7 +186,7 @@ pub fn bake(name: &str, motion: &Motion, base: &Clip, skeleton: &Skeleton, probl
         let tracks: Vec<Track> = axes(part)
             .iter()
             .enumerate()
-            .filter_map(|(a, what)| mine(*what).cloned().or_else(|| from_base.as_ref().map(|b| b[a].clone())))
+            .filter_map(|(a, what)| mine(what.clone()).cloned().or_else(|| from_base.as_ref().map(|b| b[a].clone())))
             .collect();
         let rest = &skeleton.joints[joint].rest;
         let rest = crate::Transform {
@@ -324,7 +324,7 @@ fn patched(old: &str, motion: &Motion) -> Option<String> {
         text = patch::set_field(&text, "length", Some(&format!("{:?}", motion.length)))?;
     }
     let open = patch::value_start(&text, "tracks")?;
-    let key = |t: &Track| (t.path.clone(), t.what);
+    let key = |t: &Track| (t.path.clone(), t.what.clone());
     let mut changes = Vec::new();
     for (i, t) in was.tracks.iter().enumerate() {
         match motion.tracks.iter().find(|m| key(m) == key(t)) {
@@ -347,7 +347,7 @@ fn patched(old: &str, motion: &Motion) -> Option<String> {
 /// Equal as files are: tracks in any order, numbers as written.
 fn same(a: &Motion, b: &Motion) -> bool {
     let canon = |m: &Motion| ron::from_str::<Motion>(&text(m)).ok().map(|mut m| {
-        m.tracks.sort_by(|x, y| (&x.path, x.what as u8).cmp(&(&y.path, y.what as u8)));
+        m.tracks.sort_by(|x, y| (&x.path, &x.what).cmp(&(&y.path, &y.what)));
         m
     });
     a.base == b.base && a.length == b.length && canon(a) == canon(b)

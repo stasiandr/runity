@@ -51,6 +51,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("copy", include_bytes!("../assets/icons/copy.svg")),
     ("crosshair", include_bytes!("../assets/icons/crosshair.svg")),
     ("cylinder", include_bytes!("../assets/icons/cylinder.svg")),
+    ("diamond", include_bytes!("../assets/icons/diamond.svg")),
     (
         "ellipsis-vertical",
         include_bytes!("../assets/icons/ellipsis-vertical.svg"),
@@ -111,6 +112,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("pin", include_bytes!("../assets/icons/pin.svg")),
     ("play", include_bytes!("../assets/icons/play.svg")),
     ("plus", include_bytes!("../assets/icons/plus.svg")),
+    ("record", include_bytes!("../assets/icons/record.svg")),
     ("redo-2", include_bytes!("../assets/icons/redo-2.svg")),
     ("rotate-3d", include_bytes!("../assets/icons/rotate-3d.svg")),
     ("rotate-cw", include_bytes!("../assets/icons/rotate-cw.svg")),
@@ -133,6 +135,10 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         "step-forward",
         include_bytes!("../assets/icons/step-forward.svg"),
     ),
+    ("tangent-auto", include_bytes!("../assets/icons/tangent-auto.svg")),
+    ("tangent-flat", include_bytes!("../assets/icons/tangent-flat.svg")),
+    ("tangent-linear", include_bytes!("../assets/icons/tangent-linear.svg")),
+    ("tangent-step", include_bytes!("../assets/icons/tangent-step.svg")),
     ("terminal", include_bytes!("../assets/icons/terminal.svg")),
     ("trash", include_bytes!("../assets/icons/trash.svg")),
     (

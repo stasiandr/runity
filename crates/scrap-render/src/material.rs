@@ -375,7 +375,92 @@ impl Default for Material {
     }
 }
 
+/// The numbers of a material a clip can move, by the names its tracks give
+/// them (`Property::Material`). `base_color` is as a person picks it, sRGB
+/// 0 to 1, as the file writes it; `emission` and `subsurface` are linear,
+/// as they are kept; `params.N` is the material's shader's Nth number.
+pub const NUMBERS: &[&str] = &[
+    "base_color.r",
+    "base_color.g",
+    "base_color.b",
+    "alpha",
+    "emission.r",
+    "emission.g",
+    "emission.b",
+    "metallic",
+    "smoothness",
+    "tiling.x",
+    "tiling.y",
+    "offset.x",
+    "offset.y",
+    "normal_scale",
+    "occlusion_strength",
+    "alpha_clip",
+    "wind",
+    "translucency",
+    "clarity",
+    "foam",
+    "subsurface.r",
+    "subsurface.g",
+    "subsurface.b",
+    "subsurface_radius",
+    "params.0",
+    "params.1",
+    "params.2",
+    "params.3",
+    "params.4",
+    "params.5",
+    "params.6",
+    "params.7",
+];
+
 impl Material {
+    /// One of its [`NUMBERS`] by name; `None` for a name it has not.
+    pub fn number(&self, name: &str) -> Option<f32> {
+        let mut copy = *self;
+        let slot = copy.number_mut(name)?;
+        let v = *slot;
+        Some(if name.starts_with("base_color.") { linear_to_srgb(v) } else { v })
+    }
+
+    /// Set one of its [`NUMBERS`] by name; whether it has it.
+    pub fn set_number(&mut self, name: &str, value: f32) -> bool {
+        let value = if name.starts_with("base_color.") { srgb_to_linear(value.clamp(0.0, 1.0)) } else { value };
+        match self.number_mut(name) {
+            Some(slot) => {
+                *slot = value;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn number_mut(&mut self, name: &str) -> Option<&mut f32> {
+        let rgb = |c: &str| ["r", "g", "b"].iter().position(|x| *x == c);
+        let xy = |c: &str| ["x", "y"].iter().position(|x| *x == c);
+        let (head, tail) = name.split_once('.').unwrap_or((name, ""));
+        Some(match head {
+            "base_color" => &mut self.base_color[rgb(tail)?],
+            "emission" => &mut self.emission[rgb(tail)?],
+            "subsurface" => &mut self.subsurface[rgb(tail)?],
+            "tiling" => &mut self.tiling[xy(tail)?],
+            "offset" => &mut self.offset[xy(tail)?],
+            "params" => self.params.get_mut(tail.parse::<usize>().ok()?)?,
+            "alpha" => &mut self.alpha,
+            "metallic" => &mut self.metallic,
+            "smoothness" => &mut self.smoothness,
+            "normal_scale" => &mut self.normal_scale,
+            "occlusion_strength" => &mut self.occlusion_strength,
+            "alpha_clip" => &mut self.alpha_clip,
+            "wind" => &mut self.wind,
+            "translucency" => &mut self.translucency,
+            "clarity" => &mut self.clarity,
+            "foam" => &mut self.foam,
+            "subsurface_radius" => &mut self.subsurface_radius,
+            _ => return None,
+        })
+    }
+
     pub const fn new(r: f32, g: f32, b: f32) -> Self {
         Self {
             base_color: [r, g, b],

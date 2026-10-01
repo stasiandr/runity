@@ -5553,51 +5553,6 @@ fn set_word(ui: &mut Ui, b: NodeId, word: &str) {
 
 /// A segment of the words' group: the group draws the outline, an on
 /// segment only a tint.
-fn word_toggle_style(on: bool) -> Style {
-    let s = Style::row()
-        .full_height()
-        .fixed()
-        .padding_x(SPACE_3)
-        .center()
-        .clickable();
-    if on {
-        s.background(ACCENT.alpha(12)).hover(ACCENT.alpha(16))
-    } else {
-        s.hover(HOVER)
-    }
-}
-
-/// The line between two segments.
-fn word_divider(ui: &mut Ui, parent: NodeId) {
-    ui.add(
-        parent,
-        Style::row()
-            .width(1.0)
-            .full_height()
-            .fixed()
-            .background(DIVIDER),
-    );
-}
-
-/// A word that is on or off: the grid.
-fn word_toggle(ui: &mut Ui, parent: NodeId, name: &str, word: &str) -> NodeId {
-    let b = ui.add(parent, word_toggle_style(false));
-    ui.set_name(b, name);
-    ui.add_text(
-        b,
-        Style::default().text_size(11.5).text_color(LABEL).nowrap(),
-        word,
-    );
-    b
-}
-
-fn set_word_toggle(ui: &mut Ui, b: NodeId, on: bool) {
-    ui.set_style(b, word_toggle_style(on));
-    for child in ui.children(b) {
-        ui.restyle(child, |s| s.text_color(if on { ACCENT } else { LABEL }));
-    }
-}
-
 /// How big a button of the tool strip is, a side.
 const TOOL_BUTTON: f32 = 28.0;
 
@@ -5732,6 +5687,30 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "hierarchy collapse all" => "Collapse all",
         "console clear" => "Clear the Console",
         "status problems" => "Show the Console",
+        "animation record" => "Record: what is moved or changed under it becomes keys at the playhead",
+        "animation first" => "To the clip's start",
+        "animation back" => "A frame back (←)",
+        "animation play" => "Play the clip in the view (Space)",
+        "animation on" => "A frame on (→)",
+        "animation last" => "To the clip's end",
+        "animation dopesheet" => "Keys as diamonds, a row a track",
+        "animation curves" => "Values over time: drag keys and their slopes",
+        "animation normalize" => "Every curve drawn over the same height",
+        "animation key" => "Key the chosen rows at the playhead (K)",
+        "tangent auto" => "Auto: smooth, never past its neighbours",
+        "tangent flat" => "Flat: eases in and out",
+        "tangent linear" => "Linear: straight to each neighbour",
+        "tangent step" => "Step: holds until the next key",
+        "blend tween" => "Tween: a breakdown between the keys either side",
+        "blend neighbor" => "Neighbor: toward the key before or after",
+        "blend push" => "Push: more of the move, or less",
+        "blend default" => "Default: toward the value with no clip",
+        "tween slider" => "Drag to blend the chosen keys, or make a breakdown at the playhead; past the ends overshoots",
+        "animation add" => "Add a track: a place, a material's number, a light's, a component's",
+        "animation undo" => "Undo the last change to the clip",
+        "animation stop" => "Stop showing the clip in the view",
+        "new clip" => "Make a clip of its things: places, materials, lights, components",
+        "new rig clip" => "Make a clip of its model's bones",
         _ => return None,
     })
 }

@@ -61,7 +61,7 @@ fn from_yaml(b: &Yaml, report: &mut Report) -> Motion {
         for c in b.list(list) {
             let path = c.str("path").unwrap_or("").to_string();
             let keys = c["curve"].list("m_Curve");
-            for (i, (what, sign)) in axes.into_iter().enumerate() {
+            for (i, (what, sign)) in axes.iter().cloned().enumerate() {
                 let axis = ["x", "y", "z"][i];
                 let keys: Vec<(f32, f32)> = keys
                     .iter()

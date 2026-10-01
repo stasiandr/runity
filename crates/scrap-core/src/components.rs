@@ -229,6 +229,9 @@ impl Components {
     {
         self.register::<T>(name);
         self.saved.insert(name.to_string(), write::<T>);
+        // What can be written down can be moved by a clip, a number at a
+        // time (`Property::Field("components.<name>.<path>")`).
+        crate::numbers::register::<T>(name);
         self
     }
 

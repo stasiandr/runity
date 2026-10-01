@@ -184,8 +184,8 @@ pub fn finished(world: &World, entity: Entity, name: &str) -> bool {
 fn read(
     world: &World,
     entity: Entity,
-    what: Property,
-    get: &dyn Fn(&World, Entity, Property) -> Option<f32>,
+    what: &Property,
+    get: &dyn Fn(&World, Entity, &Property) -> Option<f32>,
 ) -> f32 {
     let transform = world.get::<&crate::Transform>(entity).ok().map(|t| *t);
     let axis = |v: Vec3, i: usize| v[i];
@@ -218,8 +218,8 @@ fn read(
 pub fn run_tweens(
     world: &mut World,
     dt: f32,
-    get: &dyn Fn(&World, Entity, Property) -> Option<f32>,
-    set: &mut dyn FnMut(&mut World, Entity, Property, f32),
+    get: &dyn Fn(&World, Entity, &Property) -> Option<f32>,
+    set: &mut dyn FnMut(&mut World, Entity, &Property, f32),
 ) {
     let said: Vec<Entity> = world
         .query::<(Entity, &TweensDone)>()
@@ -256,14 +256,14 @@ pub fn run_tweens(
                 let from = tween
                     .to
                     .iter()
-                    .map(|(what, _)| read(&*world, entity, *what, get))
+                    .map(|(what, _)| read(&*world, entity, what, get))
                     .collect();
                 tween.from = Some(from);
             }
             let (w, finished) = tween.at();
             let from = tween.from.as_deref().unwrap_or_default();
             for ((what, to), from) in tween.to.iter().zip(from.iter()) {
-                values.push((*what, from + (to - from) * w));
+                values.push((what.clone(), from + (to - from) * w));
             }
             if finished {
                 done.push(tween.name.clone());
@@ -288,9 +288,10 @@ fn write(
     world: &mut World,
     entity: Entity,
     values: &[(Property, f32)],
-    set: &mut dyn FnMut(&mut World, Entity, Property, f32),
+    set: &mut dyn FnMut(&mut World, Entity, &Property, f32),
 ) {
-    for &(what, value) in values {
+    for (what, value) in values {
+        let value = *value;
         match what {
             Property::Active => {
                 let on = value > 0.5;
@@ -299,7 +300,9 @@ fn write(
                     crate::world::set_active(world, entity, on);
                 }
             }
-            Property::Volume | Property::ParticleRate => set(world, entity, what, value),
+            Property::Volume | Property::ParticleRate | Property::Material(_) | Property::Field(_) => {
+                set(world, entity, what, value)
+            }
             _ => {
                 if let Ok(mut t) = world.get::<&mut crate::Transform>(entity) {
                     match what {
@@ -444,7 +447,7 @@ mod tests {
             1.0,
             &|_, _, _| Some(0.8),
             &mut |_, _, what, v| {
-                if what == Property::Volume {
+                if *what == Property::Volume {
                     volumes.push(v);
                 }
             },

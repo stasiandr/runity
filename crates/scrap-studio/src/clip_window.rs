@@ -94,12 +94,14 @@ pub struct Animation {
     pub root: NodeId,
     title: NodeId,
     rec: NodeId,
+    rec_badge: NodeId,
     play: NodeId,
     first: NodeId,
     back: NodeId,
     on: NodeId,
     last: NodeId,
     time_field: NodeId,
+    frame_label: NodeId,
     length_field: NodeId,
     sheet_button: NodeId,
     curves_button: NodeId,
@@ -112,13 +114,33 @@ pub struct Animation {
     new_clip: NodeId,
     new_rig: NodeId,
     ruler: NodeId,
+    /// Past the clip's end, shaded: over the ruler, Curves and each lane.
+    ruler_shade: NodeId,
+    /// What the ruler's numbers are written in, under the playhead's flag.
+    ruler_marks: NodeId,
+    curves_shade: NodeId,
+    shades: Vec<NodeId>,
+    /// The playhead's frame, over the ruler.
+    flag: NodeId,
+    flag_text: NodeId,
     rows: NodeId,
     curves: NodeId,
     curve_names: NodeId,
+    /// The values written along Curves' grid, and the values they say.
+    curve_labels: Vec<(NodeId, f32)>,
+    /// What the window says when there is nothing to show.
+    empty: NodeId,
+    empty_text: NodeId,
+    normalize: NodeId,
+    /// Curves each drawn over the same height, -1 to 1, as Blender's
+    /// Normalize: a turn of 90° and a lift of 2 cm side by side.
+    normalized: bool,
     adds: NodeId,
     add_filter: NodeId,
     add_toggle: NodeId,
     adding: bool,
+    /// The thing or bone the add panel shows the numbers of.
+    add_path: Option<String>,
     /// The seconds written over the ruler, and the times they say.
     ruler_labels: Vec<(NodeId, f32)>,
     tween: NodeId,
@@ -137,6 +159,8 @@ pub struct Animation {
     clip_rows: Vec<(NodeId, String, ClipKind)>,
     /// The dopesheet's rows: the row, its lane, what it is.
     row_nodes: Vec<(NodeId, NodeId, RowKind)>,
+    /// A track row's value at the playhead, by its text.
+    row_values: Vec<(NodeId, String, Property)>,
     add_rows: Vec<(NodeId, String, Vec<Property>)>,
     /// The entity shown, and the selection's path under it.
     showing: Option<EntityId>,
@@ -149,7 +173,9 @@ pub struct Animation {
     recording: bool,
     /// The places of the things under the entity when recording began,
     /// or since the last key it made.
-    recorded: Vec<(String, scrap::Transform)>,
+    recorded: Vec<(String, Property, f32)>,
+    /// The document's revision `recorded` was read at.
+    recorded_at: Option<u64>,
     mode: Mode,
     open_groups: BTreeSet<String>,
     chosen_rows: BTreeSet<RowKind>,
@@ -181,91 +207,148 @@ fn small_field(ui: &mut Ui, parent: NodeId, name: &str, width: f32) -> NodeId {
 
 impl Animation {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
-        let root = ui.add(parent, Style::column().fill().full_width().gap(SPACE_1));
+        let root = ui.add(parent, Style::column().fill().full_width());
         ui.set_name(root, "animation");
-        // The toolbar.
-        let bar = ui.add(root, Style::row().full_width().height(30.0).fixed().gap(SPACE_1).padding_x(SPACE_2).center_items());
-        let rec = icon_button(ui, bar, "animation record", "circle-dot", false);
-        separator(ui, bar);
-        let first = icon_button(ui, bar, "animation first", "skip-back", false);
-        let back = icon_button(ui, bar, "animation back", "chevron-left", false);
-        let play = icon_button(ui, bar, "animation play", "play", false);
-        let on = icon_button(ui, bar, "animation on", "chevron-right", false);
-        let last = icon_button(ui, bar, "animation last", "skip-forward", false);
-        let time_field = small_field(ui, bar, "animation time", 64.0);
-        ui.add_text(bar, caption(), "of");
-        let length_field = small_field(ui, bar, "animation length", 56.0);
-        separator(ui, bar);
-        let sheet_button = button(ui, bar, "animation dopesheet", "Dopesheet", true);
-        let curves_button = button(ui, bar, "animation curves", "Curves", false);
-        separator(ui, bar);
-        let key_button = button(ui, bar, "animation key", "Key", false);
-        let mut shapes = Vec::new();
-        for (label, t) in [("Auto", Tangent::Auto), ("Flat", Tangent::Flat), ("Linear", Tangent::Linear), ("Step", Tangent::Step)] {
-            let b = button(ui, bar, &format!("tangent {}", label.to_lowercase()), label, false);
-            shapes.push((b, t));
-        }
-        let undo_button = icon_button(ui, bar, "animation undo", "undo-2", false);
-        let title = ui.add_text(bar, text().fill().text_color(LABEL), "");
+        // The transport, the time and the view.
+        let bar = ui.add(root, Style::row().full_width().height(34.0).fixed().gap(SPACE_3).padding_x(SPACE_3).center_items());
+        let transport = segmented(ui, bar);
+        let rec = icon_cell(ui, transport, "animation record", "record");
+        word_divider(ui, transport);
+        let first = icon_cell(ui, transport, "animation first", "skip-back");
+        let back = icon_cell(ui, transport, "animation back", "chevron-left");
+        let play = icon_cell(ui, transport, "animation play", "play");
+        let on = icon_cell(ui, transport, "animation on", "chevron-right");
+        let last = icon_cell(ui, transport, "animation last", "skip-forward");
+        let clock = ui.add(bar, Style::row().gap(SPACE_1).center_items());
+        let time_field = small_field(ui, clock, "animation time", 54.0);
+        let frame_label = ui.add_text(clock, caption().width(34.0).fixed(), "");
+        ui.set_name(frame_label, "animation frame");
+        ui.add_text(clock, caption(), "of");
+        let length_field = small_field(ui, clock, "animation length", 46.0);
+        ui.add_text(clock, caption(), "s");
+        let modes = segmented(ui, bar);
+        let sheet_button = word_toggle(ui, modes, "animation dopesheet", "Dopesheet");
+        word_divider(ui, modes);
+        let curves_button = word_toggle(ui, modes, "animation curves", "Curves");
+        let normalize_group = segmented(ui, bar);
+        let normalize = word_toggle(ui, normalize_group, "animation normalize", "Normalize");
+        ui.restyle(normalize_group, |s| s.hidden());
+        ui.add(bar, Style::row().fill());
+        let rec_badge = ui.add(bar, Style::row().height(18.0).fixed().padding_x(7.0).center().radius(6.0).background(ERROR.alpha(22)).hidden());
+        ui.add_text(rec_badge, Style::default().text_size(10.5).text_color(ERROR).nowrap(), "● RECORDING");
+        let title = ui.add_text(bar, text().text_color(LABEL), "");
         ui.set_name(title, "animation title");
-        let stop = button(ui, bar, "animation stop", "Stop", false);
+        let undo_button = icon_button(ui, bar, "animation undo", "undo-2", false);
+        let stop = icon_button(ui, bar, "animation stop", "x", false);
 
-        // The tween slider and what it does.
-        let tweens = ui.add(root, Style::row().full_width().height(26.0).fixed().gap(SPACE_1).padding_x(SPACE_2).center_items());
-        ui.add_text(tweens, caption(), "BLEND");
+        // Keys: make one, shape them, blend them.
+        let keys = ui.add(root, Style::row().full_width().height(32.0).fixed().gap(SPACE_3).padding_x(SPACE_3).center_items());
+        let key_group = segmented(ui, keys);
+        let key_button = ui.add(key_group, word_toggle_style(false).gap(5.0));
+        ui.set_name(key_button, "animation key");
+        icon(ui, key_button, "diamond", LABEL);
+        ui.add_text(key_button, Style::default().text_size(11.5).text_color(LABEL).nowrap(), "Key");
+        let shape_group = segmented(ui, keys);
+        let mut shapes = Vec::new();
+        for (i, (name, glyph, t)) in [
+            ("tangent auto", "tangent-auto", Tangent::Auto),
+            ("tangent flat", "tangent-flat", Tangent::Flat),
+            ("tangent linear", "tangent-linear", Tangent::Linear),
+            ("tangent step", "tangent-step", Tangent::Step),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if i > 0 {
+                word_divider(ui, shape_group);
+            }
+            shapes.push((icon_cell(ui, shape_group, name, glyph), t));
+        }
+        let blend = ui.add(keys, Style::row().gap(SPACE_2).center_items());
+        ui.add_text(blend, caption(), "BLEND");
+        let blend_group = segmented(ui, blend);
         let mut tween_modes = Vec::new();
-        for (label, how) in [("Tween", Blend::Tween), ("Neighbor", Blend::Neighbor), ("Push", Blend::Push), ("Default", Blend::Default)] {
-            let b = button(ui, tweens, &format!("blend {}", label.to_lowercase()), label, how == Blend::Tween);
-            ui.restyle(b, |s| s.height(22.0));
+        for (i, (label, how)) in [("Tween", Blend::Tween), ("Neighbor", Blend::Neighbor), ("Push", Blend::Push), ("Default", Blend::Default)]
+            .into_iter()
+            .enumerate()
+        {
+            if i > 0 {
+                word_divider(ui, blend_group);
+            }
+            let b = word_toggle(ui, blend_group, &format!("blend {}", label.to_lowercase()), label);
+            set_word_toggle(ui, b, how == Blend::Tween);
             tween_modes.push((b, how));
         }
-        let tween = ui.add(tweens, Style::row().width(280.0).fixed().height(22.0).clickable().draggable());
+        let tween = ui.add(blend, Style::row().width(220.0).fixed().height(22.0).clickable().draggable());
         ui.set_name(tween, "tween slider");
-        let tween_label = ui.add_text(tweens, text().width(50.0).fixed().text_color(ACCENT), "");
+        let tween_label = ui.add_text(blend, text().width(44.0).fixed().text_color(ACCENT).mono(), "");
         ui.set_name(tween_label, "tween amount");
-        let body = ui.add(root, Style::row().fill().full_width());
+        ui.add(root, Style::row().full_width().height(1.0).fixed().background(DIVIDER));
+
+        let body = ui.add(root, Style::row().fill().full_width().min_height(0.0));
         // The clips.
-        let left = ui.add(body, Style::column().width(170.0).fixed().full_height().padding(SPACE_2).gap(SPACE_1));
-        ui.add_text(left, caption(), "CLIPS");
-        let clips_list = ui.add(left, Style::column().fill().full_width().gap(1.0).clip());
+        let left = ui.add(body, Style::column().width(190.0).fixed().full_height().min_height(0.0).padding(SPACE_2).gap(SPACE_2));
+        let clips_head = ui.add(left, Style::row().full_width().height(20.0).fixed().padding_x(SPACE_1).center_items());
+        ui.add_text(clips_head, caption().fill(), "CLIPS");
+        let clips_list = ui.add(left, Style::column().fill().full_width().min_height(48.0).gap(1.0).clip());
         ui.set_name(clips_list, "animation clips");
-        let new_name = small_field(ui, left, "new clip name", 150.0);
-        ui.set_placeholder(new_name, "name of a new clip");
-        let new_row = ui.add(left, Style::row().full_width().gap(SPACE_1));
-        let new_clip = button(ui, new_row, "new clip", "New clip", false);
-        let new_rig = button(ui, new_row, "new rig clip", "Bones", false);
+        let new_name = ui.add_field(left, field_style().full_width(), "");
+        ui.set_name(new_name, "new clip name");
+        ui.set_placeholder(new_name, "New clip…");
+        let new_row = segmented(ui, left);
+        ui.restyle(new_row, |s| s.full_width());
+        let new_clip = word_toggle(ui, new_row, "new clip", "+ Things");
+        ui.restyle(new_clip, |s| s.fill());
+        word_divider(ui, new_row);
+        let new_rig = word_toggle(ui, new_row, "new rig clip", "+ Bones");
+        ui.restyle(new_rig, |s| s.fill());
+        ui.add(body, Style::row().width(1.0).fixed().full_height().background(DIVIDER));
 
         // The tracks.
-        let main = ui.add(body, Style::column().fill().full_height().clip());
+        let main = ui.add(body, Style::column().fill().full_height().min_height(0.0).clip());
         let head = ui.add(main, Style::row().full_width().height(RULER_H).fixed());
-        let corner = ui.add(head, Style::row().width(NAMES_W).fixed().full_height().padding_x(SPACE_2).center_items());
+        let corner = ui.add(head, Style::row().width(NAMES_W).fixed().full_height().padding_x(SPACE_3).gap(SPACE_1).center_items());
         ui.add_text(corner, caption().fill(), "TRACKS");
-        let add_toggle = button(ui, corner, "animation add", "+ Track", false);
-        ui.restyle(add_toggle, |s| s.height(18.0));
+        let add_toggle = ui.add(corner, word_toggle_style(false).height(18.0).radius(RADIUS_SM).gap(3.0));
+        ui.set_name(add_toggle, "animation add");
+        icon(ui, add_toggle, "plus", LABEL);
+        ui.add_text(add_toggle, Style::default().text_size(11.0).text_color(LABEL).nowrap(), "Track");
         let ruler = ui.add(head, Style::row().fill().full_height().background(BG).clickable().draggable().clip());
         ui.set_name(ruler, "animation ruler");
-        let rows = ui.add(main, Style::column().fill().full_width().clip());
+        let ruler_shade = ui.add(ruler, shade_style(0.0));
+        let ruler_marks = ui.add(ruler, Style::row().absolute(0.0, 0.0).full());
+        let flag = ui.add(ruler, Style::row().absolute(0.0, 3.0).size(30.0, 16.0).fixed().center().radius(4.0).background(ACCENT));
+        let flag_text = ui.add_text(flag, Style::default().text_size(10.0).text_color(BG).nowrap().mono(), "0");
+        let rows = ui.add(main, Style::column().fill().full_width().min_height(0.0).clip());
         ui.set_name(rows, "animation rows");
         let curves_row = ui.add(main, Style::row().fill().full_width().hidden());
         let curve_names = ui.add(curves_row, Style::column().width(NAMES_W).fixed().full_height().clip());
         let curves = ui.add(curves_row, Style::column().fill().full_height().background(BG).clickable().draggable().clip());
         ui.set_name(curves, "animation curve view");
+        let curves_shade = ui.add(curves, shade_style(0.0));
+        let empty = ui.add(main, Style::column().fill().full_width().center().gap(SPACE_2).hidden());
+        icon(ui, empty, "play", MUTED);
+        let empty_text = ui.add_text(empty, text().text_color(MUTED), "");
+        ui.set_name(empty_text, "animation hint");
         // Adding a track.
-        let adds = ui.add(main, Style::column().full_width().max_height(160.0).padding_x(SPACE_2).gap(1.0).clip().hidden());
+        let adds = ui.add(main, Style::column().full_width().max_height(170.0).min_height(0.0).padding(SPACE_2).gap(1.0).background(BG).clip().hidden());
         let add_bar = ui.add(adds, Style::row().full_width().gap(SPACE_2).center_items());
-        ui.add_text(add_bar, caption(), "ADD");
-        let add_filter = small_field(ui, add_bar, "animation add filter", 160.0);
-        ui.set_placeholder(add_filter, "thing or bone");
+        ui.add_text(add_bar, caption(), "ADD A TRACK TO");
+        let add_filter = ui.add_field(add_bar, field_style().width(200.0).fixed(), "");
+        ui.set_name(add_filter, "animation add filter");
+        ui.set_placeholder(add_filter, "thing or bone…");
         let me = Self {
             root,
             title,
             rec,
+            rec_badge,
             play,
             first,
             back,
             on,
             last,
             time_field,
+            frame_label,
             length_field,
             sheet_button,
             curves_button,
@@ -278,13 +361,25 @@ impl Animation {
             new_clip,
             new_rig,
             ruler,
+            ruler_shade,
+            ruler_marks,
+            curves_shade,
+            shades: Vec::new(),
+            flag,
+            flag_text,
             rows,
             curves,
             curve_names,
+            curve_labels: Vec::new(),
+            empty,
+            empty_text,
+            normalize,
+            normalized: false,
             adds,
             add_filter,
             add_toggle,
             adding: false,
+            add_path: None,
             ruler_labels: Vec::new(),
             tween,
             tween_label,
@@ -295,6 +390,7 @@ impl Animation {
             tween_made: false,
             clip_rows: Vec::new(),
             row_nodes: Vec::new(),
+            row_values: Vec::new(),
             add_rows: Vec::new(),
             showing: None,
             part: String::new(),
@@ -305,6 +401,7 @@ impl Animation {
             ticked: None,
             recording: false,
             recorded: Vec::new(),
+            recorded_at: None,
             mode: Mode::Dopesheet,
             open_groups: BTreeSet::new(),
             chosen_rows: BTreeSet::new(),
@@ -321,6 +418,7 @@ impl Animation {
             clipboard: Vec::new(),
         };
         me.show_time(ui);
+        me.mark(ui);
         me
     }
 
@@ -389,24 +487,23 @@ impl Animation {
         ui.clear(self.clips_list);
         self.clip_rows.clear();
         let Some(id) = self.showing else {
-            ui.set_text(self.title, "Select something to animate.");
+            ui.set_text(self.title, "");
             return;
         };
-        let name = session.entity_name(id).unwrap_or_default();
-        ui.set_text(self.title, &name);
-        for (clip, kind) in session.clip_list(id) {
+        for (clip, kind, length) in session.clip_list(id) {
             let row = ui.add(
                 self.clips_list,
-                Style::row().full_width().height(22.0).fixed().padding_x(SPACE_2).gap(SPACE_2).center_items().radius(RADIUS_SM).hover(HOVER),
+                Style::row().full_width().height(24.0).fixed().padding_x(SPACE_2).gap(SPACE_2).center_items().radius(RADIUS_SM).hover(HOVER).clickable(),
             );
             ui.set_name(row, format!("clip {clip}"));
-            let glyph = match kind {
-                ClipKind::Things => "box",
-                ClipKind::Rig => "bone",
-                ClipKind::Model => "file-box",
+            let (glyph, color) = match kind {
+                ClipKind::Things => ("box", INFO),
+                ClipKind::Rig => ("bone", SUCCESS),
+                ClipKind::Model => ("file-box", WARNING),
             };
-            icon(ui, row, glyph, MUTED);
+            icon(ui, row, glyph, color);
             ui.add_text(row, text().fill(), &clip);
+            ui.add_text(row, caption().mono(), &format!("{length:.2}"));
             self.clip_rows.push((row, clip, kind));
         }
     }
@@ -476,7 +573,7 @@ impl Animation {
             out.push(RowKind::Group(p.to_string()));
             if self.open_groups.contains(p) {
                 for t in doc.tracks.iter().filter(|t| t.path == p) {
-                    out.push(RowKind::Track(p.to_string(), t.what));
+                    out.push(RowKind::Track(p.to_string(), t.what.clone()));
                 }
             }
         }
@@ -492,33 +589,59 @@ impl Animation {
         ui.clear(self.rows);
         ui.clear(self.curve_names);
         self.row_nodes.clear();
+        self.row_values.clear();
+        self.shades.clear();
         let curves = self.mode == Mode::Curves;
-        ui.restyle(self.rows, |s| if curves { s.hidden() } else { s.shown() });
+        let nothing = self.doc.is_none();
+        ui.restyle(self.rows, |s| if curves || nothing { s.hidden() } else { s.shown() });
         if let Some(row) = ui.parent(self.curves) {
-            ui.restyle(row, |s| if curves { s.shown() } else { s.hidden() });
+            ui.restyle(row, |s| if curves && !nothing { s.shown() } else { s.hidden() });
         }
+        ui.restyle(self.empty, |s| if nothing { s.shown() } else { s.hidden() });
+        let bones = self.doc.as_ref().is_some_and(|d| d.kind != ClipKind::Things);
         for kind in kinds {
             let parent = if curves { self.curve_names } else { self.rows };
-            let row = ui.add(parent, Style::row().full_width().height(ROW_H).fixed().clickable().hover(HOVER));
-            let name = ui.add(row, Style::row().width(NAMES_W).fixed().full_height().padding_x(SPACE_2).gap(SPACE_1).center_items());
-            let (label, indent, color, row_name) = match &kind {
-                RowKind::Summary => ("Summary".to_string(), 0.0, LABEL, "row summary".to_string()),
+            let band = match kind {
+                RowKind::Track(..) => Color::TRANSPARENT,
+                _ => TEXT.alpha(3),
+            };
+            let row = ui.add(parent, Style::row().full_width().height(ROW_H).fixed().background(band).clickable().hover(HOVER));
+            let name = ui.add(row, Style::row().width(NAMES_W).fixed().full_height().padding_x(SPACE_3).gap(SPACE_2).center_items());
+            match &kind {
+                RowKind::Summary => {
+                    icon(ui, name, "diamond", MUTED);
+                    ui.add_text(name, text().fill().text_color(LABEL), "Summary");
+                    ui.set_name(row, "row summary");
+                }
                 RowKind::Group(p) => {
                     let open = self.open_groups.contains(p);
                     icon(ui, name, if open { "chevron-down" } else { "chevron-right" }, MUTED);
-                    let shown = if p.is_empty() { "(itself)".to_string() } else { p.clone() };
-                    (shown, 0.0, TEXT, format!("row {p}"))
+                    let shown = if p.is_empty() { "(itself)".to_string() } else { p.rsplit('/').next().unwrap_or(p).to_string() };
+                    let depth = if bones { 0 } else { p.matches('/').count() + usize::from(!p.is_empty()) };
+                    ui.restyle(name, |s| s.padding_left(SPACE_3 + 14.0 * depth as f32));
+                    icon(ui, name, if bones { "bone" } else { "box" }, if bones { SUCCESS } else { INFO });
+                    ui.add_text(name, text().fill(), &shown);
+                    ui.set_name(row, format!("row {p}"));
                 }
-                RowKind::Track(p, what) => (format!("{what:?}"), 18.0, axis_color(*what), format!("row {p} {what:?}")),
-            };
-            ui.restyle(name, |s| s.padding_left(SPACE_2 + indent));
-            ui.add_text(name, text().fill().text_color(color), &label);
-            ui.set_name(row, row_name);
+                RowKind::Track(p, what) => {
+                    ui.restyle(name, |s| s.padding_left(SPACE_3 + 26.0));
+                    ui.add(name, Style::row().size(3.0, 12.0).fixed().radius(1.5).background(axis_color(&what)));
+                    ui.add_text(name, text().fill().text_color(LABEL), &property_label(&what));
+                    let value = ui.add_text(name, caption().mono(), "");
+                    self.row_values.push((value, p.clone(), what.clone()));
+                    ui.set_name(row, format!("row {p} {what:?}"));
+                }
+            }
             let lane = if curves {
                 row
             } else {
-                let lane = ui.add(row, Style::row().fill().full_height().clickable().draggable().clip());
+                let lane_bg = match kind {
+                    RowKind::Track(..) => BG,
+                    _ => NEUTRAL_900,
+                };
+                let lane = ui.add(row, Style::row().fill().full_height().background(lane_bg).clickable().draggable().clip());
                 ui.set_name(lane, format!("lane {}", row_label(&kind)));
+                self.shades.push(ui.add(lane, shade_style(0.0)));
                 lane
             };
             self.row_nodes.push((row, lane, kind));
@@ -534,28 +657,40 @@ impl Animation {
             }
             ui.set_drawing(self.ruler, Drawing::default());
             ui.set_drawing(self.curves, Drawing::default());
+            ui.restyle(self.flag, |s| s.hidden());
             return;
         };
         let ruler = ui.rect(self.ruler);
         // The ruler: a tick a frame where they fit, a second taller.
         let mut lines = Vec::new();
-        let step = if self.view.1 / FPS >= 6.0 { 1.0 / FPS } else if self.view.1 >= 40.0 { 0.1 } else { 1.0 };
+        let end = self.x_of(doc.length);
+        ui.set_style(self.ruler_shade, shade_style(end));
+        let step = self.tick_step();
         let first = (self.view.0 / step).floor() as i64;
         let last = (self.t_of(ruler.width) / step).ceil() as i64;
         for i in first..=last.min(first + 2000) {
             let t = i as f32 * step;
             let x = self.x_of(t);
             let whole = (t - t.round()).abs() < 1e-4;
-            let h = if whole { RULER_H } else { RULER_H * 0.35 };
+            let h = if whole { RULER_H * 0.45 } else { RULER_H * 0.22 };
             lines.push(line(x, RULER_H - h, x, RULER_H, if whole { LABEL } else { MUTED }, 1.0));
         }
-        // Past the end, dimmed.
-        let end = self.x_of(doc.length);
-        lines.push(line(end, 0.0, end, RULER_H, WARNING, 1.0));
         let head = self.x_of(self.time);
-        lines.push(line(head, 0.0, head, RULER_H, ACCENT, 2.0));
+        lines.push(line(head, RULER_H - 6.0, head, RULER_H, ACCENT, 2.0));
         ui.set_drawing(self.ruler, Drawing { lines, marks: Vec::new() });
         self.label_ruler(ui, ruler.width);
+        // A number under the playhead's flag is the flag's to say.
+        for (n, t) in self.ruler_labels.clone() {
+            let near = (self.x_of(t) + 14.0 - head).abs() < 34.0;
+            ui.restyle(n, |s| if near { s.hidden() } else { s.shown() });
+        }
+        ui.restyle(self.flag, |s| s.shown().absolute(head - 15.0, 3.0));
+        ui.set_text(self.flag_text, &format!("{}", (self.time * FPS).round() as i64));
+        // Each track's value where the playhead is.
+        for (node, path, what) in self.row_values.clone() {
+            let v = doc.track(&path, &what).and_then(|t| t.sample(self.time));
+            ui.set_text(node, &v.map(|v| value_text(&what, v)).unwrap_or_default());
+        }
         if self.mode == Mode::Curves {
             self.draw_curves(ui, &doc);
             for (row, _, kind) in self.row_nodes.clone() {
@@ -564,9 +699,20 @@ impl Animation {
             }
             return;
         }
+        for shade in self.shades.clone() {
+            ui.set_style(shade, shade_style(end));
+        }
         for (row, lane, kind) in self.row_nodes.clone() {
             let rect = ui.rect(lane);
             let mut marks = Vec::new();
+            let mut lines = Vec::new();
+            // Past the clip's end, shaded; a line a second.
+            let seconds = if self.view.1 >= 60.0 { 1.0 } else { 5.0 };
+            let mut t = (self.view.0 / seconds).ceil() * seconds;
+            while self.x_of(t) < rect.width && t < 1e4 {
+                lines.push(line(self.x_of(t), 0.0, self.x_of(t), ROW_H, TEXT.alpha(5), 1.0));
+                t += seconds;
+            }
             let keys: Vec<(f32, bool)> = match &kind {
                 RowKind::Summary => {
                     let mut times: Vec<f32> = doc.tracks.iter().flat_map(|t| t.keys.iter().map(|k| k.time)).collect();
@@ -580,17 +726,26 @@ impl Animation {
                     times.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
                     times.into_iter().map(|t| (t, self.chosen.iter().any(|c| c.path == *p && (c.time - t).abs() < 1e-4))).collect()
                 }
-                RowKind::Track(p, what) => doc
-                    .track(p, *what)
-                    .map(|t| t.keys.iter().map(|k| (k.time, self.is_chosen(p, *what, k.time))).collect())
-                    .unwrap_or_default(),
+                RowKind::Track(p, what) => {
+                    let Some(track) = doc.track(p, &what) else { continue };
+                    // A hold: two keys of one value, a bar between them.
+                    for pair in track.keys.windows(2) {
+                        if (pair[0].value - pair[1].value).abs() < 1e-5 {
+                            lines.push(line(self.x_of(pair[0].time), ROW_H / 2.0, self.x_of(pair[1].time), ROW_H / 2.0, NEUTRAL_800, 4.0));
+                        }
+                    }
+                    track.keys.iter().map(|k| (k.time, self.is_chosen(p, &what, k.time))).collect()
+                }
             };
             let written = match &kind {
-                RowKind::Track(p, w) => doc.kind != ClipKind::Model || doc.is_written(p, *w),
+                RowKind::Track(p, w) => doc.kind != ClipKind::Model || doc.is_written(p, &w),
                 RowKind::Group(p) => doc.kind != ClipKind::Model || doc.motion.tracks.iter().any(|t| t.path == *p),
                 RowKind::Summary => true,
             };
-            let fill = if written { NEUTRAL_300 } else { NEUTRAL_500 };
+            let (size, fill) = match kind {
+                RowKind::Track(..) => (10.0, if written { NEUTRAL_300 } else { NEUTRAL_500 }),
+                _ => (11.0, if written { NEUTRAL_500 } else { NEUTRAL_800 }),
+            };
             for (t, on) in keys {
                 let x = self.x_of(t);
                 if x < -NEAR || x > rect.width + NEAR {
@@ -599,22 +754,36 @@ impl Animation {
                 marks.push(Mark {
                     x,
                     y: ROW_H / 2.0,
-                    size: if matches!(kind, RowKind::Track(..)) { 10.0 } else { 9.0 },
+                    size: if on { size + 1.0 } else { size },
                     shape: MarkShape::Diamond,
                     fill: if on { ACCENT } else { fill },
-                    border: BG,
+                    border: if on { ACCENT_200 } else { BG },
                 });
             }
-            let mut lines = vec![line(self.x_of(self.time), 0.0, self.x_of(self.time), ROW_H, ACCENT, 1.5)];
-            lines.push(line(end, 0.0, end, ROW_H, WARNING.alpha(60), 1.0));
+            lines.push(line(head, 0.0, head, ROW_H, ACCENT, 1.5));
             lines.extend(self.box_lines(ui, lane));
             ui.set_drawing(lane, Drawing { lines, marks });
             let on = self.chosen_rows.contains(&kind);
-            ui.restyle(row, |s| s.background(if on { ACCENT_900 } else { Color::TRANSPARENT }));
+            let band = match kind {
+                RowKind::Track(..) => Color::TRANSPARENT,
+                _ => TEXT.alpha(3),
+            };
+            ui.restyle(row, |s| s.background(if on { ACCENT_900 } else { band }));
         }
     }
 
-    /// A second's number over the ruler where there is room for it.
+    /// The ruler's smallest tick: a frame where frames have room, else a
+    /// tenth or a whole second.
+    fn tick_step(&self) -> f32 {
+        if self.view.1 / FPS >= 6.0 {
+            1.0 / FPS
+        } else if self.view.1 >= 40.0 {
+            0.1
+        } else {
+            1.0
+        }
+    }
+
     fn label_ruler(&mut self, ui: &mut Ui, width: f32) {
         let step = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0].into_iter().find(|s| s * self.view.1 >= 48.0).unwrap_or(30.0);
         let first = (self.view.0 / step).ceil() as i64;
@@ -627,7 +796,7 @@ impl Animation {
         }
         for t in wanted {
             let label = if step < 1.0 { format!("{t:.2}") } else { format!("{t:.0}") };
-            let n = ui.add_text(self.ruler, caption().absolute(self.x_of(t) + 3.0, 1.0), &label);
+            let n = ui.add_text(self.ruler_marks, caption().absolute(self.x_of(t) + 3.0, 1.0), &label);
             self.ruler_labels.push((n, t));
         }
     }
@@ -642,10 +811,11 @@ impl Animation {
             let rect = ui.rect(self.curves);
             let range = self.value_range(doc);
             for t in self.curve_tracks(doc) {
+                let (a, b) = self.norm(doc, &t);
                 for k in &t.keys {
-                    let (x, y) = (rect.x + self.x_of(k.time), rect.y + self.y_of(k.value, range, rect.height));
+                    let (x, y) = (rect.x + self.x_of(k.time), rect.y + self.y_of(k.value * a + b, range, rect.height));
                     if x >= left && x <= right && y >= top && y <= bottom {
-                        out.push(KeyRef { path: t.path.clone(), what: t.what, time: k.time });
+                        out.push(KeyRef { path: t.path.clone(), what: t.what.clone(), time: k.time });
                     }
                 }
             }
@@ -663,7 +833,7 @@ impl Animation {
                 RowKind::Summary => true,
             }) {
                 for k in t.keys.iter().filter(|k| k.time >= t0 && k.time <= t1) {
-                    let key = KeyRef { path: t.path.clone(), what: t.what, time: k.time };
+                    let key = KeyRef { path: t.path.clone(), what: t.what.clone(), time: k.time };
                     if !out.contains(&key) {
                         out.push(key);
                     }
@@ -692,15 +862,15 @@ impl Animation {
         out
     }
 
-    fn is_chosen(&self, path: &str, what: Property, time: f32) -> bool {
-        self.chosen.iter().any(|c| c.path == path && c.what == what && (c.time - time).abs() < 1e-4)
+    fn is_chosen(&self, path: &str, what: &Property, time: f32) -> bool {
+        self.chosen.iter().any(|c| c.path == path && c.what == *what && (c.time - time).abs() < 1e-4)
     }
 
     /// The tracks Curves shows: the chosen rows', a group for all of its;
     /// none chosen, every track of the open groups, or all of them.
     fn curve_tracks(&self, doc: &ClipDoc) -> Vec<Track> {
         let wanted = |t: &Track, rows: &BTreeSet<RowKind>| {
-            rows.contains(&RowKind::Track(t.path.clone(), t.what)) || rows.contains(&RowKind::Group(t.path.clone())) || rows.contains(&RowKind::Summary)
+            rows.contains(&RowKind::Track(t.path.clone(), t.what.clone())) || rows.contains(&RowKind::Group(t.path.clone())) || rows.contains(&RowKind::Summary)
         };
         let mut out: Vec<Track> = doc.tracks.iter().filter(|t| wanted(t, &self.chosen_rows)).cloned().collect();
         if out.is_empty() {
@@ -716,6 +886,9 @@ impl Animation {
     fn value_range(&self, doc: &ClipDoc) -> (f32, f32) {
         if let Some(r) = self.range {
             return r;
+        }
+        if self.normalized {
+            return (-1.25, 1.25);
         }
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for t in self.curve_tracks(doc) {
@@ -750,31 +923,43 @@ impl Animation {
         let range = self.value_range(doc);
         let mut lines = Vec::new();
         let mut marks = Vec::new();
-        // Zero, and the clip's ends.
-        let zero = self.y_of(0.0, range, rect.height);
-        lines.push(line(0.0, zero, rect.width, zero, DIVIDER, 1.0));
-        for t in [0.0, doc.length] {
-            let x = self.x_of(t);
-            lines.push(line(x, 0.0, x, rect.height, if t == 0.0 { DIVIDER } else { WARNING.alpha(60) }, 1.0));
+        let end = self.x_of(doc.length);
+        ui.set_style(self.curves_shade, shade_style(end));
+        // A line a value step, and one a second.
+        let step = nice_step((range.1 - range.0) / 6.0);
+        let mut v = (range.0 / step).ceil() * step;
+        let mut labels = Vec::new();
+        while v <= range.1 && labels.len() < 40 {
+            let y = self.y_of(v, range, rect.height);
+            lines.push(line(0.0, y, rect.width, y, if v.abs() < step * 1e-3 { DIVIDER } else { TEXT.alpha(5) }, 1.0));
+            labels.push(v);
+            v += step;
         }
+        let mut t = self.view.0.ceil();
+        while self.x_of(t) < rect.width && t < 1e4 {
+            lines.push(line(self.x_of(t), 0.0, self.x_of(t), rect.height, TEXT.alpha(5), 1.0));
+            t += 1.0;
+        }
+        self.label_curves(ui, &labels, range, rect.height);
         for track in self.curve_tracks(doc) {
-            let color = axis_color(track.what);
+            let color = axis_color(&track.what);
+            let (a, b) = self.norm(doc, &track);
             let mut points = Vec::new();
             let mut x = 0.0;
             while x <= rect.width {
                 if let Some(v) = track.sample(self.t_of(x)) {
-                    points.push((x, self.y_of(v, range, rect.height)));
+                    points.push((x, self.y_of(v * a + b, range, rect.height)));
                 }
                 x += 2.0;
             }
             lines.push(Polyline { points, color, width: 1.5 });
             for (i, k) in track.keys.iter().enumerate() {
-                let (x, y) = (self.x_of(k.time), self.y_of(k.value, range, rect.height));
-                let on = self.is_chosen(&track.path, track.what, k.time);
-                marks.push(Mark { x, y, size: 8.0, shape: MarkShape::Circle, fill: if on { ACCENT } else { color }, border: BG });
+                let (x, y) = (self.x_of(k.time), self.y_of(k.value * a + b, range, rect.height));
+                let on = self.is_chosen(&track.path, &track.what, k.time);
+                marks.push(Mark { x, y, size: if on { 9.0 } else { 8.0 }, shape: MarkShape::Circle, fill: if on { ACCENT } else { color }, border: if on { ACCENT_200 } else { BG } });
                 if on && self.chosen.len() <= 4 {
                     let (s_in, s_out) = scrap::keys::slopes(&track.keys, i);
-                    for (s, sign) in [(s_in, -1.0f32), (s_out, 1.0)] {
+                    for (s, sign) in [(s_in * a, -1.0f32), (s_out * a, 1.0)] {
                         let (hx, hy) = self.handle_at(x, y, s, sign, range, rect.height);
                         lines.push(line(x, y, hx, hy, NEUTRAL_300, 1.0));
                         marks.push(Mark { x: hx, y: hy, size: 7.0, shape: MarkShape::Square, fill: NEUTRAL_300, border: BG });
@@ -788,7 +973,54 @@ impl Animation {
         ui.set_drawing(self.curves, Drawing { lines, marks });
     }
 
-    /// Where a slope's handle is drawn: 40 px out from its key, along it.
+    /// The values along Curves' grid, written at its left.
+    fn label_curves(&mut self, ui: &mut Ui, values: &[f32], range: (f32, f32), height: f32) {
+        let placed: Vec<(f32, f32)> = values.iter().map(|v| (*v, self.y_of(*v, range, height))).collect();
+        let same = self.curve_labels.len() == placed.len()
+            && self.curve_labels.iter().zip(&placed).all(|((_, a), (b, _))| a == b);
+        if same {
+            for ((n, _), (_, y)) in self.curve_labels.iter().zip(&placed) {
+                ui.restyle(*n, |s| s.absolute(4.0, y - 14.0));
+            }
+            return;
+        }
+        for (n, _) in self.curve_labels.drain(..) {
+            ui.remove(n);
+        }
+        for (v, y) in placed {
+            let label = if v.abs() >= 100.0 { format!("{v:.0}") } else { format!("{}", (v * 1000.0).round() / 1000.0) };
+            let n = ui.add_text(self.curves, caption().mono().absolute(4.0, y - 14.0), &label);
+            self.curve_labels.push((n, v));
+        }
+    }
+
+    /// How a track is drawn in Curves: its value times `a` plus `b` —
+    /// as it is, or with Normalize, its own lowest to highest over -1..1.
+    fn norm(&self, doc: &ClipDoc, track: &Track) -> (f32, f32) {
+        if !self.normalized {
+            return (1.0, 0.0);
+        }
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for i in 0..=64 {
+            if let Some(v) = track.sample(doc.length * i as f32 / 64.0) {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+        for k in &track.keys {
+            lo = lo.min(k.value);
+            hi = hi.max(k.value);
+        }
+        if lo > hi {
+            return (1.0, 0.0);
+        }
+        if hi - lo < 1e-6 {
+            return (1.0, -lo);
+        }
+        let a = 2.0 / (hi - lo);
+        (a, -1.0 - lo * a)
+    }
+
     fn handle_at(&self, x: f32, y: f32, slope: f32, sign: f32, range: (f32, f32), height: f32) -> (f32, f32) {
         let per_px_v = (range.1 - range.0) / height.max(1.0);
         let dx = 1.0;
@@ -800,26 +1032,37 @@ impl Animation {
     fn show_time(&self, ui: &mut Ui) {
         let frame = (self.time * FPS).round() as i64;
         ui.set_text(self.time_field, &format!("{:.2}", self.time));
-        let _ = frame;
+        ui.set_text(self.frame_label, &format!("f {frame}"));
         let length = self.doc.as_ref().map(|d| format!("{:.2}", d.length)).unwrap_or_default();
         ui.set_text(self.length_field, &length);
     }
 
-    /// Buttons lit as the state is.
     fn mark(&self, ui: &mut Ui) {
-        set_icon_button(ui, self.rec, "circle-dot", self.recording, self.doc.is_some());
-        set_icon_button(ui, self.play, if self.playing { "pause" } else { "play" }, self.playing, self.doc.is_some());
-        set_button_primary(ui, self.sheet_button, self.mode == Mode::Dopesheet);
-        set_button_primary(ui, self.curves_button, self.mode == Mode::Curves);
+        set_icon_cell(ui, self.rec, self.recording, ERROR);
+        ui.restyle(self.rec_badge, |s| if self.recording { s.shown() } else { s.hidden() });
+        set_icon_cell(ui, self.play, self.playing, ACCENT);
+        if let Some(glyph) = ui.children(self.play).first().copied() {
+            ui.set_icon(glyph, if self.playing { "pause" } else { "play" });
+        }
+        set_word_toggle(ui, self.sheet_button, self.mode == Mode::Dopesheet);
+        set_word_toggle(ui, self.curves_button, self.mode == Mode::Curves);
+        set_word_toggle(ui, self.normalize, self.normalized);
+        if let Some(group) = ui.parent(self.normalize) {
+            let curves = self.mode == Mode::Curves;
+            ui.restyle(group, |s| if curves { s.shown() } else { s.hidden() });
+        }
         set_icon_button(ui, self.undo_button, "undo-2", false, !self.undo.is_empty());
         let open = self.doc.as_ref().map(|d| d.name.clone());
         for (row, name, _) in &self.clip_rows {
             let on = Some(name) == open.as_ref();
             ui.restyle(*row, |s| s.background(if on { ACCENT_900 } else { Color::TRANSPARENT }));
         }
-        if self.recording {
-            ui.restyle(self.rec, |s| s.background(ERROR.alpha(60)));
-        }
+        ui.set_text(self.title, open.as_deref().unwrap_or(""));
+        ui.set_text(self.empty_text, match (self.showing, self.clip_rows.is_empty()) {
+            (None, _) => "Select something to animate",
+            (Some(_), true) => "No clips yet: name one on the left and make it of its things or its bones",
+            (Some(_), false) => "Choose a clip on the left",
+        });
     }
 
     fn frame_all(&mut self, ui: &Ui) {
@@ -898,15 +1141,15 @@ impl Animation {
         let (Some(id), Some(doc)) = (self.showing, &self.doc) else { return };
         let time = snap(self.time, false);
         let values: Vec<(String, Property, f32)> =
-            tracks.into_iter().map(|(p, w)| { let v = session.current_value(id, doc, &p, w, time); (p, w, v) }).collect();
+            tracks.into_iter().map(|(p, w)| { let v = session.current_value(id, doc, &p, &w, time); (p, w, v) }).collect();
         self.chosen.clear();
         for (p, w, _) in &values {
-            self.chosen.push(KeyRef { path: p.clone(), what: *w, time });
+            self.chosen.push(KeyRef { path: p.clone(), what: w.clone(), time });
             self.open_groups.insert(p.clone());
         }
         self.change(ui, session, |doc| {
             for (path, what, value) in values {
-                let mut track = doc.track(&path, what).cloned().unwrap_or(Track { path, what, keys: Vec::new(), ease: Default::default() });
+                let mut track = doc.track(&path, &what).cloned().unwrap_or(Track { path, what, keys: Vec::new(), ease: Default::default() });
                 put_key(&mut track, ClipKey::shaped(time, value, Tangent::Auto));
                 doc.set_track(track);
             }
@@ -922,16 +1165,16 @@ impl Animation {
         let mut tracks: Vec<(String, Property)> = Vec::new();
         for row in &self.chosen_rows {
             match row {
-                RowKind::Track(p, w) => tracks.push((p.clone(), *w)),
-                RowKind::Group(p) => tracks.extend(doc.tracks.iter().filter(|t| t.path == *p).map(|t| (t.path.clone(), t.what))),
-                RowKind::Summary => tracks.extend(doc.tracks.iter().map(|t| (t.path.clone(), t.what))),
+                RowKind::Track(p, w) => tracks.push((p.clone(), w.clone())),
+                RowKind::Group(p) => tracks.extend(doc.tracks.iter().filter(|t| t.path == *p).map(|t| (t.path.clone(), t.what.clone()))),
+                RowKind::Summary => tracks.extend(doc.tracks.iter().map(|t| (t.path.clone(), t.what.clone()))),
             }
         }
         if tracks.is_empty() && doc.kind == ClipKind::Things {
             let part = self.part.clone();
-            tracks = doc.tracks.iter().filter(|t| t.path == part).map(|t| (t.path.clone(), t.what)).collect();
+            tracks = doc.tracks.iter().filter(|t| t.path == part).map(|t| (t.path.clone(), t.what.clone())).collect();
             if tracks.is_empty() {
-                tracks = TRANSFORM[..6].iter().map(|w| (part.clone(), *w)).collect();
+                tracks = TRANSFORM[..6].iter().map(|w| (part.clone(), w.clone())).collect();
             }
         }
         tracks.dedup();
@@ -982,18 +1225,18 @@ impl Animation {
                 .keys
                 .iter()
                 .enumerate()
-                .filter(|(_, k)| self.is_chosen(&t.path, t.what, k.time))
+                .filter(|(_, k)| self.is_chosen(&t.path, &t.what, k.time))
                 .map(|(i, _)| i)
                 .collect();
             if idx.is_empty() {
                 continue;
             }
             let defaults: Vec<(f32, f32)> = if self.tween_how == Blend::Default {
-                idx.iter().map(|&i| (t.keys[i].time, session.default_value(id, &doc, &t.path, t.what, t.keys[i].time))).collect()
+                idx.iter().map(|&i| (t.keys[i].time, session.default_value(id, &doc, &t.path, &t.what, t.keys[i].time))).collect()
             } else {
                 Vec::new()
             };
-            targets.push((t.path.clone(), t.what, idx, defaults));
+            targets.push((t.path.clone(), t.what.clone(), idx, defaults));
         }
         self.tweening = Some((doc, targets));
         let amount = self.tween_amount(ui, x);
@@ -1004,7 +1247,7 @@ impl Animation {
         let Some((from, targets)) = &self.tweening else { return };
         let mut doc = from.clone();
         for (path, what, idx, defaults) in targets {
-            let Some(t) = from.track(path, *what) else { continue };
+            let Some(t) = from.track(path, &what) else { continue };
             let default = |time: f32| defaults.iter().find(|(at, _)| (*at - time).abs() < 1e-4).map_or(0.0, |d| d.1);
             let keys = scrap::keys::blend(&t.keys, idx, self.tween_how, amount, &default);
             doc.set_track(Track { keys, ..t.clone() });
@@ -1055,7 +1298,7 @@ impl Animation {
             let rows: Vec<(String, Property)> = self
                 .chosen_rows
                 .iter()
-                .filter_map(|r| if let RowKind::Track(p, w) = r { Some((p.clone(), *w)) } else { None })
+                .filter_map(|r| if let RowKind::Track(p, w) = r { Some((p.clone(), w.clone())) } else { None })
                 .collect();
             if rows.is_empty() {
                 return;
@@ -1107,7 +1350,7 @@ impl Animation {
         let tracks = if self.mode == Mode::Curves { self.curve_tracks(doc) } else { doc.tracks.clone() };
         self.chosen = tracks
             .iter()
-            .flat_map(|t| t.keys.iter().map(|k| KeyRef { path: t.path.clone(), what: t.what, time: k.time }))
+            .flat_map(|t| t.keys.iter().map(|k| KeyRef { path: t.path.clone(), what: t.what.clone(), time: k.time }))
             .collect();
     }
 
@@ -1118,8 +1361,8 @@ impl Animation {
             .chosen
             .iter()
             .filter_map(|c| {
-                let k = doc.track(&c.path, c.what)?.keys.iter().find(|k| (k.time - c.time).abs() < 1e-4)?;
-                Some((c.path.clone(), c.what, k.time - first, k.value, k.tangent))
+                let k = doc.track(&c.path, &c.what)?.keys.iter().find(|k| (k.time - c.time).abs() < 1e-4)?;
+                Some((c.path.clone(), c.what.clone(), k.time - first, k.value, k.tangent))
             })
             .collect();
     }
@@ -1130,10 +1373,10 @@ impl Animation {
             return;
         }
         let at = snap(self.time, false);
-        self.chosen = keys.iter().map(|(p, w, dt, _, _)| KeyRef { path: p.clone(), what: *w, time: at + dt }).collect();
+        self.chosen = keys.iter().map(|(p, w, dt, _, _)| KeyRef { path: p.clone(), what: w.clone(), time: at + dt }).collect();
         self.change(ui, session, |doc| {
             for (path, what, dt, value, tangent) in keys {
-                let mut track = doc.track(&path, what).cloned().unwrap_or(Track { path, what, keys: Vec::new(), ease: Default::default() });
+                let mut track = doc.track(&path, &what).cloned().unwrap_or(Track { path, what, keys: Vec::new(), ease: Default::default() });
                 put_key(&mut track, ClipKey::shaped(at + dt, value, tangent));
                 doc.set_track(track);
             }
@@ -1149,54 +1392,63 @@ impl Animation {
         if doc.kind != ClipKind::Things || session.is_dragging() {
             return;
         }
-        let now = session.part_places(id);
-        if self.recorded.is_empty() {
+        // Only when the scene changed: what is compared is a few dozen
+        // numbers a thing, not to be read every frame.
+        let revision = session.revision();
+        if self.recorded_at == Some(revision) {
+            return;
+        }
+        let now = session.recordable(id);
+        let first = self.recorded_at.is_none();
+        self.recorded_at = Some(revision);
+        if first {
             self.recorded = now;
             return;
         }
-        let mut keys: Vec<(String, Property, f32)> = Vec::new();
-        for (path, place) in &now {
-            let Some((_, was)) = self.recorded.iter().find(|(p, _)| p == path) else { continue };
-            for (i, what) in TRANSFORM.iter().enumerate() {
-                let (a, b) = (component(was, i), component(place, i));
-                if (a - b).abs() > 1e-5 {
-                    keys.push((path.clone(), *what, b));
-                }
-            }
-        }
+        let keys: Vec<(String, Property, f32)> = now
+            .iter()
+            .filter(|(path, what, v)| {
+                self.recorded.iter().any(|(p, w, was)| p == path && w == what && (was - v).abs() > 1e-5)
+            })
+            .cloned()
+            .collect();
         if keys.is_empty() {
+            self.recorded = now;
             return;
         }
-        // The move goes back out of the scene: it was a key, not an edit.
+        // The change goes back out of the scene: it was a key, not an edit.
         let _ = session.undo();
         let time = snap(self.time, false);
-        self.chosen = keys.iter().map(|(p, w, _)| KeyRef { path: p.clone(), what: *w, time }).collect();
+        self.chosen = keys.iter().map(|(p, w, _)| KeyRef { path: p.clone(), what: w.clone(), time }).collect();
         for (p, _, _) in &keys {
             self.open_groups.insert(p.clone());
         }
         self.change(ui, session, |doc| {
             for (path, what, value) in keys {
-                let mut track = doc.track(&path, what).cloned().unwrap_or(Track { path, what, keys: Vec::new(), ease: Default::default() });
+                let mut track = doc.track(&path, &what).cloned().unwrap_or(Track { path, what, keys: Vec::new(), ease: Default::default() });
                 put_key(&mut track, ClipKey::shaped(time, value, Tangent::Auto));
                 doc.set_track(track);
             }
         });
-        self.recorded = session.part_places(id);
+        self.recorded = session.recordable(id);
+        self.recorded_at = Some(session.revision());
         self.posed = None;
     }
 
     // --- adding tracks -------------------------------------------------------
 
+    /// The panel that adds tracks: the things or bones by name, and under
+    /// the one chosen, what of it can move — its place, turn and scale,
+    /// its material's numbers, its light's, its components' — a chip each,
+    /// keyed at the playhead when pressed.
     fn list_adds(&mut self, ui: &mut Ui, session: &Session) {
         for (row, _, _) in self.add_rows.drain(..) {
             ui.remove(row);
         }
         let (Some(id), Some(doc)) = (self.showing, &self.doc) else { return };
         let filter = ui.text(self.add_filter).unwrap_or_default().to_lowercase();
-        let (names, props): (Vec<String>, Vec<Property>) = match doc.kind {
-            ClipKind::Things => (session.animatable_paths(id), TRANSFORM.iter().copied().chain([Property::Active]).collect()),
-            _ => (session.joints(id), TRANSFORM.to_vec()),
-        };
+        let things = doc.kind == ClipKind::Things;
+        let names = if things { session.animatable_paths(id) } else { session.joints(id) };
         let mut shown = 0;
         for name in names {
             let label = if name.is_empty() { "(itself)".to_string() } else { name.clone() };
@@ -1207,19 +1459,53 @@ impl Animation {
                 break;
             }
             shown += 1;
-            let row = ui.add(self.adds, Style::row().full_width().height(20.0).fixed().gap(SPACE_1).center_items());
-            ui.add_text(row, text().width(180.0).fixed().text_color(LABEL), &label);
-            for (group, what) in [("Position", &props[0..3]), ("Turn", &props[3..6]), ("Scale", &props[6..9])] {
-                let b = button(ui, row, &format!("add {name} {group}"), group, false);
-                ui.restyle(b, |s| s.height(18.0));
-                self.add_rows.push((b, name.clone(), what.to_vec()));
-            }
-            if props.contains(&Property::Active) {
-                let b = button(ui, row, &format!("add {name} Active"), "Active", false);
-                ui.restyle(b, |s| s.height(18.0));
-                self.add_rows.push((b, name.clone(), vec![Property::Active]));
-            }
+            let open = self.add_path.as_deref() == Some(name.as_str());
+            let row = ui.add(self.adds, Style::row().full_width().height(22.0).fixed().gap(SPACE_2).padding_x(SPACE_1).center_items().radius(RADIUS_SM).hover(HOVER).clickable());
+            ui.set_name(row, format!("add to {label}"));
+            icon(ui, row, if open { "chevron-down" } else { "chevron-right" }, MUTED);
+            icon(ui, row, if things { "box" } else { "bone" }, if things { INFO } else { SUCCESS });
+            ui.add_text(row, text().fill(), &label);
             self.add_rows.push((row, name.clone(), Vec::new()));
+            if !open {
+                continue;
+            }
+            // What of it can move, in groups: a chip adds every axis of it.
+            let mut groups: Vec<(String, Vec<(String, Vec<Property>)>)> = vec![(
+                "Transform".into(),
+                vec![
+                    ("Position".into(), TRANSFORM[0..3].to_vec()),
+                    ("Rotation".into(), TRANSFORM[3..6].to_vec()),
+                    ("Scale".into(), TRANSFORM[6..9].to_vec()),
+                ],
+            )];
+            if things {
+                groups[0].1.push(("Active".into(), vec![Property::Active]));
+                for (what, _) in session.animatable_numbers(id, &name) {
+                    let (group, chip) = chip_of(&what);
+                    let at = match groups.iter().position(|(g, _)| *g == group) {
+                        Some(i) => i,
+                        None => {
+                            groups.push((group, Vec::new()));
+                            groups.len() - 1
+                        }
+                    };
+                    match groups[at].1.iter_mut().find(|(c, _)| *c == chip) {
+                        Some((_, list)) => list.push(what),
+                        None => groups[at].1.push((chip, vec![what])),
+                    }
+                }
+            }
+            for (group, chips) in groups {
+                let line = ui.add(self.adds, Style::row().full_width().padding_left(46.0).gap(SPACE_1).center_items().wrap());
+                ui.add_text(line, caption().width(80.0).fixed(), &group.to_uppercase());
+                self.add_rows.push((line, name.clone(), Vec::new()));
+                for (chip, props) in chips {
+                    let b = ui.add(line, Style::row().height(20.0).fixed().padding_x(SPACE_2).center().radius(10.0).border(1.0, DIVIDER).hover(HOVER).clickable());
+                    ui.set_name(b, format!("add {name} {chip}"));
+                    ui.add_text(b, Style::default().text_size(11.0).text_color(TEXT).nowrap(), &chip);
+                    self.add_rows.push((b, name.clone(), props));
+                }
+            }
         }
     }
 
@@ -1314,6 +1600,7 @@ impl Animation {
         } else if node == self.rec {
             self.recording = !self.recording && self.doc.as_ref().is_some_and(|d| d.kind == ClipKind::Things);
             self.recorded.clear();
+            self.recorded_at = None;
             if self.doc.as_ref().is_some_and(|d| d.kind != ClipKind::Things) {
                 session.say(Level::Info, "recording keys what is moved in the view; bones are keyed with Key");
             }
@@ -1333,13 +1620,16 @@ impl Animation {
         } else if let Some((_, how)) = self.tween_modes.iter().find(|(b, _)| *b == node).copied() {
             self.tween_how = how;
             for (b, h) in &self.tween_modes {
-                set_button_primary(ui, *b, *h == how);
+                set_word_toggle(ui, *b, *h == how);
             }
+        } else if node == self.normalize {
+            self.normalized = !self.normalized;
+            self.range = None;
         } else if node == self.add_toggle {
             self.adding = !self.adding;
             let adding = self.adding;
             ui.restyle(self.adds, |s| if adding { s.shown() } else { s.hidden() });
-            set_button_primary(ui, self.add_toggle, adding);
+            ui.set_style(self.add_toggle, word_toggle_style(adding).height(18.0).radius(RADIUS_SM).gap(3.0));
             self.list_adds(ui, session);
         } else if node == self.key_button {
             self.key_now(ui, session);
@@ -1366,6 +1656,9 @@ impl Animation {
             self.list_adds(ui, session);
         } else if let Some((_, name, props)) = self.add_rows.iter().find(|(b, _, p)| *b == node && !p.is_empty()).cloned() {
             self.key_tracks(ui, session, props.into_iter().map(|w| (name.clone(), w)).collect());
+        } else if let Some((_, name, _)) = self.add_rows.iter().find(|(b, _, _)| *b == node).cloned() {
+            self.add_path = if self.add_path.as_deref() == Some(name.as_str()) { None } else { Some(name) };
+            self.list_adds(ui, session);
         } else if let Some((row, lane, kind)) = self.row_nodes.iter().find(|(r, l, _)| *r == node || *l == node).cloned() {
             let on_name = node == row && lane != row;
             if count >= 2 && node == lane && self.mode == Mode::Dopesheet {
@@ -1399,9 +1692,9 @@ impl Animation {
     fn row_tracks(&self, kind: &RowKind) -> Vec<(String, Property)> {
         let Some(doc) = &self.doc else { return Vec::new() };
         match kind {
-            RowKind::Track(p, w) => vec![(p.clone(), *w)],
-            RowKind::Group(p) => doc.tracks.iter().filter(|t| t.path == *p).map(|t| (t.path.clone(), t.what)).collect(),
-            RowKind::Summary => doc.tracks.iter().map(|t| (t.path.clone(), t.what)).collect(),
+            RowKind::Track(p, w) => vec![(p.clone(), w.clone())],
+            RowKind::Group(p) => doc.tracks.iter().filter(|t| t.path == *p).map(|t| (t.path.clone(), t.what.clone())).collect(),
+            RowKind::Summary => doc.tracks.iter().map(|t| (t.path.clone(), t.what.clone())).collect(),
         }
     }
 
@@ -1417,7 +1710,7 @@ impl Animation {
         let Some(doc) = &self.doc else { return Vec::new() };
         let mut best: Option<f32> = None;
         let tracks: Vec<&Track> = match kind {
-            RowKind::Track(p, w) => doc.track(p, *w).into_iter().collect(),
+            RowKind::Track(p, w) => doc.track(p, &w).into_iter().collect(),
             RowKind::Group(p) => doc.tracks.iter().filter(|t| t.path == *p).collect(),
             RowKind::Summary => doc.tracks.iter().collect(),
         };
@@ -1433,7 +1726,7 @@ impl Animation {
         tracks
             .iter()
             .filter(|t| t.keys.iter().any(|k| (k.time - time).abs() < 1e-4))
-            .map(|t| KeyRef { path: t.path.clone(), what: t.what, time })
+            .map(|t| KeyRef { path: t.path.clone(), what: t.what.clone(), time })
             .collect()
     }
 
@@ -1446,12 +1739,13 @@ impl Animation {
         let tracks = self.curve_tracks(doc);
         if self.chosen.len() <= 4 {
             for c in &self.chosen {
-                let Some(t) = tracks.iter().find(|t| t.path == c.path && t.what == c.what) else { continue };
+                let Some(t) = tracks.iter().find(|t| t.path == c.path && t.what == c.what.clone()) else { continue };
                 let Some(i) = t.keys.iter().position(|k| (k.time - c.time).abs() < 1e-4) else { continue };
                 let k = t.keys[i];
-                let (kx, ky) = (self.x_of(k.time), self.y_of(k.value, range, rect.height));
+                let (a, b) = self.norm(doc, t);
+                let (kx, ky) = (self.x_of(k.time), self.y_of(k.value * a + b, range, rect.height));
                 let (s_in, s_out) = scrap::keys::slopes(&t.keys, i);
-                for (s, sign, out) in [(s_in, -1.0, false), (s_out, 1.0, true)] {
+                for (s, sign, out) in [(s_in * a, -1.0, false), (s_out * a, 1.0, true)] {
                     let (hx, hy) = self.handle_at(kx, ky, s, sign, range, rect.height);
                     if (hx - x).hypot(hy - y) <= NEAR {
                         return Some((c.clone(), Some(out)));
@@ -1461,10 +1755,11 @@ impl Animation {
         }
         let mut best: Option<(f32, KeyRef)> = None;
         for t in &tracks {
+            let (a, b) = self.norm(doc, t);
             for k in &t.keys {
-                let d = (self.x_of(k.time) - x).hypot(self.y_of(k.value, range, rect.height) - y);
+                let d = (self.x_of(k.time) - x).hypot(self.y_of(k.value * a + b, range, rect.height) - y);
                 if d <= NEAR && best.as_ref().is_none_or(|(b, _)| d < *b) {
-                    best = Some((d, KeyRef { path: t.path.clone(), what: t.what, time: k.time }));
+                    best = Some((d, KeyRef { path: t.path.clone(), what: t.what.clone(), time: k.time }));
                 }
             }
         }
@@ -1564,7 +1859,7 @@ impl Animation {
                 let shift_t = snap((lx - x0) / self.view.1, alt);
                 let mut doc = from.clone();
                 for t in from.tracks.iter() {
-                    let mine: Vec<&KeyRef> = chosen.iter().filter(|c| c.path == t.path && c.what == t.what).collect();
+                    let mine: Vec<&KeyRef> = chosen.iter().filter(|c| c.path == t.path && c.what == t.what.clone()).collect();
                     if mine.is_empty() {
                         continue;
                     }
@@ -1585,10 +1880,11 @@ impl Animation {
             Some(Drag::Point { from, key, x0, y0 }) => {
                 let range = self.value_range(&from);
                 let new_t = snap(key.time + (lx - x0) / self.view.1, alt).max(0.0);
-                let old_v = from.track(&key.path, key.what).and_then(|t| t.keys.iter().find(|k| (k.time - key.time).abs() < 1e-4)).map(|k| k.value).unwrap_or(0.0);
-                let new_v = old_v + (self.v_of(ly, range, rect.height) - self.v_of(y0, range, rect.height));
+                let old_v = from.track(&key.path, &key.what).and_then(|t| t.keys.iter().find(|k| (k.time - key.time).abs() < 1e-4)).map(|k| k.value).unwrap_or(0.0);
+                let a = from.track(&key.path, &key.what).map_or(1.0, |t| self.norm(&from, t).0);
+                let new_v = old_v + (self.v_of(ly, range, rect.height) - self.v_of(y0, range, rect.height)) / a;
                 let mut doc = from.clone();
-                if let Some(mut t) = from.track(&key.path, key.what).cloned() {
+                if let Some(mut t) = from.track(&key.path, &key.what).cloned() {
                     if let Some(i) = t.keys.iter().position(|k| (k.time - key.time).abs() < 1e-4) {
                         let mut k = t.keys.remove(i);
                         k.time = new_t;
@@ -1604,16 +1900,17 @@ impl Animation {
             }
             Some(Drag::Handle { from, key, out }) => {
                 let range = self.value_range(&from);
-                let Some(t) = from.track(&key.path, key.what).cloned() else { return };
+                let Some(t) = from.track(&key.path, &key.what).cloned() else { return };
                 let Some(i) = t.keys.iter().position(|k| (k.time - key.time).abs() < 1e-4) else { return };
                 let k = t.keys[i];
-                let (kx, ky) = (self.x_of(k.time), self.y_of(k.value, range, rect.height));
+                let (a, b) = self.norm(&from, &t);
+                let (kx, ky) = (self.x_of(k.time), self.y_of(k.value * a + b, range, rect.height));
                 let (hx, hy) = (lx - kx, ly - ky);
                 if (hx.abs() < 1.0) || (out && hx <= 0.0) || (!out && hx >= 0.0) {
                     return;
                 }
                 let per_v = (range.1 - range.0) / rect.height.max(1.0);
-                let slope = -(hy * per_v) / (hx / self.view.1);
+                let slope = -(hy * per_v) / (hx / self.view.1) / a;
                 let (s_in, s_out) = scrap::keys::slopes(&t.keys, i);
                 let shape = match k.tangent {
                     Tangent::Broken(..) => if out { Tangent::Broken(s_in, slope) } else { Tangent::Broken(slope, s_out) },
@@ -1706,20 +2003,24 @@ const TRANSFORM: [Property; 9] = [
     Property::ScaleZ,
 ];
 
-fn component(t: &scrap::Transform, i: usize) -> f32 {
-    match i {
-        0..=2 => t.position[i],
-        3..=5 => t.rotation_deg[i - 3],
-        _ => t.scale[i - 6],
-    }
-}
-
-fn axis_color(what: Property) -> Color {
-    match what {
-        Property::X | Property::TurnX | Property::ScaleX => AXIS_X,
-        Property::Y | Property::TurnY | Property::ScaleY => AXIS_Y,
-        Property::Z | Property::TurnZ | Property::ScaleZ => AXIS_Z,
-        _ => ACCENT,
+fn axis_color(what: &Property) -> Color {
+    let last = |p: &str| p.rsplit('.').next().unwrap_or("").to_string();
+    let axis = match what {
+        Property::X | Property::TurnX | Property::ScaleX => "x".to_string(),
+        Property::Y | Property::TurnY | Property::ScaleY => "y".to_string(),
+        Property::Z | Property::TurnZ | Property::ScaleZ => "z".to_string(),
+        Property::Material(p) | Property::Field(p) => last(p),
+        _ => String::new(),
+    };
+    match axis.as_str() {
+        "x" | "r" | "0" => AXIS_X,
+        "y" | "g" | "1" => AXIS_Y,
+        "z" | "b" | "2" => AXIS_Z,
+        _ => match what {
+            Property::Material(_) => WARNING,
+            Property::Field(_) => INFO,
+            _ => ACCENT,
+        },
     }
 }
 
@@ -1733,4 +2034,100 @@ fn row_label(kind: &RowKind) -> String {
 
 fn line(x0: f32, y0: f32, x1: f32, y1: f32, color: Color, width: f32) -> Polyline {
     Polyline { points: vec![(x0, y0), (x1, y1)], color, width }
+}
+
+/// Past the clip's end, shaded over.
+const PAST_END: Color = Color::hex(0x000000).alpha(28);
+
+/// A property as the window names it: `Position X`, `Emission R`,
+/// `Light · Intensity`, `Player · Speed`.
+fn property_label(what: &Property) -> String {
+    match what {
+        Property::X => "Position X".into(),
+        Property::Y => "Position Y".into(),
+        Property::Z => "Position Z".into(),
+        Property::TurnX => "Rotation X".into(),
+        Property::TurnY => "Rotation Y".into(),
+        Property::TurnZ => "Rotation Z".into(),
+        Property::ScaleX => "Scale X".into(),
+        Property::ScaleY => "Scale Y".into(),
+        Property::ScaleZ => "Scale Z".into(),
+        Property::Active => "Active".into(),
+        Property::Volume => "Volume".into(),
+        Property::ParticleRate => "Particle rate".into(),
+        Property::Material(name) => words(name),
+        Property::Field(path) => {
+            let path = path.strip_prefix("components.").unwrap_or(path);
+            match path.split_once('.') {
+                Some((owner, rest)) => format!("{} · {}", words(owner), words(rest)),
+                None => words(path),
+            }
+        }
+    }
+}
+
+/// A path as words: `base_color.r` → `Base color R`, `params.2` →
+/// `Params 2`.
+fn words(path: &str) -> String {
+    let mut out = String::new();
+    for (i, part) in path.split(['.', '_']).filter(|p| !p.is_empty()).enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut c = part.chars();
+        if let Some(first) = c.next() {
+            if i == 0 || part.len() == 1 {
+                out.extend(first.to_uppercase());
+            } else {
+                out.push(first);
+            }
+            out.push_str(c.as_str());
+        }
+    }
+    out
+}
+
+/// Which group and which chip of the add panel a number goes under: its
+/// owner, and its name less the axis — `Material`, `Emission` for
+/// `emission.g`; `Light`, `Color` for `light.color.1`.
+fn chip_of(what: &Property) -> (String, String) {
+    let (group, path) = match what {
+        Property::Material(name) => ("Material".to_string(), name.as_str()),
+        Property::Field(path) => {
+            let path = path.strip_prefix("components.").unwrap_or(path);
+            let (owner, rest) = path.split_once('.').unwrap_or((path, ""));
+            (words(owner), rest)
+        }
+        other => ("Transform".to_string(), if matches!(other, Property::Active) { "active" } else { "" }),
+    };
+    let chip = match path.rsplit_once('.') {
+        Some((head, last)) if last.len() == 1 || last.parse::<usize>().is_ok() && head != "params" => head,
+        _ => path,
+    };
+    (group, words(chip))
+}
+
+/// A track's value as the row shows it.
+fn value_text(what: &Property, v: f32) -> String {
+    match what {
+        Property::TurnX | Property::TurnY | Property::TurnZ => format!("{v:.1}°"),
+        Property::Active => if v > 0.5 { "on".into() } else { "off".into() },
+        _ if v.abs() >= 100.0 => format!("{v:.0}"),
+        _ => format!("{v:.2}"),
+    }
+}
+
+/// A round step for a grid that has about `rough` between its lines:
+/// 1, 2 or 5 times a power of ten.
+fn nice_step(rough: f32) -> f32 {
+    if !rough.is_finite() || rough <= 0.0 {
+        return 1.0;
+    }
+    let ten = 10f32.powf(rough.log10().floor());
+    [1.0, 2.0, 5.0, 10.0].into_iter().map(|m| m * ten).find(|s| *s >= rough).unwrap_or(10.0 * ten)
+}
+
+/// Past the clip's end, from `x` on: a shade over what is under it.
+fn shade_style(x: f32) -> Style {
+    Style::row().absolute(x.max(0.0), 0.0).width(100_000.0).full_height().background(PAST_END)
 }

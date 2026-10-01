@@ -172,6 +172,9 @@ pub struct Session {
     preview_target: Option<OffscreenTarget>,
     /// Entities whose clips are playing in the view, for a preview.
     previewing: Vec<EntityId>,
+    /// What a clip shown in the view changed besides places, as it was
+    /// before: the document's value of a material's or a part's number.
+    posed_from: std::collections::HashMap<(hecs::Entity, scrap::motion::Property), f32>,
     /// Draw what the game would show instead of the Scene view: Unity's
     /// Game view (see [`Session::set_game_view`]).
     game_view: bool,
@@ -421,6 +424,7 @@ impl Session {
             readback: true,
             game_view: false,
             previewing: Vec::new(),
+            posed_from: Default::default(),
             preview_target: None,
             selected: None,
             gizmo_style: GizmoStyle::default(),
@@ -5388,6 +5392,7 @@ impl Session {
     fn respawn(&mut self) {
         // A new world has no previews on it.
         self.previewing.clear();
+        self.posed_from.clear();
         if let Some((_, grid)) = &mut self.nav_shown {
             *grid = None;
         }

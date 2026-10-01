@@ -5726,7 +5726,7 @@ fn the_animation_window_makes_a_clip_keys_it_and_poses_the_view() {
     // A clip of its own, and a graph that plays it on the line.
     assert_eq!(
         s.session.clip_list(crate_),
-        vec![("lift".to_string(), scrap_editor::clips::ClipKind::Things)],
+        vec![("lift".to_string(), scrap_editor::clips::ClipKind::Things, 1.0)],
         "the line got an animator that plays it"
     );
     assert!(clip_text(&dir, "lift").contains("length: 1.0"));
@@ -5889,3 +5889,49 @@ fn a_box_drawn_over_the_dopesheet_chooses_the_keys_in_it() {
     key(&mut s, Key::Delete);
     assert_eq!(clip_text(&dir, "slide").matches("(0.0, ").count(), 0);
 }
+
+#[test]
+fn a_clip_moves_a_things_material_from_the_add_panel() {
+    use scrap::motion::Property;
+    let Some((mut s, dir)) = studio() else { return };
+    let crate_ = s.session.find("boulder").unwrap();
+    s.session.select(Some(crate_)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    fill(&mut s, "new clip name", "glow");
+    click(&mut s, "new clip");
+    // + Track, the thing itself, its material's emission: three tracks
+    // keyed at the playhead.
+    click(&mut s, "animation add");
+    click(&mut s, "add to (itself)");
+    click(&mut s, "add  Emission");
+    let text = clip_text(&dir, "glow");
+    for axis in ["r", "g", "b"] {
+        assert!(text.contains(&format!("what: Material(\"emission.{axis}\"), keys: [(0.0, ")), "{text}");
+    }
+    // Its glow up to 4 at the end, written as a person would.
+    let path = scrap::layout::find(&dir, scrap::layout::Kind::Clip, "glow").unwrap();
+    let up = text.replace("what: Material(\"emission.r\"), keys: [(0.0, 0.0, Auto)]", "what: Material(\"emission.r\"), keys: [(0.0, 0.0, Auto), (1.0, 4.0, Auto)]");
+    assert_ne!(up, text);
+    std::fs::write(&path, up).unwrap();
+    click(&mut s, "clip glow");
+    fill(&mut s, "animation time", "0.5");
+    s.frame();
+    let glow = s.session.shown_number(crate_, "", &Property::Material("emission.r".into())).unwrap();
+    assert!((glow - 2.0).abs() < 0.01, "halfway up: {glow}");
+    // Recording, its material changed in the Inspector is a key, not an
+    // edit of the scene.
+    fill(&mut s, "animation time", "0.8");
+    click(&mut s, "animation record");
+    s.frame();
+    s.session.set_field(crate_, "material", "(base_color: (0.5, 0.5, 0.5), emission: (3.0, 0.0, 0.0))").unwrap();
+    s.frame();
+    s.frame();
+    let text = clip_text(&dir, "glow");
+    assert!(text.contains("(0.8, 3.0, Auto)"), "{text}");
+    click(&mut s, "animation record");
+    // Let go: the document's again.
+    click(&mut s, "animation stop");
+    assert_eq!(s.session.shown_number(crate_, "", &Property::Material("emission.r".into())), Some(0.0));
+}
+

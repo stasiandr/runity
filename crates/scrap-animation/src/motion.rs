@@ -47,7 +47,7 @@ pub use crate::keys::{Key, Tangent};
 pub const DIR: &str = "clips";
 
 /// What a track moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Property {
     X,
     Y,
@@ -64,6 +64,16 @@ pub enum Property {
     Volume,
     /// Its particles' rate.
     ParticleRate,
+    /// A number of its material, by name — `Material("emission.r")`,
+    /// `"base_color.g"`, `"metallic"`, `"tiling.x"`, a shader graph's
+    /// `"params.2"` — on this thing alone: a lamp that glows, a panel that
+    /// fades, a river whose texture flows.
+    Material(String),
+    /// Any other number of the thing by its path, as the Inspector names
+    /// it: an engine part's — `Field("light.intensity")` — or a game
+    /// component's — `Field("components.player.speed")`. Written by the
+    /// module that owns it ([`run_with`]'s `set`).
+    Field(String),
 }
 
 /// One property of one thing over time.
@@ -440,7 +450,7 @@ fn attach_with(
                     continue;
                 };
                 match track.what {
-                    Property::Active | Property::Volume | Property::ParticleRate => {
+                    Property::Active | Property::Volume | Property::ParticleRate | Property::Material(_) | Property::Field(_) => {
                         other.push((target, (*track).clone()));
                     }
                     _ => by_path.entry(track.path.as_str()).or_default().push(track),
@@ -496,7 +506,7 @@ fn attach_with(
             let what = &track.what;
             if *what == Property::Active && !defaults.iter().any(|(t, w, _)| t == target && w == what) {
                 let on = world.get::<&crate::world::Inactive>(*target).is_err();
-                defaults.push((*target, *what, if on { 1.0 } else { 0.0 }));
+                defaults.push((*target, what.clone(), if on { 1.0 } else { 0.0 }));
             }
         }
         let animator = Animator::new(Arc::new(skeleton), Arc::new(clips));
@@ -614,7 +624,7 @@ pub(crate) fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transfor
             Part::Scale,
         ),
     ] {
-        let keyed: Vec<Option<&&Track>> = axes.iter().map(|a| find(*a)).collect();
+        let keyed: Vec<Option<&&Track>> = axes.iter().map(|a| find(a.clone())).collect();
         if keyed.iter().all(Option::is_none) {
             continue;
         }
@@ -703,7 +713,7 @@ pub(crate) fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transfor
 pub fn run_with(
     world: &mut World,
     dt: f32,
-    set: &mut dyn FnMut(&mut World, hecs::Entity, Property, f32),
+    set: &mut dyn FnMut(&mut World, hecs::Entity, &Property, f32),
 ) {
     let mut places: Vec<(hecs::Entity, PoseTransform)> = Vec::new();
     let mut others: Vec<(hecs::Entity, Property, f32)> = Vec::new();
@@ -729,12 +739,12 @@ pub fn run_with(
                     .flatten()
                     .any(|(t, track)| t == target && track.what == *what);
                 if !said {
-                    others.push((*target, *what, *value));
+                    others.push((*target, what.clone(), *value));
                 }
             }
             for (target, track) in keyed.into_iter().flatten() {
                 if let Some(v) = track.sample(time) {
-                    others.push((*target, track.what, v));
+                    others.push((*target, track.what.clone(), v));
                 }
             }
         }
@@ -755,7 +765,9 @@ pub fn run_with(
                     crate::world::set_active(world, entity, on);
                 }
             }
-            Property::Volume | Property::ParticleRate => set(world, entity, what, value),
+            Property::Volume | Property::ParticleRate | Property::Material(_) | Property::Field(_) => {
+                set(world, entity, &what, value)
+            }
             _ => {}
         }
     }

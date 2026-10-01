@@ -65,8 +65,8 @@ pub struct ClipDoc {
 impl ClipDoc {
     /// Whether the file keys this track — on a model's clip, whether it is
     /// changed from the model's.
-    pub fn is_written(&self, path: &str, what: Property) -> bool {
-        self.motion.tracks.iter().any(|t| t.path == path && t.what == what)
+    pub fn is_written(&self, path: &str, what: &Property) -> bool {
+        self.motion.tracks.iter().any(|t| t.path == path && t.what == *what)
     }
 
     /// Put a track in, in place of the one of its path and property, or
@@ -92,8 +92,8 @@ impl ClipDoc {
         }
     }
 
-    pub fn track(&self, path: &str, what: Property) -> Option<&Track> {
-        self.tracks.iter().find(|t| t.path == path && t.what == what)
+    pub fn track(&self, path: &str, what: &Property) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.path == path && t.what == *what)
     }
 
     /// Change the length: the clip ends there, its keys where they are.
@@ -128,34 +128,39 @@ impl Session {
             .map(|(e, _)| e)
     }
 
-    /// The clips an entity can show, by name and kind: its model's, the
-    /// project's clips of that model's rig, and the clips its `animator`
-    /// graph moves things with.
-    pub fn clip_list(&self, id: EntityId) -> Vec<(String, ClipKind)> {
+    /// The clips an entity can show, by name, kind and length in seconds:
+    /// its model's, the project's clips of that model's rig, and the clips
+    /// its `animator` graph moves things with.
+    pub fn clip_list(&self, id: EntityId) -> Vec<(String, ClipKind, f32)> {
         let motions = self.motions();
-        let mut out: Vec<(String, ClipKind)> = Vec::new();
+        let mut out: Vec<(String, ClipKind, f32)> = Vec::new();
         if let (Some(skin), Some(model)) = (self.library_skin(id), self.entity_model(id)) {
-            out.extend(skin.clips.iter().map(|c| (c.name.clone(), ClipKind::Model)));
-            let mut rig: Vec<(String, ClipKind)> = motions
+            let length = |name: &str, own: f32| {
+                let edit = motions.clips.get(name).map_or(0.0, |m| m.length);
+                if edit > 0.0 { edit } else { own }
+            };
+            out.extend(skin.clips.iter().map(|c| (c.name.clone(), ClipKind::Model, length(&c.name, c.duration))));
+            let mut rig: Vec<(String, ClipKind, f32)> = motions
                 .clips
                 .iter()
                 .filter_map(|(name, m)| {
                     let base = m.base.as_ref()?;
-                    (base.model.name == model && !out.iter().any(|(n, _)| n == name)).then(|| {
+                    (base.model.name == model && !out.iter().any(|(n, _, _)| n == name)).then(|| {
                         let kind = if base.clip.is_empty() { ClipKind::Rig } else { ClipKind::Model };
-                        (name.clone(), kind)
+                        let own = skin.clips.iter().find(|c| c.name == base.clip).map_or(0.0, |c| c.duration);
+                        (name.clone(), kind, length(name, own))
                     })
                 })
                 .collect();
-            rig.sort();
+            rig.sort_by(|a, b| a.0.cmp(&b.0));
             out.extend(rig);
         }
         if let Some(graph) = self.line(id).map(|l| l.animator()).filter(|a| !a.is_empty()) {
             if let Some(graph) = motions.graphs.get(&graph) {
                 for clip in graph.clips() {
-                    let things = motions.clips.get(&clip).is_some_and(|m| m.base.is_none());
-                    if things && !out.iter().any(|(n, _)| *n == clip) {
-                        out.push((clip, ClipKind::Things));
+                    let Some(m) = motions.clips.get(&clip).filter(|m| m.base.is_none()) else { continue };
+                    if !out.iter().any(|(n, _, _)| *n == clip) {
+                        out.push((clip, ClipKind::Things, m.length));
                     }
                 }
             }
@@ -229,7 +234,7 @@ impl Session {
             return Err(EditError::Scene(format!("`{name}` cannot be a clip's name")));
         }
         let project = self.project.clone().ok_or_else(|| EditError::Scene("no project open".into()))?;
-        if project.file(Kind::Clip, name).is_some() || self.clip_list(id).iter().any(|(n, _)| n == name) {
+        if project.file(Kind::Clip, name).is_some() || self.clip_list(id).iter().any(|(n, _, _)| n == name) {
             return Err(EditError::Scene(format!("there is a clip `{name}` already")));
         }
         let model = self.entity_model(id);
@@ -314,7 +319,7 @@ impl Session {
                     let mut place = desc.transform;
                     for t in tracks {
                         let Some(v) = t.sample(time) else { continue };
-                        match t.what {
+                        match &t.what {
                             Property::X => place.position.x = v,
                             Property::Y => place.position.y = v,
                             Property::Z => place.position.z = v,
@@ -325,7 +330,12 @@ impl Session {
                             Property::ScaleY => place.scale.y = v,
                             Property::ScaleZ => place.scale.z = v,
                             Property::Active => scrap::world::set_active(&mut self.world, target, v > 0.5),
-                            Property::Volume | Property::ParticleRate => {}
+                            other => {
+                                let was = scrap::motion::access(&self.world, target, other, Some(v));
+                                if let Some(was) = was {
+                                    self.posed_from.entry((target, other.clone())).or_insert(was);
+                                }
+                            }
                         }
                     }
                     if let Ok(mut t) = self.world.get::<&mut scrap::Transform>(target) {
@@ -369,18 +379,81 @@ impl Session {
             .collect()
     }
 
+    /// Every number Record watches under an entity, by path, as the
+    /// document has it: each thing's place, turn and scale, and the numbers
+    /// of its material, parts and components.
+    pub fn recordable(&self, id: EntityId) -> Vec<(String, Property, f32)> {
+        use Property::*;
+        let mut out = Vec::new();
+        for (path, t) in self.part_places(id) {
+            let axes = [X, Y, Z, TurnX, TurnY, TurnZ, ScaleX, ScaleY, ScaleZ];
+            let values = [t.position, t.rotation_deg, t.scale].map(|v| v.to_array()).concat();
+            for (what, v) in axes.into_iter().zip(values) {
+                out.push((path.clone(), what, v));
+            }
+            for (what, v) in self.animatable_numbers(id, &path) {
+                out.push((path.clone(), what, v));
+            }
+        }
+        out
+    }
+
     /// The paths of what an entity's clip can move — `""` itself, then
     /// what is under it — for adding a track.
     pub fn animatable_paths(&self, id: EntityId) -> Vec<String> {
         self.line(id).map(|l| scrap::motion::animates(l).parts.into_iter().map(|(p, _)| p).collect()).unwrap_or_default()
     }
 
+    /// What the view shows of a property of a thing under an entity now —
+    /// posed by a clip, or as the document has it: what an agent checks a
+    /// material's glow by.
+    pub fn shown_number(&self, id: EntityId, path: &str, what: &Property) -> Option<f32> {
+        let line = self.line(id)?;
+        let (_, part) = scrap::motion::animates(line).parts.into_iter().find(|(p, _)| p == path)?;
+        scrap::motion::access(&self.world, self.world_entity(part)?, what, None)
+    }
+
+    /// The numbers of a thing under an entity a track can move, beyond its
+    /// place, turn and scale: its material's, its engine parts' (a light, a
+    /// camera, a sound, particles) and its game components', with what
+    /// each is now.
+    pub fn animatable_numbers(&self, id: EntityId, path: &str) -> Vec<(Property, f32)> {
+        let Some(line) = self.line(id) else { return Vec::new() };
+        let Some((_, part)) = scrap::motion::animates(line).parts.into_iter().find(|(p, _)| p == path) else {
+            return Vec::new();
+        };
+        let Some(desc) = self.expanded().get(part).cloned() else { return Vec::new() };
+        let mut out = Vec::new();
+        if let Some(target) = self.world_entity(part) {
+            for name in scrap::material::NUMBERS {
+                let what = Property::Material(name.to_string());
+                let now = self.posed_from.get(&(target, what.clone())).copied();
+                if let Some(v) = now.or_else(|| scrap::motion::access(&self.world, target, &what, None)) {
+                    out.push((what, v));
+                }
+            }
+        }
+        for name in ["light", "camera", "sound", "particles"] {
+            if let Some(raw) = desc.parts.raw(name) {
+                for (p, v) in scrap::numbers::all(raw) {
+                    out.push((Property::Field(format!("{name}.{p}")), v));
+                }
+            }
+        }
+        for (name, value) in &desc.components {
+            for (p, v) in scrap::numbers::all(value.get_ron()) {
+                out.push((Property::Field(format!("components.{name}.{p}")), v));
+            }
+        }
+        out
+    }
+
     /// What a track's property would be without the track: the scene's
     /// for a thing, the rest pose's for a rig's bone, the model's own clip's
     /// for a model's — what the tween slider's Default blends toward.
-    pub fn default_value(&self, id: EntityId, doc: &ClipDoc, path: &str, what: Property, time: f32) -> f32 {
+    pub fn default_value(&self, id: EntityId, doc: &ClipDoc, path: &str, what: &Property, time: f32) -> f32 {
         let mut bare = doc.clone();
-        let other = |t: &Track| !(t.path == path && t.what == what);
+        let other = |t: &Track| !(t.path == path && t.what == *what);
         bare.tracks.retain(other);
         bare.motion.tracks.retain(other);
         self.current_value(id, &bare, path, what, time)
@@ -389,7 +462,7 @@ impl Session {
     /// What a track's property is now, where the document has it: the
     /// first key a new track starts from. A bone's, from the clip shown at
     /// `time`.
-    pub fn current_value(&self, id: EntityId, doc: &ClipDoc, path: &str, what: Property, time: f32) -> f32 {
+    pub fn current_value(&self, id: EntityId, doc: &ClipDoc, path: &str, what: &Property, time: f32) -> f32 {
         if let Some(t) = doc.track(path, what) {
             if let Some(v) = t.sample(time) {
                 return v;
@@ -412,7 +485,16 @@ impl Session {
                     Property::ScaleY => t.scale.y,
                     Property::ScaleZ => t.scale.z,
                     Property::Active => if desc.inactive { 0.0 } else { 1.0 },
-                    Property::Volume | Property::ParticleRate => 1.0,
+                    // As the document has it: what it was before a clip
+                    // was shown on it, or what it is.
+                    other => {
+                        let Some(target) = self.world_entity(desc.id) else { return 0.0 };
+                        self.posed_from
+                            .get(&(target, other.clone()))
+                            .copied()
+                            .or_else(|| scrap::motion::access(&self.world, target, other, None))
+                            .unwrap_or(0.0)
+                    }
                 }
             }
             ClipKind::Rig | ClipKind::Model => {

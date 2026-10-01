@@ -157,6 +157,7 @@ pub use scrap_render::upscale;
 pub use scrap_render::vsm;
 pub mod live;
 pub use scrap_core::merge;
+pub use scrap_core::numbers;
 pub use scrap_render::material;
 pub use scrap_render::moods;
 /// Clips that move a scene's things: the animation module's, with the
@@ -165,63 +166,115 @@ pub use scrap_render::moods;
 pub mod motion {
     pub use scrap_animation::motion::*;
 
-    /// Every moving line one step on ([`run_with`]), a clip's volume and
-    /// particle-rate tracks written to the entity's sound and particles.
+    /// Every moving line one step on ([`run_with`]): what a clip's track
+    /// moves besides the place and the switch — a sound's volume, a
+    /// material's number, a light's, a game component's — written by
+    /// [`access`].
     pub fn run(world: &mut hecs::World, dt: f32) {
-        run_with(world, dt, &mut |world, entity, what, value| match what {
+        run_with(world, dt, &mut |world, entity, what, value| {
+            access(world, entity, what, Some(value));
+        })
+    }
+
+    /// A property of an entity a clip or a tween hands over, as it is now;
+    /// with `to`, set to that as well. `None` when the entity has nothing
+    /// of the kind:
+    ///
+    /// * `Volume`, `ParticleRate` — its sound's and its particles';
+    /// * `Material("emission.r")` — a number of its own material
+    ///   ([`crate::material::NUMBERS`]), on each of its pieces;
+    /// * `Field("light.intensity")` — a number of an engine part it has:
+    ///   `light`, `camera`, `sound`, `particles`, by the path the part's
+    ///   file writes it at;
+    /// * `Field("components.player.speed")` — a number of a game's
+    ///   component that can be written down ([`crate::numbers`]).
+    pub fn access(world: &hecs::World, entity: hecs::Entity, what: &Property, to: Option<f32>) -> Option<f32> {
+        use crate::world::{CameraLens, LightSource, Sounding, Surface, SurfaceParts};
+        match what {
             Property::Volume => {
-                if let Ok(mut s) = world.get::<&mut crate::world::Sounding>(entity) {
-                    s.0.volume = value;
+                let mut s = world.get::<&mut Sounding>(entity).ok()?;
+                let now = s.0.volume;
+                if let Some(v) = to {
+                    s.0.volume = v;
                 }
+                Some(now)
             }
             Property::ParticleRate => {
-                if let Ok(mut p) = world.get::<&mut crate::particles::Emitting>(entity) {
-                    p.emitter.rate = value;
+                let mut p = world.get::<&mut crate::particles::Emitting>(entity).ok()?;
+                let now = p.emitter.rate;
+                if let Some(v) = to {
+                    p.emitter.rate = v;
+                }
+                Some(now)
+            }
+            Property::Material(name) => {
+                let mut now = None;
+                if let Ok(mut s) = world.get::<&mut Surface>(entity) {
+                    now = s.0.number(name);
+                    if let Some(v) = to {
+                        s.0.set_number(name, v);
+                    }
+                }
+                // A model of several materials: each piece that has its own.
+                if let Ok(mut parts) = world.get::<&mut SurfaceParts>(entity) {
+                    for m in parts.0.iter_mut().filter_map(|(_, m)| m.as_mut()) {
+                        now = now.or(m.number(name));
+                        if let Some(v) = to {
+                            m.set_number(name, v);
+                        }
+                    }
+                }
+                now
+            }
+            Property::Field(path) => {
+                let (part, rest) = path.split_once('.')?;
+                fn inner<C: hecs::Component, T: serde::Serialize + serde::de::DeserializeOwned>(
+                    world: &hecs::World,
+                    entity: hecs::Entity,
+                    pick: fn(&mut C) -> &mut T,
+                    path: &str,
+                    to: Option<f32>,
+                ) -> Option<f32> {
+                    let mut c = world.get::<&mut C>(entity).ok()?;
+                    let value = pick(&mut c);
+                    let now = crate::numbers::get(&*value, path)?;
+                    if let Some(v) = to {
+                        crate::numbers::set(value, path, v);
+                    }
+                    Some(now)
+                }
+                match part {
+                    "components" => {
+                        let (name, inner_path) = rest.split_once('.')?;
+                        crate::numbers::component(world, entity, name, inner_path, to)
+                    }
+                    "light" => inner::<LightSource, _>(world, entity, |c| &mut c.0, rest, to),
+                    "camera" => inner::<CameraLens, _>(world, entity, |c| &mut c.0, rest, to),
+                    "sound" => inner::<Sounding, _>(world, entity, |c| &mut c.0, rest, to),
+                    "particles" => inner::<crate::particles::Emitting, _>(world, entity, |c| &mut c.emitter, rest, to),
+                    _ => None,
                 }
             }
-            _ => {}
-        })
+            _ => None,
+        }
     }
 }
 
-/// Tweens from game code: the animation module's, with a sound's volume
-/// and particles' rate read and written by the modules that own them, as
-/// a motion clip's are (docs/feel.md).
+/// Tweens from game code: the animation module's, with what is not a
+/// place or a switch read and written as a motion clip's is
+/// ([`motion::access`], docs/feel.md).
 #[cfg(feature = "animation")]
 pub mod tween {
     pub use scrap_animation::tween::*;
 
-    use scrap_animation::motion::Property;
-
     /// Every tween one step on ([`run_tweens`]).
     pub fn run(world: &mut hecs::World, dt: f32) {
-        let get = |world: &hecs::World, entity: hecs::Entity, what: Property| match what {
-            Property::Volume => world
-                .get::<&crate::world::Sounding>(entity)
-                .ok()
-                .map(|s| s.0.volume),
-            Property::ParticleRate => world
-                .get::<&crate::particles::Emitting>(entity)
-                .ok()
-                .map(|p| p.emitter.rate),
-            _ => None,
-        };
         run_tweens(
             world,
             dt,
-            &get,
-            &mut |world, entity, what, value| match what {
-                Property::Volume => {
-                    if let Ok(mut s) = world.get::<&mut crate::world::Sounding>(entity) {
-                        s.0.volume = value;
-                    }
-                }
-                Property::ParticleRate => {
-                    if let Ok(mut p) = world.get::<&mut crate::particles::Emitting>(entity) {
-                        p.emitter.rate = value;
-                    }
-                }
-                _ => {}
+            &|world, entity, what| crate::motion::access(world, entity, what, None),
+            &mut |world, entity, what, value| {
+                crate::motion::access(world, entity, what, Some(value));
             },
         )
     }
