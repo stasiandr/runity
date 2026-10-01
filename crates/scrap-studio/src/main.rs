@@ -3,6 +3,16 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // A panic in a key or a click is raised inside AppKit, which cannot
+    // unwind it: the process aborts, and macOS's crash report has the stack
+    // but not what the panic said. Written down here first, with where.
+    if let Some(dir) = scrap_studio::appearance::config_dir() {
+        scrap::crash::install_in(
+            dir.join(scrap::crash::DIR),
+            "scrap-studio",
+            env!("CARGO_PKG_VERSION"),
+        );
+    }
     let bundled = in_app_bundle();
     if bundled {
         adopt_login_path();
