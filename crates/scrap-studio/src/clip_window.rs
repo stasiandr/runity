@@ -84,6 +84,10 @@ enum Drag {
     /// A chosen key's slope, by its handle: `out` the right one.
     Handle { from: ClipDoc, key: KeyRef, out: bool },
     Pan,
+    /// A box drawn over the keys, window coordinates from where it was
+    /// pressed to where the pointer is; `kept` the keys chosen before it,
+    /// with Shift.
+    Box { x0: f32, y0: f32, x1: f32, y1: f32, kept: Vec<KeyRef> },
 }
 
 pub struct Animation {
@@ -157,6 +161,10 @@ pub struct Animation {
     drag: Option<Drag>,
     undo: Vec<ClipDoc>,
     redo: Vec<ClipDoc>,
+    /// The document's revision when the window last changed the clip:
+    /// while it is still that, Undo is the window's (as the Configs
+    /// window's is), from the menu, the keys or the toolbar alike.
+    revision: Option<u64>,
     /// Shown in the view as the window has it: posed again when not.
     posed: Option<(f32, u64)>,
     version: u64,
@@ -306,6 +314,7 @@ impl Animation {
             drag: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            revision: None,
             posed: None,
             version: 0,
             built: None,
@@ -598,6 +607,7 @@ impl Animation {
             }
             let mut lines = vec![line(self.x_of(self.time), 0.0, self.x_of(self.time), ROW_H, ACCENT, 1.5)];
             lines.push(line(end, 0.0, end, ROW_H, WARNING.alpha(60), 1.0));
+            lines.extend(self.box_lines(ui, lane));
             ui.set_drawing(lane, Drawing { lines, marks });
             let on = self.chosen_rows.contains(&kind);
             ui.restyle(row, |s| s.background(if on { ACCENT_900 } else { Color::TRANSPARENT }));
@@ -620,6 +630,66 @@ impl Animation {
             let n = ui.add_text(self.ruler, caption().absolute(self.x_of(t) + 3.0, 1.0), &label);
             self.ruler_labels.push((n, t));
         }
+    }
+
+    /// The keys inside a box, in window coordinates: in Curves where they
+    /// are drawn, in the Dopesheet on the rows it crosses, a group's or the
+    /// summary's row standing for every key of its tracks at that time.
+    fn keys_in_box(&self, ui: &Ui, (left, top, right, bottom): (f32, f32, f32, f32)) -> Vec<KeyRef> {
+        let Some(doc) = &self.doc else { return Vec::new() };
+        let mut out = Vec::new();
+        if self.mode == Mode::Curves {
+            let rect = ui.rect(self.curves);
+            let range = self.value_range(doc);
+            for t in self.curve_tracks(doc) {
+                for k in &t.keys {
+                    let (x, y) = (rect.x + self.x_of(k.time), rect.y + self.y_of(k.value, range, rect.height));
+                    if x >= left && x <= right && y >= top && y <= bottom {
+                        out.push(KeyRef { path: t.path.clone(), what: t.what, time: k.time });
+                    }
+                }
+            }
+            return out;
+        }
+        for (_, lane, kind) in &self.row_nodes {
+            let r = ui.rect(*lane);
+            if r.y + r.height < top || r.y > bottom {
+                continue;
+            }
+            let (t0, t1) = (self.t_of(left - r.x) - 1e-4, self.t_of(right - r.x) + 1e-4);
+            for t in doc.tracks.iter().filter(|t| match kind {
+                RowKind::Track(p, w) => t.path == *p && t.what == *w,
+                RowKind::Group(p) => t.path == *p,
+                RowKind::Summary => true,
+            }) {
+                for k in t.keys.iter().filter(|k| k.time >= t0 && k.time <= t1) {
+                    let key = KeyRef { path: t.path.clone(), what: t.what, time: k.time };
+                    if !out.contains(&key) {
+                        out.push(key);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The box being drawn, as lines in a node's own coordinates.
+    fn box_lines(&self, ui: &Ui, node: NodeId) -> Vec<Polyline> {
+        let Some(Drag::Box { x0, y0, x1, y1, .. }) = &self.drag else { return Vec::new() };
+        let r = ui.rect(node);
+        let (l, t, rt, b) = (x0.min(*x1) - r.x, y0.min(*y1) - r.y, x0.max(*x1) - r.x, y0.max(*y1) - r.y);
+        if b < 0.0 || t > r.height {
+            return Vec::new();
+        }
+        let (top, bottom) = (t.max(0.0), b.min(r.height));
+        let mut out = vec![line(l, top, l, bottom, ACCENT, 1.0), line(rt, top, rt, bottom, ACCENT, 1.0)];
+        if t >= 0.0 {
+            out.push(line(l, t, rt, t, ACCENT, 1.0));
+        }
+        if b <= r.height {
+            out.push(line(l, b, rt, b, ACCENT, 1.0));
+        }
+        out
     }
 
     fn is_chosen(&self, path: &str, what: Property, time: f32) -> bool {
@@ -714,6 +784,7 @@ impl Animation {
         }
         let head = self.x_of(self.time);
         lines.push(line(head, 0.0, head, rect.height, ACCENT, 1.5));
+        lines.extend(self.box_lines(ui, self.curves));
         ui.set_drawing(self.curves, Drawing { lines, marks });
     }
 
@@ -781,12 +852,33 @@ impl Animation {
             session.say(Level::Error, e.to_string());
         }
         self.version += 1;
+        self.revision = Some(session.revision());
         if !was_file && self.doc.as_ref().is_some_and(|d| d.file.is_some()) {
             let name = self.doc.as_ref().map(|d| d.name.clone()).unwrap_or_default();
             session.say(Level::Info, format!("clip `{name}`: changes written over the model's"));
         }
         self.show_time(ui);
         self.mark(ui);
+    }
+
+    /// Whether Undo takes back the window's last change: there is one, and
+    /// nothing has changed the scene since.
+    pub fn takes_undo(&self, session: &Session) -> bool {
+        !self.undo.is_empty() && self.revision == Some(session.revision())
+    }
+
+    pub fn takes_redo(&self, session: &Session) -> bool {
+        !self.redo.is_empty() && self.revision == Some(session.revision())
+    }
+
+    /// What Undo and Redo say they would take back.
+    pub fn undo_label(&self) -> Option<String> {
+        self.doc.as_ref().map(|d| format!("clip {}", d.name))
+    }
+
+    /// Undo or Redo, from wherever it was asked.
+    pub fn step(&mut self, ui: &mut Ui, session: &mut Session, redo: bool) {
+        self.take_back(ui, session, redo);
     }
 
     fn take_back(&mut self, ui: &mut Ui, session: &mut Session, redo: bool) {
@@ -1009,6 +1101,16 @@ impl Animation {
         });
     }
 
+    /// Every key shown: in Curves, of the curves drawn.
+    fn choose_all(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        let tracks = if self.mode == Mode::Curves { self.curve_tracks(doc) } else { doc.tracks.clone() };
+        self.chosen = tracks
+            .iter()
+            .flat_map(|t| t.keys.iter().map(|k| KeyRef { path: t.path.clone(), what: t.what, time: k.time }))
+            .collect();
+    }
+
     fn copy(&mut self) {
         let Some(doc) = &self.doc else { return };
         let first = self.chosen.iter().map(|c| c.time).fold(f32::MAX, f32::min);
@@ -1128,12 +1230,16 @@ impl Animation {
         let _ = ctrl;
         match event {
             Event::Submit(text) if node == self.time_field => {
+                // The keyboard back to the window: Cmd-Z and the keys are
+                // the clip's again, not the field's.
+                ui.focus(None);
                 if let Ok(t) = text.trim().parse::<f32>() {
                     self.time = t.max(0.0);
                 }
                 self.show_time(ui);
             }
             Event::Submit(text) if node == self.length_field => {
+                ui.focus(None);
                 if let Ok(t) = text.trim().parse::<f32>() {
                     self.change(ui, session, |doc| doc.set_length(t));
                 }
@@ -1147,7 +1253,11 @@ impl Animation {
                 self.tween_to(ui, amount);
             }
             Event::DragEnd { .. } if node == self.tween => self.tween_end(ui, session),
-            Event::Press { x, y, .. } => self.press(ui, node, *x, *y, shift),
+            Event::Press { x, y, button } => {
+                // Curves pan with Alt, or the middle or right button.
+                let pan = alt || *button != scrap::input::MouseButton::Left;
+                self.press(ui, node, *x, *y, shift, pan)
+            }
             Event::Drag { dx, dy, x, y } => self.drag_to(ui, session, node, *x, *y, *dx, *dy, alt),
             Event::DragEnd { .. } => self.drag_end(ui, session),
             Event::Wheel { x, y } if node == self.curves || node == self.ruler || self.is_lane(node) => {
@@ -1361,7 +1471,7 @@ impl Animation {
         best.map(|(_, k)| (k, None))
     }
 
-    fn press(&mut self, ui: &mut Ui, node: NodeId, x: f32, y: f32, shift: bool) {
+    fn press(&mut self, ui: &mut Ui, node: NodeId, x: f32, y: f32, shift: bool, pan: bool) {
         let Some(doc) = self.doc.clone() else { return };
         if node == self.ruler {
             let rect = ui.rect(node);
@@ -1374,7 +1484,8 @@ impl Animation {
         if node == self.curves {
             let rect = ui.rect(node);
             let (lx, ly) = (x - rect.x, y - rect.y);
-            match self.curve_hit(ui, lx, ly) {
+            let hit = if pan { None } else { self.curve_hit(ui, lx, ly) };
+            match hit {
                 Some((key, Some(out))) => self.drag = Some(Drag::Handle { from: doc, key, out }),
                 Some((key, None)) => {
                     if !shift && !self.chosen.contains(&key) {
@@ -1385,11 +1496,12 @@ impl Animation {
                     }
                     self.drag = Some(Drag::Point { from: doc, key, x0: lx, y0: ly });
                 }
+                None if pan => self.drag = Some(Drag::Pan),
                 None => {
                     if !shift {
                         self.chosen.clear();
                     }
-                    self.drag = Some(Drag::Pan);
+                    self.drag = Some(Drag::Box { x0: x, y0: y, x1: x, y1: y, kept: self.chosen.clone() });
                 }
             }
             return;
@@ -1399,13 +1511,12 @@ impl Animation {
         let lx = x - rect.x;
         let hit = self.keys_at(&kind, lx);
         if hit.is_empty() {
+            // An empty place: a box to choose keys with, as in Unity; the
+            // playhead is the ruler's.
             if !shift {
                 self.chosen.clear();
             }
-            // An empty place: the playhead goes there.
-            self.time = snap(self.t_of(lx), false).clamp(0.0, doc.length);
-            self.drag = Some(Drag::Scrub);
-            self.show_time(ui);
+            self.drag = Some(Drag::Box { x0: x, y0: y, x1: x, y1: y, kept: self.chosen.clone() });
             return;
         }
         let already = hit.iter().all(|h| self.chosen.contains(h));
@@ -1430,6 +1541,16 @@ impl Animation {
             Some(Drag::Scrub) => {
                 self.time = snap(self.t_of(lx), alt).clamp(0.0, length);
                 self.show_time(ui);
+            }
+            Some(Drag::Box { x0, y0, kept, .. }) => {
+                self.drag = Some(Drag::Box { x0, y0, x1: x, y1: y, kept: kept.clone() });
+                let mut chosen = kept;
+                for k in self.keys_in_box(ui, (x0.min(x), y0.min(y), x0.max(x), y0.max(y))) {
+                    if !chosen.contains(&k) {
+                        chosen.push(k);
+                    }
+                }
+                self.chosen = chosen;
             }
             Some(Drag::Pan) => {
                 self.view.0 -= dx / self.view.1;
@@ -1532,7 +1653,7 @@ impl Animation {
         if !over || self.doc.is_none() {
             return false;
         }
-        let (shift, ctrl, _, command) = ui.modifiers();
+        let (_, ctrl, _, command) = ui.modifiers();
         let cmd = ctrl || command;
         match key {
             K::Space => {
@@ -1543,7 +1664,7 @@ impl Animation {
             K::Delete | K::Backspace => self.delete_chosen(ui, session),
             K::Left => self.step_frame(-1),
             K::Right => self.step_frame(1),
-            K::Z if cmd => self.take_back(ui, session, shift),
+            K::A if cmd => self.choose_all(),
             K::C if cmd => self.copy(),
             K::V if cmd => self.paste(ui, session),
             K::F => {

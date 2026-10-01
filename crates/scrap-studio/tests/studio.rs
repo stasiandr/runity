@@ -5750,15 +5750,23 @@ fn the_animation_window_makes_a_clip_keys_it_and_poses_the_view() {
     s.frame();
     let y = s.session.world_position(crate_).unwrap().y;
     assert!((y - (p.y + 1.0)).abs() < 0.05, "{y} halfway between {} and +2", p.y);
-    // Cmd-Z over the window takes the key back.
-    click(&mut s, "lane summary");
-    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
-    s.handle(&InputEvent::KeyDown(Key::Z));
-    s.handle(&InputEvent::KeyUp(Key::Z));
-    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
-    s.frame();
+    // Cmd-Z takes the key back, wherever the pointer is — the window's
+    // change is the last — and the Edit menu says so.
+    s.ui.paint();
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    s.handle(&InputEvent::MouseMoved { x: view.x + 20.0, y: view.y + 20.0 });
+    let undo = s.menu_state(&scrap_studio::menu::Action::Editor("undo"), "Undo");
+    assert_eq!(undo.label, "Undo clip lift");
+    shortcut(&mut s, Key::Z);
     let text = clip_text(&dir, "lift");
     assert!(!text.contains(&format!("(1.0, {:?}, Auto)", p.y + 2.0)), "{text}");
+    assert_eq!(s.session.transform(crate_).unwrap().position, start.position, "the scene untouched");
+    // An edit of the scene after it: Cmd-Z is the scene's again.
+    s.session.set_field(crate_, "position", &format!("({:?}, {:?}, {:?})", p.x + 1.0, p.y, p.z)).unwrap();
+    s.frame();
+    shortcut(&mut s, Key::Z);
+    assert_eq!(s.session.transform(crate_).unwrap().position, start.position, "the scene's edit taken back");
+    assert!(clip_text(&dir, "lift").contains("what: Y, keys: [(0.0, "), "the clip's keys stay");
 }
 
 #[test]
@@ -5838,13 +5846,46 @@ fn the_tween_slider_makes_a_breakdown_between_the_keys_around_the_playhead() {
     let shown = s.session.world_position(crate_).unwrap().y;
     assert!((shown - y).abs() < 0.01, "{shown} not {y}");
     // One step back takes the breakdown away, key and slide.
-    click(&mut s, "lane summary");
-    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
-    s.handle(&InputEvent::KeyDown(Key::Z));
-    s.handle(&InputEvent::KeyUp(Key::Z));
-    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
-    s.frame();
+    shortcut(&mut s, Key::Z);
     let text = clip_text(&dir, "hop");
     assert!(!text.contains("(0.5,"), "{text}");
     assert!(text.contains("(1.0,"), "the keys before it stay: {text}");
+}
+
+#[test]
+fn a_box_drawn_over_the_dopesheet_chooses_the_keys_in_it() {
+    let Some((mut s, dir)) = studio() else { return };
+    let crate_ = s.session.add(None, "cube").unwrap();
+    s.session.select(Some(crate_)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    fill(&mut s, "new clip name", "slide");
+    click(&mut s, "new clip");
+    // Its place and turn keyed at 0 and at 1: six tracks, two keys each.
+    click(&mut s, "animation key");
+    fill(&mut s, "animation time", "1.0");
+    click(&mut s, "animation key");
+    assert_eq!(clip_text(&dir, "slide").matches("(1.0, ").count(), 6);
+    // A box from the middle of the summary's row to its end, down past
+    // the rows under it: every key at 1, none at 0.
+    s.ui.paint();
+    let lane = s.ui.rect(s.ui.find("lane summary").unwrap());
+    let (x0, y0) = (lane.x + lane.width * 0.5, lane.y + 4.0);
+    s.handle(&InputEvent::MouseMoved { x: x0, y: y0 });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x: x0 + 40.0, y: y0 + 10.0 });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x: lane.x + lane.width - 2.0, y: y0 + 30.0 });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    key(&mut s, Key::Delete);
+    let text = clip_text(&dir, "slide");
+    assert_eq!(text.matches("(1.0, ").count(), 0, "{text}");
+    assert_eq!(text.matches("(0.0, ").count(), 6, "{text}");
+    // Cmd-A over the window chooses them all.
+    shortcut(&mut s, Key::A);
+    key(&mut s, Key::Delete);
+    assert_eq!(clip_text(&dir, "slide").matches("(0.0, ").count(), 0);
 }

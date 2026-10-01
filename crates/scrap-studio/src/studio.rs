@@ -1077,8 +1077,8 @@ impl Studio {
         let selected = !s.selection().is_empty();
         let playing = s.is_playing();
         let (enabled, checked) = match action {
-            Action::Editor("undo") => (s.can_undo() || self.configs.takes_undo(s), false),
-            Action::Editor("redo") => (s.can_redo() || self.configs.takes_redo(s), false),
+            Action::Editor("undo") => (s.can_undo() || self.configs.takes_undo(s) || self.animation.takes_undo(s), false),
+            Action::Editor("redo") => (s.can_redo() || self.configs.takes_redo(s) || self.animation.takes_redo(s), false),
             Action::Editor("carve") => (s.selection().len() >= 2, false),
             Action::Editor("duplicate_entity" | "delete_entity" | "drop_to_ground")
             | Action::Copy
@@ -1107,6 +1107,12 @@ impl Studio {
         };
         // Undo and Redo say what they would do, as Unity's Edit menu.
         let label = match action {
+            Action::Editor("undo") if self.animation.takes_undo(s) => {
+                self.animation.undo_label().map_or_else(|| label.to_string(), |l| format!("Undo {l}"))
+            }
+            Action::Editor("redo") if self.animation.takes_redo(s) => {
+                self.animation.undo_label().map_or_else(|| label.to_string(), |l| format!("Redo {l}"))
+            }
             Action::Editor("undo") if self.configs.takes_undo(s) => self
                 .configs
                 .undo_label()
@@ -4240,6 +4246,14 @@ impl Studio {
                             s.say(Level::Warning, m);
                         }
                     }
+                }
+                // Undo is the Animation window's while its change to a
+                // clip is the last.
+                Action::Editor(name @ ("undo" | "redo"))
+                    if (name == "undo" && self.animation.takes_undo(s))
+                        || (name == "redo" && self.animation.takes_redo(s)) =>
+                {
+                    self.animation.step(&mut self.ui, s, name == "redo");
                 }
                 // Undo is the Configs window's while its edit is the last.
                 Action::Editor(name @ ("undo" | "redo"))
