@@ -471,7 +471,7 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         ));
     }
     let prefab_files = project.files(scrap::layout::Kind::Prefab);
-    let prefabs = prefab_files.iter().map(scrap::layout::name_of).collect();
+    let mut prefabs: HashSet<String> = prefab_files.iter().map(scrap::layout::name_of).collect();
     let mut ids = HashSet::new();
     let mut sources = prefab_files;
     scrap_import::walk(project.root(), &mut |path| {
@@ -479,6 +479,22 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             sources.push(path.to_path_buf());
         }
     });
+    // Prefabs an import builds — a glTF or `.blend` that is a scene — are
+    // found as the game finds them (`Prefabs::of`): in the library, by
+    // their root's name. And by the file's name from its sidecar's
+    // `scene: true`, for a clone whose library is not built yet.
+    let (built, _) = scrap::Prefabs::of(project);
+    prefabs.extend(built.names().into_iter().map(str::to_string));
+    for source in &sources {
+        let sidecar = scrap::asset::sidecar_of(source);
+        if sidecar.exists()
+            && scrap_import::ImportSettings::load(&sidecar).is_ok_and(|s| s.scene)
+        {
+            if let Some(stem) = source.file_stem() {
+                prefabs.insert(stem.to_string_lossy().into_owned());
+            }
+        }
+    }
     let scene_files = project.files(scrap::layout::Kind::Scene);
     sources.extend(scene_files.iter().cloned());
     let (mut sounds, mut textures) = (HashSet::new(), HashSet::new());
@@ -501,6 +517,17 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
     for source in sources {
         if let Some(id) = scrap::asset::sidecar_id(scrap::asset::sidecar_of(&source)) {
             ids.insert(id);
+        }
+        // The materials an import builds — a scene's, a character's runs'
+        // — by the name it gives them, `<file>/<material>`.
+        let sidecar = scrap::asset::sidecar_of(&source);
+        if let (Ok(settings), Some(stem)) = (scrap_import::ImportSettings::load(&sidecar), source.file_stem()) {
+            for key in settings.parts.keys() {
+                if let Some(material) = key.strip_prefix("material:") {
+                    let name = format!("{}/{material}", stem.to_string_lossy());
+                    materials.entry(name).or_default().push(relative(project, &source));
+                }
+            }
         }
     }
     let graphs: Vec<PathBuf> = project.files(scrap::layout::Kind::Animator);
@@ -984,6 +1011,7 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
     }
     // What the scenes' and prefabs' wires pull: set, as by the code.
     let wired = wired_parameters(project);
+    let mut models = ModelClips::default();
     // The game's code, as text: a parameter is set by name.
     let code = game_code(project);
     for path in graphs {
@@ -1008,6 +1036,10 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
                 message: problem,
             });
         }
+        if !graph.clips_from.is_empty() {
+            let name = scrap::layout::name_of(&path);
+            clips_from(project, &graph, &name, &file, &mut models, out);
+        }
         if code.is_empty() {
             continue;
         }
@@ -1022,6 +1054,119 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
                 });
             }
         }
+    }
+}
+
+/// A graph's `clips_from`: each a model of the project, and every clip the
+/// graph names in one of them — or in the model of a line that plays the
+/// graph, or a model named as the clip (a Mixamo file a clip).
+fn clips_from(
+    project: &Project,
+    graph: &scrap::animgraph::Graph,
+    name: &str,
+    file: &str,
+    models: &mut ModelClips,
+    out: &mut Vec<Finding>,
+) {
+    let mut clips: Vec<String> = Vec::new();
+    for from in &graph.clips_from {
+        match models.clips(project, from) {
+            Some(found) => clips.extend(found),
+            None => {
+                let known = models.names(project);
+                out.push(error(
+                    file,
+                    format!(
+                        "clips_from `{from}` is no model in the project (a .gltf or .glb){}",
+                        suggest(from, known.iter().map(String::as_str))
+                    ),
+                ));
+            }
+        }
+    }
+    for model in models.playing(project, name) {
+        clips.extend(models.clips(project, &model).unwrap_or_default());
+    }
+    let known = models.names(project);
+    clips.extend(graph.clips().into_iter().filter(|c| known.contains(c)));
+    let clips: Vec<&str> = clips.iter().map(String::as_str).collect();
+    let looked_in = graph.clips_from.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ");
+    for problem in graph.missing_clips(&clips, &looked_in) {
+        out.push(error(file, problem));
+    }
+}
+
+/// The clips of the project's models, read once each: from the library as
+/// it was built, else from the source without importing it.
+#[derive(Default)]
+struct ModelClips {
+    library: Option<Option<scrap::Library>>,
+    sources: Option<HashMap<String, PathBuf>>,
+    clips: HashMap<String, Option<Vec<String>>>,
+    /// Each graph's models, by the lines that play it.
+    playing: Option<HashMap<String, std::collections::BTreeSet<String>>>,
+}
+
+impl ModelClips {
+    fn sources(&mut self, project: &Project) -> &HashMap<String, PathBuf> {
+        self.sources.get_or_insert_with(|| {
+            let mut out = HashMap::new();
+            scrap_import::walk(project.root(), &mut |path| {
+                let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+                if matches!(extension.as_deref(), Some("gltf" | "glb")) {
+                    if let Some(stem) = path.file_stem() {
+                        out.insert(stem.to_string_lossy().into_owned(), path.to_path_buf());
+                    }
+                }
+            });
+            out
+        })
+    }
+
+    fn names(&mut self, project: &Project) -> std::collections::BTreeSet<String> {
+        self.sources(project).keys().cloned().collect()
+    }
+
+    fn clips(&mut self, project: &Project, model: &str) -> Option<Vec<String>> {
+        if let Some(found) = self.clips.get(model) {
+            return found.clone();
+        }
+        let source = self.sources(project).get(model).cloned();
+        let library = self
+            .library
+            .get_or_insert_with(|| scrap::Library::open_lazy(project.library()).ok().map(|(l, _)| l))
+            .as_ref();
+        let built = library
+            .and_then(|l| scrap::mesh_asset::MeshLibrary::mesh_by_name(l, model))
+            .map(|mesh| mesh.skin.as_ref().map(|s| s.clips.iter().map(|c| c.name.to_string()).collect()).unwrap_or_default());
+        let found = built.or_else(|| scrap_import::scene::clip_names(&source?).ok());
+        self.clips.insert(model.to_string(), found.clone());
+        found
+    }
+
+    fn playing(&mut self, project: &Project, graph: &str) -> Vec<String> {
+        let playing = self.playing.get_or_insert_with(|| {
+            let mut lines: Vec<EntityDesc> = Vec::new();
+            for path in project.files(scrap::layout::Kind::Scene) {
+                if let Some(scene) = std::fs::read_to_string(&path).ok().and_then(|t| ron::from_str::<Scene>(&t).ok()) {
+                    lines.extend(scene.entities);
+                }
+            }
+            for path in project.files(scrap::layout::Kind::Prefab) {
+                if let Some(desc) = std::fs::read_to_string(&path).ok().and_then(|t| ron::from_str::<EntityDesc>(&t).ok()) {
+                    lines.push(desc);
+                }
+            }
+            let mut out: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
+            while let Some(line) = lines.pop() {
+                if !line.animator().is_empty() && !line.model().is_empty() {
+                    out.entry(line.animator()).or_default().insert(line.model().name.clone());
+                }
+                lines.extend(line.children);
+            }
+            out
+        });
+        playing.get(graph).map(|m| m.iter().cloned().collect()).unwrap_or_default()
     }
 }
 

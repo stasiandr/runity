@@ -5,7 +5,9 @@
 //!
 //! The coarser meshes are made by clustering: the mesh's box is cut into a
 //! grid of cells, every vertex in a cell (and facing the same way — a thin
-//! wall keeps both its faces) becomes one at their average, and the
+//! wall keeps both its faces — and near the same place on its picture, so
+//! the pieces of a texture atlas stay apart) becomes one at their average,
+//! and the
 //! triangles that fold to a line or a point go. Blunt, but it never makes
 //! holes where there were none, it costs nothing to author, and at the
 //! distance it is used the difference is a pixel.
@@ -27,7 +29,7 @@ pub fn simplify(
     if cell <= 0.0 || indices.len() < 3 {
         return None;
     }
-    let mut cells: std::collections::HashMap<(i32, i32, i32, u8), u32> = std::collections::HashMap::new();
+    let mut cells: std::collections::HashMap<(i32, i32, i32, u8, i32, i32), u32> = std::collections::HashMap::new();
     let mut sums: Vec<(Vec3, Vec3, [f32; 2], f32)> = Vec::new();
     let mut remap = Vec::with_capacity(vertices.len());
     for v in vertices {
@@ -46,7 +48,12 @@ pub fn simplify(
             5
         };
         let q = (p / cell).floor();
-        let key = (q.x as i32, q.y as i32, q.z as i32, facing);
+        // Where on its picture: a vertex on the seam of two pieces of an
+        // atlas is two vertices, one in each, and merged into one it would
+        // stretch a triangle of the one piece across the picture to the
+        // other — far away, a model baked into an atlas came out in stripes.
+        let (u, w) = ((v.uv[0] * UV_CELLS).floor() as i32, (v.uv[1] * UV_CELLS).floor() as i32);
+        let key = (q.x as i32, q.y as i32, q.z as i32, facing, u, w);
         let at = *cells.entry(key).or_insert_with(|| {
             sums.push((Vec3::ZERO, Vec3::ZERO, v.uv, 0.0));
             sums.len() as u32 - 1
@@ -100,6 +107,10 @@ pub fn simplify(
     }
     Some((out_vertices, out_colors, out_indices))
 }
+
+/// Vertices whose places on the picture are in different ones of this
+/// many cells a side are never merged.
+const UV_CELLS: f32 = 8.0;
 
 /// The triangles a mesh needs before it is given coarser levels.
 pub const FROM_TRIANGLES: usize = 600;
@@ -176,6 +187,42 @@ mod tests {
         }
         // A small mesh is not worth it.
         assert!(simplify(&sphere.vertices, &[], &sphere.indices, 0.0001).is_none());
+    }
+
+    /// A plane in two pieces of an atlas — its left half painted from the
+    /// left of the picture, its right half from the right, the seam's
+    /// vertices doubled — keeps every triangle within one piece.
+    #[test]
+    fn the_pieces_of_an_atlas_stay_apart() {
+        let n = 20;
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for half in 0..2 {
+            let base = vertices.len() as u32;
+            for j in 0..=n {
+                for i in 0..=n {
+                    let (x, z) = (half as f32 + i as f32 / n as f32 - 1.0, j as f32 / n as f32);
+                    let u = if half == 0 { 0.05 + 0.35 * i as f32 / n as f32 } else { 0.6 + 0.35 * i as f32 / n as f32 };
+                    vertices.push(Vertex { position: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [u, z] });
+                }
+            }
+            for j in 0..n {
+                for i in 0..n {
+                    let a = base + j * (n + 1) + i;
+                    let (b, c, d) = (a + 1, a + n + 1, a + n + 2);
+                    indices.extend_from_slice(&[a, c, b, b, c, d]);
+                }
+            }
+        }
+        let (v, _, i) = simplify(&vertices, &[], &indices, 0.3).expect("coarser");
+        let crossing = i
+            .chunks_exact(3)
+            .filter(|t| {
+                let us: Vec<f32> = t.iter().map(|&k| v[k as usize].uv[0]).collect();
+                us.iter().any(|u| *u < 0.5) && us.iter().any(|u| *u >= 0.5)
+            })
+            .count();
+        assert_eq!(crossing, 0, "triangles stretched across the picture");
     }
 
     #[test]

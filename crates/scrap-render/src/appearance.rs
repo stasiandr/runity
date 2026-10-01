@@ -174,30 +174,60 @@ fn emitting(
     Some(out)
 }
 
-/// A model's runs each with its material, when its line names materials
-/// past the first: a run is found by its model's link with `#` and its
-/// number. `None` when the line names none, or its runs are not found (a
-/// model of one run, or no GPU yet) — drawn whole with its material.
-fn surface_parts(
+/// The materials of a model's runs, when its line draws them apart: the
+/// ones its line names past the first (`more_materials`, the first run
+/// then drawn with `material`); or, when it names no material at all, the
+/// ones the model's import gave its runs — a skinned character whose
+/// outfit and skin are two pictures (a run of it found by the palette as
+/// `<model>#<run>`). `None` a run drawn with the line's `material`; no list
+/// at all for a model drawn whole.
+pub fn run_materials(
     desc: &EntityDesc,
     model: &crate::AssetLink,
-    mesh: MeshHandle,
-    resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
-) -> Option<crate::world::SurfaceParts> {
-    let more = desc.part::<crate::scene::MoreMaterials>().filter(|m| !m.0.is_empty())?;
-    if mesh == MeshHandle::TEST {
+) -> Option<Vec<Option<Material>>> {
+    if let Some(more) = desc.part::<crate::scene::MoreMaterials>().filter(|m| !m.0.is_empty()) {
+        return Some(
+            std::iter::once(None)
+                .chain(more.0.iter().map(|m| Some(m.material_from(palette))))
+                .collect(),
+        );
+    }
+    if desc.part::<crate::scene::MaterialRef>().is_some_and(|m| !m.is_default()) {
         return None;
     }
+    let run = |run: usize| palette(&crate::AssetLink { name: format!("{}#{run}", model.name), id: model.id });
+    let first = run(0)?;
+    Some(
+        std::iter::once(Some(first))
+            .chain((1..).map(run).take_while(Option::is_some))
+            .collect(),
+    )
+}
+
+/// A model's runs each with its material from `materials` (see
+/// [`run_materials`]): a run is found by its model's link with `#` and its
+/// number. `None` when its runs are not found (a model of one run) —
+/// drawn whole with its material.
+pub fn surface_parts(
+    model: &crate::AssetLink,
+    materials: &[Option<Material>],
+    resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+) -> Option<crate::world::SurfaceParts> {
     let mut parts = Vec::new();
     for run in 0usize.. {
         let link = crate::AssetLink { name: format!("{}#{run}", model.name), id: model.id };
         let Some(part) = resolve(&link) else { break };
-        let material = run.checked_sub(1).and_then(|i| more.0.get(i)).map(|m| m.material_from(palette));
-        parts.push((part, material));
+        parts.push((part, materials.get(run).copied().flatten()));
     }
     (!parts.is_empty()).then_some(crate::world::SurfaceParts(parts))
 }
+
+/// A model with runs drawn apart, spawned without a GPU: each run's
+/// material, for its parts to be found when its mesh is uploaded
+/// ([`MeshPending`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunsPending(pub Vec<Option<Material>>);
 
 /// A model spawned without a GPU, drawn with a stand-in until its mesh is
 /// uploaded: the link it names.
@@ -254,14 +284,18 @@ pub fn dress_look(
         Some(mesh) => {
             let surface = Surface(desc.material_from(palette));
             let _ = world.insert(entity, (Model(mesh), surface));
-            put(world, entity, surface_parts(desc, &model, mesh, resolve, palette));
+            let runs = run_materials(desc, &model, palette);
             // Spawned where there is no GPU (a game's fixed step, with the
             // renderer on its own thread): its mesh comes with the next
-            // frame (`LiveScene::upload_pending`).
+            // frame (`LiveScene::upload_pending`), its runs' too.
             if mesh == crate::render::MeshHandle::TEST {
                 let _ = world.insert_one(entity, MeshPending(model.clone()));
+                scrap_core::world::take_off::<crate::world::SurfaceParts>(world, entity);
+                put(world, entity, runs.map(RunsPending));
             } else {
                 let _ = world.remove_one::<MeshPending>(entity);
+                scrap_core::world::take_off::<RunsPending>(world, entity);
+                put(world, entity, runs.and_then(|runs| surface_parts(&model, &runs, resolve)));
             }
         }
         None => {

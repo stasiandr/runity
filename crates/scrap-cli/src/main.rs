@@ -10,7 +10,7 @@
 //! scrap modules [sync] [PROJECT]  the engine's modules; Cargo.toml from scrap.ron
 //! scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]  frames against budgets.ron
-//! scrap frame-debug SCENE [PROJECT] [--stop N] [--size WxH] [--out FILE]  a frame's passes and draws
+//! scrap frame-debug SCENE [PROJECT] [--seconds S] [--stop N] [--size WxH] [--out FILE]  a frame's passes and draws
 //! scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform P]  a folder to ship
 //! scrap cook  [PROJECT] --platform desktop|mobile|web --out DIR  the library cooked
 //! scrap merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
@@ -150,11 +150,14 @@ scrap migrate-layout [PROJECT]
 scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
-scrap frame-debug SCENE [PROJECT] [--stop N] [--size WxH] [--out FILE]
+scrap frame-debug SCENE [PROJECT] [--seconds S] [--stop N] [--size WxH] [--out FILE]
     The Frame Debugger without a window (F9 in a running game): a frame of
     SCENE drawn offscreen, every pass and draw listed with the mesh drawn,
     its triangles and instances. --stop N draws it stopped at event N and
-    writes what its pass had drawn by then to FILE (frame.png).
+    writes what its pass had drawn by then to FILE (frame.png). --seconds S
+    plays the scene S seconds first, as the game's fixed steps do: its
+    animators started (a character in its clip's pose, not the bind pose),
+    physics, ropes and water run. What did not resolve is said on stderr.
 scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]
     Draw every scene (or one) offscreen at budgets.ron's size and measure
     it: the GPU's milliseconds a frame (over N frames, 10), the draws, the
@@ -637,12 +640,20 @@ fn rebuild_time(rest: &[String]) -> Result<ExitCode> {
 fn frame_debug(rest: &[String]) -> Result<ExitCode> {
     let mut at: Vec<String> = Vec::new();
     let mut stop: Option<usize> = None;
+    let mut seconds: Option<f32> = None;
     let mut size = (1280u32, 720u32);
     let mut out = std::path::PathBuf::from("frame.png");
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--stop" => stop = Some(args.next().context("--stop wants an event's number")?.parse()?),
+            "--seconds" => {
+                let s: f32 = args.next().context("--seconds wants a number")?.parse()?;
+                if !(0.0..=60.0).contains(&s) {
+                    bail!("--seconds is between 0 and 60");
+                }
+                seconds = Some(s);
+            }
             "--size" => {
                 let s = args.next().context("--size wants WxH")?;
                 let (w, h) = s.split_once('x').context("--size wants WxH, like 1920x1080")?;
@@ -659,6 +670,16 @@ fn frame_debug(rest: &[String]) -> Result<ExitCode> {
     let project = find(&at[1..])?;
     let path = project.scene(&scene).with_context(|| format!("no scene called `{scene}`"))?;
     let mut shot = scrap::shot::Shot::open(&path, size.0, size.1, None).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Played first when asked: animators started, the game's fixed steps
+    // run, so a character stands in its clip's pose, not its bind pose.
+    if let Some(seconds) = seconds {
+        shot.play(seconds);
+    }
+    // What did not resolve or start — a prefab, a model, an animator — is
+    // said, not left for the picture to show.
+    for problem in &shot.problems {
+        eprintln!("warning: {problem}");
+    }
     let warm = shot.warm_frames();
     shot.draw(warm);
     shot.renderer.profile_gpu(true);

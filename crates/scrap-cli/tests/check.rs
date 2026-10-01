@@ -723,6 +723,69 @@ fn an_animators_cases_are_played_by_check() {
     );
 }
 
+/// A graph's `clips_from` names models of the project, and every clip it
+/// plays is in one of them — or in the model of a line that plays it: a
+/// model that is none and a clip in none are named with the nearest.
+#[test]
+fn a_clip_in_none_of_an_animators_clips_from_is_named() {
+    let project = project("clips-from");
+    let root = project.root();
+    let gltf = |clips: &[&str]| {
+        let animations: Vec<String> = clips
+            .iter()
+            .map(|c| format!(r#"{{"name": "{c}", "channels": [], "samplers": []}}"#))
+            .collect();
+        format!(r#"{{"asset": {{"version": "2.0"}}, "animations": [{}]}}"#, animations.join(", "))
+    };
+    write(&root.join("people/ual1.gltf"), &gltf(&["Walk_Loop", "Idle_Loop"]));
+    write(&root.join("people/ual2.gltf"), &gltf(&["TreeChopping_Loop"]));
+    write(&root.join("people/outfit.gltf"), &gltf(&["Wave"]));
+    write(
+        &root.join("people/villager.animator.ron"),
+        r#"(clips_from: ["ual1", "ual2", "ual"], start: "walk", states: {
+            "walk": (clip: "Walk_Loop", transitions: [(to: "chop", when: [Trigger("chop")])]),
+            "chop": (clip: "TreeChopping_Lop", transitions: [(to: "wave", when: [Trigger("wave")])]),
+            "wave": (clip: "Wave"),
+        })"#,
+    );
+    write(
+        &root.join("maps/main.scene.ron"),
+        r#"(entities: [(id: "00000000000000a1", name: "villager", model: "outfit", animator: "villager")])"#,
+    );
+    let found = errors(&check(&project));
+    let model = one_containing(&found, "clips_from `ual`");
+    assert!(model.contains("villager.animator.ron") && model.contains("is no model"), "{model}");
+    let clip = one_containing(&found, "`TreeChopping_Lop`");
+    assert!(
+        clip.contains("in none of `ual1`, `ual2`, `ual`") && clip.contains("did you mean `TreeChopping_Loop`"),
+        "{clip}"
+    );
+    assert!(!found.iter().any(|l| l.contains("`Walk_Loop`") || l.contains("`Wave`")), "{found:#?}");
+}
+
+/// A material an import builds — a character's run's, a scene's — is
+/// named `<file>/<material>`, and a line may draw with it.
+#[test]
+fn a_material_an_import_built_is_a_name_a_line_may_use() {
+    let project = project("import-materials");
+    let root = project.root();
+    write(&root.join("people/Peasant.gltf"), r#"{"asset": {"version": "2.0"}}"#);
+    write(
+        &root.join("people/Peasant.gltf.scrimport"),
+        r#"ImportSettings(source: "people/Peasant.gltf", parts: {"material:MI_Peasant": "923aa724a2f3d2c61994ea53beefe55f"})"#,
+    );
+    write(
+        &root.join("maps/main.scene.ron"),
+        r#"(entities: [
+            (id: "00000000000000a1", name: "a", model: "Peasant", material: "Peasant/MI_Peasant"),
+            (id: "00000000000000a2", name: "b", model: "Peasant", material: "Peasant/MI_Peasent"),
+        ])"#,
+    );
+    let found = errors(&check(&project));
+    let line = one_containing(&found, "no material named");
+    assert!(line.contains("`Peasant/MI_Peasent`") && line.contains("did you mean `Peasant/MI_Peasant`"), "{line}");
+}
+
 #[test]
 fn a_field_no_module_reads_is_kept_and_named_and_one_that_does_not_fit_is_an_error() {
     // DNA, postulate 3: a disabled module's component is not lost. A field
@@ -822,4 +885,72 @@ fn a_tuning_record_that_does_not_fit_the_game_s_type_is_found() {
     assert!(typo.contains("did you mean `speed`?"), "{typo}");
     let wrong = one_containing(&found, "record `orc`");
     assert!(wrong.contains("whole number"), "{wrong}");
+}
+
+/// Two rocks sharing one triangle: a glTF of two objects, which imports
+/// as a scene — a prefab named after the file.
+fn grove(path: &Path) {
+    use std::fmt::Write as _;
+    let mut bin = Vec::new();
+    for c in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+        bin.extend(c.to_le_bytes());
+    }
+    for i in [0u16, 1, 2, 0] {
+        bin.extend(i.to_le_bytes());
+    }
+    const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut data = String::new();
+    for chunk in bin.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            let _ = write!(
+                data,
+                "{}",
+                if i <= chunk.len() { B64[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' }
+            );
+        }
+    }
+    write(
+        path,
+        &format!(
+            r#"{{"asset": {{"version": "2.0"}}, "scene": 0, "scenes": [{{"nodes": [0, 1]}}],
+  "nodes": [{{"name": "rock", "mesh": 0}}, {{"name": "rock 2", "mesh": 0, "translation": [2, 0, 0]}}],
+  "meshes": [{{"name": "rock", "primitives": [{{"attributes": {{"POSITION": 0}}, "indices": 1}}]}}],
+  "buffers": [{{"uri": "data:application/octet-stream;base64,{data}", "byteLength": {len}}}],
+  "bufferViews": [{{"buffer": 0, "byteOffset": 0, "byteLength": 36}}, {{"buffer": 0, "byteOffset": 36, "byteLength": 6}}],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}},
+    {{"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}}
+  ]}}"#,
+            len = bin.len()
+        ),
+    );
+}
+
+#[test]
+fn a_prefab_an_import_builds_is_found_as_the_game_finds_it() {
+    let project = project("imported-prefab");
+    grove(&project.assets().join("grove.gltf"));
+    scrap_import::sync(&project);
+    assert!(
+        scrap_import::ImportSettings::load(scrap_import::sidecar_for(&project.assets().join("grove.gltf")))
+            .unwrap()
+            .scene
+    );
+    write(
+        &project.scenes().join("glade.scene.ron"),
+        r#"(entities: [(id: "a1", name: "grove", prefab: "grove"), (id: "a2", name: "typo", prefab: "grov")])"#,
+    );
+    let lines = errors(&check(&project));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(
+        one_containing(&lines, "`grov`").contains("did you mean `grove`?"),
+        "{lines:#?}"
+    );
+
+    // A clone that has not built its library yet: the sidecar says it is
+    // a scene, and a scene is a prefab by the file's name.
+    std::fs::remove_dir_all(project.library()).unwrap();
+    let lines = errors(&check(&project));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
 }

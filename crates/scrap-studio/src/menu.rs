@@ -150,13 +150,13 @@ pub enum Action {
     KeepSimulation,
     /// Play builds the game's own code optimized, or as a debug build.
     FastGame,
+    /// The game played from here silent, or heard: the host and every
+    /// clone, now and from the next Play.
+    MuteGame,
     /// Play starts this many players: the host in the Game view, and
     /// clones of it joining in windows of their own (Unity's Multiplayer
     /// Play Mode).
     Players(u32),
-    /// The game played from here silent, or heard: the host and every
-    /// clone, now and from the next Play.
-    MuteGame,
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
     /// A material that is another one with nothing changed yet.

@@ -172,7 +172,10 @@ impl LiveScene {
         let (current, prefabs, mut problems) = read(&path, project.as_ref())?;
         let library = match project.as_ref().map(Project::library) {
             Some(directory) if crate::files::is_dir(&directory) => {
-                let (library, skipped) = Library::open(&directory)?;
+                // Headers only: a body is read when the scene asks for it.
+                // A project's library holds every asset of every level —
+                // tens of gigabytes — and a scene uses a few of them.
+                let (library, skipped) = Library::open_lazy(&directory)?;
                 problems.extend(
                     skipped
                         .into_iter()
@@ -510,6 +513,12 @@ impl LiveScene {
                 }
             }
             let _ = world.remove_one::<crate::appearance::MeshPending>(*entity);
+            // Its runs, each with its own material.
+            if let Ok(runs) = world.remove_one::<crate::appearance::RunsPending>(*entity) {
+                if let Some(parts) = crate::appearance::surface_parts(link, &runs.0, &mut resolve) {
+                    let _ = world.insert_one(*entity, parts);
+                }
+            }
         }
         for (entity, link) in &emitters {
             if let Some(mesh) = resolve(link) {
@@ -812,12 +821,16 @@ impl LiveScene {
             if builtin::by_name(name).is_some() {
                 continue;
             }
+            // Uploaded under its ID by a link that had one, under its name
+            // by one that did not. One nobody uploaded is not read.
+            let keys = [asset.id.to_string(), name.to_string()];
+            if !keys.iter().any(|key| self.meshes.contains_key(key)) {
+                continue;
+            }
             let Some(mesh) = library.mesh(asset.id) else {
                 continue;
             };
-            // Uploaded under its ID by a link that had one, under its name
-            // by one that did not.
-            for key in [asset.id.to_string(), name.to_string()] {
+            for key in keys {
                 if let Some(old) = self.meshes.get(&key).copied() {
                     let new = renderer.upload_mesh(gpu, mesh);
                     self.meshes.insert(key, new);
@@ -928,7 +941,7 @@ pub fn stamps(path: &Path, project: Option<&Project>) -> Stamps {
 
 /// Turn a model name into an uploaded mesh: a builtin first, then the
 /// library, each uploaded once.
-fn resolver<'a>(
+pub(crate) fn resolver<'a>(
     meshes: &'a mut HashMap<String, MeshHandle>,
     library: Option<&'a Library>,
     gpu: &'a Gpu,

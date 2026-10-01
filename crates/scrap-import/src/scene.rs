@@ -45,7 +45,7 @@ use scrap::material::{Material, RenderFace, SurfaceType};
 use scrap::scene::{Body, Collider, MaterialRef};
 use scrap::{AssetLink, EntityDesc, EntityId, Transform};
 
-use crate::{asset_for, build_mips, recompute_normals, ImportSettings};
+use crate::{asset_for, build_mips, capped, recompute_normals, ImportSettings};
 
 /// A scene as a reader found it, in the engine's space (Y up, metres
 /// before the import's `scale`), before any asset is written.
@@ -68,6 +68,11 @@ pub struct ImageData {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The image's own file, as the source names it (a glTF's `uri`,
+    /// relative to the source): a picture several sources share — every
+    /// model of a kit painting with one trim sheet — is one texture asset,
+    /// not one per source. `None` for a picture inside the file.
+    pub file: Option<String>,
 }
 
 /// A material in the metallic-roughness model, with the images it reads.
@@ -131,10 +136,20 @@ pub struct AssetData {
 }
 
 /// Whether a glTF is a scene rather than a model: more than one node with
-/// a mesh. Decided once, on the first import, and kept in the sidecar
-/// (`scene: true`), so a file that grows a second object does not quietly
-/// turn from the model scenes name into a prefab they do not. A `.blend`
-/// is always a scene.
+/// a mesh — or one object whose materials paint with more than one
+/// base-colour image (a tree's bark and leaves, a wall's plaster and
+/// trim). A model is drawn with one look, and several pictures do not fit
+/// in one: their UVs tile, so no atlas holds them, and the palette of
+/// base colours [`crate::mesh_from_gltf`] falls back to is white for a
+/// textured kit. As a scene each material is a material of its own. A
+/// character — every mesh on one skin, however many (Quaternius' outfit:
+/// arms, body, legs, feet) — is a model even so: one thing its skeleton
+/// moves, whose runs each paint with their material
+/// ([`model_materials`]). Decided once, on the first import, and kept in
+/// the sidecar (`scene: true`), so a file that grows a second object does
+/// not quietly turn from the model scenes name into a prefab they do not
+/// — except for a character, which is never a scene ([`is_character`]).
+/// A `.blend` is always a scene.
 pub fn is_scene(path: &Path) -> Result<bool> {
     if path
         .extension()
@@ -143,6 +158,9 @@ pub fn is_scene(path: &Path) -> Result<bool> {
         return Ok(true);
     }
     let document = gltf::Gltf::open(path).with_context(|| format!("{}", path.display()))?;
+    if character(&document.document) {
+        return Ok(false);
+    }
     let mut count = 0;
     let mut stack: Vec<gltf::Node> = roots(&document.document);
     while let Some(node) = stack.pop() {
@@ -151,7 +169,65 @@ pub fn is_scene(path: &Path) -> Result<bool> {
         }
         stack.extend(node.children());
     }
-    Ok(count > 1)
+    Ok(count > 1 || (document.skins().len() == 0 && base_images(&document.document) > 1))
+}
+
+/// Whether a glTF is one character: it has a skin, and every node with a
+/// mesh is skinned by it. Such a file is a model whatever its sidecar
+/// says: as a scene its pieces would stand in their bind pose, since a
+/// scene's models carry no skin.
+/// Reads the file's JSON only, not its buffers: `sync` asks it of every
+/// glTF its sidecar calls a scene.
+pub fn is_character(path: &Path) -> Result<bool> {
+    let document = gltf::Gltf::from_slice_without_validation(&gltf_json(path)?)
+        .with_context(|| format!("{}", path.display()))?;
+    Ok(character(&document.document))
+}
+
+/// The clips a glTF model's import gives it, without importing it: its
+/// animations by name, and the clips its sidecar cuts from them. Reads
+/// the file's JSON only.
+pub fn clip_names(path: &Path) -> Result<Vec<String>> {
+    let document = gltf::Gltf::from_slice_without_validation(&gltf_json(path)?)
+        .with_context(|| format!("{}", path.display()))?;
+    let mut names: Vec<String> = document.animations().filter_map(|a| a.name().map(str::to_string)).collect();
+    if let Ok(settings) = ImportSettings::load(crate::sidecar_for(path)) {
+        names.extend(settings.clips.into_iter().map(|c| c.name));
+    }
+    Ok(names)
+}
+
+/// A glTF's JSON: the file, or a `.glb`'s JSON chunk after its header.
+fn gltf_json(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).with_context(|| format!("{}", path.display()))?;
+    let mut head = [0u8; 20];
+    Ok(match file.read_exact(&mut head) {
+        Ok(()) if &head[..4] == b"glTF" => {
+            let length = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
+            let mut json = vec![0; length];
+            file.read_exact(&mut json)?;
+            json
+        }
+        _ => std::fs::read(path)?,
+    })
+}
+
+fn character(document: &gltf::Document) -> bool {
+    let mut meshes = document.nodes().filter(|n| n.mesh().is_some()).peekable();
+    document.skins().len() == 1
+        && meshes.peek().is_some()
+        && meshes.all(|n| n.skin().is_some_and(|s| s.index() == 0))
+}
+
+/// How many distinct images the materials' base colours read.
+pub fn base_images(document: &gltf::Document) -> usize {
+    document
+        .materials()
+        .filter_map(|m| m.pbr_metallic_roughness().base_color_texture())
+        .map(|t| t.texture().source().index())
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 fn roots(document: &gltf::Document) -> Vec<gltf::Node<'_>> {
@@ -195,7 +271,8 @@ pub fn import_scene(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "scene".into());
-    build(data, &stem, library, settings).with_context(|| format!("{}", source.display()))
+    build_in(data, &stem, Some(source), library, settings)
+        .with_context(|| format!("{}", source.display()))
 }
 
 /// The IDs of what one import builds, by key, minted the first time a key
@@ -204,6 +281,45 @@ struct Parts<'a> {
     source: &'a str,
     before: BTreeMap<String, AssetId>,
     now: BTreeMap<String, AssetId>,
+}
+
+/// The parts' key of a texture shared with other sources ([`Shared`]).
+const SHARED: &str = "shared:";
+
+/// A texture made from pictures that are files of their own, which other
+/// sources may make too: its ID is the pictures' names and how they are
+/// read, the same whichever source builds it, and it is written once —
+/// again only when one of the pictures is newer than it.
+struct Shared {
+    id: AssetId,
+    /// The pictures on disk, to tell whether it is stale.
+    files: Vec<std::path::PathBuf>,
+}
+
+impl Shared {
+    fn of(key: &str, files: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            id: AssetId::from_source(key, 0),
+            files,
+        }
+    }
+
+    /// Whether the library already has it, in this engine's format,
+    /// built after its pictures.
+    fn built(&self, library: &Path) -> bool {
+        let path = asset_for(self.id, library);
+        if !scrap::asset::is_current(&path) {
+            return false;
+        }
+        let Ok(at) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+            return false;
+        };
+        self.files.iter().all(|f| {
+            std::fs::metadata(f)
+                .and_then(|m| m.modified())
+                .is_ok_and(|m| m <= at)
+        })
+    }
 }
 
 impl Parts<'_> {
@@ -239,6 +355,19 @@ pub fn build(
     library: &Path,
     settings: &mut ImportSettings,
 ) -> Result<AssetId> {
+    build_in(data, stem, None, library, settings)
+}
+
+/// [`build`], for a source at `source` on disk: the pictures it names as
+/// files of their own are textures shared with every other source that
+/// names them ([`ImageData::file`]).
+pub fn build_in(
+    data: SceneData,
+    stem: &str,
+    source: Option<&Path>,
+    library: &Path,
+    settings: &mut ImportSettings,
+) -> Result<AssetId> {
     let source_name = settings.source.clone();
     let mut parts = Parts {
         source: &source_name,
@@ -247,85 +376,11 @@ pub fn build(
     };
     let mut written: Vec<(AssetId, Vec<u8>)> = Vec::new();
     let mut prefabs: Vec<(AssetId, EntityDesc)> = Vec::new();
-
-    // Textures, each built once per way it is read: an image that is both a
-    // colour map and something else is two assets, sRGB and linear.
-    let mut textures: BTreeMap<(usize, bool), AssetId> = BTreeMap::new();
-    let mut texture = |index: usize,
-                       srgb: bool,
-                       parts: &mut Parts,
-                       written: &mut Vec<(AssetId, Vec<u8>)>|
-     -> Result<Option<AssetId>> {
-        if let Some(id) = textures.get(&(index, srgb)) {
-            return Ok(Some(*id));
-        }
-        let Some(image) = data.images.get(index) else {
-            return Ok(None);
-        };
-        let id = parts.id(format!(
-            "texture:{}:{}",
-            image.key,
-            if srgb { "colour" } else { "data" }
-        ));
-        let asset = TextureAsset {
-            id,
-            name: format!("{stem}/{}", image.name),
-            width: image.width,
-            height: image.height,
-            mips: build_mips(image.width, image.height, &image.rgba, srgb),
-            pixels: image.rgba.clone(),
-            srgb,
-            coding: Default::default(),
-        };
-        written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?));
-        textures.insert((index, srgb), id);
-        Ok(Some(id))
-    };
-
-    // Materials, as the file names them.
-    let mut material_names: Vec<String> = Vec::new();
-    let mut taken = HashSet::new();
-    for md in &data.materials {
-        let own = unique(md.name.clone(), &mut taken);
-        let mut m = md.material;
-        if let Some(i) = md.base_map {
-            m.base_map = texture(i, true, &mut parts, &mut written)?;
-        }
-        if let Some(i) = md.emission_map {
-            m.emission_map = texture(i, true, &mut parts, &mut written)?;
-        }
-        if let Some(i) = md.normal_map {
-            m.normal_map = texture(i, false, &mut parts, &mut written)?;
-        }
-        // The engine's mask is metal in red, occlusion in green and
-        // smoothness in alpha; packed here from wherever the file keeps
-        // them, with the factors baked in.
-        if md.metallic_map.is_some() || md.roughness_map.is_some() || md.occlusion_map.is_some() {
-            let id = parts.id(format!("mask:{}", md.key));
-            if let Some(asset) = mask(&data.images, md, id, format!("{stem}/{own} mask")) {
-                if md.metallic_map.is_some() {
-                    m.metallic = 1.0;
-                }
-                if md.roughness_map.is_some() {
-                    m.smoothness = 1.0;
-                }
-                m.mask_map = Some(asset.id);
-                written.push((
-                    asset.id,
-                    scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?,
-                ));
-            }
-        }
-        let id = parts.id(format!("material:{}", md.key));
-        let name = format!("{stem}/{own}");
-        let asset = MaterialAsset {
-            id,
-            name: name.clone(),
-            material: m,
-        };
-        written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::MATERIAL)?));
-        material_names.push(settings.materials.get(&own).cloned().unwrap_or(name));
-    }
+    let material_names: Vec<String> =
+        materials(&data, stem, source, library, settings, &mut parts, &mut written)?
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
 
     // Models: one per material of every mesh, shared by every object that
     // draws it.
@@ -396,24 +451,233 @@ pub fn build(
 
     // Written only once all of it has been read: a file that fails halfway
     // leaves the library as it was.
-    std::fs::create_dir_all(library)?;
-    for (id, bytes) in &written {
-        std::fs::write(asset_for(*id, library), bytes)?;
-    }
+    write(library, &written)?;
     for (id, root) in &prefabs {
         let path = prefab_for(*id, library);
         let _ = std::fs::remove_file(&path);
         scrap::Prefabs::save(root, &path).map_err(anyhow::Error::msg)?;
     }
-    // What an earlier version of the file had and this one does not.
+    settings.parts = prune(library, parts);
+    Ok(settings.asset_id())
+}
+
+/// Put what an import built into the library.
+fn write(library: &Path, written: &[(AssetId, Vec<u8>)]) -> Result<()> {
+    std::fs::create_dir_all(library)?;
+    for (id, bytes) in written {
+        std::fs::write(asset_for(*id, library), bytes)?;
+    }
+    Ok(())
+}
+
+/// Remove what an earlier version of the file had and this one does not
+/// — never a shared texture, which another source may draw with — and
+/// return the parts kept.
+fn prune(library: &Path, parts: Parts) -> BTreeMap<String, AssetId> {
     for (key, old) in &parts.before {
-        if !parts.now.contains_key(key) {
+        if !parts.now.contains_key(key) && !key.starts_with(SHARED) {
             let _ = std::fs::remove_file(asset_for(*old, library));
             let _ = std::fs::remove_file(prefab_for(*old, library));
         }
     }
-    settings.parts = parts.now;
-    Ok(settings.asset_id())
+    parts.now
+}
+
+/// A model's materials, for each of its runs to paint with its own (a
+/// skinned character whose outfit and skin are two pictures — see
+/// [`crate::import_to`]): the file's textures and materials written into
+/// `library` as a scene's are, pictures that are files shared with every
+/// source that names them, their IDs kept in `settings.parts`. `None` for
+/// a model drawn with one look: what an earlier import built for it —
+/// its materials, or its models and prefab when it was a scene — is
+/// removed then. Returns each material's ID in the file's order.
+pub fn model_materials(
+    data: Option<&SceneData>,
+    stem: &str,
+    source: &Path,
+    library: &Path,
+    settings: &mut ImportSettings,
+) -> Result<Vec<AssetId>> {
+    let source_name = settings.source.clone();
+    let mut parts = Parts {
+        source: &source_name,
+        before: std::mem::take(&mut settings.parts),
+        now: BTreeMap::new(),
+    };
+    let mut written = Vec::new();
+    let ids = match data {
+        Some(data) => materials(data, stem, Some(source), library, settings, &mut parts, &mut written)
+            .with_context(|| format!("{}", source.display()))?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect(),
+        None => Vec::new(),
+    };
+    write(library, &written)?;
+    // A file that was a scene is a prefab no more.
+    let _ = std::fs::remove_file(prefab_for(settings.asset_id(), library));
+    settings.parts = prune(library, parts);
+    Ok(ids)
+}
+
+/// Write a source's textures and materials — every material its reader
+/// found, URP Lit, each with its pictures as textures (a picture that is a
+/// file of its own shared with every source that names it) — into
+/// `written`, their IDs kept in `parts`. Returns each material's ID and the
+/// name a scene draws it by: its own, `<stem>/<material>`, or the
+/// project's that `settings.materials` puts in its place.
+fn materials(
+    data: &SceneData,
+    stem: &str,
+    source: Option<&Path>,
+    library: &Path,
+    settings: &ImportSettings,
+    parts: &mut Parts,
+    written: &mut Vec<(AssetId, Vec<u8>)>,
+) -> Result<Vec<(AssetId, String)>> {
+    // A picture's own file, on disk and by its name in the project.
+    let beside = source.and_then(Path::parent);
+    let named_in = Path::new(&settings.source).parent().map(Path::to_path_buf).unwrap_or_default();
+    let shared_file = |image: &ImageData| -> Option<(std::path::PathBuf, String)> {
+        let file = image.file.as_ref()?;
+        let on_disk = beside?.join(file);
+        on_disk.is_file().then(|| (on_disk, lexical(&named_in.join(file))))
+    };
+    let cap = settings.max_size.map(|m| format!("@{m}")).unwrap_or_default();
+
+    // Textures, each built once per way it is read: an image that is both a
+    // colour map and something else is two assets, sRGB and linear.
+    let mut textures: BTreeMap<(usize, bool), AssetId> = BTreeMap::new();
+    let mut texture = |index: usize,
+                       srgb: bool,
+                       parts: &mut Parts,
+                       written: &mut Vec<(AssetId, Vec<u8>)>|
+     -> Result<Option<AssetId>> {
+        if let Some(id) = textures.get(&(index, srgb)) {
+            return Ok(Some(*id));
+        }
+        let Some(image) = data.images.get(index) else {
+            return Ok(None);
+        };
+        let role = if srgb { "colour" } else { "data" };
+        let (id, name) = match shared_file(image) {
+            Some((on_disk, named)) => {
+                let key = format!("{named}#{role}{cap}");
+                let shared = Shared::of(&key, vec![on_disk]);
+                // Kept among the parts so a library of an older format
+                // rebuilds it, and never removed with them: another
+                // source may draw with it.
+                parts.now.insert(format!("{SHARED}{key}"), shared.id);
+                textures.insert((index, srgb), shared.id);
+                if shared.built(library) {
+                    return Ok(Some(shared.id));
+                }
+                let name = Path::new(&named)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| image.name.clone());
+                (shared.id, name)
+            }
+            None => (
+                parts.id(format!("texture:{}:{role}", image.key)),
+                format!("{stem}/{}", image.name),
+            ),
+        };
+        let (width, height, pixels, mips) =
+            capped(image.width, image.height, image.rgba.clone(), srgb, settings.max_size);
+        let asset = TextureAsset {
+            id,
+            name,
+            width,
+            height,
+            mips,
+            pixels,
+            srgb,
+            coding: Default::default(),
+        };
+        written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?));
+        textures.insert((index, srgb), id);
+        Ok(Some(id))
+    };
+
+    // Materials, as the file names them.
+    let mut material_names: Vec<(AssetId, String)> = Vec::new();
+    let mut taken = HashSet::new();
+    for md in &data.materials {
+        let own = unique(md.name.clone(), &mut taken);
+        let mut m = md.material;
+        if let Some(i) = md.base_map {
+            m.base_map = texture(i, true, parts, written)?;
+        }
+        if let Some(i) = md.emission_map {
+            m.emission_map = texture(i, true, parts, written)?;
+        }
+        if let Some(i) = md.normal_map {
+            m.normal_map = texture(i, false, parts, written)?;
+        }
+        // The engine's mask is metal in red, occlusion in green and
+        // smoothness in alpha; packed here from wherever the file keeps
+        // them, with the factors baked in.
+        if md.metallic_map.is_some() || md.roughness_map.is_some() || md.occlusion_map.is_some() {
+            // Of pictures that are files: shared, by the pictures, their
+            // channels and the factors baked in.
+            let maps = [md.metallic_map, md.roughness_map, md.occlusion_map];
+            let files: Option<Vec<(std::path::PathBuf, String, usize)>> = maps
+                .iter()
+                .flatten()
+                .map(|&(i, c)| shared_file(data.images.get(i)?).map(|(d, n)| (d, n, c)))
+                .collect();
+            let shared = files.map(|files| {
+                let mut key = String::from("mask");
+                for (map, file) in maps.iter().zip(["metal", "rough", "occlusion"]) {
+                    if let Some((i, c)) = map {
+                        let named = shared_file(&data.images[*i]).map(|(_, n)| n).unwrap_or_default();
+                        key.push_str(&format!("|{file}:{named}:{c}"));
+                    }
+                }
+                key.push_str(&format!("|{}|{}{cap}", md.material.metallic, md.material.smoothness));
+                let name = Path::new(&files[0].1)
+                    .file_stem()
+                    .map(|s| format!("{} mask", s.to_string_lossy()))
+                    .unwrap_or_default();
+                (Shared::of(&key, files.into_iter().map(|(d, _, _)| d).collect()), name)
+            });
+            let (id, name, built) = match &shared {
+                Some((shared, name)) => {
+                    parts.now.insert(format!("{SHARED}{}", shared.id), shared.id);
+                    (shared.id, name.clone(), shared.built(library))
+                }
+                None => (parts.id(format!("mask:{}", md.key)), format!("{stem}/{own} mask"), false),
+            };
+            let asset = if built { None } else { mask(&data.images, md, id, name) };
+            if built || asset.is_some() {
+                if md.metallic_map.is_some() {
+                    m.metallic = 1.0;
+                }
+                if md.roughness_map.is_some() {
+                    m.smoothness = 1.0;
+                }
+                m.mask_map = Some(id);
+            }
+            if let Some(asset) = asset {
+                let (width, height, pixels, mips) =
+                    capped(asset.width, asset.height, asset.pixels, false, settings.max_size);
+                let asset = TextureAsset { width, height, pixels, mips, ..asset };
+                written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?));
+            }
+        }
+        let id = parts.id(format!("material:{}", md.key));
+        let name = format!("{stem}/{own}");
+        let asset = MaterialAsset {
+            id,
+            name: name.clone(),
+            material: m,
+        };
+        written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::MATERIAL)?));
+        material_names.push((id, settings.materials.get(&own).cloned().unwrap_or(name)));
+    }
+    Ok(material_names)
+
 }
 
 /// What turning nodes into entities needs to know.
@@ -549,10 +813,10 @@ fn mask(
     })
 }
 
-/// Read a glTF into a [`SceneData`]. glTF is already Y up in metres.
-pub fn from_gltf(source: &Path) -> Result<SceneData> {
-    let (document, buffers, images) =
-        gltf::import(source).with_context(|| format!("{}", source.display()))?;
+/// A glTF's pictures and materials: a [`SceneData`] with nothing else in
+/// it, for a model whose runs each paint with their own
+/// ([`model_materials`]) as for a scene.
+pub fn pictures_of(document: &gltf::Document, images: &[gltf::image::Data]) -> SceneData {
     let mut data = SceneData::default();
 
     // Images an exporter writes: 8-bit. 16-bit and float ones a colour or
@@ -569,6 +833,12 @@ pub fn from_gltf(source: &Path) -> Result<SceneData> {
                 width: image.width,
                 height: image.height,
                 rgba,
+                file: match info.source() {
+                    gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+                        Some(percent_decoded(uri))
+                    }
+                    _ => None,
+                },
             });
             data.images.len() - 1
         }));
@@ -625,6 +895,14 @@ pub fn from_gltf(source: &Path) -> Result<SceneData> {
         md.material = m;
         data.materials.push(md);
     }
+    data
+}
+
+/// Read a glTF into a [`SceneData`]. glTF is already Y up in metres.
+pub fn from_gltf(source: &Path) -> Result<SceneData> {
+    let (document, buffers, images) =
+        gltf::import(source).with_context(|| format!("{}", source.display()))?;
+    let mut data = pictures_of(&document, &images);
 
     let mut taken = HashSet::new();
     for (i, mesh) in document.meshes().enumerate() {
@@ -711,6 +989,47 @@ fn triangles(primitive: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Res
         material: primitive.material().index(),
         has_normals: normals.is_some(),
     })
+}
+
+/// A URI's `%20`s as the bytes they stand for: how glTF writes a file
+/// name with a space in it.
+fn percent_decoded(uri: &str) -> String {
+    let bytes = uri.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `a/b/../c` as `a/c`, by its words alone: the project-relative name of
+/// a file a source names relative to itself, the same on every machine.
+fn lexical(path: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                if parts.last().is_some_and(|p| p != "..") {
+                    parts.pop();
+                } else {
+                    parts.push("..".into());
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    parts.join("/")
 }
 
 /// An image as RGBA8, from the formats exporters write.

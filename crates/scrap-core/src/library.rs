@@ -387,6 +387,19 @@ impl Library {
             if now.is_none() || now == self.entries[index].modified {
                 continue;
             }
+            // Never read yet (a library opened lazily): its header is
+            // enough, and the body is read when something asks for it —
+            // a re-import of what nobody draws does not pull it in.
+            if self.entries[index].on_disk && self.entries[index].bytes.get().is_none() {
+                let Ok((kind, id, name)) = asset::read_head(&path) else {
+                    continue;
+                };
+                self.reindex(index, id, name);
+                self.entries[index].kind = kind;
+                self.entries[index].modified = now;
+                changed.push(Reloaded { id, kind, path: path.clone() });
+                continue;
+            }
             let Ok(bytes) = asset::read(&path) else {
                 continue;
             };
@@ -423,6 +436,25 @@ impl Library {
             });
         }
         changed
+    }
+
+    /// An entry known by another ID or name now: the indexes follow.
+    fn reindex(&mut self, index: usize, id: AssetId, name: String) {
+        let entry = &mut self.entries[index];
+        if entry.id != id {
+            if self.by_id.get(&entry.id) == Some(&index) {
+                self.by_id.remove(&entry.id);
+            }
+            entry.id = id;
+        }
+        self.by_id.insert(id, index);
+        if entry.name != name {
+            if let Some(list) = self.by_name.get_mut(&entry.name) {
+                list.retain(|i| *i != index);
+            }
+            entry.name = name.clone();
+            self.by_name.entry(name).or_default().push(index);
+        }
     }
 
     pub fn kind(&self, id: AssetId) -> Option<AssetKind> {

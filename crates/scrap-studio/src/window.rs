@@ -123,6 +123,8 @@ struct App {
     /// paces one that is hidden or on a display that does not, which
     /// would otherwise draw as fast as the GPU goes for nobody.
     next: Instant,
+    /// Agents driving this window over MCP, answered before each frame.
+    agents: crate::agents::Agents,
 }
 
 /// The most frames a second the editor draws.
@@ -152,6 +154,16 @@ impl ApplicationHandler<Chosen> for App {
     /// A line of the system's menu bar.
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, chosen: Chosen) {
+        // An agent's message: answered now — a window hidden behind
+        // others may not be asked to draw for seconds — and drawn next.
+        if chosen.id == crate::agents::WAKE {
+            if let Some(run) = self.running.as_mut() {
+                // The frame sees what changed, as after any edit.
+                self.agents.serve(&mut run.studio.session);
+                run.window.request_redraw();
+            }
+            return;
+        }
         #[cfg(target_os = "macos")]
         {
             use crate::native_menu::mac::Asked;
@@ -333,6 +345,7 @@ impl ApplicationHandler<Chosen> for App {
                 return;
             }
             WindowEvent::RedrawRequested => {
+                self.agents.serve(&mut run.studio.session);
                 run.studio.frame();
                 for key in self.keys_up.drain(..) {
                     run.studio.handle(&InputEvent::KeyUp(key));
@@ -548,7 +561,17 @@ pub fn run_with(session: scrap_editor::Session, title: String, projects: bool) {
             return;
         }
     };
+    let wake = std::sync::Mutex::new(event_loop.create_proxy());
+    let agents = crate::agents::Agents::new(move || {
+        if let Ok(proxy) = wake.lock() {
+            let _ = proxy.send_event(Chosen {
+                id: crate::agents::WAKE.into(),
+                by_key: false,
+            });
+        }
+    });
     let mut app = App {
+        agents,
         pending: Some((session, title)),
         projects,
         running: None,

@@ -3985,6 +3985,7 @@ dependencies = [
  "scrap-editor",
  "scrap-engine",
  "scrap-import",
+ "scrap-mcp",
  "scrap-ui",
  "serde",
  "wgpu",

@@ -279,9 +279,15 @@ impl Clip {
             .collect();
         let mut channels = Vec::new();
         // The same rig in another file — Unity's clips, a take an FBX,
-        // each file's rest its own first frame: every joint there by name
-        // under the same parent. Its keys are the pose itself, as Unity
-        // plays a generic rig's curves: taken as they are.
+        // each file's rest its own first frame; Quaternius' animation
+        // library and the outfits and bodies made for it: every joint
+        // there by name under the same parent. Its turns are the pose
+        // itself, as Unity plays a generic rig's curves and Unreal a
+        // compatible skeleton's: taken as they are. A bone's place is
+        // `to`'s own, moved as the clip moves it from `from`'s — scaled by
+        // how much longer the bone is — so a broader body keeps its hips
+        // and shoulders where they are and still bobs as it walks. Where
+        // the two rests are one, that is the keys as they are.
         let parent_name = |s: &Skeleton, j: &Joint| j.parent.and_then(|p| s.joints.get(p as usize)).map(|p| bare_joint_name(&p.name).to_string());
         let same_rig = from.joints.iter().all(|j| {
             by_name
@@ -292,7 +298,20 @@ impl Clip {
             for channel in &self.channels {
                 let Some(source) = from.joints.get(channel.joint as usize) else { continue };
                 let Some(&target) = by_name.get(bare_joint_name(&source.name)) else { continue };
-                channels.push(Channel { joint: target as u16, ..channel.clone() });
+                let aim = &to.joints[target];
+                let values = match channel.path {
+                    Path::Translation if source.rest.translation != aim.rest.translation => {
+                        let (from_rest, to_rest) = (Vec3::from_array(source.rest.translation), Vec3::from_array(aim.rest.translation));
+                        let ratio = if from_rest.length() > 1e-5 { to_rest.length() / from_rest.length() } else { 1.0 };
+                        channel
+                            .values
+                            .chunks_exact(3)
+                            .flat_map(|v| (to_rest + (Vec3::from_slice(v) - from_rest) * ratio).to_array())
+                            .collect()
+                    }
+                    _ => channel.values.clone(),
+                };
+                channels.push(Channel { joint: target as u16, values, ..channel.clone() });
             }
             return Clip { name: self.name.clone(), duration: self.duration, channels };
         }

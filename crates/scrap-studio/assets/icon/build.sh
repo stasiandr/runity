@@ -1,7 +1,7 @@
 #!/bin/sh
 # Renders the editor's icon from its two SVGs: scrap-256.png for the window
-# (Windows, Linux) and scrap.icns for the Dock. Needs ImageMagick; the .icns
-# needs macOS's iconutil. Run from anywhere; writes next to itself.
+# (Windows, Linux), scrap-64.png for the toolbar and scrap.icns for the Dock.
+# Needs ImageMagick; the .icns needs macOS's iconutil. Run from anywhere; writes next to itself.
 set -eu
 cd "$(dirname "$0")"
 tmp=$(mktemp -d)
@@ -20,6 +20,8 @@ render_mac() {
 }
 
 render scrap.svg 256 scrap-256.png
+# The studio's toolbar, drawn at 20 px.
+render scrap-small.svg 64 scrap-64.png
 
 set=$tmp/scrap.iconset
 mkdir "$set"

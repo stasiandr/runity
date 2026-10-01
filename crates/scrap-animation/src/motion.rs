@@ -244,6 +244,8 @@ pub fn attach(
     skins: impl Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>,
 ) -> Vec<String> {
     crate::animator::bind_skins(world, &skins);
+    // A skinned model put under a line whose animator has started.
+    let shared = crate::animator::bind_shared_poses(world, &skins);
     let waiting: Vec<(hecs::Entity, Animates)> = world
         .query::<(hecs::Entity, &Animates)>()
         .without::<&Moving>()
@@ -251,7 +253,7 @@ pub fn attach(
         .map(|(e, a)| (e, a.clone()))
         .collect();
     if waiting.is_empty() {
-        return Vec::new();
+        return shared;
     }
     // By the scene's ids and by a run-time prefab's own: a building stage
     // spawned mid-level has a drone its clips fly.
@@ -266,7 +268,8 @@ pub fn attach(
             .iter()
             .map(|(e, s)| (s.0, e)),
     );
-    let mut problems = Vec::new();
+    let mut problems = shared;
+    let mut sets = ClipSets::default();
     for (entity, animates) in waiting {
         // Rules (docs/animator.md): on the model's skeleton, as a graph
         // without clips of its own is.
@@ -293,9 +296,12 @@ pub fn attach(
                 None => animates.model.clone(),
             };
             scrap_core::world::take_off::<Animates>(world, entity);
-            match skins(&model) {
-                Some(skin) => {
-                    let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
+            match sets.get(&model, &rules.clips_from, &skins) {
+                Some(set) => {
+                    for problem in &set.problems {
+                        say(&mut problems, format!("animator `{}`: {problem}", animates.graph));
+                    }
+                    let mut animator = Animator::new(set.skeleton.clone(), set.clips.clone());
                     for clip in rules.clips() {
                         if animator.clip_named(&clip).is_some() {
                             continue;
@@ -326,7 +332,7 @@ pub fn attach(
         }
         let Some(graph) = motions.graphs.get(&animates.graph) else {
             problems.push(format!(
-                "animator `{}`: no such graph in animators/",
+                "animator `{}`: no such graph in the project (`*.animator.ron`)",
                 animates.graph
             ));
             // Not asked again every frame.
@@ -339,15 +345,31 @@ pub fn attach(
             .collect();
         if names.is_empty() {
             scrap_core::world::take_off::<Animates>(world, entity);
-            match skins(&animates.model) {
-                Some(skin) => {
-                    let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
+            match sets.get(&animates.model, &graph.clips_from, &skins) {
+                Some(set) => {
+                    for problem in &set.problems {
+                        say(&mut problems, format!("animator `{}`: {problem}", animates.graph));
+                    }
+                    let mut animator = Animator::new(set.skeleton.clone(), set.clips.clone());
                     for clip in clips_of(graph) {
                         if animator.clip_named(&clip).is_some() {
                             continue;
                         }
                         if let Some(from) = skins(&crate::AssetLink::named(clip.clone())) {
                             animator.take_clips(&clip, &from.skeleton, &from.clips);
+                        }
+                    }
+                    // Where its clips were to be found, a clip in none of
+                    // them named: said once for every copy.
+                    if !graph.clips_from.is_empty() {
+                        let clips: Vec<&str> = animator.clips.iter().map(|c| c.name.as_str()).collect();
+                        let looked_in = std::iter::once(&animates.model.name)
+                            .chain(&graph.clips_from)
+                            .map(|m| format!("`{m}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        for problem in graph.missing_clips(&clips, &looked_in) {
+                            say(&mut problems, format!("animator `{}`: {problem}", animates.graph));
                         }
                     }
                     // Masks and IK name joints: said once, with the nearest.
@@ -366,7 +388,7 @@ pub fn attach(
                     let _ = world.insert(entity, (animator, Controller::new(graph.clone())));
                 }
                 None => problems.push(format!(
-                    "animator `{}`: none of its clips is in clips/, and `{}` has no skeleton",
+                    "animator `{}`: none of its clips is a `*.clip.ron`, and `{}` has no skeleton",
                     animates.graph, animates.model
                 )),
             }
@@ -466,7 +488,64 @@ pub fn attach(
             },
         );
     }
+    // The skinned models under the lines that started: posed by them.
+    for problem in crate::animator::bind_shared_poses(world, &skins) {
+        say(&mut problems, problem);
+    }
     problems
+}
+
+/// A problem said once, however many lines share it.
+fn say(problems: &mut Vec<String>, problem: String) {
+    if !problems.contains(&problem) {
+        problems.push(problem);
+    }
+}
+
+/// A model's skeleton and the clips its animators play: its own and every
+/// clip of the models its animator's `clips_from` names, retargeted by
+/// joint names ([`Animator::take_clips`]).
+struct ClipSet {
+    skeleton: Arc<Skeleton>,
+    clips: Arc<Vec<crate::animation::Clip>>,
+    /// A `clips_from` that is no model with a skeleton.
+    problems: Vec<String>,
+}
+
+/// The clip sets one [`attach`] built, by model and `clips_from`: a crowd
+/// of villagers on one outfit and one animation library shares one set,
+/// not a copy of both libraries each.
+#[derive(Default)]
+struct ClipSets(HashMap<(crate::AssetLink, Vec<String>), Arc<ClipSet>>);
+
+impl ClipSets {
+    fn get(
+        &mut self,
+        model: &crate::AssetLink,
+        from: &[String],
+        skins: &impl Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>,
+    ) -> Option<Arc<ClipSet>> {
+        let key = (model.clone(), from.to_vec());
+        if let Some(set) = self.0.get(&key) {
+            return Some(set.clone());
+        }
+        let skin = skins(model)?;
+        let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
+        let mut problems = Vec::new();
+        for name in from {
+            match skins(&crate::AssetLink::named(name.clone())) {
+                Some(other) => animator.take_clips(name, &other.skeleton, &other.clips),
+                None => problems.push(format!("clips_from `{name}` is no model with a skeleton")),
+            }
+        }
+        let set = Arc::new(ClipSet {
+            skeleton: animator.skeleton.clone(),
+            clips: animator.clips.clone(),
+            problems,
+        });
+        self.0.insert(key, set.clone());
+        Some(set)
+    }
 }
 
 /// The first skinned mesh under `root` bound to its bones, and its model.
@@ -748,6 +827,209 @@ mod tests {
         );
     }
 
+    /// Quaternius' outfits have no clips; their animation library is two
+    /// files of 43 each on the same rig. A graph's `clips_from` plays
+    /// every clip of those files on the outfit, by name — its own bones'
+    /// lengths kept — shared by every line that plays it; a clip in none
+    /// of them, and a `clips_from` that is no model, are said once.
+    #[test]
+    fn a_graph_plays_the_clips_of_other_files_on_the_same_rig() {
+        use crate::animation::{Channel, Joint, Path, Skeleton};
+        let scene: crate::scene::Scene = ron::from_str(
+            r#"(entities: [
+                (id: "0000000000000001", name: "peasant", model: "Male_Peasant", animator: "villager"),
+                (id: "0000000000000002", name: "another", model: "Male_Peasant", animator: "villager"),
+            ])"#,
+        )
+        .unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut motions = Motions::default();
+        motions.graphs.insert(
+            "villager".into(),
+            ron::from_str(
+                r#"(clips_from: ["ual1", "ual2", "ual3"], start: "walk", states: {
+                    "walk": (clip: "Walk_Loop", transitions: [(to: "chop", when: [Trigger("chop")])]),
+                    "chop": (clip: "TreeChopping_Loop", transitions: [(to: "fix", when: [Trigger("fix")])]),
+                    "fix": (clip: "Fixing_Kneelin"),
+                })"#,
+            )
+            .unwrap(),
+        );
+        // The outfit's hips stand higher than the mannequin's.
+        let rig = |hips: f32| Skeleton {
+            joints: vec![
+                Joint {
+                    name: "root".into(),
+                    parent: None,
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest: PoseTransform::default(),
+                },
+                Joint {
+                    name: "pelvis".into(),
+                    parent: Some(0),
+                    inverse_bind: glam::Mat4::from_translation(Vec3::new(0.0, -hips, 0.0)).to_cols_array_2d(),
+                    rest: PoseTransform {
+                        translation: [0.0, hips, 0.0],
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        // The mannequin's hips bob 5 cm over their rest at 0.9.
+        let clip = |name: &str| Clip {
+            name: name.into(),
+            duration: 1.0,
+            channels: vec![Channel {
+                joint: 1,
+                path: Path::Translation,
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 0.95, 0.0, 0.0, 0.95, 0.0],
+            }],
+        };
+        let skin = |skeleton: Skeleton, clips: Vec<Clip>| crate::asset::MeshSkin {
+            skeleton,
+            clips,
+            joints: Vec::new(),
+            weights: Vec::new(),
+        };
+        let asked = std::cell::Cell::new(0);
+        let skins = |model: &crate::AssetLink| {
+            if model.as_str() == "ual1" {
+                asked.set(asked.get() + 1);
+            }
+            match model.as_str() {
+                "Male_Peasant" => Some(skin(rig(1.0), Vec::new())),
+                "ual1" => Some(skin(rig(0.9), vec![clip("Walk_Loop"), clip("Fixing_Kneeling")])),
+                "ual2" => Some(skin(rig(0.9), vec![clip("TreeChopping_Loop")])),
+                _ => None,
+            }
+        };
+        let said = attach(&mut world, &motions, skins);
+        assert_eq!(asked.get(), 1, "a library read once for both lines");
+        assert_eq!(said.len(), 2, "each said once: {said:?}");
+        assert!(said.iter().any(|p| p.contains("clips_from `ual3` is no model")), "{said:?}");
+        assert!(
+            said.iter().any(|p| p.contains("clip `Fixing_Kneelin` is in none of `Male_Peasant`, `ual1`, `ual2`, `ual3`")
+                && p.contains("did you mean `Fixing_Kneeling`")),
+            "{said:?}"
+        );
+        let peasant = crate::world::addressable(&world)[&EntityId::from_raw(1)];
+        let another = crate::world::addressable(&world)[&EntityId::from_raw(2)];
+        let animator = world.get::<&Animator>(peasant).unwrap();
+        assert!(Arc::ptr_eq(&animator.clips, &world.get::<&Animator>(another).unwrap().clips), "one set for both");
+        let walk = animator.clip_named("Walk_Loop").expect("from ual1");
+        assert!(animator.clip_named("TreeChopping_Loop").is_some(), "from ual2");
+        // On the outfit's hips: its own height, bobbing as the mannequin's.
+        let pose = animator.clips[walk].sample(&animator.skeleton, 0.5, true);
+        assert!((pose[1].translation[1] - 1.0 * (1.0 + 0.05 / 0.9)).abs() < 1e-4, "{:?}", pose[1]);
+        drop(animator);
+        crate::animgraph::run_controllers(&mut world);
+        world.get::<&mut Controller>(peasant).unwrap().trigger("chop");
+        crate::animgraph::run_controllers(&mut world);
+        assert_eq!(world.get::<&Controller>(peasant).unwrap().state(), Some("chop"));
+    }
+
+    /// A villager: the outfit plays the animator, the body and the hair
+    /// under it are skinned to the same rig's names and posed by it — a
+    /// joint the animator lacks as its nearest ancestor that it has — and
+    /// `only_joints` draws the body's head only, the rest folded away.
+    #[test]
+    fn skinned_models_under_an_animator_are_posed_by_it() {
+        use crate::animation::{Channel, Joint, Path, Skeleton};
+        use glam::Mat4;
+        let scene: crate::scene::Scene = ron::from_str(
+            r#"(entities: [
+                (id: "0000000000000001", name: "villager", model: "outfit", animator: "bend", children: [
+                    (id: "0000000000000002", name: "head", model: "body", only_joints: ["spine"]),
+                ]),
+            ])"#,
+        )
+        .unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let mut motions = Motions::default();
+        motions
+            .graphs
+            .insert("bend".into(), ron::from_str(r#"(start: "bend", states: {"bend": (clip: "bend")})"#).unwrap());
+        let joint = |name: &str, parent: Option<u16>, y: f32| Joint {
+            name: name.into(),
+            parent,
+            inverse_bind: Mat4::from_translation(Vec3::new(0.0, -y, 0.0)).to_cols_array_2d(),
+            rest: PoseTransform {
+                translation: [0.0, if parent.is_some() { 1.0 } else { y }, 0.0],
+                ..Default::default()
+            },
+        };
+        let outfit = Skeleton { joints: vec![joint("root", None, 0.0), joint("spine", Some(0), 1.0)] };
+        // The body has a head the outfit's rig does not.
+        let body = Skeleton {
+            joints: vec![joint("root", None, 0.0), joint("spine", Some(0), 1.0), joint("head", Some(1), 2.0)],
+        };
+        let turn = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let bend = Clip {
+            name: "bend".into(),
+            duration: 1.0,
+            channels: vec![Channel {
+                joint: 1,
+                path: Path::Rotation,
+                times: vec![0.0, 1.0],
+                values: [turn.to_array(), turn.to_array()].concat(),
+            }],
+        };
+        let skins = |model: &crate::AssetLink| {
+            let skin = |skeleton: &Skeleton, clips: Vec<Clip>| crate::asset::MeshSkin {
+                skeleton: skeleton.clone(),
+                clips,
+                joints: Vec::new(),
+                weights: Vec::new(),
+            };
+            match model.as_str() {
+                "outfit" => Some(skin(&outfit, vec![bend.clone()])),
+                "body" => Some(skin(&body, Vec::new())),
+                _ => None,
+            }
+        };
+        let said = attach(&mut world, &motions, skins);
+        assert!(said.is_empty(), "{said:?}");
+        crate::animgraph::run_controllers(&mut world);
+        crate::animator::advance_animations(&mut world, 0.5);
+        let ids = crate::world::addressable(&world);
+        let (villager, head) = (ids[&EntityId::from_raw(1)], ids[&EntityId::from_raw(2)]);
+        let outfit_pose = world.get::<&crate::animation::Posed>(villager).unwrap().0.clone();
+        let body_pose = world.get::<&crate::animation::Posed>(head).expect("posed by the animator above").0.clone();
+        assert_eq!(body_pose.len(), 3);
+        assert!(body_pose[1].abs_diff_eq(outfit_pose[1], 1e-5), "the spine as the outfit's");
+        // The head rides the spine: where the spine turned it.
+        let head_at = body_pose[2].transform_point3(Vec3::new(0.0, 2.0, 0.0));
+        assert!(head_at.abs_diff_eq(Vec3::new(-1.0, 1.0, 0.0), 1e-4), "{head_at}");
+        // The root is not under the spine: folded into it, a point.
+        let folded = body_pose[0];
+        assert!(folded.x_axis.length() < 1e-2 && folded.y_axis.length() < 1e-2, "{folded}");
+        let spine_at = folded.transform_point3(Vec3::new(0.0, 1.0, 0.0));
+        assert!(spine_at.abs_diff_eq(Vec3::new(0.0, 1.0, 0.0), 1e-3), "{spine_at}");
+
+        // A joint it cannot show is said, with the nearest.
+        let mut world = World::new();
+        let wrong = scene_text_with_only("spien");
+        spawn(&wrong, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let said = attach(&mut world, &motions, skins);
+        assert!(said.iter().any(|p| p.contains("no joint `spien`") && p.contains("`spine`")), "{said:?}");
+    }
+
+    fn scene_text_with_only(joint: &str) -> crate::scene::Scene {
+        ron::from_str(&format!(
+            r#"(entities: [
+                (id: "0000000000000001", name: "villager", model: "outfit", animator: "bend", children: [
+                    (id: "0000000000000002", name: "head", model: "body", only_joints: ["{joint}"]),
+                ]),
+            ])"#
+        ))
+        .unwrap()
+    }
+
     #[test]
     fn a_full_turn_spins_and_what_one_state_switched_off_the_next_puts_back() {
         // A saw: starting, its sparks off; running, its blade from -360
@@ -931,7 +1213,7 @@ pub struct MotionDress;
 
 impl crate::world::Dress for MotionDress {
     fn parts(&self) -> &[&'static str] {
-        &["animator", "bone", "model", "ik"]
+        &["animator", "bone", "model", "ik", "only_joints"]
     }
 
     fn dress(
@@ -959,6 +1241,21 @@ impl crate::world::Dress for MotionDress {
                 scrap_core::world::take_off::<crate::animator::SkinOf>(world, entity);
             } else {
                 let _ = world.insert_one(entity, crate::animator::SkinOf(model.clone()));
+            }
+        }
+        // Bound again by the animator above it, with what it now shows.
+        if changed.has("only_joints") || changed.has("model") {
+            scrap_core::world::take_off::<crate::animator::SharesPose>(world, entity);
+            match line
+                .part::<crate::animator::OnlyJoints>()
+                .filter(|o| !o.0.is_empty())
+            {
+                Some(only) => {
+                    let _ = world.insert_one(entity, only);
+                }
+                None => {
+                    scrap_core::world::take_off::<crate::animator::OnlyJoints>(world, entity);
+                }
             }
         }
         if changed.has("ik") {
@@ -1006,6 +1303,8 @@ crate::impl_parts! {
         scrap_core::shape::Shape::Asset("animator".into())
     };
     BoneName => "bone", default if |b| b.0.is_empty();
+    // A skinned model under an animator drawn only where these joints move it.
+    crate::animator::OnlyJoints => "only_joints", default if |o| o.0.is_empty();
     // Feet on the ground and a look, on the line's animated skeleton.
     crate::ik::Ik => "ik", default if |i| *i == crate::ik::Ik::default();
 }

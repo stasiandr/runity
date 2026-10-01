@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use crate::prelude::*;
-use crate::render::{FogSettings, Frame, MeshHandle};
+use crate::render::{FogSettings, Frame};
 use crate::{Gpu, Library, OffscreenTarget, Renderer, Scene};
 
 /// A scene ready to draw.
@@ -23,6 +23,11 @@ pub struct Shot {
     /// [`Shot::build`]).
     pub world: hecs::World,
     scene: Scene,
+    /// The project's root, where its animators are found.
+    root: Option<std::path::PathBuf>,
+    library: Option<Library>,
+    /// Whether the scene's animators are started ([`Shot::play`]).
+    animated: bool,
     camera: crate::render::Camera,
     lighting: crate::render::Lighting,
     fog: FogSettings,
@@ -88,7 +93,7 @@ impl Shot {
             .or_else(|| project.as_ref().map(|p| p.library()).filter(|dir| dir.is_dir()));
         let library = match &library_dir {
             Some(dir) => {
-                let (library, skipped) = Library::open(dir)?;
+                let (library, skipped) = Library::open_lazy(dir)?;
                 for (path, e) in &skipped {
                     problems.push(format!("skipped {}: {e}", path.display()));
                 }
@@ -98,25 +103,15 @@ impl Shot {
         };
 
         let mut world = hecs::World::new();
-        let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
+        // As a live scene resolves them: by link, a model's run
+        // (`model#1`) a mesh of its own, a material by link — a run's the
+        // one its import gave it.
+        let mut uploaded = std::collections::HashMap::new();
         let missing = crate::spawn_scene_with(
             &scene,
             &mut world,
-            |name| {
-                let name: &str = name;
-                if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
-                    return Some(found.1);
-                }
-                let handle = if let Some(mesh) = crate::builtin::by_name(name) {
-                    renderer.upload_mesh_owned(&gpu, &mesh)
-                } else {
-                    let mesh = library.as_ref()?.mesh_by_name(name)?;
-                    renderer.upload_mesh(&gpu, mesh)
-                };
-                uploaded.push((name.to_string(), handle));
-                Some(handle)
-            },
-            |name| library.as_ref()?.material_by_name(name),
+            crate::live::resolver(&mut uploaded, library.as_ref(), &gpu, &mut renderer),
+            |link| library.as_ref()?.material_link(link),
         );
         for m in &missing {
             problems.push(format!("{}: no model named {}", m.entity_name, m.model));
@@ -168,6 +163,9 @@ impl Shot {
             entities: scene.entities.len(),
             world,
             scene,
+            root: project.as_ref().map(|p| p.root().to_path_buf()),
+            library,
+            animated: false,
             camera,
             lighting,
             fog,
@@ -219,6 +217,45 @@ impl Shot {
         physics
             .get_or_insert_with(|| crate::physics::PhysicsWorld::new(seconds))
             .run(world);
+    }
+
+    /// The scene played for `seconds`, as the game's loop plays it: its
+    /// animators started (a character in the pose of its clip rather than
+    /// its bind pose), then fixed steps of every module's systems
+    /// (`player_loop::modules`: wires, routes, motion clips, characters'
+    /// animation, the hierarchy, ropes, water) and physics, and the frame
+    /// built again. What its animators could not do is added to
+    /// [`Shot::problems`] and returned. Nothing but the frame for no time.
+    pub fn play(&mut self, seconds: f32) -> Vec<String> {
+        let mut said = Vec::new();
+        #[cfg(feature = "animation")]
+        if !self.animated {
+            self.animated = true;
+            let (motions, problems) = self
+                .root
+                .as_ref()
+                .map(crate::motion::Motions::load)
+                .unwrap_or_default();
+            said.extend(problems);
+            let library = self.library.as_ref();
+            let skins = |model: &crate::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+            said.extend(crate::motion::attach(&mut self.world, &motions, skins));
+        }
+        let dt = 1.0 / 60.0;
+        let steps = (seconds.max(0.0) / dt).round() as u32;
+        if steps > 0 {
+            let mut player_loop = crate::player_loop::modules();
+            for _ in 0..steps {
+                player_loop.run(crate::player_loop::Phase::FixedUpdate, &mut self.world, dt, None);
+                #[cfg(feature = "physics")]
+                self.physics
+                    .get_or_insert_with(|| crate::physics::PhysicsWorld::new(dt))
+                    .run(&mut self.world);
+            }
+        }
+        self.build();
+        self.problems.extend(said.iter().cloned());
+        said
     }
 
     /// The frame built again from the world, as a game builds it each

@@ -6372,3 +6372,57 @@ fn a_ball_onto_a_wired_porch_slides_the_door_open_in_play() {
     session.stop();
     assert!((x(&session) - 5.0).abs() < 1e-3, "and back when play stops");
 }
+
+/// A skinned model with an animator beside it — not in `animators/`, as
+/// a project laid out by kind would have it — moves in play: its graph's
+/// start state is entered, as the game's animation module enters it, and
+/// the skeleton leaves its bind pose.
+#[test]
+fn a_skinned_models_animator_plays_its_start_state_in_play() {
+    let Some((mut session, path)) = open("anim_play") else {
+        return;
+    };
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scrap-import/tests/fixtures/skinned_banner.gltf");
+    let assets = root_of(&path).join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::copy(&fixture, assets.join("banner.gltf")).unwrap();
+    write_all(
+        assets.join("wave.animator.ron"),
+        r#"(start: "furl", states: { "furl": (clip: "furl") })"#,
+    )
+    .unwrap();
+    session.reload_assets();
+    let model = session
+        .assets()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.kind == "model" && a.name.contains("banner"))
+        .expect("the banner imported")
+        .name;
+    write_all(
+        &path,
+        format!(r#"(entities: [(id: "b1", name: "banner", model: "{model}", animator: "wave")])"#),
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let id = id(&session, "banner");
+    session.select(Some(id)).unwrap();
+    session.focus_selected();
+    session.select(None).unwrap();
+
+    session.play();
+    session.step(1.0 / 60.0);
+    session.render();
+    let start = session.frame_pixels().to_vec();
+    for _ in 0..24 {
+        session.step(1.0 / 60.0);
+    }
+    session.render();
+    assert_ne!(session.frame_pixels(), &start[..], "the banner furls");
+    assert!(
+        !session.console().iter().any(|l| l.text.contains("wave")),
+        "nothing said against its animator: {:?}",
+        session.console()
+    );
+}

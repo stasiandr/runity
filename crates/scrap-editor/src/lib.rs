@@ -491,7 +491,7 @@ impl Session {
     pub fn set_library(&mut self, directory: impl AsRef<Path>) -> EditResult<Vec<String>> {
         let directory = directory.as_ref().to_path_buf();
         let (library, problems) =
-            Library::open(&directory).map_err(|e| EditError::Io(e.to_string()))?;
+            Library::open_lazy(&directory).map_err(|e| EditError::Io(e.to_string()))?;
         self.library = Some(library);
         self.library_dir = Some(directory);
         // Handles from the old library refer to meshes uploaded for it.
@@ -538,7 +538,7 @@ impl Session {
             // the first import if not. A library set by hand stays only for
             // scenes that are in no project.
             let directory = project.library();
-            self.library = Library::open(&directory).ok().map(|(library, _)| library);
+            self.library = Library::open_lazy(&directory).ok().map(|(library, _)| library);
             self.library_dir = Some(directory);
             self.uploaded.clear();
         }
@@ -5177,6 +5177,11 @@ impl Session {
         scrap::wires::run_wires(world, fixed);
         scrap::routes::run_routes(world, fixed);
         scrap::motion::run(world, fixed);
+        // Characters' graphs pick their clips, as the game's animation
+        // module does in its step: without it an animator's start state
+        // is never entered and a skeleton stands in its bind pose.
+        scrap::animgraph::run_controllers(world);
+        scrap::rules::run_rules(world, fixed);
         scrap::world::apply_hierarchy(world);
         scrap::fluid::float(world, physics);
         scrap::character::step(world, physics, fixed);
@@ -5423,7 +5428,7 @@ impl Session {
     fn reopen_library(&mut self) -> EditResult<()> {
         let directory = self.library_dir.clone().ok_or(EditError::NoLibrary)?;
         let (library, _skipped) =
-            Library::open(&directory).map_err(|e| EditError::Io(e.to_string()))?;
+            Library::open_lazy(&directory).map_err(|e| EditError::Io(e.to_string()))?;
         self.library = Some(library);
         self.uploaded.clear();
         self.respawn();

@@ -888,7 +888,10 @@ pub trait MaterialLibrary {
     /// By file stem, which is what a scene writes: `material:
     /// "mossy_stone"` in any scene finds the one asset.
     fn material_by_name(&self, name: &str) -> Option<Material>;
-    /// Follow a link to a material: by ID first, then by name.
+    /// Follow a link to a material: by ID first, then by name. A run of a
+    /// model, `<model>#<run>` with the model's ID, is the material its
+    /// import gave that run (a skinned character's outfit, its skin), if
+    /// it gave one.
     fn material_link(&self, link: &crate::AssetLink) -> Option<Material>;
 }
 
@@ -902,7 +905,14 @@ impl MaterialLibrary for crate::library::Library {
         crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
     }
     fn material_link(&self, link: &crate::AssetLink) -> Option<Material> {
-        let bytes = self.bytes_linked(link, MATERIAL)?;
-        crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
+        if let Some(bytes) = self.bytes_linked(link, MATERIAL) {
+            return crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material));
+        }
+        let (model, run) = link.name.rsplit_once('#')?;
+        let run: usize = run.parse().ok()?;
+        use scrap_geometry::mesh_asset::MeshLibrary;
+        let mesh = self.mesh_link(&crate::AssetLink { name: model.to_string(), id: link.id })?;
+        let id = mesh.submeshes.get(run)?.material.as_ref()?;
+        self.material(crate::asset::AssetId(id.0.to_native()))
     }
 }

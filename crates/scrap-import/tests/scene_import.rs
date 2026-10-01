@@ -251,6 +251,356 @@ fn a_gltf_of_one_object_is_still_one_model() {
     assert!(!scrap_import::scene::is_scene(&fixture).unwrap());
 }
 
+/// One object — a tree — whose mesh has two materials, bark and leaves,
+/// each painting with `images[material]`: an image each, or one shared.
+fn tree(dir: &Path, images: [usize; 2]) -> PathBuf {
+    let mut bin = Vec::new();
+    for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for v in [[0.0f32, 0.0], [3.0, 0.0], [0.0, 3.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for i in [0u16, 1, 2, 0] {
+        bin.extend(i.to_le_bytes());
+    }
+    std::fs::create_dir_all(dir).unwrap();
+    write_all(dir.join("tree.bin"), &bin).unwrap();
+    for (name, rgba) in [("bark.png", [120, 60, 20, 255]), ("leaves.png", [30, 160, 40, 255])] {
+        image::RgbaImage::from_pixel(1, 1, image::Rgba(rgba)).save(dir.join(name)).unwrap();
+    }
+    let prim = |m: usize| {
+        format!(r#"{{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1}}, "indices": 2, "material": {m}}}"#)
+    };
+    let gltf = format!(
+        r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [{{"name": "tree", "mesh": 0}}],
+  "meshes": [{{"name": "tree", "primitives": [{p0}, {p1}]}}],
+  "materials": [
+    {{"name": "bark", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": {t0}}}}}}},
+    {{"name": "leaves", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": {t1}}}}}}}
+  ],
+  "images": [{{"uri": "bark.png"}}, {{"uri": "leaves.png"}}],
+  "textures": [{{"source": 0}}, {{"source": 1}}],
+  "buffers": [{{"uri": "tree.bin", "byteLength": {len}}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 24}},
+    {{"buffer": 0, "byteOffset": 60, "byteLength": 6}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}},
+    {{"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}}
+  ]
+}}"#,
+        p0 = prim(0),
+        p1 = prim(1),
+        t0 = images[0],
+        t1 = images[1],
+        len = bin.len(),
+    );
+    let path = dir.join("tree.gltf");
+    write_all(&path, gltf).unwrap();
+    path
+}
+
+#[test]
+fn one_object_painted_with_two_images_is_a_scene_each_material_with_its_own() {
+    let (project, _root) = project("two-images");
+    let source = tree(&project.assets(), [0, 1]);
+    assert!(scrap_import::scene::is_scene(&source).unwrap());
+    scrap_import::import_into(&project, &source, None).unwrap();
+    assert!(ImportSettings::load(sidecar_for(&source)).unwrap().scene);
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    for (material, rgba) in [("tree/bark", [120, 60, 20, 255]), ("tree/leaves", [30, 160, 40, 255])] {
+        let material = library.material_by_name(material).unwrap();
+        let base = library.texture(material.base_map.expect("a base map")).unwrap();
+        assert_eq!(&base.pixels[..4], &rgba, "its own picture, not white");
+    }
+    let (prefabs, _) = Prefabs::of(&project);
+    assert!(prefabs.get("tree").is_some(), "placed as `prefab: \"tree\"`");
+}
+
+#[test]
+fn one_object_whose_materials_share_one_image_is_still_one_model() {
+    let (project, _root) = project("one-image");
+    let source = tree(&project.assets(), [0, 0]);
+    assert!(!scrap_import::scene::is_scene(&source).unwrap());
+    scrap_import::import_into(&project, &source, None).unwrap();
+    assert!(!ImportSettings::load(sidecar_for(&source)).unwrap().scene);
+}
+
+/// A character as Quaternius' outfits come: an `Armature` with one joint,
+/// and two pieces — a shirt and bare arms — each its own node and mesh,
+/// both skinned by the one skin, each painting with its own picture.
+fn character(dir: &Path, name: &str) -> PathBuf {
+    let mut bin = Vec::new();
+    // Positions, UVs, indices (padded to four), joints, weights, and the
+    // joint's inverse bind.
+    for v in [[0.0f32, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 2.0, 0.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for v in [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]] {
+        for c in v {
+            bin.extend(c.to_le_bytes());
+        }
+    }
+    for i in [0u16, 1, 2, 0] {
+        bin.extend(i.to_le_bytes());
+    }
+    bin.extend([0u8; 12]);
+    for _ in 0..3 {
+        for w in [1.0f32, 0.0, 0.0, 0.0] {
+            bin.extend(w.to_le_bytes());
+        }
+    }
+    for c in glam::Mat4::IDENTITY.to_cols_array() {
+        bin.extend(c.to_le_bytes());
+    }
+    std::fs::create_dir_all(dir).unwrap();
+    write_all(dir.join(format!("{name}.bin")), &bin).unwrap();
+    for (file, rgba) in [("shirt.png", [150, 90, 40, 255]), ("skin.png", [230, 180, 150, 255])] {
+        image::RgbaImage::from_pixel(1, 1, image::Rgba(rgba)).save(dir.join(file)).unwrap();
+    }
+    let gltf = format!(
+        r#"{{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [
+    {{"name": "Armature", "children": [1, 2, 3]}},
+    {{"name": "root"}},
+    {{"name": "{name}_Body", "mesh": 0, "skin": 0}},
+    {{"name": "{name}_Arms", "mesh": 1, "skin": 0}}
+  ],
+  "skins": [{{"joints": [1], "inverseBindMatrices": 5}}],
+  "meshes": [
+    {{"name": "{name}_Body", "primitives": [{{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1, "JOINTS_0": 3, "WEIGHTS_0": 4}}, "indices": 2, "material": 0}}]}},
+    {{"name": "{name}_Arms", "primitives": [{{"attributes": {{"POSITION": 0, "TEXCOORD_0": 1, "JOINTS_0": 3, "WEIGHTS_0": 4}}, "indices": 2, "material": 1}}]}}
+  ],
+  "materials": [
+    {{"name": "shirt", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}}},
+    {{"name": "skin", "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 1}}}}}}
+  ],
+  "images": [{{"uri": "shirt.png"}}, {{"uri": "skin.png"}}],
+  "textures": [{{"source": 0}}, {{"source": 1}}],
+  "buffers": [{{"uri": "{name}.bin", "byteLength": {len}}}],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 24}},
+    {{"buffer": 0, "byteOffset": 60, "byteLength": 6}},
+    {{"buffer": 0, "byteOffset": 68, "byteLength": 12}},
+    {{"buffer": 0, "byteOffset": 80, "byteLength": 48}},
+    {{"buffer": 0, "byteOffset": 128, "byteLength": 64}}
+  ],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 1, 0], "max": [1, 2, 0]}},
+    {{"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}},
+    {{"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}},
+    {{"bufferView": 3, "componentType": 5121, "count": 3, "type": "VEC4"}},
+    {{"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC4"}},
+    {{"bufferView": 5, "componentType": 5126, "count": 1, "type": "MAT4"}}
+  ]
+}}"#,
+        len = bin.len(),
+    );
+    let path = dir.join(format!("{name}.gltf"));
+    write_all(&path, gltf).unwrap();
+    path
+}
+
+/// A skinned character painted with two pictures is a model that keeps
+/// its skeleton, each run drawn with its own textured material — found
+/// by the line that draws it when it names none — not a palette's white,
+/// nor a prefab of pieces standing in their bind pose.
+#[test]
+fn a_skinned_character_of_two_pictures_is_a_model_each_run_with_its_own_material() {
+    use scrap::material::MaterialLibrary;
+    use scrap::mesh_asset::MeshLibrary;
+    let (project, _root) = project("character");
+    let source = character(&project.assets(), "Peasant");
+    assert!(!scrap_import::scene::is_scene(&source).unwrap(), "one thing its skeleton moves");
+    scrap_import::import_into(&project, &source, None).unwrap();
+    let settings = ImportSettings::load(sidecar_for(&source)).unwrap();
+    assert!(!settings.scene);
+    assert!(settings.parts.contains_key("material:shirt"), "{:?}", settings.parts);
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    let mesh = library.mesh_by_name("Peasant").unwrap();
+    assert!(mesh.skin.is_some(), "its skeleton kept");
+    assert!(mesh.look.is_none(), "no palette: its runs have materials");
+    assert_eq!(mesh.submeshes.len(), 2);
+    let colour = |m: &scrap::material::Material| library.texture(m.base_map.expect("a base map")).unwrap().pixels[..4].to_vec();
+    let model = scrap::AssetLink::to("Peasant", settings.id.unwrap());
+    let run = |r: usize| library.material_link(&scrap::AssetLink { name: format!("Peasant#{r}"), id: model.id });
+    // The shirt and the arms, each its own picture, in the order the
+    // runs were read.
+    let mut colours = vec![colour(&run(0).unwrap()), colour(&run(1).unwrap())];
+    colours.sort();
+    assert_eq!(colours, [vec![150, 90, 40, 255], vec![230, 180, 150, 255]]);
+    assert!(run(2).is_none());
+    assert!(library.material_by_name("Peasant/shirt").is_some(), "named as a scene's are");
+    // Not left at the palette's origin: its rig's.
+    assert!(mesh.bounds.min[1].to_native() > 0.5, "its vertices where its bones are");
+
+    // A line that names no material draws each run with its own; one
+    // that names one, whole with it.
+    let palette = |l: &scrap::AssetLink| library.material_link(l);
+    let mut line = EntityDesc::default();
+    line.set_model(model.clone());
+    let runs = scrap::appearance::run_materials(&line, &model, &palette).expect("drawn apart");
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|m| m.is_some_and(|m| m.base_map.is_some())));
+    let mut handles = 0;
+    let parts = scrap::appearance::surface_parts(&model, &runs, &mut |l| {
+        (l.name == format!("Peasant#{handles}") && handles < 2).then(|| {
+            handles += 1;
+            scrap::render::MeshHandle::TEST
+        })
+    })
+    .unwrap();
+    assert_eq!(parts.0.len(), 2);
+    assert_eq!(parts.0[1].1, runs[1]);
+    line.set_material(MaterialRef::Named(scrap::AssetLink::named("red")));
+    assert!(scrap::appearance::run_materials(&line, &model, &palette).is_none());
+}
+
+/// A character imported as a scene before characters were models — its
+/// sidecar says `scene: true` — comes in as a model, and the prefab of
+/// its pieces is gone. Its pictures are the textures every other source
+/// naming them draws with.
+#[test]
+fn a_character_once_a_scene_is_a_model_and_shares_its_pictures() {
+    use scrap::mesh_asset::MeshLibrary;
+    let (project, _root) = project("character-was-scene");
+    let dir = project.assets();
+    let source = character(&dir, "Ranger");
+    let settings = ImportSettings {
+        scene: true,
+        ..ImportSettings::for_source("")
+    };
+    scrap_import::import_into(&project, &source, Some(&settings)).unwrap();
+    assert!(!ImportSettings::load(sidecar_for(&source)).unwrap().scene);
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert!(library.mesh_by_name("Ranger").is_some_and(|m| m.skin.is_some()));
+    let (prefabs, _) = Prefabs::of(&project);
+    assert!(prefabs.get("Ranger").is_none(), "no prefab of pieces");
+
+    // Unchanged since, its prefab of pieces still in the library: `sync`
+    // builds it again, as the model it is.
+    let sidecar = sidecar_for(&source);
+    let mut was = ImportSettings::load(&sidecar).unwrap();
+    was.scene = true;
+    was.save(&sidecar).unwrap();
+    let prefab = scrap_import::scene::prefab_for(was.id.unwrap(), &project.library());
+    let mut pieces = EntityDesc::default();
+    pieces.name = "Ranger".into();
+    Prefabs::save(&pieces, &prefab).unwrap();
+    sync(&project);
+    assert!(!ImportSettings::load(&sidecar).unwrap().scene);
+    assert!(!prefab.exists());
+
+    let other = character(&dir, "Farmer");
+    scrap_import::import_into(&project, &other, None).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert_eq!(
+        library.material_by_name("Ranger/shirt").unwrap().base_map,
+        library.material_by_name("Farmer/shirt").unwrap().base_map,
+        "one texture of shirt.png"
+    );
+}
+
+/// A kit: models in one folder painting with the same pictures beside
+/// them. Each picture is one texture, whichever model it is read by —
+/// not one per model (a kit of 340 models sharing 4K maps was 28 GB of
+/// copies).
+#[test]
+fn models_that_share_a_picture_share_its_texture() {
+    let (project, _root) = project("shared");
+    let dir = project.assets();
+    let tree_gltf = tree(&dir, [0, 1]);
+    let text = std::fs::read_to_string(&tree_gltf).unwrap();
+    // The bush's bark also packs its metal and roughness from a file of
+    // its own; the tree's the same file.
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 64, 255, 255]))
+        .save(dir.join("orm.png"))
+        .unwrap();
+    let with_mask = text
+        .replace(
+            r#""baseColorTexture": {"index": 0}}"#,
+            r#""baseColorTexture": {"index": 0}, "metallicRoughnessTexture": {"index": 2}}"#,
+        )
+        .replace(
+            r#"{"uri": "leaves.png"}]"#,
+            r#"{"uri": "leaves.png"}, {"uri": "orm.png"}]"#,
+        )
+        .replace(r#"{"source": 1}]"#, r#"{"source": 1}, {"source": 2}]"#);
+    assert_ne!(with_mask, text);
+    write_all(&tree_gltf, &with_mask).unwrap();
+    write_all(dir.join("bush.gltf"), &with_mask).unwrap();
+    sync(&project);
+
+    let (library, _) = Library::open(project.library()).unwrap();
+    let bark = |file: &str| library.material_by_name(&format!("{file}/bark")).unwrap().clone();
+    let (tree_bark, bush_bark) = (bark("tree"), bark("bush"));
+    assert!(tree_bark.base_map.is_some());
+    assert_eq!(tree_bark.base_map, bush_bark.base_map, "one texture of bark.png");
+    assert!(tree_bark.mask_map.is_some());
+    assert_eq!(tree_bark.mask_map, bush_bark.mask_map, "one mask of orm.png");
+    let base = library.texture(tree_bark.base_map.unwrap()).unwrap();
+    assert_eq!(base.name.as_str(), "bark", "named after its picture");
+    let textures = std::fs::read_dir(project.library())
+        .unwrap()
+        .flatten()
+        .filter(|e| scrap::asset::read_head(e.path()).is_ok_and(|(kind, _, _)| kind == scrap::asset::TEXTURE))
+        .count();
+    // bark, leaves, the mask; and the pictures' own imports, as images of
+    // the project (bark.png, leaves.png, orm.png).
+    assert_eq!(textures, 6);
+
+    // The bush no longer paints with bark.png: what the tree draws with
+    // stays.
+    let bush = dir.join("bush.gltf");
+    write_all(&bush, with_mask.replace(r#"{"uri": "bark.png"}"#, r#"{"uri": "leaves.png"}"#)).unwrap();
+    scrap_import::import_into(&project, &bush, None).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert_ne!(library.material_by_name("bush/bark").unwrap().base_map, tree_bark.base_map);
+    assert!(library.texture(tree_bark.base_map.unwrap()).is_some(), "the tree's bark is still there");
+}
+
+/// `max_size` in a sidecar halves a scene's pictures until they fit.
+#[test]
+fn a_scenes_pictures_come_in_no_larger_than_its_max_size() {
+    let (project, _root) = project("max-size");
+    let dir = project.assets();
+    let source = tree(&dir, [0, 1]);
+    image::RgbaImage::from_pixel(8, 4, image::Rgba([120, 60, 20, 255]))
+        .save(dir.join("bark.png"))
+        .unwrap();
+    let settings = ImportSettings {
+        max_size: Some(2),
+        ..ImportSettings::for_source("")
+    };
+    scrap_import::import_into(&project, &source, Some(&settings)).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    let bark = library.material_by_name("tree/bark").unwrap();
+    let base = library.texture(bark.base_map.unwrap()).unwrap();
+    assert_eq!((base.width.to_native(), base.height.to_native()), (2, 1));
+    assert_eq!(&base.pixels[..4], &[120, 60, 20, 255]);
+    assert_eq!(base.mips.len(), 1, "and its mips below");
+}
+
 #[test]
 fn a_scenes_maps_become_textures_and_metal_roughness_packs_into_the_mask() {
     let (project, _root) = project("maps");
