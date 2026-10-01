@@ -969,8 +969,12 @@ mod tests {
     #[test]
     fn a_rebound_key_is_the_bars_key_equivalent() {
         let mut keymap = crate::keymap::Keymap::default();
-        let rebound = Shortcut::parse(if cfg!(target_os = "macos") { "⌥⌘U" } else { "Ctrl+Alt+U" })
-            .unwrap();
+        let rebound = Shortcut::parse(if cfg!(target_os = "macos") {
+            "⌥⌘U"
+        } else {
+            "Ctrl+Alt+U"
+        })
+        .unwrap();
         keymap.set("undo", rebound);
         keymap.clear("save_scene");
         let tree = tree(keymap.label_bar(crate::menu::bare_menu_bar()));
@@ -989,17 +993,39 @@ mod tests {
         };
         assert_eq!(key("Edit", "Undo"), Some(rebound));
         assert_eq!(key("File", "Save"), None);
-        assert_eq!(rebound.label(), Shortcut::parse(&rebound.label()).unwrap().label());
+        assert_eq!(
+            rebound.label(),
+            Shortcut::parse(&rebound.label()).unwrap().label()
+        );
     }
 
     #[test]
     fn a_shortcut_writes_as_it_reads() {
-        for text in ["⌘Z", "⇧⌘Z", "⌥⌘P", "⌘,", "⇧Space", "F2", "Esc", "⌘⌫", "Ctrl+Shift+P", "Ctrl+,"] {
+        for text in [
+            "⌘Z",
+            "⇧⌘Z",
+            "⌥⌘P",
+            "⌘,",
+            "⇧Space",
+            "F2",
+            "Esc",
+            "⌘⌫",
+            "Ctrl+Shift+P",
+            "Ctrl+,",
+        ] {
             let k = Shortcut::parse(text).unwrap();
-            assert_eq!(Shortcut::parse(&k.label()), Some(k), "{text} → {}", k.label());
+            assert_eq!(
+                Shortcut::parse(&k.label()),
+                Some(k),
+                "{text} → {}",
+                k.label()
+            );
         }
         let mac = Shortcut::parse("Ctrl+Shift+Z").unwrap();
         assert_eq!(mac.label_for(true), "⌃⇧Z");
-        assert_eq!(Shortcut::parse("⇧⌘Z").unwrap().label_for(false), "Win+Shift+Z");
+        assert_eq!(
+            Shortcut::parse("⇧⌘Z").unwrap().label_for(false),
+            "Win+Shift+Z"
+        );
     }
 }

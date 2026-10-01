@@ -35,9 +35,9 @@ use crate::animator::Animator;
 use crate::bottom::{Asset, Bottom};
 use crate::clipboard::SystemClipboard;
 use crate::dock::{Arrangement, Docked, Docks, Panel};
-use crate::layouts::{self, Layout};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
+use crate::layouts::{self, Layout};
 use crate::menu::{self, Action, MenuItem};
 use crate::native_menu::Shortcut;
 use crate::screens::{self, Screens};
@@ -96,6 +96,8 @@ pub struct Requests {
 struct Float {
     panel: Panel,
     frame: NodeId,
+    /// The row with its name, dragged onto a dock to dock it there.
+    strip: NodeId,
     dock_button: NodeId,
     origin: (f32, f32),
 }
@@ -418,6 +420,12 @@ pub struct Studio {
     face_box: NodeId,
     /// Panels in windows of their own.
     floats: Vec<Float>,
+    /// Where the main window's content is on the screen, logical pixels:
+    /// a tab let go out of it opens its window there.
+    window_origin: Option<(f32, f32)>,
+    /// The pointer in a floating panel's window, in the main window's
+    /// pixels: where a float dragged by its strip would dock.
+    float_pointer: Option<(f32, f32)>,
     /// Every picture given by pixels, kept for a window opened later, and
     /// a number that changes whenever any picture does.
     pictures: HashMap<ImageId, (u32, Vec<u8>)>,
@@ -548,7 +556,7 @@ impl Studio {
                 .padding_x(SPACE_2)
                 .gap(4.0)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .hover(HOVER),
         );
         ui.set_name(aspect_button, "aspect");
@@ -561,9 +569,22 @@ impl Studio {
         spacer(&mut ui, view_tabs);
         // What the handles do, in words, as Unity's bar says them: where
         // they sit, which way they point; and the grid.
-        let pivot_button = word_toggle(&mut ui, view_tabs, "handles at", "Pivot");
-        let space_button = word_toggle(&mut ui, view_tabs, "handles along", "Global");
-        let grid_button = word_toggle(&mut ui, view_tabs, "grid", "Grid");
+        // One segmented group, as a tool's bar has it, not three pills.
+        let words = ui.add(
+            view_tabs,
+            Style::row()
+                .height(22.0)
+                .fixed()
+                .center_items()
+                .radius(RADIUS_SM)
+                .border(1.0, DIVIDER)
+                .clip(),
+        );
+        let pivot_button = word_toggle(&mut ui, words, "handles at", "Pivot");
+        word_divider(&mut ui, words);
+        let space_button = word_toggle(&mut ui, words, "handles along", "Global");
+        word_divider(&mut ui, words);
+        let grid_button = word_toggle(&mut ui, words, "grid", "Grid");
         separator(&mut ui, view_tabs);
         let mut buttons = Vec::new();
         let snap = icon_button(&mut ui, view_tabs, "snap", "magnet", false);
@@ -772,6 +793,8 @@ impl Studio {
             face_drag: None,
             face_box,
             floats: Vec::new(),
+            window_origin: None,
+            float_pointer: None,
             pictures: HashMap::new(),
             picture_generation: 0,
             panels: [true; 3],
@@ -934,7 +957,11 @@ impl Studio {
         }
         let focused = self.ui.focused() == Some(self.viewport);
         let (_, ctrl, _, command) = self.ui.modifiers();
-        let shortcut = if cfg!(target_os = "macos") { command } else { ctrl };
+        let shortcut = if cfg!(target_os = "macos") {
+            command
+        } else {
+            ctrl
+        };
         let modifier = |key: &Key| {
             matches!(
                 key,
@@ -1295,7 +1322,8 @@ impl Studio {
                 let (_, ctrl, _, command) = self.ui.modifiers();
                 // Flying (the right button held in the view), a plain key
                 // steers — W A S D, Q E — and does not pick a tool.
-                let steering = self.scene_buttons.contains(&MouseButton::Right) && !ctrl && !command;
+                let steering =
+                    self.scene_buttons.contains(&MouseButton::Right) && !ctrl && !command;
                 if !steering && !Shortcut::is_modifier(*key) {
                     let chord = Shortcut::held(*key, self.ui.modifiers());
                     if let Some(action) = self.keymap.action(chord).cloned() {
@@ -1406,7 +1434,10 @@ impl Studio {
         // each is drawn and read back whole, and a click must not wait
         // for a picture of a scene.
         let calm = self.last_input.elapsed() > Duration::from_millis(250)
-            && self.seen.as_ref().is_some_and(|seen| *seen == Stamp::of(&self.session));
+            && self
+                .seen
+                .as_ref()
+                .is_some_and(|seen| *seen == Stamp::of(&self.session));
         if calm {
             let start = Instant::now();
             for (name, image) in self.bottom.wanted_pictures(4) {
@@ -1414,9 +1445,10 @@ impl Studio {
                     break;
                 }
                 let pixels = match name.strip_prefix(crate::bottom::SCENE_PICTURE) {
-                    Some(path) => self
-                        .session
-                        .scene_thumbnail(std::path::Path::new(path), 128, 128),
+                    Some(path) => {
+                        self.session
+                            .scene_thumbnail(std::path::Path::new(path), 128, 128)
+                    }
                     None => self.session.thumbnail(&name, 128),
                 };
                 if let Ok(pixels) = pixels {
@@ -1440,7 +1472,11 @@ impl Studio {
             let mut files = self.git.files.clone();
             // The open scene, edited and not saved, is not committed either.
             if !self.git.entities.is_empty() {
-                if let Some(p) = self.session.scene_path().and_then(|p| p.canonicalize().ok()) {
+                if let Some(p) = self
+                    .session
+                    .scene_path()
+                    .and_then(|p| p.canonicalize().ok())
+                {
                     files.insert(p);
                 }
             }
@@ -1742,7 +1778,13 @@ impl Studio {
         let off = self.session.is_playing() || self.session.is_game_view();
         if self.compass.off != off {
             self.compass.off = off;
-            self.ui.restyle(self.compass.holder, |s| if off { s.hidden() } else { s.shown() });
+            self.ui.restyle(self.compass.holder, |s| {
+                if off {
+                    s.hidden()
+                } else {
+                    s.shown()
+                }
+            });
         }
         if off {
             return;
@@ -1843,7 +1885,8 @@ impl Studio {
         };
         self.preferences.stop_capture();
         if key == Key::Escape {
-            self.preferences.note(&mut self.ui, "Kept as it was.", false);
+            self.preferences
+                .note(&mut self.ui, "Kept as it was.", false);
             self.preferences.show_keys(&mut self.ui, &self.keymap);
             return;
         }
@@ -2096,16 +2139,24 @@ impl Studio {
                 .radius(RADIUS_MD)
                 .clip(),
         );
+        let strip = Style::row()
+            .height(32.0)
+            .fixed()
+            .full_width()
+            .padding_x(SPACE_3)
+            .gap(SPACE_2)
+            .center_items();
+        // Dragged onto a dock, it docks there — not one that lives in a
+        // window.
         let strip = ui.add(
             card,
-            Style::row()
-                .height(32.0)
-                .fixed()
-                .full_width()
-                .padding_x(SPACE_3)
-                .gap(SPACE_2)
-                .center_items(),
+            if panel.floats() {
+                strip
+            } else {
+                strip.draggable()
+            },
         );
+        ui.set_name(strip, format!("float strip {}", panel.name()));
         ui.add_text(strip, text(), panel.label());
         spacer(ui, strip);
         let dock_button = button(
@@ -2125,6 +2176,7 @@ impl Studio {
         self.floats.push(Float {
             panel,
             frame,
+            strip,
             dock_button,
             origin: (x, 0.0),
         });
@@ -2163,6 +2215,52 @@ impl Studio {
         self.refresh();
     }
 
+    /// A tab let go over no dock at `(x, y)` of the main window: the panel
+    /// in a window of its own there, its strip under the pointer.
+    fn float_at(&mut self, panel: Panel, x: f32, y: f32) {
+        if let Some((ox, oy)) = self.window_origin {
+            let [w, h] = self.float_size(panel);
+            // Under the window's title bar.
+            self.personal.windows.insert(
+                panel.name().to_string(),
+                [ox + x - 60.0, oy + y - 44.0, w, h],
+            );
+            self.personal_dirty = true;
+        }
+        self.float(panel);
+    }
+
+    /// A floating panel's strip let go: over a dock, it docks there and its
+    /// window closes.
+    fn drop_float(&mut self, panel: Panel) {
+        let at = self.float_pointer;
+        if !self.docks.drop_in(&mut self.ui, panel, at) {
+            self.sync_visible();
+            return;
+        }
+        if let Some(i) = self.floats.iter().position(|f| f.panel == panel) {
+            let float = self.floats.remove(i);
+            self.ui.remove(float.frame);
+        }
+        self.docks.activate(&mut self.ui, panel);
+        if let Some(r) = self.docks.region_of(panel) {
+            self.panels[r] = true;
+        }
+        self.sync_visible();
+        self.refresh();
+    }
+
+    /// Where the main window's content is on the screen, logical pixels.
+    pub fn set_window_origin(&mut self, x: f32, y: f32) {
+        self.window_origin = Some((x, y));
+    }
+
+    /// The pointer in a floating panel's window, given in the main
+    /// window's logical pixels (it may be off the window).
+    pub fn set_float_pointer(&mut self, x: f32, y: f32) {
+        self.float_pointer = Some((x, y));
+    }
+
     /// The panels in windows of their own, with their titles: what the
     /// window code keeps a window open for.
     pub fn floating(&self) -> Vec<(String, String)> {
@@ -2195,11 +2293,12 @@ impl Studio {
             return;
         };
         self.ui.restyle(frame, |s| s.size(width, height));
-        let entry = self
-            .personal
-            .windows
-            .entry(name.to_string())
-            .or_insert([f32::NAN, f32::NAN, width, height]);
+        let entry = self.personal.windows.entry(name.to_string()).or_insert([
+            f32::NAN,
+            f32::NAN,
+            width,
+            height,
+        ]);
         entry[2] = width;
         entry[3] = height;
         self.personal_dirty = true;
@@ -2277,7 +2376,6 @@ impl Studio {
         entry[1] = y;
         self.personal_dirty = true;
     }
-
 
     /// Draw a floating panel's window. `seen` is the picture generation
     /// this renderer has: pictures are given to it again when it is old.
@@ -2588,15 +2686,14 @@ impl Studio {
             .or_else(|| {
                 self.session.entities().into_iter().find(|id| {
                     self.session.entity_model(*id).is_some_and(|m| {
-                        self.session
-                            .project()
-                            .is_some_and(|p| {
-                                let mut found = false;
-                                scrap_import::walk(p.root(), &mut |f| {
-                                    found |= f.extension().is_some_and(|e| e == "scrterrain") && f.file_stem().is_some_and(|s| *s.to_string_lossy() == *m);
-                                });
-                                found
-                            })
+                        self.session.project().is_some_and(|p| {
+                            let mut found = false;
+                            scrap_import::walk(p.root(), &mut |f| {
+                                found |= f.extension().is_some_and(|e| e == "scrterrain")
+                                    && f.file_stem().is_some_and(|s| *s.to_string_lossy() == *m);
+                            });
+                            found
+                        })
                     })
                 })
             });
@@ -2820,7 +2917,8 @@ impl Studio {
             on(Panel::History),
             on(Panel::Git),
         ];
-        self.bottom.set_visible(&mut self.ui, &self.session, visible);
+        self.bottom
+            .set_visible(&mut self.ui, &self.session, visible);
     }
 
     fn layout_text_after_paint(&mut self) -> String {
@@ -2879,7 +2977,6 @@ impl Studio {
     pub fn theme(&self) -> &crate::appearance::Theme {
         &self.theme
     }
-
 
     fn poll_disk(&mut self) {
         if self.polled.elapsed().as_secs_f32() < 0.5 {
@@ -2996,7 +3093,7 @@ impl Studio {
                 .height(24.0)
                 .padding_x(SPACE_3)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .background(NEUTRAL_900)
                 .border(1.0, NEUTRAL_800),
         );
@@ -3187,7 +3284,11 @@ impl Studio {
         set_icon_button(
             ui,
             t.mute,
-            if self.mute_game { "volume-x" } else { "volume-2" },
+            if self.mute_game {
+                "volume-x"
+            } else {
+                "volume-2"
+            },
             false,
             true,
         );
@@ -3283,7 +3384,11 @@ impl Studio {
         };
         ui.set_text(self.status.mode, mode);
         ui.restyle(self.status.mode, |st| {
-            st.text_color(if s.is_playing() || s.is_game_running() { ACCENT } else { MUTED })
+            st.text_color(if s.is_playing() || s.is_game_running() {
+                ACCENT
+            } else {
+                MUTED
+            })
         });
         self.update_status_line();
     }
@@ -3458,6 +3563,13 @@ impl Studio {
                 requests.menu = Some((self.panel_menu(panel), x, y));
                 return;
             }
+            Some(Docked::Float(panel, x, y)) => {
+                if !panel.floats() {
+                    self.float_at(panel, x, y);
+                }
+                self.sync_visible();
+                return;
+            }
             Some(Docked::Lock(panel)) => {
                 if panel == Panel::Inspector {
                     self.inspector.toggle_lock();
@@ -3467,6 +3579,22 @@ impl Studio {
                 return;
             }
             None => {}
+        }
+        if let Some(panel) = self
+            .floats
+            .iter()
+            .find(|f| f.strip == node)
+            .map(|f| f.panel)
+        {
+            match event {
+                Event::Drag { .. } => {
+                    self.docks.drag_in(&mut self.ui, self.float_pointer);
+                    self.sync_visible();
+                }
+                Event::DragEnd { .. } => self.drop_float(panel),
+                _ => {}
+            }
+            return;
         }
         if let Some(panel) = self
             .floats
@@ -3644,7 +3772,11 @@ impl Studio {
         }
         if node == self.toolbar.layout {
             let r = self.ui.rect(node);
-            requests.menu = Some((self.layout_menu(), r.x + r.width - 236.0, r.y + r.height + 4.0));
+            requests.menu = Some((
+                self.layout_menu(),
+                r.x + r.width - 236.0,
+                r.y + r.height + 4.0,
+            ));
             return true;
         }
         let t = &self.toolbar;
@@ -3663,7 +3795,11 @@ impl Studio {
                 .iter()
                 .position(|i| i.action == Some(Action::Layout("Tall".into())))
             {
-                let saved = self.config_dir.as_deref().map(layouts::saved).unwrap_or_default();
+                let saved = self
+                    .config_dir
+                    .as_deref()
+                    .map(layouts::saved)
+                    .unwrap_or_default();
                 for (k, name) in saved.into_iter().enumerate() {
                     items.insert(
                         at + 1 + k,
@@ -4035,8 +4171,11 @@ impl Studio {
                     // Its folder open, its tile outlined and scrolled to.
                     self.docks.activate(&mut self.ui, Panel::Project);
                     self.sync_visible();
-                    self.bottom
-                        .ping(&mut self.ui, &self.session, crate::bottom::Asset::Scene(path));
+                    self.bottom.ping(
+                        &mut self.ui,
+                        &self.session,
+                        crate::bottom::Asset::Scene(path),
+                    );
                     self.refresh();
                 }
                 Action::Import => {
@@ -4044,8 +4183,19 @@ impl Studio {
                         .add_filter(
                             "model, texture, sound",
                             &[
-                                "gltf", "glb", "obj", "png", "jpg", "jpeg", "wav", "ogg", "mp3",
-                                "flac", "scrterrain", "scrpoly", "scrbrush",
+                                "gltf",
+                                "glb",
+                                "obj",
+                                "png",
+                                "jpg",
+                                "jpeg",
+                                "wav",
+                                "ogg",
+                                "mp3",
+                                "flac",
+                                "scrterrain",
+                                "scrpoly",
+                                "scrbrush",
                             ],
                         )
                         .pick_files()
@@ -4410,7 +4560,11 @@ impl Studio {
                     self.ask("Save layout as", &initial, Ask::SaveLayout);
                 }
                 Action::DeleteLayout => {
-                    let saved = self.config_dir.as_deref().map(layouts::saved).unwrap_or_default();
+                    let saved = self
+                        .config_dir
+                        .as_deref()
+                        .map(layouts::saved)
+                        .unwrap_or_default();
                     let initial = self
                         .layout_name
                         .clone()
@@ -4430,7 +4584,8 @@ impl Studio {
                     self.sync_visible();
                 }
                 Action::InspectorDebug(debug) => {
-                    self.inspector.set_debug(&mut self.ui, &mut self.session, debug);
+                    self.inspector
+                        .set_debug(&mut self.ui, &mut self.session, debug);
                 }
                 Action::ToggleClearOnPlay => {
                     self.bottom.clear_on_play = !self.bottom.clear_on_play;
@@ -4695,7 +4850,10 @@ impl Studio {
                 if found.is_empty() {
                     self.session.say(
                         Level::Warning,
-                        format!("no scrap.ron in {} or two levels under it", folder.display()),
+                        format!(
+                            "no scrap.ron in {} or two levels under it",
+                            folder.display()
+                        ),
                     );
                     return;
                 }
@@ -4978,7 +5136,10 @@ impl Studio {
                 });
             }
             Ask::SaveLayout => {
-                let dir = self.config_dir.clone().ok_or("no config folder to keep layouts in")?;
+                let dir = self
+                    .config_dir
+                    .clone()
+                    .ok_or("no config folder to keep layouts in")?;
                 let name = layouts::check_name(text)?.to_string();
                 let layout = Layout {
                     name: Some(name.clone()),
@@ -4987,11 +5148,16 @@ impl Studio {
                 let path = layouts::save(&dir, &name, &layout)?;
                 self.layout_name = Some(name.clone());
                 self.update_layout_button();
-                self.session
-                    .say(Level::Info, format!("saved layout {name} ({})", path.display()));
+                self.session.say(
+                    Level::Info,
+                    format!("saved layout {name} ({})", path.display()),
+                );
             }
             Ask::DeleteLayout => {
-                let dir = self.config_dir.clone().ok_or("no config folder to keep layouts in")?;
+                let dir = self
+                    .config_dir
+                    .clone()
+                    .ok_or("no config folder to keep layouts in")?;
                 layouts::delete(&dir, text)?;
                 if self.layout_name.as_deref() == Some(text) {
                     self.layout_name = None;
@@ -5166,7 +5332,11 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let side = |ui: &mut Ui| {
         ui.add(
             bar,
-            Style::row().share().full_height().gap(SPACE_2).center_items(),
+            Style::row()
+                .share()
+                .full_height()
+                .gap(SPACE_2)
+                .center_items(),
         )
     };
     let left = side(ui);
@@ -5174,7 +5344,11 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
         left,
         Style::row().gap(SPACE_2).center_items().padding_x(SPACE_1),
     );
-    ui.add_image(brand, Style::default().size(20.0, 20.0).fixed().radius(4.0), LOGO);
+    ui.add_image(
+        brand,
+        Style::default().size(20.0, 20.0).fixed().radius(4.0),
+        LOGO,
+    );
     let project = ui.add_text(
         brand,
         Style::default()
@@ -5193,7 +5367,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
                 .height(26.0)
                 .padding_x(SPACE_2)
                 .center()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .hover(HOVER)
                 .pressed(PRESSED),
         );
@@ -5225,7 +5399,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             .padding_x(SPACE_2)
             .gap(4.0)
             .center_items()
-            .radius(6.0)
+            .radius(RADIUS_SM)
             .hover(HOVER)
             .pressed(PRESSED),
     );
@@ -5239,10 +5413,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     spacer(ui, right);
     // The document beside what saves it: its name, and a dot while it
     // has changes.
-    let doc = ui.add(
-        right,
-        Style::row().gap(SPACE_2).center_items(),
-    );
+    let doc = ui.add(right, Style::row().gap(SPACE_2).center_items());
     let scene_name = ui.add_text(
         doc,
         Style::default().text_size(13.0).text_color(MUTED).nowrap(),
@@ -5265,7 +5436,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             .padding_x(SPACE_2)
             .gap(4.0)
             .center_items()
-            .radius(6.0)
+            .radius(RADIUS_SM)
             .hover(HOVER)
             .pressed(PRESSED),
     );
@@ -5366,21 +5537,32 @@ fn set_word(ui: &mut Ui, b: NodeId, word: &str) {
     }
 }
 
+/// A segment of the words' group: the group draws the outline, an on
+/// segment only a tint.
 fn word_toggle_style(on: bool) -> Style {
     let s = Style::row()
-        .height(22.0)
+        .full_height()
         .fixed()
         .padding_x(SPACE_3)
         .center()
-        .radius(6.0)
         .clickable();
     if on {
-        s.border(1.0, ACCENT.alpha(60))
-            .background(ACCENT.alpha(12))
-            .hover(ACCENT.alpha(16))
+        s.background(ACCENT.alpha(12)).hover(ACCENT.alpha(16))
     } else {
-        s.border(1.0, DIVIDER).hover(HOVER)
+        s.hover(HOVER)
     }
+}
+
+/// The line between two segments.
+fn word_divider(ui: &mut Ui, parent: NodeId) {
+    ui.add(
+        parent,
+        Style::row()
+            .width(1.0)
+            .full_height()
+            .fixed()
+            .background(DIVIDER),
+    );
 }
 
 /// A word that is on or off: the grid.
@@ -5410,7 +5592,7 @@ fn tool_button_style(on: bool) -> Style {
         .size(TOOL_BUTTON, TOOL_BUTTON)
         .fixed()
         .center()
-        .radius(6.0)
+        .radius(RADIUS_SM)
         .clickable();
     if on {
         s.background(ACCENT.alpha(22)).hover(ACCENT.alpha(28))
@@ -5456,7 +5638,7 @@ fn view_tab_style(on: bool) -> Style {
         .padding_x(SPACE_3)
         .gap(6.0)
         .center_items()
-        .radius(6.0)
+        .radius(RADIUS_SM)
         .clickable();
     if on {
         s.background(SURFACE).hover(SURFACE)
@@ -5529,7 +5711,9 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "compass bottom" => "Look up from below (−Y)",
         "compass back" => "Look from the back (−Z)",
         "view scene" => "The Scene view: edit (double-click: over the whole window)",
-        "view game" => "The Game view: what the game's camera sees (double-click: over the whole window)",
+        "view game" => {
+            "The Game view: what the game's camera sees (double-click: over the whole window)"
+        }
         "hierarchy expand all" => "Expand all (Alt click an arrow: all under it)",
         "hierarchy collapse all" => "Collapse all",
         "console clear" => "Clear the Console",
@@ -5596,10 +5780,7 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
             .height(COMPASS + 30.0),
     );
     ui.add(holder, Style::row().fill());
-    let column = ui.add(
-        holder,
-        Style::column().margin(4.0).gap(2.0).center_items(),
-    );
+    let column = ui.add(holder, Style::column().margin(4.0).gap(2.0).center_items());
     // A disc under the axes, so they read as one thing to turn the view
     // by, lit when the pointer is on it.
     let dial = ui.add(
@@ -5699,8 +5880,14 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
 fn sibling(file: &str, name: &str) -> String {
     let path = std::path::Path::new(file);
     // The whole extension that says the kind: `cave.scene.ron` keeps `.scene.ron`.
-    let full = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = full.strip_prefix(&scrap::layout::name_of(path)).unwrap_or_default().to_string();
+    let full = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = full
+        .strip_prefix(&scrap::layout::name_of(path))
+        .unwrap_or_default()
+        .to_string();
     let name = name.strip_suffix(&ext).unwrap_or(name);
     match path.parent().filter(|p| !p.as_os_str().is_empty()) {
         Some(dir) => format!("{}/{name}{ext}", dir.display()),

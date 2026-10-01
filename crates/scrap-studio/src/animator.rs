@@ -604,7 +604,7 @@ impl Animator {
                                     .height(20.0)
                                     .padding_x(7.0)
                                     .center()
-                                    .radius(6.0)
+                                    .radius(RADIUS_SM)
                                     .hover(HOVER)
                                     .clickable(),
                             );
@@ -724,7 +724,7 @@ impl Animator {
                     .height(20.0)
                     .padding_x(7.0)
                     .center()
-                    .radius(6.0)
+                    .radius(RADIUS_SM)
                     .border(1.0, NEUTRAL_800)
                     .hover(HOVER)
                     .clickable(),

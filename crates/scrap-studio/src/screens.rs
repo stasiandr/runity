@@ -170,7 +170,10 @@ impl Screens {
         self.listed = true;
         ui.clear(self.files_list);
         self.files.clear();
-        let Some(paths) = session.project().map(|p| p.files(scrap::layout::Kind::Screen)) else {
+        let Some(paths) = session
+            .project()
+            .map(|p| p.files(scrap::layout::Kind::Screen))
+        else {
             return;
         };
         if paths.is_empty() {

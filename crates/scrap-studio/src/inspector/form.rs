@@ -866,7 +866,7 @@ impl Inspector {
                             .padding_x(6.0)
                             .gap(SPACE_1)
                             .center_items()
-                            .radius(6.0)
+                            .radius(RADIUS_SM)
                             .border(1.0, DIVIDER)
                             .hover(HOVER)
                             .clickable(),
@@ -1167,7 +1167,7 @@ impl Inspector {
                 .padding_x(6.0)
                 .gap(SPACE_2)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .background(BG)
                 .border(1.0, DIVIDER)
                 .hover_border(TEXT.alpha(35))
@@ -1185,7 +1185,7 @@ impl Inspector {
                 .size(20.0, 22.0)
                 .fixed()
                 .center()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .hover(HOVER)
                 .clickable(),
         );
@@ -1214,7 +1214,7 @@ impl Inspector {
                 .padding_x(6.0)
                 .gap(SPACE_2)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .border(1.0, DIVIDER)
                 .hover_border(ACCENT)
                 .clickable(),

@@ -117,7 +117,7 @@ impl Inspector {
                 .fixed()
                 .padding_x(SPACE_3)
                 .center()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .border(1.0, DIVIDER)
                 .hover(HOVER)
                 .hover_border(ACCENT)

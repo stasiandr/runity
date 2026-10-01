@@ -137,10 +137,7 @@ impl GitTab {
         let all = check_box(ui, head, true);
         ui.set_name(all, "git all");
         let changes_title = ui.add_text(head, caption().fill(), "CHANGES");
-        let files = ui.add(
-            left,
-            Style::column().fill().full_width().clip(),
-        );
+        let files = ui.add(left, Style::column().fill().full_width().clip());
         ui.set_name(files, "git files");
         // The message and Commit on one line: the dock is often short.
         let commit_row = ui.add(
@@ -159,7 +156,11 @@ impl GitTab {
 
         ui.add(
             body,
-            Style::default().width(1.0).fixed().full_height().background(DIVIDER),
+            Style::default()
+                .width(1.0)
+                .fixed()
+                .full_height()
+                .background(DIVIDER),
         );
 
         // Conflicts, then the history.
@@ -184,7 +185,7 @@ impl GitTab {
                     .height(22.0)
                     .padding_x(SPACE_2)
                     .center()
-                    .radius(6.0)
+                    .radius(RADIUS_SM)
                     .hover(HOVER),
             );
             ui.set_name(chip, format!("git scope {label}"));
@@ -199,7 +200,11 @@ impl GitTab {
         let lower = ui.add(right, Style::row().fill().full_width());
         let list = ui.add(
             lower,
-            Style::column().fill().full_height().padding_y(SPACE_1).clip(),
+            Style::column()
+                .fill()
+                .full_height()
+                .padding_y(SPACE_1)
+                .clip(),
         );
         ui.set_name(list, "git lines");
         let details = ui.add(
@@ -341,10 +346,22 @@ impl GitTab {
         if let Some(upstream) = &status.upstream {
             ui.add_text(self.branch, small(MUTED), &format!("→ {upstream}"));
             if status.ahead > 0 {
-                tag(ui, self.branch, &format!("↑{} to push", status.ahead), ACCENT_900, ACCENT_300);
+                tag(
+                    ui,
+                    self.branch,
+                    &format!("↑{} to push", status.ahead),
+                    ACCENT_900,
+                    ACCENT_300,
+                );
             }
             if status.behind > 0 {
-                tag(ui, self.branch, &format!("↓{} to pull", status.behind), NEUTRAL_900, WARNING);
+                tag(
+                    ui,
+                    self.branch,
+                    &format!("↓{} to pull", status.behind),
+                    NEUTRAL_900,
+                    WARNING,
+                );
             }
             if status.ahead == 0 && status.behind == 0 {
                 ui.add_text(self.branch, small(MUTED), "· up to date");
@@ -386,7 +403,10 @@ impl GitTab {
         let now: HashSet<&PathBuf> = lines.iter().map(|(p, ..)| p).collect();
         self.left_out.retain(|p| now.contains(p));
 
-        let chosen = lines.iter().filter(|(p, ..)| !self.left_out.contains(p)).count();
+        let chosen = lines
+            .iter()
+            .filter(|(p, ..)| !self.left_out.contains(p))
+            .count();
         ui.set_text(
             self.changes_title,
             &if lines.is_empty() {
@@ -399,7 +419,11 @@ impl GitTab {
 
         if self.status.is_none() {
             let h = ui.add(self.files, Style::row().padding_y(SPACE_2));
-            ui.add_text(h, small(MUTED), "No repository here: git init to start one.");
+            ui.add_text(
+                h,
+                small(MUTED),
+                "No repository here: git init to start one.",
+            );
             return;
         }
         if lines.is_empty() {
@@ -424,7 +448,11 @@ impl GitTab {
             ui.set_name(row, format!("git file {shown}"));
             check_box(ui, row, !self.left_out.contains(path));
             let ink = letter_ink(*letter);
-            ui.add_text(row, small(ink).mono().width(12.0).fixed(), &letter.to_string());
+            ui.add_text(
+                row,
+                small(ink).mono().width(12.0).fixed(),
+                &letter.to_string(),
+            );
             let (folder, file) = match shown.rsplit_once('/') {
                 Some((folder, file)) => (Some(folder), file),
                 None => (None, shown.as_str()),
@@ -512,7 +540,9 @@ impl GitTab {
                 Some((ours, theirs)) => {
                     ui.add_text(row, small(TEXT), &conflict_subject(c));
                     spacer(ui, row);
-                    for (s, word, value) in [(Side::Ours, "Ours", ours), (Side::Theirs, "Theirs", theirs)] {
+                    for (s, word, value) in
+                        [(Side::Ours, "Ours", ours), (Side::Theirs, "Theirs", theirs)]
+                    {
                         let chip = side_chip(ui, row, word, &value, side == Some(s));
                         let lower = word.to_lowercase();
                         ui.set_name(chip, format!("take {lower} {i}"));
@@ -526,7 +556,11 @@ impl GitTab {
         }
         ui.add(
             self.conflicts,
-            Style::default().height(1.0).fixed().full_width().background(DIVIDER),
+            Style::default()
+                .height(1.0)
+                .fixed()
+                .full_width()
+                .background(DIVIDER),
         );
     }
 
@@ -560,7 +594,11 @@ impl GitTab {
         ui.clear(self.list);
         self.rows.clear();
         let small = |c| Style::default().text_size(11.5).text_color(c).nowrap();
-        let word = ui.text(self.search).unwrap_or_default().trim().to_lowercase();
+        let word = ui
+            .text(self.search)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
         let found: Vec<&Revision> = self
             .revisions
             .iter()
@@ -580,7 +618,10 @@ impl GitTab {
             },
         );
         if found.is_empty() {
-            let h = ui.add(self.list, Style::row().padding_x(SPACE_4).padding_y(SPACE_1));
+            let h = ui.add(
+                self.list,
+                Style::row().padding_x(SPACE_4).padding_y(SPACE_1),
+            );
             let said = if !word.is_empty() {
                 "No commit says that."
             } else if self.project_scope {
@@ -607,8 +648,16 @@ impl GitTab {
                     .center_items(),
             );
             ui.set_name(row, format!("revision {}", short(&r.commit, 8)));
-            ui.add_text(row, small(MUTED).mono().width(64.0).fixed(), short(&r.commit, 7));
-            ui.add_text(row, small(MUTED).width(84.0).fixed(), &ago(r.when, now, &r.date));
+            ui.add_text(
+                row,
+                small(MUTED).mono().width(64.0).fixed(),
+                short(&r.commit, 7),
+            );
+            ui.add_text(
+                row,
+                small(MUTED).width(84.0).fixed(),
+                &ago(r.when, now, &r.date),
+            );
             ui.add_text(row, small(LABEL).width(120.0).fixed(), &r.author);
             ui.add_text(row, small(TEXT).fill(), &r.summary);
             self.rows.insert(row, r.commit.clone());
@@ -621,8 +670,12 @@ impl GitTab {
         for (row, commit) in &self.rows {
             let chosen = self.selected.as_ref() == Some(commit);
             ui.restyle(*row, |s| {
-                s.background(if chosen { ACCENT_HOVER } else { Color::TRANSPARENT })
-                    .hover(if chosen { ACCENT_HOVER } else { TEXT.alpha(5) })
+                s.background(if chosen {
+                    ACCENT_HOVER
+                } else {
+                    Color::TRANSPARENT
+                })
+                .hover(if chosen { ACCENT_HOVER } else { TEXT.alpha(5) })
             });
             if let Some(hash) = ui.children(*row).first().copied() {
                 ui.restyle(hash, |s| s.text_color(if chosen { ACCENT } else { MUTED }));
@@ -646,14 +699,27 @@ impl GitTab {
         let small = |c| Style::default().text_size(11.5).text_color(c).nowrap();
         let head = ui.add(
             self.details,
-            Style::row().full_width().height(24.0).fixed().gap(SPACE_2).center_items(),
+            Style::row()
+                .full_width()
+                .height(24.0)
+                .fixed()
+                .gap(SPACE_2)
+                .center_items(),
         );
         icon(ui, head, "git-commit-horizontal", ACCENT);
         ui.add_text(head, small(ACCENT).mono(), short(&r.commit, 10));
-        ui.add_text(head, small(MUTED).fill(), &format!("{} · {}", r.author, r.date));
+        ui.add_text(
+            head,
+            small(MUTED).fill(),
+            &format!("{} · {}", r.author, r.date),
+        );
         ui.add_text(
             self.details,
-            Style::default().text_size(12.0).text_color(TEXT).wrap().full_width(),
+            Style::default()
+                .text_size(12.0)
+                .text_color(TEXT)
+                .wrap()
+                .full_width(),
             &r.summary,
         );
         let changes = match session.commit_changes(&commit) {
@@ -667,7 +733,11 @@ impl GitTab {
         if session.scene_path().is_some() && (scene_touched || !self.project_scope) {
             let row = ui.add(
                 self.details,
-                Style::row().full_width().padding_y(SPACE_1).gap(SPACE_2).center_items(),
+                Style::row()
+                    .full_width()
+                    .padding_y(SPACE_1)
+                    .gap(SPACE_2)
+                    .center_items(),
             );
             let b = crate::theme::button(ui, row, "git restore", "Restore scene", false);
             ui.add_text(row, small(MUTED), "as of this commit, one undo step");
@@ -718,9 +788,18 @@ impl GitTab {
         for (letter, name) in changes.files.iter().take(MOST_LINES) {
             let row = ui.add(
                 self.details,
-                Style::row().height(18.0).fixed().full_width().gap(SPACE_2).center_items(),
+                Style::row()
+                    .height(18.0)
+                    .fixed()
+                    .full_width()
+                    .gap(SPACE_2)
+                    .center_items(),
             );
-            ui.add_text(row, small(letter_ink(*letter)).mono().width(12.0).fixed(), &letter.to_string());
+            ui.add_text(
+                row,
+                small(letter_ink(*letter)).mono().width(12.0).fixed(),
+                &letter.to_string(),
+            );
             ui.add_text(row, small(LABEL).fill(), name);
         }
     }
@@ -882,7 +961,15 @@ impl GitTab {
 
 /// A box that is ticked or not: Unity's checkbox, as the Inspector draws it.
 fn check_box(ui: &mut Ui, parent: NodeId, on: bool) -> NodeId {
-    let b = ui.add(parent, Style::row().size(14.0, 14.0).fixed().center().radius(4.0).clickable());
+    let b = ui.add(
+        parent,
+        Style::row()
+            .size(14.0, 14.0)
+            .fixed()
+            .center()
+            .radius(4.0)
+            .clickable(),
+    );
     set_check(ui, b, on);
     b
 }
@@ -895,7 +982,14 @@ fn set_check(ui: &mut Ui, b: NodeId, on: bool) {
     });
     ui.clear(b);
     if on {
-        ui.add_icon(b, Style::default().size(11.0, 11.0).fixed().text_color(NEUTRAL_900), "check");
+        ui.add_icon(
+            b,
+            Style::default()
+                .size(11.0, 11.0)
+                .fixed()
+                .text_color(NEUTRAL_900),
+            "check",
+        );
     }
 }
 
@@ -910,7 +1004,7 @@ fn side_chip(ui: &mut Ui, parent: NodeId, word: &str, value: &str, on: bool) -> 
             .padding_x(SPACE_2)
             .gap(SPACE_1)
             .center_items()
-            .radius(6.0)
+            .radius(RADIUS_SM)
             .border(1.0, if on { ACCENT } else { DIVIDER })
             .background(if on { ACCENT_HOVER } else { Color::TRANSPARENT })
             .hover(if on { ACCENT_HOVER } else { HOVER })
@@ -918,16 +1012,27 @@ fn side_chip(ui: &mut Ui, parent: NodeId, word: &str, value: &str, on: bool) -> 
             .clickable(),
     );
     if on {
-        ui.add_icon(chip, Style::default().size(11.0, 11.0).fixed().text_color(ACCENT), "check");
+        ui.add_icon(
+            chip,
+            Style::default().size(11.0, 11.0).fixed().text_color(ACCENT),
+            "check",
+        );
     }
     ui.add_text(
         chip,
-        Style::default().text_size(11.0).text_color(if on { ACCENT } else { LABEL }).nowrap(),
+        Style::default()
+            .text_size(11.0)
+            .text_color(if on { ACCENT } else { LABEL })
+            .nowrap(),
         word,
     );
     ui.add_text(
         chip,
-        Style::default().text_size(11.0).text_color(MUTED).nowrap().mono(),
+        Style::default()
+            .text_size(11.0)
+            .text_color(MUTED)
+            .nowrap()
+            .mono(),
         value,
     );
     chip
