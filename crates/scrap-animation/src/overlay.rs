@@ -37,10 +37,13 @@ use crate::animation::{Channel, Clip, Path as Part, Skeleton};
 use crate::motion::{Motion, Motions, Property, Track};
 use crate::AssetLink;
 
-/// The model's clip an edit is made over.
+/// The model's clip an edit is made over — or, with no `clip`, the
+/// model's rest pose: a clip made in the editor for that rig, from
+/// nothing (`base: (model: "character-male-a")`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Base {
     pub model: AssetLink,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub clip: String,
 }
 
@@ -230,6 +233,15 @@ pub fn apply(motions: &Motions, model: &AssetLink, skeleton: &Skeleton, clips: &
         .collect();
     edits.sort_by_key(|(name, _, _)| *name);
     for (name, motion, base) in edits {
+        if base.clip.is_empty() {
+            let rest = Clip { name: name.clone(), duration: motion.length, channels: Vec::new() };
+            let made = bake(name, motion, &rest, skeleton, &mut problems);
+            match clips.iter().position(|c| c.name == *name) {
+                Some(i) => clips[i] = made,
+                None => clips.push(made),
+            }
+            continue;
+        }
         let Some(from) = clips.iter().position(|c| c.name == base.clip) else {
             let nearest = scrap_core::spelling::closest(&base.clip, clips.iter().map(|c| c.name.as_str()));
             problems.push(match nearest {
@@ -252,7 +264,7 @@ pub fn apply(motions: &Motions, model: &AssetLink, skeleton: &Skeleton, clips: &
 pub fn text(motion: &Motion) -> String {
     let mut out = String::from("(\n");
     if let Some(base) = &motion.base {
-        out.push_str(&format!("    base: {},\n", ron::to_string(base).unwrap_or_default()));
+        out.push_str(&format!("    base: {},\n", base_text(base)));
     }
     out.push_str(&format!("    length: {:?},\n    tracks: [\n", motion.length));
     for t in &motion.tracks {
@@ -260,6 +272,16 @@ pub fn text(motion: &Motion) -> String {
     }
     out.push_str("    ],\n)\n");
     out
+}
+
+/// The base as a person writes it, `(model: "body", clip: "walk")`.
+fn base_text(base: &Base) -> String {
+    let model = ron::to_string(&base.model).unwrap_or_default();
+    if base.clip.is_empty() {
+        format!("(model: {model})")
+    } else {
+        format!("(model: {model}, clip: {:?})", base.clip)
+    }
 }
 
 /// One track as its line.
@@ -295,7 +317,7 @@ fn patched(old: &str, motion: &Motion) -> Option<String> {
     let was: Motion = ron::from_str(old).ok()?;
     let mut text = old.to_string();
     if was.base != motion.base {
-        let base = motion.base.as_ref().map(|b| ron::to_string(b).unwrap_or_default());
+        let base = motion.base.as_ref().map(base_text);
         text = patch::set_field(&text, "base", base.as_deref())?;
     }
     if was.length != motion.length {
@@ -415,6 +437,19 @@ mod tests {
         let mut other = vec![wave()];
         assert!(apply(&motions, &AssetLink::named("rock"), &skeleton(), &mut other).is_empty());
         assert_eq!(other, vec![wave()]);
+    }
+
+    #[test]
+    fn a_clip_of_the_rig_alone_starts_from_the_rest_pose() {
+        let motions = edit(r#"(base: (model: "body"), length: 2.0, tracks: [
+            (path: "arm", what: TurnZ, keys: [(0.0, 0.0, Auto), (1.0, 30.0, Auto), (2.0, 0.0, Auto)]),
+        ])"#);
+        let mut clips = Vec::new();
+        assert!(apply(&motions, &AssetLink::named("body"), &skeleton(), &mut clips).is_empty());
+        assert_eq!((clips[0].name.as_str(), clips[0].duration), ("wave", 2.0));
+        let pose = clips[0].sample(&skeleton(), 1.0, false);
+        assert!((degrees(Quat::from_array(pose[1].rotation)).z - 30.0).abs() < 0.1);
+        assert_eq!(pose[0], PoseTransform::default(), "the hips at rest");
     }
 
     #[test]

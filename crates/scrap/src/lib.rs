@@ -134,6 +134,8 @@ pub mod debug_overlay;
 pub mod gizmo;
 #[cfg(feature = "animation")]
 pub use scrap_animation::graph_text;
+#[cfg(feature = "animation")]
+pub use scrap_animation::{keys, overlay};
 pub use scrap_core::id;
 pub use scrap_core::input;
 pub use scrap_core::layers;

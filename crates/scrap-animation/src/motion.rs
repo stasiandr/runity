@@ -47,7 +47,7 @@ pub use crate::keys::{Key, Tangent};
 pub const DIR: &str = "clips";
 
 /// What a track moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Property {
     X,
     Y,
@@ -242,6 +242,29 @@ pub fn attach(
     world: &mut World,
     motions: &Motions,
     skins: impl Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>,
+) -> Vec<String> {
+    // A model's clips with the project's edits of them made
+    // ([`crate::overlay`]): what the game plays is what the editor shows.
+    let edits_said = std::cell::RefCell::new(Vec::<String>::new());
+    let skins = |link: &crate::AssetLink| {
+        let mut skin = skins(link)?;
+        for problem in crate::overlay::apply(motions, link, &skin.skeleton, &mut skin.clips) {
+            let mut said = edits_said.borrow_mut();
+            if !said.contains(&problem) {
+                said.push(problem);
+            }
+        }
+        Some(skin)
+    };
+    let mut problems = attach_with(world, motions, &skins);
+    problems.extend(edits_said.into_inner());
+    problems
+}
+
+fn attach_with(
+    world: &mut World,
+    motions: &Motions,
+    skins: &dyn Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>,
 ) -> Vec<String> {
     crate::animator::bind_skins(world, &skins);
     // A skinned model put under a line whose animator has started.
@@ -1181,7 +1204,7 @@ mod tests {
 }
 
 /// A line's `animator`, with every thing under it by its path of names.
-pub(crate) fn animates(desc: &crate::scene::EntityDesc) -> crate::motion::Animates {
+pub fn animates(desc: &crate::scene::EntityDesc) -> crate::motion::Animates {
     fn walk(
         desc: &crate::scene::EntityDesc,
         path: &str,

@@ -42,7 +42,8 @@ use crate::menu::{self, Action, MenuItem};
 use crate::native_menu::Shortcut;
 use crate::screens::{self, Screens};
 use crate::theme::*;
-use crate::tools::{Animation, FrameCost, Profiler, Settings};
+use crate::clip_window::Animation;
+use crate::tools::{FrameCost, Profiler, Settings};
 
 /// The engine's reference scene: every builtin, no import step.
 pub const REFERENCE_SCENE: &str = "examples/showreel/content/showreel/maps/first-light.scene.ron";
@@ -1265,6 +1266,13 @@ impl Studio {
                 self.capture_key(*key);
             }
             InputEvent::KeyDown(key) if !typing => {
+                // The Animation window's keys, while the pointer is over it.
+                if self.docks.is_showing(Panel::Animation)
+                    && self.animation.key(&mut self.ui, &mut self.session, *key)
+                {
+                    self.refresh();
+                    return;
+                }
                 let mut requests = Requests::default();
                 if self
                     .bottom
@@ -1488,7 +1496,7 @@ impl Studio {
                 self.profiler.update(&mut self.ui, &self.session);
             }
             if self.docks.is_showing(Panel::Animation) {
-                self.animation.update(&mut self.ui, &self.session);
+                self.animation.update(&mut self.ui, &mut self.session);
             }
             if self.docks.is_showing(Panel::Screens) {
                 self.screens.update(&mut self.ui, &self.session);

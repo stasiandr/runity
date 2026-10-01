@@ -8,6 +8,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         "arrow-up-from-line",
         include_bytes!("../assets/icons/arrow-up-from-line.svg"),
     ),
+    ("bone", include_bytes!("../assets/icons/bone.svg")),
     ("box", include_bytes!("../assets/icons/box.svg")),
     ("boxes", include_bytes!("../assets/icons/boxes.svg")),
     ("camera", include_bytes!("../assets/icons/camera.svg")),
@@ -16,6 +17,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         "chevron-down",
         include_bytes!("../assets/icons/chevron-down.svg"),
     ),
+    ("chevron-left", include_bytes!("../assets/icons/chevron-left.svg")),
     (
         "chevron-right",
         include_bytes!("../assets/icons/chevron-right.svg"),
@@ -119,6 +121,8 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("scissors", include_bytes!("../assets/icons/scissors.svg")),
     ("search", include_bytes!("../assets/icons/search.svg")),
     ("settings", include_bytes!("../assets/icons/settings.svg")),
+    ("skip-back", include_bytes!("../assets/icons/skip-back.svg")),
+    ("skip-forward", include_bytes!("../assets/icons/skip-forward.svg")),
     (
         "sliders-horizontal",
         include_bytes!("../assets/icons/sliders-horizontal.svg"),

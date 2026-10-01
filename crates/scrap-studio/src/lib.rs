@@ -19,6 +19,7 @@
 
 mod agents;
 mod animator;
+mod clip_window;
 pub mod appearance;
 mod bottom;
 mod clipboard;

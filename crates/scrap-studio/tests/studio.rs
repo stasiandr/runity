@@ -5157,3 +5157,88 @@ fn the_editor_starts_on_the_projects_screen_and_new_makes_a_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+
+/// The Animation window's clip file, as written.
+fn clip_text(dir: &std::path::Path, name: &str) -> String {
+    let path = scrap::layout::find(dir, scrap::layout::Kind::Clip, name).unwrap_or_else(|| panic!("no clip file {name}"));
+    std::fs::read_to_string(path).unwrap()
+}
+
+#[test]
+fn the_animation_window_makes_a_clip_keys_it_and_poses_the_view() {
+    let Some((mut s, dir)) = studio() else { return };
+    let crate_ = s.session.add(None, "cube").unwrap();
+    s.session.select(Some(crate_)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    fill(&mut s, "new clip name", "lift");
+    click(&mut s, "new clip");
+    // A clip of its own, and a graph that plays it on the line.
+    assert_eq!(
+        s.session.clip_list(crate_),
+        vec![("lift".to_string(), scrap_editor::clips::ClipKind::Things)],
+        "the line got an animator that plays it"
+    );
+    assert!(clip_text(&dir, "lift").contains("length: 1.0"));
+    // Key its place at 0, then at 1 with it moved up — by recording.
+    click(&mut s, "animation key");
+    let start = s.session.transform(crate_).unwrap();
+    fill(&mut s, "animation time", "1.0");
+    click(&mut s, "animation record");
+    s.frame();
+    let p = start.position;
+    s.session.set_field(crate_, "position", &format!("({:?}, {:?}, {:?})", p.x, p.y + 2.0, p.z)).unwrap();
+    s.frame();
+    s.frame();
+    assert_eq!(s.session.transform(crate_).unwrap().position, start.position, "recorded, not moved in the scene");
+    let text = clip_text(&dir, "lift");
+    assert!(text.contains("what: Y, keys: [(0.0, "), "{text}");
+    assert!(text.contains(&format!("(1.0, {:?}, Auto)", p.y + 2.0)), "{text}");
+    // Halfway, the view has it halfway up.
+    click(&mut s, "animation record");
+    fill(&mut s, "animation time", "0.5");
+    s.frame();
+    let y = s.session.world_position(crate_).unwrap().y;
+    assert!((y - (p.y + 1.0)).abs() < 0.05, "{y} halfway between {} and +2", p.y);
+    // Cmd-Z over the window takes the key back.
+    click(&mut s, "lane summary");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::Z));
+    s.handle(&InputEvent::KeyUp(Key::Z));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    s.frame();
+    let text = clip_text(&dir, "lift");
+    assert!(!text.contains(&format!("(1.0, {:?}, Auto)", p.y + 2.0)), "{text}");
+}
+
+#[test]
+fn a_models_clip_changed_in_the_window_is_an_edit_over_it() {
+    let Some((mut s, dir)) = studio() else { return };
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scrap-import/tests/fixtures/skinned_banner.gltf");
+    std::fs::copy(&fixture, dir.join("content/showreel/banner.gltf")).unwrap();
+    menu(&mut s, "Assets", "Refresh");
+    let banner = s.session.add(None, "banner").unwrap();
+    s.session.select(Some(banner)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    click(&mut s, "clip furl");
+    assert_eq!(s.session.previewing(), &[banner], "the clip shown in the view");
+    let doc = s.session.open_clip(banner, "furl").unwrap();
+    let bone = doc.tracks[0].path.clone();
+    // Choose a bone's row and key it halfway: only that bone is written.
+    click(&mut s, &format!("row {bone}"));
+    fill(&mut s, "animation time", "0.5");
+    click(&mut s, "animation key");
+    let text = clip_text(&dir, "furl");
+    assert!(text.contains("base: (model: \"banner\", clip: \"furl\")"), "{text}");
+    assert!(text.contains(&format!("path: {bone:?}")), "{text}");
+    for other in doc.tracks.iter().map(|t| &t.path).filter(|p| **p != bone) {
+        assert!(!text.contains(&format!("path: {other:?}")), "only the keyed bone: {text}");
+    }
+    // A clip of the bones from nothing.
+    fill(&mut s, "new clip name", "wave");
+    click(&mut s, "new rig clip");
+    assert!(clip_text(&dir, "wave").contains("base: (model: \"banner\")"), "{}", clip_text(&dir, "wave"));
+    click(&mut s, "animation stop");
+    assert!(s.session.previewing().is_empty());
+}
