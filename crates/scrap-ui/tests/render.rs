@@ -221,3 +221,62 @@ fn a_nocturne_panel_draws_as_the_design_file_says() {
         "the picture from another texture",
     );
 }
+
+/// A drawing on the GPU: a diamond is a turned square, so its bounding
+/// box's corners stay the ground; a line at an angle covers its middle; a
+/// line running out of its node stops at the node's edge.
+#[test]
+fn a_drawing_draws_diamonds_and_lines_clipped_to_its_node() {
+    let Some(gpu) = gpu() else { return };
+    let (w, h) = (600u32, 200u32);
+    let scale = 2.0;
+    let target = OffscreenTarget::new(&gpu, w, h);
+    let mut ui = Ui::new();
+    ui.set_viewport(300.0, 100.0, scale);
+    let root = ui.root();
+    ui.set_style(root, Style::row().full().background(SURFACE));
+    let node = ui.add(root, Style::row().size(200.0, 100.0).background(BG).clip());
+    let red = Color::hex(0xff0000);
+    let green = Color::hex(0x00ff00);
+    ui.set_drawing(
+        node,
+        scrap_ui::Drawing {
+            lines: vec![
+                scrap_ui::Polyline {
+                    points: vec![(100.0, 20.0), (180.0, 80.0)],
+                    color: green,
+                    width: 4.0,
+                },
+                scrap_ui::Polyline {
+                    points: vec![(150.0, 90.0), (300.0, 90.0)],
+                    color: green,
+                    width: 6.0,
+                },
+            ],
+            marks: vec![scrap_ui::Mark {
+                x: 50.0,
+                y: 50.0,
+                size: 20.0,
+                shape: scrap_ui::MarkShape::Diamond,
+                fill: red,
+                border: Color::TRANSPARENT,
+            }],
+        },
+    );
+    let mut renderer = UiRenderer::new(&gpu, target.format().remove_srgb_suffix());
+    renderer.draw(&gpu, &target.ui_view(), w, h, &mut ui, Some(BG));
+    let pixels = target.read_rgba(&gpu);
+    let out = std::env::temp_dir().join("scrap-ui-drawing.png");
+    image::save_buffer(&out, &pixels, w, h, image::ExtendedColorType::Rgba8).unwrap();
+    let at = |x: f32, y: f32| {
+        let p = OffscreenTarget::pixel(&pixels, w, (x * scale) as u32, (y * scale) as u32);
+        Color::rgba(p[0], p[1], p[2], 255)
+    };
+    assert_eq!(at(50.0, 50.0), red, "the diamond's middle");
+    assert_eq!(at(50.0, 41.5), red, "near its top corner");
+    assert_eq!(at(42.0, 42.0), BG, "its box's corner is empty");
+    assert_eq!(at(140.0, 50.0), green, "the line's middle, at an angle");
+    assert_eq!(at(140.0, 30.0), BG, "beside the line");
+    assert_eq!(at(190.0, 90.0), green, "the second line inside its node");
+    assert_eq!(at(250.0, 90.0), SURFACE, "and not past the node's edge");
+}

@@ -188,6 +188,8 @@ struct Node {
     field: Option<field::FieldState>,
     /// A field's hint, shown while it is empty: a node of its own.
     placeholder: Option<NodeId>,
+    /// Lines and marks painted over its background (see [`Drawing`]).
+    drawing: Option<Box<Drawing>>,
 }
 
 impl Node {
@@ -205,6 +207,7 @@ impl Node {
             icon: None,
             field: None,
             placeholder: None,
+            drawing: None,
         }
     }
 }
@@ -247,6 +250,78 @@ pub struct Layer {
     pub images: Vec<ImagePaint>,
     pub texts: Vec<TextPaint>,
     pub icons: Vec<IconPaint>,
+    /// Lines of drawings, one straight piece each.
+    pub segments: Vec<SegmentPaint>,
+    /// Marks of drawings.
+    pub marks: Vec<MarkPaint>,
+}
+
+/// Lines and marks drawn inside a node, in its own coordinates (0, 0 is
+/// its top left), clipped to it: a dopesheet's thousands of keys or a
+/// curve with its tangents, without a node per key for the layout to
+/// weigh. The node lays out as any other; the drawing is only paint.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Drawing {
+    pub lines: Vec<Polyline>,
+    pub marks: Vec<Mark>,
+}
+
+/// A line through `points`, `width` logical pixels thick, with round ends
+/// so that its pieces meet without gaps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Polyline {
+    pub points: Vec<(f32, f32)>,
+    pub color: Color,
+    pub width: f32,
+}
+
+/// A small shape centred on a point: a key, a tangent's handle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mark {
+    pub x: f32,
+    pub y: f32,
+    /// Across, in logical pixels: a diamond's from corner to corner.
+    pub size: f32,
+    pub shape: MarkShape,
+    pub fill: Color,
+    /// One logical pixel wide, when visible.
+    pub border: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MarkShape {
+    Square,
+    Diamond,
+    Circle,
+}
+
+/// One straight piece of a drawing's line, in window coordinates.
+///
+/// `after_rects` is how many of its layer's rectangles were painted before
+/// it: the renderer draws it right after them, so a child's background
+/// covers its parent's drawing as it covers the parent's own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SegmentPaint {
+    pub from: (f32, f32),
+    pub to: (f32, f32),
+    pub width: f32,
+    pub color: Color,
+    pub clip: Rect,
+    pub after_rects: usize,
+}
+
+/// A drawing's mark, centred at `x`, `y` in window coordinates; see
+/// [`SegmentPaint`] for `after_rects`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkPaint {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub shape: MarkShape,
+    pub fill: Color,
+    pub border: Color,
+    pub clip: Rect,
+    pub after_rects: usize,
 }
 
 /// An icon, where to draw it and in what colour.
@@ -517,6 +592,27 @@ impl Ui {
         let id = self.add(parent, style);
         self.node_mut(id).image = Some(image);
         id
+    }
+
+    /// Draw lines and marks inside `id`, over its background and under
+    /// its children. The same drawing again repaints nothing, so a panel
+    /// can hand over its drawing every frame.
+    pub fn set_drawing(&mut self, id: NodeId, drawing: Drawing) {
+        let node = self.node_mut(id);
+        let empty = drawing.lines.is_empty() && drawing.marks.is_empty();
+        let same = match node.drawing.as_deref() {
+            Some(d) => *d == drawing,
+            None => empty,
+        };
+        if !same {
+            node.drawing = (!empty).then(|| Box::new(drawing));
+            self.paint_dirty = true;
+        }
+    }
+
+    /// What `id` draws, if anything.
+    pub fn drawing(&self, id: NodeId) -> Option<&Drawing> {
+        self.tree.get_node_context(id.0)?.drawing.as_deref()
     }
 
     /// Make `id` start a layer of its own: it and what is under it draw
@@ -825,7 +921,9 @@ impl Ui {
                 !(l.rects.is_empty()
                     && l.texts.is_empty()
                     && l.images.is_empty()
-                    && l.icons.is_empty())
+                    && l.icons.is_empty()
+                    && l.segments.is_empty()
+                    && l.marks.is_empty())
             });
             self.paint_dirty = false;
             self.revision += 1;
@@ -943,6 +1041,10 @@ impl Ui {
                 color: fade(text_color),
             });
         }
+        if let Some(drawing) = self.node_mut(id).drawing.take() {
+            self.paint_drawing(&drawing, rect, clip.intersect(&rect), &fade);
+            self.node_mut(id).drawing = Some(drawing);
+        }
         if has_text {
             let pad = &layout.padding;
             let border_w = &layout.border;
@@ -987,6 +1089,86 @@ impl Ui {
             // that it is not drawn under the popup's text.
             self.layers.push(Layer::default());
         }
+    }
+
+    /// A node's drawing as paints, moved to where the node is. What lies
+    /// wholly outside `clip` is left out: a dopesheet scrolled to one
+    /// second of a minute-long clip costs the keys in view.
+    fn paint_drawing(
+        &mut self,
+        drawing: &Drawing,
+        rect: Rect,
+        clip: Rect,
+        fade: &dyn Fn(Color) -> Color,
+    ) {
+        if clip.width <= 0.0 || clip.height <= 0.0 {
+            return;
+        }
+        let outside = |x0: f32, y0: f32, x1: f32, y1: f32, pad: f32| {
+            x0.max(x1) + pad < clip.x
+                || y0.max(y1) + pad < clip.y
+                || x0.min(x1) - pad > clip.x + clip.width
+                || y0.min(y1) - pad > clip.y + clip.height
+        };
+        let mut segments = Vec::new();
+        for line in &drawing.lines {
+            let color = fade(self.tint(line.color));
+            if !color.is_visible() || line.width <= 0.0 {
+                continue;
+            }
+            let at = |&(x, y): &(f32, f32)| (rect.x + x, rect.y + y);
+            let mut points = line.points.iter().map(at);
+            let Some(mut from) = points.next() else {
+                continue;
+            };
+            if line.points.len() == 1 {
+                // A line of one point is a dot, as a pen would leave.
+                segments.push((from, from, line.width, color));
+            }
+            for to in points {
+                if !outside(from.0, from.1, to.0, to.1, line.width) {
+                    segments.push((from, to, line.width, color));
+                }
+                from = to;
+            }
+        }
+        let mut marks = Vec::new();
+        for mark in &drawing.marks {
+            let (x, y) = (rect.x + mark.x, rect.y + mark.y);
+            let (fill, border) = (fade(self.tint(mark.fill)), fade(self.tint(mark.border)));
+            if (fill.is_visible() || border.is_visible())
+                && mark.size > 0.0
+                && !outside(x, y, x, y, mark.size / 2.0 + 1.0)
+            {
+                marks.push((x, y, *mark, fill, border));
+            }
+        }
+        let layer = self.layers.last_mut().expect("there is always a layer");
+        let after_rects = layer.rects.len();
+        layer.segments.extend(
+            segments
+                .into_iter()
+                .map(|(from, to, width, color)| SegmentPaint {
+                    from,
+                    to,
+                    width,
+                    color,
+                    clip,
+                    after_rects,
+                }),
+        );
+        layer
+            .marks
+            .extend(marks.into_iter().map(|(x, y, m, fill, border)| MarkPaint {
+                x,
+                y,
+                size: m.size,
+                shape: m.shape,
+                fill,
+                border,
+                clip,
+                after_rects,
+            }));
     }
 
     /// Where a node was drawn, after the last [`Ui::paint`].

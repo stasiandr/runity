@@ -19,7 +19,7 @@ use glyphon::{
 };
 use scrap_gpu::gpu::Gpu;
 
-use crate::{ImageId, Layer, Rect, Ui};
+use crate::{ImageId, Layer, MarkPaint, MarkShape, Rect, SegmentPaint, Ui};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -328,6 +328,16 @@ impl UiRenderer {
                     shift(&mut i.rect);
                     shift(&mut i.clip);
                 }
+                for g in &mut layer.segments {
+                    g.from = (g.from.0 - ox, g.from.1 - oy);
+                    g.to = (g.to.0 - ox, g.to.1 - oy);
+                    shift(&mut g.clip);
+                }
+                for m in &mut layer.marks {
+                    m.x -= ox;
+                    m.y -= oy;
+                    shift(&mut m.clip);
+                }
             }
         }
         let scale = ui.viewport().2;
@@ -343,7 +353,22 @@ impl UiRenderer {
         self.batches.clear();
         for (i, layer) in layers.iter().enumerate() {
             let start = shapes.len() as u32;
-            for r in &layer.rects {
+            // Drawings go in among the rectangles, each right after the
+            // rectangles painted before it, all in one draw.
+            let (mut segments, mut marks) = (
+                layer.segments.iter().peekable(),
+                layer.marks.iter().peekable(),
+            );
+            for n in 0..=layer.rects.len() {
+                while let Some(g) = segments.next_if(|g| g.after_rects <= n) {
+                    shapes.push(segment_shape(g, scale));
+                }
+                while let Some(m) = marks.next_if(|m| m.after_rects <= n) {
+                    shapes.push(mark_shape(m, scale));
+                }
+                let Some(r) = layer.rects.get(n) else {
+                    break;
+                };
                 shapes.push(Shape {
                     rect: physical(r.rect, scale),
                     fill: r.fill.to_array(),
@@ -558,6 +583,57 @@ impl UiRenderer {
             self.render(&mut pass);
         }
         gpu.queue.submit(Some(encoder.finish()));
+    }
+}
+
+/// A piece of a drawing's line: kind 1 in the shader.
+fn segment_shape(g: &SegmentPaint, scale: f32) -> Shape {
+    let color = g.color.to_array();
+    Shape {
+        rect: [
+            g.from.0 * scale,
+            g.from.1 * scale,
+            g.to.0 * scale,
+            g.to.1 * scale,
+        ],
+        fill: color,
+        border: color,
+        params: [0.5 * g.width * scale, 0.0, 1.0, 0.0],
+        clip: physical(g.clip, scale),
+    }
+}
+
+/// A drawing's mark: a square or a circle is a box, a diamond a box turned
+/// along its diagonal (kind 2 in the shader).
+fn mark_shape(m: &MarkPaint, scale: f32) -> Shape {
+    let (x, y, size) = (m.x * scale, m.y * scale, m.size * scale);
+    let border = if m.border.is_visible() { scale } else { 0.0 };
+    let (rect, params) = match m.shape {
+        MarkShape::Square | MarkShape::Circle => {
+            let radius = if m.shape == MarkShape::Circle {
+                size / 2.0
+            } else {
+                0.0
+            };
+            (
+                [x - size / 2.0, y - size / 2.0, size, size],
+                [radius, border, 0.0, 0.0],
+            )
+        }
+        MarkShape::Diamond => {
+            // A square whose diagonal is `size`: half a side is a quarter
+            // of the diagonal times the square root of two.
+            let half = size * std::f32::consts::SQRT_2 / 4.0;
+            let d = half * std::f32::consts::FRAC_1_SQRT_2;
+            ([x - d, y - d, x + d, y + d], [half, border, 2.0, 0.0])
+        }
+    };
+    Shape {
+        rect,
+        fill: m.fill.to_array(),
+        border: m.border.to_array(),
+        params,
+        clip: physical(m.clip, scale),
     }
 }
 

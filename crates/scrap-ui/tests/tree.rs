@@ -3,7 +3,7 @@
 //! is redone.
 
 use scrap_core::input::{InputEvent, Key, MouseButton};
-use scrap_ui::{Color, Event, Style, Ui};
+use scrap_ui::{Color, Drawing, Event, Mark, MarkShape, Polyline, Style, Ui};
 
 const BG: Color = Color::hex(0x161826);
 const SURFACE: Color = Color::hex(0x232532);
@@ -515,4 +515,115 @@ fn a_palette_recolours_a_built_tree() {
     ui.set_palette([([0x23, 0x25, 0x32], red)].into_iter().collect());
     ui.paint();
     assert_eq!(ui.revision(), r);
+}
+
+/// A dopesheet's row in miniature: a node 200 × 40 at (50, 30), a line
+/// across it that runs out of it on the right, three keys of which one is
+/// far outside, and a child over its corner.
+fn drawn() -> (Ui, scrap_ui::NodeId, Drawing) {
+    let mut ui = Ui::new();
+    ui.set_viewport(400.0, 300.0, 1.0);
+    let root = ui.root();
+    ui.set_style(
+        root,
+        Style::column().full().padding_left(50.0).padding_top(30.0),
+    );
+    let row = ui.add(
+        root,
+        Style::row()
+            .width(200.0)
+            .height(40.0)
+            .fixed()
+            .background(SURFACE)
+            .clip(),
+    );
+    let key = |x: f32, shape| Mark {
+        x,
+        y: 20.0,
+        size: 8.0,
+        shape,
+        fill: BG,
+        border: Color::TRANSPARENT,
+    };
+    let drawing = Drawing {
+        lines: vec![Polyline {
+            points: vec![(0.0, 10.0), (100.0, 30.0), (400.0, 30.0), (900.0, 0.0)],
+            color: Color::hex(0xff0000),
+            width: 2.0,
+        }],
+        marks: vec![
+            key(10.0, MarkShape::Diamond),
+            key(190.0, MarkShape::Circle),
+            key(5000.0, MarkShape::Square),
+        ],
+    };
+    ui.set_drawing(row, drawing.clone());
+    ui.add(
+        row,
+        Style::default().width(20.0).height(20.0).background(BG),
+    );
+    (ui, row, drawing)
+}
+
+#[test]
+fn a_drawing_is_painted_where_its_node_is_and_clipped_to_it() {
+    let (mut ui, row, drawing) = drawn();
+    assert_eq!(ui.drawing(row), Some(&drawing));
+    let layers = ui.paint();
+    let segments: Vec<_> = layers.iter().flat_map(|l| l.segments.iter()).collect();
+    let marks: Vec<_> = layers.iter().flat_map(|l| l.marks.iter()).collect();
+    // The piece wholly right of the node is left out.
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    assert_eq!(segments[0].from, (50.0, 40.0));
+    assert_eq!(segments[0].to, (150.0, 60.0));
+    assert_eq!(segments[0].width, 2.0);
+    let clip = scrap_ui::Rect {
+        x: 50.0,
+        y: 30.0,
+        width: 200.0,
+        height: 40.0,
+    };
+    assert!(segments.iter().all(|s| s.clip == clip));
+    // The key at 5000 is out of sight; the other two move with the node.
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    assert_eq!(
+        (marks[0].x, marks[0].y, marks[0].shape),
+        (60.0, 50.0, MarkShape::Diamond)
+    );
+    assert_eq!((marks[1].x, marks[1].shape), (240.0, MarkShape::Circle));
+    assert!(marks.iter().all(|m| m.clip == clip));
+    // Over the row's background, under its child's.
+    let layer = layers.iter().find(|l| !l.marks.is_empty()).unwrap();
+    let background = layer.rects.iter().position(|r| r.fill == SURFACE).unwrap();
+    let child = layer.rects.iter().rposition(|r| r.fill == BG).unwrap();
+    assert!(child > background);
+    assert!(marks.iter().all(|m| m.after_rects == background + 1));
+    assert!(segments.iter().all(|s| s.after_rects == background + 1));
+}
+
+#[test]
+fn the_same_drawing_again_repaints_nothing() {
+    let (mut ui, row, drawing) = drawn();
+    ui.paint();
+    let r = ui.revision();
+    ui.set_drawing(row, drawing.clone());
+    assert!(!ui.is_dirty());
+    ui.paint();
+    assert_eq!(ui.revision(), r);
+    // An empty drawing on a node without one is no change either.
+    let root = ui.root();
+    ui.set_drawing(root, Drawing::default());
+    assert!(!ui.is_dirty());
+    // A key moved is.
+    let mut moved = drawing;
+    moved.marks[0].x += 1.0;
+    ui.set_drawing(row, moved);
+    ui.paint();
+    assert!(ui.revision() > r);
+    ui.set_drawing(row, Drawing::default());
+    assert_eq!(ui.drawing(row), None);
+    let layers = ui.paint();
+    assert!(layers
+        .iter()
+        .all(|l| l.segments.is_empty() && l.marks.is_empty()));
 }

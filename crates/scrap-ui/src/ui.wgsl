@@ -6,6 +6,13 @@
 // as in a browser. The fragment works out the distance to the rounded box
 // and fades over one pixel, which is the anti-aliasing; the border is the
 // band within `border_width` of the edge.
+//
+// A drawing's pieces share the pipeline, told apart by `params.z`: 0 is
+// the box above, 1 a straight piece of line with round ends from `rect.xy`
+// to `rect.zw`, `params.x` thick on each side, and 2 a box turned along
+// that piece — a diamond is a square turned by 45 degrees. They are
+// interleaved with the boxes in one draw, so a drawing stays under the
+// boxes painted after it.
 
 struct Screen {
     size: vec2<f32>,
@@ -17,7 +24,7 @@ struct Shape {
     @location(0) rect: vec4<f32>,
     @location(1) fill: vec4<f32>,
     @location(2) border: vec4<f32>,
-    // radius, border width, unused, unused
+    // radius (half thickness for a line), border width, kind, unused
     @location(3) params: vec4<f32>,
     @location(4) clip: vec4<f32>,
 };
@@ -41,7 +48,18 @@ fn vs(@builtin(vertex_index) index: u32, shape: Shape) -> Out {
     let corner = vec2<f32>(f32(index & 1u), f32((index >> 1u) & 1u));
     // One pixel of room around the box for its soft edge.
     let grow = 1.0;
-    let p = shape.rect.xy - vec2<f32>(grow) + corner * (shape.rect.zw + vec2<f32>(2.0 * grow));
+    var p = shape.rect.xy - vec2<f32>(grow) + corner * (shape.rect.zw + vec2<f32>(2.0 * grow));
+    if shape.params.z > 0.5 {
+        let a = shape.rect.xy;
+        let b = shape.rect.zw;
+        let axis = along(a, b);
+        let half_width = shape.params.x;
+        // A line's round ends reach past its points by half its width.
+        let ends = select(0.0, half_width, shape.params.z < 1.5);
+        let reach = 0.5 * length(b - a) + ends + grow;
+        let side = (corner * 2.0 - vec2<f32>(1.0)) * vec2<f32>(reach, half_width + grow);
+        p = 0.5 * (a + b) + axis * side.x + vec2<f32>(-axis.y, axis.x) * side.y;
+    }
     var out: Out;
     out.pos = to_clip_space(p);
     out.rect = shape.rect;
@@ -51,6 +69,32 @@ fn vs(@builtin(vertex_index) index: u32, shape: Shape) -> Out {
     out.clip = shape.clip;
     out.uv = (p - shape.rect.xy) / max(shape.rect.zw, vec2<f32>(1.0));
     return out;
+}
+
+// The unit direction from `a` to `b`, or across for a piece of no length:
+// a dot.
+fn along(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let d = b - a;
+    let len = length(d);
+    if len < 1.0e-4 {
+        return vec2<f32>(1.0, 0.0);
+    }
+    return d / len;
+}
+
+// Distance from `p` to a drawing's piece: a line with round ends, or a
+// box turned along it.
+fn piece(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, half_width: f32, kind: f32) -> f32 {
+    if kind < 1.5 {
+        let pa = p - a;
+        let ba = b - a;
+        let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1.0e-8), 0.0, 1.0);
+        return length(pa - ba * h) - half_width;
+    }
+    let axis = along(a, b);
+    let m = p - 0.5 * (a + b);
+    let local = vec2<f32>(dot(m, axis), dot(m, vec2<f32>(-axis.y, axis.x)));
+    return rounded_box(local, vec2<f32>(0.5 * length(b - a), half_width), 0.0);
 }
 
 // Distance from `p` to a box of half-size `half` with corners of radius
@@ -77,7 +121,11 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
     if clipped(in.pos.xy, in.clip) {
         discard;
     }
-    let cover = coverage(in.pos.xy, in.rect, in.params.x, in.params.y);
+    var cover = coverage(in.pos.xy, in.rect, in.params.x, in.params.y);
+    if in.params.z > 0.5 {
+        let d = piece(in.pos.xy, in.rect.xy, in.rect.zw, in.params.x, in.params.z);
+        cover = vec2<f32>(clamp(0.5 - d, 0.0, 1.0), clamp(0.5 - (d + in.params.y), 0.0, 1.0));
+    }
     // Premultiplied, so that a transparent fill inside an opaque border
     // does not darken the edge between them.
     let fill = vec4<f32>(in.fill.rgb * in.fill.a, in.fill.a);
