@@ -141,6 +141,9 @@ pub struct Animation {
     adding: bool,
     /// The thing or bone the add panel shows the numbers of.
     add_path: Option<String>,
+    /// What each thing's shader calls the slots of its material's
+    /// `params`, by the thing's path: read when a clip opens.
+    param_names: Vec<(String, Vec<(usize, String, Option<&'static str>)>)>,
     /// The seconds written over the ruler, and the times they say.
     ruler_labels: Vec<(NodeId, f32)>,
     tween: NodeId,
@@ -380,6 +383,7 @@ impl Animation {
             add_toggle,
             adding: false,
             add_path: None,
+            param_names: Vec::new(),
             ruler_labels: Vec::new(),
             tween,
             tween_label,
@@ -520,6 +524,9 @@ impl Animation {
                     self.range = None;
                     self.time = self.time.min(doc.length);
                 }
+                let mut paths: Vec<String> = doc.tracks.iter().map(|t| t.path.clone()).collect();
+                paths.dedup();
+                self.param_names = paths.into_iter().map(|p| (p.clone(), session.shader_params(id, &p))).collect();
                 self.doc = Some(doc);
                 self.version += 1;
                 self.built = None;
@@ -626,7 +633,7 @@ impl Animation {
                 RowKind::Track(p, what) => {
                     ui.restyle(name, |s| s.padding_left(SPACE_3 + 26.0));
                     ui.add(name, Style::row().size(3.0, 12.0).fixed().radius(1.5).background(axis_color(&what)));
-                    ui.add_text(name, text().fill().text_color(LABEL), &property_label(&what));
+                    ui.add_text(name, text().fill().text_color(LABEL), &self.label_of(p, what));
                     let value = ui.add_text(name, caption().mono(), "");
                     self.row_values.push((value, p.clone(), what.clone()));
                     ui.set_name(row, format!("row {p} {what:?}"));
@@ -860,6 +867,25 @@ impl Animation {
             out.push(line(l, b, rt, b, ACCENT, 1.0));
         }
         out
+    }
+
+    /// The name a thing's shader gives a slot of its params, and the axis,
+    /// for a `Material("params.N")` track.
+    fn param_name(&self, path: &str, what: &Property) -> Option<(String, Option<&'static str>)> {
+        let Property::Material(m) = what else { return None };
+        let slot = m.strip_prefix("params.")?.parse::<usize>().ok()?;
+        let (_, names) = self.param_names.iter().find(|(p, _)| p == path)?;
+        names.iter().find(|(s, _, _)| *s == slot).map(|(_, n, a)| (n.clone(), *a))
+    }
+
+    /// A track's name in its row: a shader's slot by the shader's name for
+    /// it (`Glow`, `Tint R`), the rest as [`property_label`] says.
+    fn label_of(&self, path: &str, what: &Property) -> String {
+        match self.param_name(path, what) {
+            Some((name, Some(axis))) => format!("{} {}", words(&name), axis.to_uppercase()),
+            Some((name, None)) => words(&name),
+            None => property_label(what),
+        }
     }
 
     fn is_chosen(&self, path: &str, what: &Property, time: f32) -> bool {
@@ -1460,6 +1486,9 @@ impl Animation {
             }
             shown += 1;
             let open = self.add_path.as_deref() == Some(name.as_str());
+            if open && !self.param_names.iter().any(|(p, _)| *p == name) {
+                self.param_names.push((name.clone(), session.shader_params(id, &name)));
+            }
             let row = ui.add(self.adds, Style::row().full_width().height(22.0).fixed().gap(SPACE_2).padding_x(SPACE_1).center_items().radius(RADIUS_SM).hover(HOVER).clickable());
             ui.set_name(row, format!("add to {label}"));
             icon(ui, row, if open { "chevron-down" } else { "chevron-right" }, MUTED);
@@ -1481,7 +1510,10 @@ impl Animation {
             if things {
                 groups[0].1.push(("Active".into(), vec![Property::Active]));
                 for (what, _) in session.animatable_numbers(id, &name) {
-                    let (group, chip) = chip_of(&what);
+                    let (group, chip) = match self.param_name(&name, &what) {
+                        Some((param, _)) => ("Shader".to_string(), words(&param)),
+                        None => chip_of(&what),
+                    };
                     let at = match groups.iter().position(|(g, _)| *g == group) {
                         Some(i) => i,
                         None => {

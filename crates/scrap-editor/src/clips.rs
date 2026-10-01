@@ -413,6 +413,48 @@ impl Session {
         scrap::motion::access(&self.world, self.world_entity(part)?, what, None)
     }
 
+    /// The names its material's shader gives the numbers of `params` on a
+    /// thing under an entity, a slot each: `(2, "glow", None)`,
+    /// `(3, "tint", Some("r"))` — a graph's properties, or a hand-written
+    /// shader's `// scrap:params`. Tracks keep the slot (`params.2`); the
+    /// window says the name. Empty for the standard shader.
+    pub fn shader_params(&self, id: EntityId, path: &str) -> Vec<(usize, String, Option<&'static str>)> {
+        let Some(line) = self.line(id) else { return Vec::new() };
+        let Some((_, part)) = scrap::motion::animates(line).parts.into_iter().find(|(p, _)| p == path) else {
+            return Vec::new();
+        };
+        let (Some(target), Some(project)) = (self.world_entity(part), self.project.as_ref()) else { return Vec::new() };
+        let shader = self
+            .world
+            .get::<&scrap::Surface>(target)
+            .ok()
+            .and_then(|s| s.0.shader)
+            .or_else(|| {
+                let parts = self.world.get::<&scrap::world::SurfaceParts>(target).ok()?;
+                parts.0.iter().find_map(|(_, m)| m.as_ref()?.shader)
+            });
+        let Some(shader) = shader else { return Vec::new() };
+        // The shader's name: the file whose name makes its ID.
+        let name = scrap::layout::files(project.root(), scrap::layout::Kind::Shader).into_iter().find_map(|p| {
+            let file = p.file_name()?.to_str()?;
+            let stem = file.strip_suffix(".graph.ron").or_else(|| file.strip_suffix(".wgsl"))?;
+            (scrap::asset::shader_id(stem) == shader).then(|| stem.to_string())
+        });
+        let Some(name) = name else { return Vec::new() };
+        let mut out = Vec::new();
+        for property in scrap::render::material_properties(project.root(), &name) {
+            let axes: &[&'static str] = match (property.kind, property.size) {
+                (_, 1) => &[],
+                (scrap::render::PropertyKind::Color, _) => &["r", "g", "b", "a"],
+                _ => &["x", "y", "z", "w"],
+            };
+            for i in 0..property.size {
+                out.push((property.at + i, property.name.clone(), axes.get(i).copied()));
+            }
+        }
+        out
+    }
+
     /// The numbers of a thing under an entity a track can move, beyond its
     /// place, turn and scale: its material's, its engine parts' (a light, a
     /// camera, a sound, particles) and its game components', with what
@@ -425,7 +467,13 @@ impl Session {
         let Some(desc) = self.expanded().get(part).cloned() else { return Vec::new() };
         let mut out = Vec::new();
         if let Some(target) = self.world_entity(part) {
+            // A shader's numbers only where it names them.
+            let named: Vec<usize> = self.shader_params(id, path).into_iter().map(|(slot, _, _)| slot).collect();
             for name in scrap::material::NUMBERS {
+                let slot = name.strip_prefix("params.").and_then(|n| n.parse::<usize>().ok());
+                if slot.is_some_and(|n| !named.contains(&n)) {
+                    continue;
+                }
                 let what = Property::Material(name.to_string());
                 let now = self.posed_from.get(&(target, what.clone())).copied();
                 if let Some(v) = now.or_else(|| scrap::motion::access(&self.world, target, &what, None)) {

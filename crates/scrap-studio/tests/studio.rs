@@ -5935,3 +5935,31 @@ fn a_clip_moves_a_things_material_from_the_add_panel() {
     assert_eq!(s.session.shown_number(crate_, "", &Property::Material("emission.r".into())), Some(0.0));
 }
 
+
+#[test]
+fn a_shader_graphs_numbers_are_tracks_by_the_names_the_graph_gives_them() {
+    let Some((mut s, dir)) = studio() else { return };
+    let rock = s.session.find("boulder").unwrap();
+    s.session.set_field(rock, "material", "lava").unwrap();
+    s.session.select(Some(rock)).unwrap();
+    s.frame();
+    // The lava graph's one property, `flow`, is its material's first slot.
+    assert_eq!(s.session.shader_params(rock, ""), vec![(0, "flow".to_string(), None)]);
+    let numbers = s.session.animatable_numbers(rock, "");
+    let params: Vec<_> = numbers.iter().filter(|(w, _)| matches!(w, scrap::motion::Property::Material(m) if m.starts_with("params."))).collect();
+    assert_eq!(params.len(), 1, "only the slots the shader names: {params:?}");
+    click(&mut s, "tab animation");
+    fill(&mut s, "new clip name", "crawl");
+    click(&mut s, "new clip");
+    click(&mut s, "animation add");
+    click(&mut s, "add to (itself)");
+    click(&mut s, "add  Flow");
+    assert!(clip_text(&dir, "crawl").contains("what: Material(\"params.0\")"), "{}", clip_text(&dir, "crawl"));
+    // Its row says the graph's name for it (the panel, which says it too,
+    // put away).
+    click(&mut s, "animation add");
+    click(&mut s, "row ");
+    assert!(s.ui.find("row  Material(\"params.0\")").is_some(), "the track's row");
+    let said = s.ui.dump();
+    assert!(said.contains("\"Flow\""), "named as the graph names it");
+}
