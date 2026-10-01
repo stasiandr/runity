@@ -176,7 +176,11 @@ impl Hub {
 
         let row = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
         ui.add_text(row, text().width(64.0).fixed(), "Name");
-        let name = ui.add_field(row, field_style().fill().height(28.0).text_size(13.0), "my-game");
+        let name = ui.add_field(
+            row,
+            field_style().fill().height(28.0).text_size(13.0),
+            "my-game",
+        );
         ui.set_name(name, "new name");
 
         let row = ui.add(panel, Style::row().full_width().gap(SPACE_2).center_items());
@@ -247,7 +251,8 @@ impl Hub {
                 if on {
                     s.background(ACCENT_900).border(1.0, ACCENT)
                 } else {
-                    s.background(Color::TRANSPARENT).border(1.0, Color::TRANSPARENT)
+                    s.background(Color::TRANSPARENT)
+                        .border(1.0, Color::TRANSPARENT)
                 }
             });
         }
@@ -266,7 +271,11 @@ impl Hub {
             .filter(|e| e.problem.is_none() && !inside_engine(&e.path))
             .max_by_key(|e| e.opened)
             .and_then(|e| e.path.parent().map(Path::to_path_buf))
-            .or_else(|| self.engine.as_ref().and_then(|e| e.parent().map(Path::to_path_buf)))
+            .or_else(|| {
+                self.engine
+                    .as_ref()
+                    .and_then(|e| e.parent().map(Path::to_path_buf))
+            })
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("."))
     }
@@ -355,7 +364,9 @@ impl Hub {
     }
 
     fn list_event(&mut self, ui: &mut Ui, node: NodeId, event: &Event) -> Option<Outcome> {
-        let Mode::List(list) = &self.mode else { return None };
+        let Mode::List(list) = &self.mode else {
+            return None;
+        };
         let (field, add, new, close) = (list.field, list.add, list.new, list.close);
         let row = list
             .rows
@@ -416,7 +427,9 @@ impl Hub {
     }
 
     fn form_event(&mut self, ui: &mut Ui, node: NodeId, event: &Event) -> Option<Outcome> {
-        let Mode::New(form) = &mut self.mode else { return None };
+        let Mode::New(form) = &mut self.mode else {
+            return None;
+        };
         let choice = form.choices.iter().position(|(n, _)| *n == node);
         match event {
             Event::Click { .. } if node == form.back => {
@@ -515,7 +528,10 @@ impl Hub {
             said
         };
         ui.set_text(status, &said);
-        let rows: Vec<Row> = shown.into_iter().map(|i| self.row(ui, list_node, i)).collect();
+        let rows: Vec<Row> = shown
+            .into_iter()
+            .map(|i| self.row(ui, list_node, i))
+            .collect();
         if let Mode::List(list) = &mut self.mode {
             list.rows = rows;
         }
@@ -536,7 +552,11 @@ impl Hub {
                 .center_items()
                 .radius(RADIUS_MD)
                 .hover(ACCENT.alpha(16))
-                .background(if current { ACCENT_900 } else { Color::TRANSPARENT })
+                .background(if current {
+                    ACCENT_900
+                } else {
+                    Color::TRANSPARENT
+                })
                 .clickable(),
         );
         ui.set_name(node, format!("project {}", e.path.display()));
@@ -547,7 +567,9 @@ impl Hub {
         let title = ui.add(names, Style::row().gap(SPACE_2).center_items());
         ui.add_text(
             title,
-            text().weight(500).text_color(if broken { MUTED } else { TEXT }),
+            text()
+                .weight(500)
+                .text_color(if broken { MUTED } else { TEXT }),
             &e.name,
         );
         if current {
@@ -612,9 +634,7 @@ impl Hub {
     /// than the one this editor came from.
     fn other_engine(&self, e: &Entry) -> bool {
         match (&e.engine.checkout, &self.engine) {
-            (Some(theirs), Some(ours)) => {
-                theirs.canonicalize().unwrap_or(theirs.clone()) != *ours
-            }
+            (Some(theirs), Some(ours)) => theirs.canonicalize().unwrap_or(theirs.clone()) != *ours,
             _ => false,
         }
     }

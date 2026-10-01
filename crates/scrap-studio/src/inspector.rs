@@ -42,9 +42,23 @@ use crate::studio::Requests;
 use crate::theme::*;
 
 // The material last: written out in full, its parts are many lines.
-const OBJECT: [&str; 6] = ["model", "prefab", "animator", "bone", "bends_grass", "material"];
+const OBJECT: [&str; 6] = [
+    "model",
+    "prefab",
+    "animator",
+    "bone",
+    "bends_grass",
+    "material",
+];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
-const PHYSICS: [&str; 6] = ["body", "collider", "physics", "joint", "joint_break", "wires"];
+const PHYSICS: [&str; 6] = [
+    "body",
+    "collider",
+    "physics",
+    "joint",
+    "joint_break",
+    "wires",
+];
 const PARTS: [&str; 32] = [
     "camera",
     "light",
@@ -359,7 +373,11 @@ enum Part {
 #[derive(Debug, Clone, PartialEq)]
 enum Scrub {
     Axis(String, usize),
-    Sub { component: String, key: String, whole: bool },
+    Sub {
+        component: String,
+        key: String,
+        whole: bool,
+    },
     /// A number of a form; `true` for a count.
     Form(Place, bool),
 }
@@ -462,7 +480,11 @@ fn slider_track(ui: &mut Ui, line: NodeId, value: f32, mixed: bool) -> NodeId {
         Style::row()
             .full_height()
             .radius(3.0)
-            .background(if mixed { MUTED.alpha(70) } else { ACCENT.alpha(70) })
+            .background(if mixed {
+                MUTED.alpha(70)
+            } else {
+                ACCENT.alpha(70)
+            })
             .width_fraction(value.clamp(0.0, 1.0)),
     );
     track
@@ -702,8 +724,7 @@ impl Inspector {
     }
 
     pub fn owns(&self, node: NodeId) -> bool {
-        self.parts.contains_key(&node)
-            || self.popover_parts.contains_key(&node)
+        self.parts.contains_key(&node) || self.popover_parts.contains_key(&node)
     }
 
     /// The Project's pictures drawn so far: what an object field shows its
@@ -922,7 +943,11 @@ impl Inspector {
                     .center()
                     .radius(4.0)
                     .border(1.0, if on { ACCENT } else { NEUTRAL_500 })
-                    .background(if on { ACCENT } else { scrap_ui::Color::TRANSPARENT })
+                    .background(if on {
+                        ACCENT
+                    } else {
+                        scrap_ui::Color::TRANSPARENT
+                    })
                     .hover_border(ACCENT)
                     .clickable(),
             );
@@ -969,14 +994,18 @@ impl Inspector {
                     .padding_x(6.0)
                     .gap(4.0)
                     .center_items()
-                    .radius(6.0)
+                    .radius(RADIUS_SM)
                     .border(1.0, DIVIDER)
                     .hover(HOVER)
                     .clickable(),
             );
             ui.set_name(pick, "inspector layer");
             icon(ui, pick, "layers-2", MUTED);
-            let shown = if layer.value.is_empty() { "Default" } else { &layer.value };
+            let shown = if layer.value.is_empty() {
+                "Default"
+            } else {
+                &layer.value
+            };
             ui.add_text(pick, text().nowrap().text_size(11.5), shown);
             icon(ui, pick, "chevron-down", MUTED);
             self.parts.insert(pick, Part::Layer);
@@ -1086,7 +1115,7 @@ impl Inspector {
                 .height(26.0)
                 .gap(SPACE_2)
                 .center()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .border(1.0, DIVIDER)
                 .hover(HOVER)
                 .hover_border(ACCENT)
@@ -1288,7 +1317,7 @@ impl Inspector {
                     .size(18.0, 22.0)
                     .fixed()
                     .center()
-                    .radius(6.0)
+                    .radius(RADIUS_SM)
                     .hover(HOVER)
                     .clickable(),
             );
@@ -1444,7 +1473,7 @@ impl Inspector {
                             .padding_x(6.0)
                             .gap(SPACE_2)
                             .center_items()
-                            .radius(6.0)
+                            .radius(RADIUS_SM)
                             .border(1.0, DIVIDER)
                             .hover(HOVER),
                     );
@@ -1595,7 +1624,13 @@ impl Inspector {
     /// The properties of a material's shader, by name and kind — a colour
     /// with its swatch — each its own numbers of the material's `params`:
     /// Unity's material inspector over a Shader Graph's properties.
-    fn shader_properties(&mut self, ui: &mut Ui, session: &Session, material: &str, fields: &[(String, String, bool)]) {
+    fn shader_properties(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        material: &str,
+        fields: &[(String, String, bool)],
+    ) {
         let Some(shader) = fields
             .iter()
             .find(|(k, _, _)| k == "shader")
@@ -1614,14 +1649,26 @@ impl Inspector {
         self.heading(ui, &format!("Shader properties ({shader})"));
         let params = material_params(fields);
         for property in properties {
-            let numbers: Vec<f32> = (property.at..property.at + property.size).map(|i| params.get(i).copied().unwrap_or(0.0)).collect();
+            let numbers: Vec<f32> = (property.at..property.at + property.size)
+                .map(|i| params.get(i).copied().unwrap_or(0.0))
+                .collect();
             let line = ui.add(
                 self.body,
-                Style::row().full_width().padding_x(SPACE_4).padding_y(2.0).gap(SPACE_2).center_items(),
+                Style::row()
+                    .full_width()
+                    .padding_x(SPACE_4)
+                    .padding_y(2.0)
+                    .gap(SPACE_2)
+                    .center_items(),
             );
             ui.add_text(
                 line,
-                Style::default().width(120.0).fixed().text_size(12.0).text_color(LABEL).nowrap(),
+                Style::default()
+                    .width(120.0)
+                    .fixed()
+                    .text_size(12.0)
+                    .text_color(LABEL)
+                    .nowrap(),
                 &title(&property.name),
             );
             if property.kind == scrap::render::PropertyKind::Color && numbers.len() >= 3 {
@@ -1637,12 +1684,21 @@ impl Inspector {
                 );
             }
             let shown = match property.kind {
-                scrap::render::PropertyKind::Boolean => if numbers[0] > 0.5 { "1" } else { "0" }.to_string(),
-                _ => numbers.iter().map(|n| trim_number(&n.to_string())).collect::<Vec<_>>().join(", "),
+                scrap::render::PropertyKind::Boolean => {
+                    if numbers[0] > 0.5 { "1" } else { "0" }.to_string()
+                }
+                _ => numbers
+                    .iter()
+                    .map(|n| trim_number(&n.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             };
             let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &shown);
             ui.set_name(f, format!("shader property {}", property.name));
-            self.parts.insert(f, Part::MaterialProperty(material.to_string(), property.at, property.size));
+            self.parts.insert(
+                f,
+                Part::MaterialProperty(material.to_string(), property.at, property.size),
+            );
         }
     }
 
@@ -1664,15 +1720,14 @@ impl Inspector {
             Asset::Prefab(n) => (
                 n.clone(),
                 "prefab",
-                session.project().and_then(|p| p.file(scrap::layout::Kind::Prefab, n)).and_then(|f| session.project()?.relative(f)),
+                session
+                    .project()
+                    .and_then(|p| p.file(scrap::layout::Kind::Prefab, n))
+                    .and_then(|f| session.project()?.relative(f)),
             ),
             Asset::Material(n) => (n.clone(), "material", None),
             Asset::Sound(n, f) => (n.clone(), "sound", Some(f.clone())),
-            Asset::Scene(p) => (
-                scrap::layout::name_of(p),
-                "scene",
-                None,
-            ),
+            Asset::Scene(p) => (scrap::layout::name_of(p), "scene", None),
         };
         let head = ui.add(
             self.body,
@@ -1791,7 +1846,7 @@ impl Inspector {
                                 .size(18.0, 22.0)
                                 .fixed()
                                 .center()
-                                .radius(6.0)
+                                .radius(RADIUS_SM)
                                 .hover(HOVER)
                                 .clickable(),
                         );
@@ -1930,7 +1985,7 @@ impl Inspector {
                 .size(20.0, 22.0)
                 .fixed()
                 .center()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .hover(HOVER)
                 .clickable(),
         );
@@ -1941,7 +1996,14 @@ impl Inspector {
 
     /// A colour as a swatch and its `#rrggbb`: a click on either opens the
     /// picker.
-    fn color_line(&mut self, ui: &mut Ui, label: &str, name: &str, rgb: [u8; 3], target: ColorTarget) {
+    fn color_line(
+        &mut self,
+        ui: &mut Ui,
+        label: &str,
+        name: &str,
+        rgb: [u8; 3],
+        target: ColorTarget,
+    ) {
         let line = ui.add(
             self.body,
             Style::row()
@@ -1969,7 +2031,7 @@ impl Inspector {
                 .padding_x(6.0)
                 .gap(SPACE_2)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .border(1.0, DIVIDER)
                 .hover_border(ACCENT)
                 .clickable(),
@@ -2023,21 +2085,39 @@ impl Inspector {
                 requests.refresh = true;
             }
             (Part::MaterialProperty(material, at, size), Event::Submit(value)) => {
-                let numbers: Result<Vec<f32>, _> = value.split([',', ' ']).filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse::<f32>()).collect();
+                let numbers: Result<Vec<f32>, _> = value
+                    .split([',', ' '])
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| t.trim().parse::<f32>())
+                    .collect();
                 match numbers {
                     Ok(numbers) if numbers.len() == size => {
-                        let fields = session.material_layers(&material).map(|l| l.fields).unwrap_or_default();
+                        let fields = session
+                            .material_layers(&material)
+                            .map(|l| l.fields)
+                            .unwrap_or_default();
                         let mut params = material_params(&fields);
                         if params.len() < at + size {
                             params.resize(at + size, 0.0);
                         }
                         params[at..at + size].copy_from_slice(&numbers);
-                        let text = format!("[{}]", params.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", "));
-                        if let Err(e) = session.set_material_param(&material, "params", Some(&text)) {
+                        let text = format!(
+                            "[{}]",
+                            params
+                                .iter()
+                                .map(|n| format!("{n:?}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                        if let Err(e) = session.set_material_param(&material, "params", Some(&text))
+                        {
                             session.say(Level::Error, e.to_string());
                         }
                     }
-                    _ => session.say(Level::Error, format!("{size} number(s), separated by commas")),
+                    _ => session.say(
+                        Level::Error,
+                        format!("{size} number(s), separated by commas"),
+                    ),
                 }
                 requests.inspect = Some(Asset::Material(material));
             }
@@ -2047,7 +2127,10 @@ impl Inspector {
                 }
                 requests.inspect = Some(Asset::Material(material));
             }
-            (Part::MaterialSlide(material, key), Event::Press { x, .. } | Event::Drag { x, .. }) => {
+            (
+                Part::MaterialSlide(material, key),
+                Event::Press { x, .. } | Event::Drag { x, .. },
+            ) => {
                 self.scrubbing = Some((0.0, 0.0));
                 // The material changes as the track does: its file, and
                 // what wears it, every step of the drag.
@@ -2135,7 +2218,10 @@ impl Inspector {
                     items.push(MenuItem::separator());
                 }
                 for layer in layers {
-                    items.push(MenuItem::new(&layer, Action::SetField("layer".into(), layer.clone())));
+                    items.push(MenuItem::new(
+                        &layer,
+                        Action::SetField("layer".into(), layer.clone()),
+                    ));
                 }
                 let r = ui.rect(node);
                 requests.menu = Some((items, r.x, r.y + r.height));
@@ -2344,7 +2430,14 @@ impl Inspector {
     }
 
     /// A number dragged by its label to `start` and `moved` pixels on.
-    fn scrub_to(&mut self, ui: &mut Ui, session: &mut Session, scrub: &Scrub, start: f32, moved: f32) {
+    fn scrub_to(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        scrub: &Scrub,
+        start: f32,
+        moved: f32,
+    ) {
         match scrub {
             Scrub::Axis(field, axis) => {
                 // A degree a pixel for turning, a centimetre for the rest.
@@ -2361,7 +2454,11 @@ impl Inspector {
                 if let Err(e) = session.set_field_all(&self.showing, field, &text) {
                     session.say(Level::Error, e.to_string());
                 }
-                for s in self.slots.iter_mut().filter(|s| s.0 == *field && s.1 == Some(*axis)) {
+                for s in self
+                    .slots
+                    .iter_mut()
+                    .filter(|s| s.0 == *field && s.1 == Some(*axis))
+                {
                     let shown = trim_number(&format!("{value}"));
                     ui.set_text(s.2, &shown);
                     s.3 = shown;
@@ -2381,7 +2478,11 @@ impl Inspector {
                     ui.set_text(*node, &trim_number(&value));
                 }
             }
-            Scrub::Sub { component, key, whole } => {
+            Scrub::Sub {
+                component,
+                key,
+                whole,
+            } => {
                 let value = if *whole {
                     format!("{}", (start + moved / 4.0).round() as i64)
                 } else {
@@ -2474,7 +2575,8 @@ impl Inspector {
 
     /// Unity's Add Component: a search, and what matches it.
     fn open_add(&mut self, ui: &mut Ui, session: &Session, at: scrap_ui::Rect) {
-        let (ground, card) = self.popover_card(ui, at.x, at.y + at.height + 4.0, at.width.max(220.0));
+        let (ground, card) =
+            self.popover_card(ui, at.x, at.y + at.height + 4.0, at.width.max(220.0));
         ui.set_name(card, "add component list");
         let field = ui.add_field(card, field_style().full_width().height(26.0), "");
         ui.set_placeholder(field, "Search");
@@ -2504,9 +2606,7 @@ impl Inspector {
             .and_then(|id| session.inspect(*id))
             .unwrap_or_default();
         let has = |name: &str| {
-            fields
-                .iter()
-                .any(|f| f.name == name && !is_empty(&f.value))
+            fields.iter().any(|f| f.name == name && !is_empty(&f.value))
                 || self.revealed.contains(name)
         };
         let mut offered: Vec<(Addition, String)> = ADDABLE
@@ -2543,7 +2643,11 @@ impl Inspector {
                     .gap(SPACE_2)
                     .center_items()
                     .radius(RADIUS_SM)
-                    .background(if i == 0 && !query.is_empty() { HOVER } else { scrap_ui::Color::TRANSPARENT })
+                    .background(if i == 0 && !query.is_empty() {
+                        HOVER
+                    } else {
+                        scrap_ui::Color::TRANSPARENT
+                    })
                     .hover(HOVER)
                     .clickable(),
             );
@@ -2553,7 +2657,16 @@ impl Inspector {
                 Addition::Component(_) => "component",
                 Addition::NewComponent => "plus",
             };
-            icon(ui, row, glyph, if matches!(addition, Addition::Field(_)) { MUTED } else { ACCENT });
+            icon(
+                ui,
+                row,
+                glyph,
+                if matches!(addition, Addition::Field(_)) {
+                    MUTED
+                } else {
+                    ACCENT
+                },
+            );
             ui.add_text(row, text().nowrap(), &label);
             hits.push(addition.clone());
             parts.push((row, addition));
@@ -2564,7 +2677,13 @@ impl Inspector {
     }
 
     /// Put what was picked from Add Component on what is shown.
-    fn add(&mut self, ui: &mut Ui, session: &mut Session, addition: Addition, requests: &mut Requests) {
+    fn add(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        addition: Addition,
+        requests: &mut Requests,
+    ) {
         self.close_popover(ui);
         match addition {
             Addition::Field(field) => match added_value(&field) {
@@ -2647,7 +2766,8 @@ impl Inspector {
             self.hue_drawn = true;
             self.images.push((HUE_STRIP, PICTURE, hue_pixels()));
         }
-        self.images.push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
+        self.images
+            .push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
         self.popover = Some(Popover::Color {
             root: ground,
             target,
@@ -2673,13 +2793,18 @@ impl Inspector {
         };
         let [h, s, v] = self.hsv;
         let rgb = rgb_of(self.hsv);
-        ui.restyle(*square_mark, |st| st.absolute(s * 220.0 - 5.0, (1.0 - v) * 150.0 - 5.0));
+        ui.restyle(*square_mark, |st| {
+            st.absolute(s * 220.0 - 5.0, (1.0 - v) * 150.0 - 5.0)
+        });
         ui.restyle(*hue_mark, |st| st.absolute(h * 220.0 - 3.0, -2.0));
         ui.restyle(*preview, |st| {
             st.background(scrap_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255))
         });
         if ui.focused() != Some(*hex) {
-            ui.set_text(*hex, &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+            ui.set_text(
+                *hex,
+                &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+            );
         }
     }
 
@@ -2735,7 +2860,8 @@ impl Inspector {
                     self.hsv[2] = 1.0 - fy;
                 } else {
                     self.hsv[0] = fx.min(0.999);
-                    self.images.push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
+                    self.images
+                        .push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
                 }
                 self.show_picker(ui);
                 self.apply_color(session, &target);
@@ -2752,7 +2878,8 @@ impl Inspector {
                 match parse_hex(text) {
                     Some(rgb) => {
                         self.hsv = hsv_of(rgb);
-                        self.images.push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
+                        self.images
+                            .push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
                         session.begin_gesture();
                         self.apply_color(session, &target);
                         session.end_gesture();

@@ -372,7 +372,7 @@ impl Inspector {
                 .padding_x(4.0)
                 .gap(SPACE_2)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .background(BG)
                 .border(1.0, if shown.missing { ERROR } else { DIVIDER })
                 .hover_border(TEXT.alpha(35))

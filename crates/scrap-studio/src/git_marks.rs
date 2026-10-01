@@ -92,7 +92,9 @@ impl GitMarks {
                                 self.files = files;
                                 changed = true;
                             }
-                            if self.status.as_ref() != Some(&found.status) || found.head != self.head {
+                            if self.status.as_ref() != Some(&found.status)
+                                || found.head != self.head
+                            {
                                 self.status = Some(found.status);
                                 self.head = found.head;
                                 self.generation += 1;
@@ -136,7 +138,10 @@ impl GitMarks {
                 self.asking = Some(rx);
             }
         }
-        let now = (session.revision(), session.scene_path().map(|p| p.to_path_buf()));
+        let now = (
+            session.revision(),
+            session.scene_path().map(|p| p.to_path_buf()),
+        );
         if self.known && self.compared.as_ref() != Some(&now) {
             let text = self
                 .committed

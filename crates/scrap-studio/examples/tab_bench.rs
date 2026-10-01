@@ -27,10 +27,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from(scrap_studio::REFERENCE_SCENE));
     let mut tabs: Vec<String> = args.collect();
     if tabs.is_empty() {
-        tabs = ["project", "console", "history", "git", "settings", "profiler", "animation"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        tabs = [
+            "project",
+            "console",
+            "history",
+            "git",
+            "settings",
+            "profiler",
+            "animation",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
     }
     let (width, height, scale) = (1440.0, 900.0, 2.0);
     // Before the scene opens: opening it writes it down as the last one.
@@ -103,7 +111,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut all = Vec::new();
     for (tab, times) in tabs.iter().zip(&per_tab) {
         let worst = times.iter().cloned().fold(0.0, f64::max);
-        println!("tab {tab:<10} mean {:6.1} ms  worst {worst:6.1} ms", mean(times));
+        println!(
+            "tab {tab:<10} mean {:6.1} ms  worst {worst:6.1} ms",
+            mean(times)
+        );
         all.extend(times);
     }
     println!("all tabs     mean {:6.1} ms", mean(&all));

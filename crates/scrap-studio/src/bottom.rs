@@ -206,7 +206,7 @@ impl Bottom {
                     .padding_x(SPACE_2)
                     .gap(4.0)
                     .center_items()
-                    .radius(6.0)
+                    .radius(RADIUS_SM)
                     .border(1.0, scrap_ui::Color::TRANSPARENT)
                     .hover(HOVER),
             );
@@ -253,7 +253,7 @@ impl Bottom {
                     .height(22.0)
                     .padding_x(SPACE_2)
                     .center()
-                    .radius(6.0)
+                    .radius(RADIUS_SM)
                     .hover(HOVER),
             );
             ui.set_name(chip, format!("kind {kind}"));
@@ -279,7 +279,11 @@ impl Bottom {
         ui.set_name(tree, "project folders");
         ui.add(
             body,
-            Style::row().width(1.0).fixed().full_height().background(DIVIDER),
+            Style::row()
+                .width(1.0)
+                .fixed()
+                .full_height()
+                .background(DIVIDER),
         );
         let right = ui.add(body, Style::column().fill().full_height());
         let crumbs = ui.add(
@@ -318,7 +322,11 @@ impl Bottom {
         // The chosen thing's path, as Unity's Project shows it at its foot.
         ui.add(
             project,
-            Style::row().height(1.0).fixed().full_width().background(DIVIDER),
+            Style::row()
+                .height(1.0)
+                .fixed()
+                .full_width()
+                .background(DIVIDER),
         );
         let foot = ui.add(
             project,
@@ -530,7 +538,6 @@ impl Bottom {
         self.folder = folder;
     }
 
-
     /// The tree: every folder with something in it, the open ones' folders
     /// under them, the chosen one lit.
     fn update_tree(&mut self, ui: &mut Ui, folders: &[String]) {
@@ -542,7 +549,10 @@ impl Bottom {
             depth: usize,
             rows: &mut Vec<(String, usize)>,
         ) {
-            for f in folders.iter().filter(|f| !f.is_empty() && parent_folder(f) == at) {
+            for f in folders
+                .iter()
+                .filter(|f| !f.is_empty() && parent_folder(f) == at)
+            {
                 rows.push((f.clone(), depth));
                 if open.contains(f) {
                     walk(folders, open, f, depth + 1, rows);
@@ -599,11 +609,20 @@ impl Bottom {
             let open = self.open_folders.contains(folder);
             ui.restyle(kids[0], |s| s.opacity(if arrow_shown { 1.0 } else { 0.0 }));
             if let Some(glyph) = ui.children(kids[0]).first().copied() {
-                ui.set_icon(glyph, if open { "chevron-down" } else { "chevron-right" });
+                ui.set_icon(
+                    glyph,
+                    if open {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    },
+                );
             }
             let chosen = *folder == self.folder;
             ui.set_icon(kids[1], if chosen { "folder-open" } else { "folder" });
-            ui.restyle(kids[1], |s| s.text_color(if chosen { ACCENT } else { MUTED }));
+            ui.restyle(kids[1], |s| {
+                s.text_color(if chosen { ACCENT } else { MUTED })
+            });
             ui.restyle(line, |s| {
                 s.background(if chosen {
                     ACCENT_900
@@ -813,7 +832,11 @@ impl Bottom {
         let all = assets_of(session, &entries);
         let sources = sources_of(&entries);
         let folders = folders(&all, session, &sources);
-        let listed = std::rc::Rc::new(Listed { all, sources, folders });
+        let listed = std::rc::Rc::new(Listed {
+            all,
+            sources,
+            folders,
+        });
         self.listed = disk.map(|d| (d, listed.clone()));
         listed
     }
@@ -941,7 +964,7 @@ impl Bottom {
                             .padding_x(SPACE_2)
                             .gap(SPACE_2)
                             .center_items()
-                            .radius(6.0)
+                            .radius(RADIUS_SM)
                             .border(1.0, scrap_ui::Color::TRANSPARENT)
                             .hover(HOVER)
                             .draggable(),
@@ -1000,7 +1023,8 @@ impl Bottom {
         for (tile, folder) in tiles.iter().zip(&subfolders) {
             self.folder_tiles.insert(*tile, folder.clone());
             if let (Some(root), false) = (&root, self.tile_files.contains_key(tile)) {
-                self.tile_files.insert(*tile, (true, folder_files(root, folder)));
+                self.tile_files
+                    .insert(*tile, (true, folder_files(root, folder)));
             }
             let chosen = self.selected == Some(Pick::Folder(folder.clone()));
             ui.restyle(*tile, |s| lit(s, chosen, false));
@@ -1009,7 +1033,8 @@ impl Bottom {
         for (tile, asset) in tiles.into_iter().skip(n_folders).zip(assets) {
             if let (Some(root), false) = (&root, self.tile_files.contains_key(&tile)) {
                 if let Some(file) = asset_file(&asset, session) {
-                    self.tile_files.insert(tile, (false, asset_files(root, &file)));
+                    self.tile_files
+                        .insert(tile, (false, asset_files(root, &file)));
                 }
             }
             let current = matches!(&asset, Asset::Scene(p) if Some(p) == open.as_ref());
@@ -1121,7 +1146,8 @@ impl Bottom {
                 Pick::Asset(a) => {
                     self.entries.insert(line, a.clone());
                     if let (Some(root), Some(file)) = (&root, asset_file(a, session)) {
-                        self.tile_files.insert(line, (false, asset_files(root, &file)));
+                        self.tile_files
+                            .insert(line, (false, asset_files(root, &file)));
                     }
                 }
             }
@@ -1149,7 +1175,14 @@ impl Bottom {
                 if let Pick::Folder(_) = pick {
                     let kids = ui.children(line);
                     if let Some(arrow) = ui.children(kids[1]).first().copied() {
-                        ui.set_icon(arrow, if unfolded { "chevron-down" } else { "chevron-right" });
+                        ui.set_icon(
+                            arrow,
+                            if unfolded {
+                                "chevron-down"
+                            } else {
+                                "chevron-right"
+                            },
+                        );
                     }
                     if let Some(glyph) = ui.children(kids[2]).last().copied() {
                         ui.set_icon(glyph, if unfolded { "folder-open" } else { "folder" });
@@ -1165,11 +1198,7 @@ impl Bottom {
     fn update_path(&mut self, ui: &mut Ui, session: &Session, sources: &Sources) {
         let (glyph, folder, file) = match &self.selected {
             None => (None, String::new(), String::new()),
-            Some(Pick::Folder(f)) => (
-                Some("folder"),
-                parent_folder(f),
-                folder_label(f),
-            ),
+            Some(Pick::Folder(f)) => (Some("folder"), parent_folder(f), folder_label(f)),
             Some(Pick::Asset(a)) => {
                 let (folder, file) = match asset_file(a, session) {
                     Some(file) => match file.rsplit_once('/') {
@@ -1309,7 +1338,10 @@ impl Bottom {
                     .and_then(|r| std::path::Path::new(&wanted).strip_prefix(r).ok())
                     .map(|p| p.to_string_lossy().replace('\\', "/"))
                     .unwrap_or(wanted.clone());
-                match folders.into_iter().find(|f| !f.is_empty() && *f == relative) {
+                match folders
+                    .into_iter()
+                    .find(|f| !f.is_empty() && *f == relative)
+                {
                     Some(f) => Pick::Folder(f),
                     None => return false,
                 }
@@ -1507,7 +1539,8 @@ impl Bottom {
                 self.opened_content = true;
                 if !project.is_legacy() {
                     let own = scrap::layout::relative(project.root(), &project.content());
-                    self.open_folders.insert(scrap::project::CONTENT.to_string());
+                    self.open_folders
+                        .insert(scrap::project::CONTENT.to_string());
                     self.open_folders.insert(own);
                 }
             }
@@ -1991,10 +2024,13 @@ fn file_of(root: &std::path::Path, kind: scrap::layout::Kind, name: &str) -> Opt
             let mut files = HashMap::new();
             // Sorted, as `find` walks: the first of a name is the one.
             for path in scrap::layout::walk(root) {
-                let Some(kind) = scrap::layout::kind_of(&scrap::layout::relative(root, &path)) else {
+                let Some(kind) = scrap::layout::kind_of(&scrap::layout::relative(root, &path))
+                else {
                     continue;
                 };
-                files.entry((kind, scrap::layout::name_of(&path))).or_insert(path);
+                files
+                    .entry((kind, scrap::layout::name_of(&path)))
+                    .or_insert(path);
             }
             *index = Some(Index {
                 root: root.to_path_buf(),
@@ -2002,7 +2038,11 @@ fn file_of(root: &std::path::Path, kind: scrap::layout::Kind, name: &str) -> Opt
                 files,
             });
         }
-        index.as_ref()?.files.get(&(kind, name.to_string())).cloned()
+        index
+            .as_ref()?
+            .files
+            .get(&(kind, name.to_string()))
+            .cloned()
     })
 }
 
@@ -2194,7 +2234,11 @@ fn folder_tile(ui: &mut Ui, grid: NodeId, folder: &str, big: bool) -> NodeId {
         );
         let frame = ui.add(
             tile,
-            Style::row().size(76.0, 76.0).fixed().center().radius(RADIUS_SM),
+            Style::row()
+                .size(76.0, 76.0)
+                .fixed()
+                .center()
+                .radius(RADIUS_SM),
         );
         ui.add_icon(
             frame,
@@ -2222,7 +2266,7 @@ fn folder_tile(ui: &mut Ui, grid: NodeId, folder: &str, big: bool) -> NodeId {
                 .padding_x(SPACE_2)
                 .gap(SPACE_2)
                 .center_items()
-                .radius(6.0)
+                .radius(RADIUS_SM)
                 .hover(HOVER)
                 .clickable(),
         );
@@ -2277,7 +2321,12 @@ fn lit(s: Style, chosen: bool, current: bool) -> Style {
 /// No children left in a keyed list.
 fn empty(ui: &mut Ui, list: NodeId) {
     if !ui.children(list).is_empty() {
-        ui.sync_children(list, &[] as &[u8], |ui, l, _| ui.add(l, Style::row()), |_, _, _| {});
+        ui.sync_children(
+            list,
+            &[] as &[u8],
+            |ui, l, _| ui.add(l, Style::row()),
+            |_, _, _| {},
+        );
     }
 }
 
@@ -2306,14 +2355,7 @@ fn asset_files(root: &std::path::Path, file: &str) -> Vec<PathBuf> {
 /// An entry's picture in `frame`, `size` across: the drawn picture when
 /// pictures are on and it has one (see [`Bottom::wanted_pictures`]), its
 /// kind's icon, `glyph` across, until then — and for a sound.
-fn picture(
-    ui: &mut Ui,
-    frame: NodeId,
-    asset: &Asset,
-    size: f32,
-    glyph: f32,
-    pictures: Pictures,
-) {
+fn picture(ui: &mut Ui, frame: NodeId, asset: &Asset, size: f32, glyph: f32, pictures: Pictures) {
     let mut drawn = false;
     if let (Some(name), Some((thumbs, next_image))) = (picture_key(asset), pictures) {
         let (id, ready) = *thumbs.entry(name.clone()).or_insert_with(|| {

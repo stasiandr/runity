@@ -184,8 +184,8 @@ pub const PRESETS: [Preset; 5] = [
             ("ACCENT_200", 0xe3efff),
             ("ACCENT_300", 0xc6dcf7),
             ("ACCENT_400", 0x8dbcf2),
-            ("ACCENT_800", 0x234a6e),
-            ("ACCENT_900", 0x2c5d87),
+            ("ACCENT_800", 0x2c5d87),
+            ("ACCENT_900", 0x223447),
             ("WARNING", 0xe8c05a),
             ("ERROR", 0xf07878),
             ("SUCCESS", 0x8ccf7e),
@@ -543,9 +543,9 @@ pub const SPACE_3: f32 = 8.4;
 pub const SPACE_4: f32 = 11.2;
 pub const SPACE_6: f32 = 16.8;
 
-pub const RADIUS_SM: f32 = 4.0;
-pub const RADIUS_MD: f32 = 8.0;
-pub const RADIUS_LG: f32 = 14.0;
+pub const RADIUS_SM: f32 = 3.0;
+pub const RADIUS_MD: f32 = 4.0;
+pub const RADIUS_LG: f32 = 6.0;
 
 /// Body text.
 pub fn text() -> Style {
@@ -682,7 +682,7 @@ pub fn tag(ui: &mut Ui, parent: NodeId, label: &str, fill: Color, ink: Color) ->
             .fixed()
             .padding_x(7.0)
             .center()
-            .radius(6.0)
+            .radius(RADIUS_SM)
             .background(fill),
     );
     ui.add_text(
@@ -701,7 +701,7 @@ pub fn field_style() -> Style {
         .fixed()
         .padding_x(6.0)
         .center_items()
-        .radius(6.0)
+        .radius(RADIUS_SM)
         .background(BG)
         .border(1.0, DIVIDER)
         .hover_border(TEXT.alpha(35))
@@ -785,6 +785,21 @@ mod tests {
 
     /// Any accent, made readable for the preset, keeps every pair
     /// readable: the ramp made from it included.
+    /// The selection, the active tab and every tag are `ACCENT_900`: the
+    /// quiet tint, nearer the panel than `ACCENT_800`. Graphite had them
+    /// the other way, and the chrome came out in saturated blue pills.
+    #[test]
+    fn the_quiet_tint_is_the_quieter() {
+        for p in &PRESETS {
+            let surface = p.get("SURFACE");
+            assert!(
+                contrast(p.get("ACCENT_900"), surface) < contrast(p.get("ACCENT_800"), surface),
+                "{}: ACCENT_900 stands out more than ACCENT_800",
+                p.name
+            );
+        }
+    }
+
     #[test]
     fn any_accent_reads_in_every_preset() {
         for p in &PRESETS {

@@ -325,16 +325,17 @@ impl Hierarchy {
             || node == self.expand_all
             || node == self.collapse_all
             || node == self.add
-            || self.parts.contains_key(&node) || {
-            let mut at = ui.parent(node);
-            while let Some(p) = at {
-                if p == self.card {
-                    return true;
+            || self.parts.contains_key(&node)
+            || {
+                let mut at = ui.parent(node);
+                while let Some(p) = at {
+                    if p == self.card {
+                        return true;
+                    }
+                    at = ui.parent(p);
                 }
-                at = ui.parent(p);
+                false
             }
-            false
-        }
     }
 
     pub fn event(
@@ -791,7 +792,7 @@ fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
         line,
         Style::row()
             .fixed()
-            .radius(6.0)
+            .radius(RADIUS_SM)
             .hover_border(ACCENT_300)
             .clickable(),
     );
@@ -886,22 +887,54 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
             s.shown()
         }
     });
-    // The prefab's name as a tag, the line's last thing.
+    // The prefab's name, the line's last thing, as quiet text: only when
+    // the line's own name does not already say it — `Plank (1)` is a
+    // Plank, its icon says it is an instance, and the Inspector opens it.
     let slot = kids[TAG];
     ui.restyle(slot, |s| s.opacity(fade));
+    let label = row
+        .prefab
+        .as_deref()
+        .filter(|p| !names_its_prefab(&row.name, p));
     let shown = ui
         .children(slot)
         .first()
         .and_then(|t| ui.children(*t).first().copied())
         .and_then(|label| ui.text(label));
-    if shown.as_deref() != row.prefab.as_deref() {
+    if shown.as_deref() != label {
         ui.clear(slot);
-        if let Some(p) = &row.prefab {
-            tag(ui, slot, p, ACCENT_900, ACCENT_300);
+        if let Some(p) = label {
+            tag(ui, slot, p, scrap_ui::Color::TRANSPARENT, MUTED);
         }
     }
     ui.set_name(slot, format!("open {}", row.name));
     if let Some(dot) = kids.get(MARK) {
         ui.set_name(*dot, format!("mark {}", row.name));
+    }
+}
+
+/// Whether a line's name already says its prefab: the prefab's own name,
+/// or it with Unity's ` (2)` of a copy.
+fn names_its_prefab(name: &str, prefab: &str) -> bool {
+    let base = match name.strip_suffix(')').and_then(|n| n.rsplit_once(" (")) {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
+    base == prefab
+}
+
+#[cfg(test)]
+mod tests {
+    use super::names_its_prefab;
+
+    #[test]
+    fn a_copy_names_its_prefab() {
+        assert!(names_its_prefab("Saw", "Saw"));
+        assert!(names_its_prefab("Plank (1)", "Plank"));
+        assert!(names_its_prefab("Dynamite (3)", "Dynamite"));
+        assert!(!names_its_prefab("SM_Mir", "SM_Mine_01"));
+        assert!(!names_its_prefab("G", "Garden_SpongeSeeds"));
+        assert!(!names_its_prefab("Scrap_1 (4)", "Scrap_1 (x)"));
+        assert!(!names_its_prefab("Lock ()", "Lock"));
     }
 }

@@ -399,16 +399,31 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Save Layout As…", Action::SaveLayoutAs),
                 item("Delete Layout…", Action::DeleteLayout),
                 MenuItem::separator(),
-                item("Hierarchy", Action::ShowPanel(crate::dock::Panel::Hierarchy)),
-                item("Inspector", Action::ShowPanel(crate::dock::Panel::Inspector)),
+                item(
+                    "Hierarchy",
+                    Action::ShowPanel(crate::dock::Panel::Hierarchy),
+                ),
+                item(
+                    "Inspector",
+                    Action::ShowPanel(crate::dock::Panel::Inspector),
+                ),
                 item("Project", Action::ShowPanel(crate::dock::Panel::Project)),
                 item("Console", Action::ShowPanel(crate::dock::Panel::Console)),
                 item("History", Action::ShowPanel(crate::dock::Panel::History)),
                 item("Git", Action::ShowPanel(crate::dock::Panel::Git)),
-                item("Animation", Action::ShowPanel(crate::dock::Panel::Animation)),
+                item(
+                    "Animation",
+                    Action::ShowPanel(crate::dock::Panel::Animation),
+                ),
                 item("Animator", Action::ShowPanel(crate::dock::Panel::Animator)),
-                item("Dialogues", Action::ShowPanel(crate::dock::Panel::Dialogues)),
-                item("Shader Graph", Action::ShowPanel(crate::dock::Panel::ShaderGraph)),
+                item(
+                    "Dialogues",
+                    Action::ShowPanel(crate::dock::Panel::Dialogues),
+                ),
+                item(
+                    "Shader Graph",
+                    Action::ShowPanel(crate::dock::Panel::ShaderGraph),
+                ),
                 item("Table", Action::ShowPanel(crate::dock::Panel::Table)),
                 item("UI Builder", Action::ShowPanel(crate::dock::Panel::Screens)),
                 item(
@@ -551,7 +566,9 @@ mod tests {
                 .find(|(title, _)| *title == action.menu)
                 .unwrap_or_else(|| panic!("no menu {} for {}", action.menu, action.name));
             assert!(
-                items.iter().any(|i| i.action == Some(Action::Editor(action.name))),
+                items
+                    .iter()
+                    .any(|i| i.action == Some(Action::Editor(action.name))),
                 "{} is not in {}",
                 action.name,
                 action.menu

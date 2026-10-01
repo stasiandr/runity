@@ -261,6 +261,9 @@ impl ApplicationHandler<Chosen> for App {
             studio.set_native_menu(true);
         }
         let renderer = studio.renderer(surface.format());
+        if let Some((x, y)) = content_origin(&window) {
+            studio.set_window_origin(x, y);
+        }
         window.request_redraw();
         self.running = Some(Running {
             window,
@@ -321,6 +324,11 @@ impl ApplicationHandler<Chosen> for App {
                     .resize(size.width as f32 / scale, size.height as f32 / scale, scale);
             }
             WindowEvent::DroppedFile(path) => run.studio.drop_file(path),
+            WindowEvent::Moved(_) => {
+                if let Some((x, y)) = content_origin(&run.window) {
+                    run.studio.set_window_origin(x, y);
+                }
+            }
             WindowEvent::Focused(focused) => {
                 run.focused = *focused;
                 if !focused && run.captured {
@@ -441,6 +449,13 @@ impl ApplicationHandler<Chosen> for App {
     }
 }
 
+/// Where a window's content is on the screen, in logical pixels.
+fn content_origin(window: &Window) -> Option<(f32, f32)> {
+    let at = window.inner_position().ok()?;
+    let at = at.to_logical::<f32>(window.scale_factor());
+    Some((at.x, at.y))
+}
+
 /// Hold the pointer in the window and hide it, or let it go: locked where
 /// the platform can, else confined.
 fn set_captured(window: &Window, on: bool) {
@@ -524,6 +539,16 @@ fn float_event(run: &mut Running, float: &mut FloatWindow, event: &WindowEvent) 
         }
         WindowEvent::RedrawRequested => float.draw(&mut run.studio),
         _ => {
+            // Where the pointer is over the main window too: the float's
+            // strip dragged onto a dock docks it there.
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                if let (Some((fx, fy)), Some((mx, my))) =
+                    (content_origin(&float.window), content_origin(&run.window))
+                {
+                    let at = position.to_logical::<f32>(scale as f64);
+                    run.studio.set_float_pointer(fx + at.x - mx, fy + at.y - my);
+                }
+            }
             for input in scrap::shell::translate(event) {
                 let input = match input {
                     InputEvent::MouseMoved { x, y } => InputEvent::MouseMoved {

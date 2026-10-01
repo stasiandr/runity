@@ -82,9 +82,23 @@ pub struct ShaderGraphs {
 
 impl ShaderGraphs {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
-        let root = ui.add(parent, Style::row().fill().full_width().gap(SPACE_2).padding(SPACE_2));
+        let root = ui.add(
+            parent,
+            Style::row()
+                .fill()
+                .full_width()
+                .gap(SPACE_2)
+                .padding(SPACE_2),
+        );
         ui.set_name(root, "shader graphs");
-        let left = ui.add(root, Style::column().width(170.0).full_height().fixed().gap(SPACE_2));
+        let left = ui.add(
+            root,
+            Style::column()
+                .width(170.0)
+                .full_height()
+                .fixed()
+                .gap(SPACE_2),
+        );
         let head = ui.add(left, Style::row().full_width().center_items().gap(SPACE_1));
         ui.add_text(head, caption(), "SHADER GRAPH");
         spacer(ui, head);
@@ -102,7 +116,15 @@ impl ShaderGraphs {
                 .draggable(),
         );
         ui.set_name(canvas, "shader graphs canvas");
-        let side = ui.add(root, Style::column().width(290.0).full_height().fixed().gap(3.0).clip());
+        let side = ui.add(
+            root,
+            Style::column()
+                .width(290.0)
+                .full_height()
+                .fixed()
+                .gap(3.0)
+                .clip(),
+        );
         let mut parts = HashMap::new();
         parts.insert(canvas, Part::Canvas);
         parts.insert(wide_button, Part::Wide);
@@ -120,7 +142,10 @@ impl ShaderGraphs {
             columns: 1,
             pan: (0.0, 0.0),
             listed: false,
-            checked: Checked { built: Ok(()), problems: Vec::new() },
+            checked: Checked {
+                built: Ok(()),
+                problems: Vec::new(),
+            },
             connecting: None,
             images: Vec::new(),
         }
@@ -155,7 +180,12 @@ impl ShaderGraphs {
         // Wherever they lie (docs/layout.md).
         let paths: Vec<PathBuf> = session
             .project()
-            .map(|p| p.files(scrap::layout::Kind::Shader).into_iter().filter(|p| Kind::of(p).is_some()).collect())
+            .map(|p| {
+                p.files(scrap::layout::Kind::Shader)
+                    .into_iter()
+                    .filter(|p| Kind::of(p).is_some())
+                    .collect()
+            })
             .unwrap_or_default();
         if paths.is_empty() {
             ui.add_text(
@@ -165,7 +195,10 @@ impl ShaderGraphs {
             );
         }
         for path in paths {
-            let name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let on = self.open.as_ref().is_some_and(|(p, _)| *p == path);
             let row = ui.add(
                 self.files_list,
@@ -239,12 +272,16 @@ impl ShaderGraphs {
         let (column, row) = self.layout.get(name).copied().unwrap_or((0, 0));
         // What the graph sets on the right, what it reads from to the left.
         let column = self.columns.saturating_sub(column + 1);
-        (24.0 + column as f32 * (BOX_W + 40.0), 24.0 + row as f32 * (BOX_H + 30.0))
+        (
+            24.0 + column as f32 * (BOX_W + 40.0),
+            24.0 + row as f32 * (BOX_H + 30.0),
+        )
     }
 
     /// Build the canvas and the side again from the graph.
     fn show(&mut self, ui: &mut Ui) {
-        self.parts.retain(|_, p| matches!(p, Part::File(_) | Part::Canvas | Part::Wide));
+        self.parts
+            .retain(|_, p| matches!(p, Part::File(_) | Part::Canvas | Part::Wide));
         ui.clear(self.canvas);
         ui.clear(self.side);
         let Some((_, doc)) = self.open.clone() else {
@@ -262,7 +299,10 @@ impl ShaderGraphs {
         let mut names: Vec<&str> = outputs.iter().map(|(o, _)| *o).collect();
         names.extend(nodes.keys().map(String::as_str));
         // Laid out from what the graph sets, back along the reads.
-        let back: Vec<(&str, &str)> = edges.iter().map(|(f, t)| (t.as_str(), f.as_str())).collect();
+        let back: Vec<(&str, &str)> = edges
+            .iter()
+            .map(|(f, t)| (t.as_str(), f.as_str()))
+            .collect();
         self.layout = graph_view::layout(outputs[0].0, &names, &back);
         // The other outputs beside the first.
         for (i, (o, _)) in outputs.iter().enumerate().skip(1) {
@@ -270,7 +310,14 @@ impl ShaderGraphs {
         }
         self.columns = self.layout.values().map(|(c, _)| c + 1).max().unwrap_or(1);
         let blamed = self.checked.blamed();
-        let layer = |ui: &mut Ui| ui.add(self.canvas, Style::default().absolute(self.pan.0, self.pan.1).size(4000.0, 4000.0));
+        let layer = |ui: &mut Ui| {
+            ui.add(
+                self.canvas,
+                Style::default()
+                    .absolute(self.pan.0, self.pan.1)
+                    .size(4000.0, 4000.0),
+            )
+        };
         let arrows = layer(ui);
         let boxes = layer(ui);
         let heads = layer(ui);
@@ -278,8 +325,11 @@ impl ShaderGraphs {
             if from == to {
                 continue;
             }
-            let others: Vec<(f32, f32)> =
-                names.iter().filter(|n| **n != from.as_str() && **n != to.as_str()).map(|n| self.place(n)).collect();
+            let others: Vec<(f32, f32)> = names
+                .iter()
+                .filter(|n| **n != from.as_str() && **n != to.as_str())
+                .map(|n| self.place(n))
+                .collect();
             let on = self.chosen.as_deref().is_some_and(|c| c == from || c == to);
             graph_view::arrow(
                 ui,
@@ -298,7 +348,10 @@ impl ShaderGraphs {
             let (x, y) = self.place(name);
             let output = outputs.iter().any(|(o, _)| o == name);
             let on = self.chosen.as_deref() == Some(*name)
-                || self.connecting.as_ref().is_some_and(|(f, t)| f == name || t == name);
+                || self
+                    .connecting
+                    .as_ref()
+                    .is_some_and(|(f, t)| f == name || t == name);
             let wrong = blamed.as_deref() == Some(*name);
             let b = ui.add(
                 boxes,
@@ -329,7 +382,10 @@ impl ShaderGraphs {
             });
             ui.add_text(
                 b,
-                Style::default().text_size(10.0).text_color(if output { ACCENT_200 } else { MUTED }).nowrap(),
+                Style::default()
+                    .text_size(10.0)
+                    .text_color(if output { ACCENT_200 } else { MUTED })
+                    .nowrap(),
                 kind.as_deref().unwrap_or("what the graph sets"),
             );
             self.parts.insert(
@@ -345,7 +401,11 @@ impl ShaderGraphs {
     }
 
     fn small(&self, ui: &mut Ui, words: &str, color: Color) {
-        ui.add_text(self.side, Style::default().text_size(12.0).text_color(color), words);
+        ui.add_text(
+            self.side,
+            Style::default().text_size(12.0).text_color(color),
+            words,
+        );
     }
 
     fn show_side(&mut self, ui: &mut Ui, doc: &Doc) {
@@ -378,18 +438,39 @@ impl ShaderGraphs {
                 ui.add_text(b, text().text_size(12.0), field);
                 self.parts.insert(b, Part::As(field));
             }
-            let b = ui.add(row, Style::row().padding_x(SPACE_2).height(22.0).center_items().radius(RADIUS_SM).hover(HOVER).clickable());
+            let b = ui.add(
+                row,
+                Style::row()
+                    .padding_x(SPACE_2)
+                    .height(22.0)
+                    .center_items()
+                    .radius(RADIUS_SM)
+                    .hover(HOVER)
+                    .clickable(),
+            );
             ui.set_name(b, "graph connect cancel");
-            ui.add_text(b, Style::default().text_size(12.0).text_color(MUTED), "Cancel");
+            ui.add_text(
+                b,
+                Style::default().text_size(12.0).text_color(MUTED),
+                "Cancel",
+            );
             self.parts.insert(b, Part::NotAs);
         }
         if matches!(doc, Doc::Material(_)) && self.checked.built.is_ok() {
             let row = ui.add(side, Style::row().full_width().gap(SPACE_2));
             let size = 130.0;
-            let whole = ui.add_image(row, Style::default().size(size, size).radius(RADIUS_MD), GRAPH_PREVIEW);
+            let whole = ui.add_image(
+                row,
+                Style::default().size(size, size).radius(RADIUS_MD),
+                GRAPH_PREVIEW,
+            );
             ui.set_name(whole, "graph preview");
             if self.chosen.is_some() {
-                let one = ui.add_image(row, Style::default().size(size, size).radius(RADIUS_MD), NODE_PREVIEW);
+                let one = ui.add_image(
+                    row,
+                    Style::default().size(size, size).radius(RADIUS_MD),
+                    NODE_PREVIEW,
+                );
                 ui.set_name(one, "node preview");
             }
         }
@@ -398,10 +479,27 @@ impl ShaderGraphs {
                 self.small(ui, &format!("{name}: {}", node.kind()), LABEL);
                 if let Node::Subgraph { name: sub, inputs } = &node {
                     self.small(ui, &format!("calls {sub}.subgraph.ron, beside it"), MUTED);
-                    let given = inputs.iter().map(|(k, v)| format!("\"{k}\": {}", written(v))).collect::<Vec<_>>().join(", ");
+                    let given = inputs
+                        .iter()
+                        .map(|(k, v)| format!("\"{k}\": {}", written(v)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let r = ui.add(side, Style::row().full_width().gap(SPACE_2).center_items());
-                    ui.add_text(r, Style::default().width(80.0).fixed().text_size(12.0).text_color(LABEL).nowrap(), "inputs");
-                    let f = ui.add_field(r, field_style().fill().mono().text_size(11.5), &format!("{{ {given} }}"));
+                    ui.add_text(
+                        r,
+                        Style::default()
+                            .width(80.0)
+                            .fixed()
+                            .text_size(12.0)
+                            .text_color(LABEL)
+                            .nowrap(),
+                        "inputs",
+                    );
+                    let f = ui.add_field(
+                        r,
+                        field_style().fill().mono().text_size(11.5),
+                        &format!("{{ {given} }}"),
+                    );
                     ui.set_name(f, "graph input inputs");
                     self.parts.insert(f, Part::Input("inputs"));
                 }
@@ -412,24 +510,48 @@ impl ShaderGraphs {
                     let r = ui.add(side, Style::row().full_width().gap(SPACE_2).center_items());
                     ui.add_text(
                         r,
-                        Style::default().width(80.0).fixed().text_size(12.0).text_color(LABEL).nowrap(),
+                        Style::default()
+                            .width(80.0)
+                            .fixed()
+                            .text_size(12.0)
+                            .text_color(LABEL)
+                            .nowrap(),
                         field,
                     );
-                    let f = ui.add_field(r, field_style().fill().mono().text_size(11.5), &written(input));
+                    let f = ui.add_field(
+                        r,
+                        field_style().fill().mono().text_size(11.5),
+                        &written(input),
+                    );
                     ui.set_name(f, format!("graph input {field}"));
                     self.parts.insert(f, Part::Input(field));
                 }
                 let d = ui.add(
                     side,
-                    Style::row().padding_x(SPACE_2).height(22.0).fixed().center_items().radius(RADIUS_SM).hover(HOVER).clickable(),
+                    Style::row()
+                        .padding_x(SPACE_2)
+                        .height(22.0)
+                        .fixed()
+                        .center_items()
+                        .radius(RADIUS_SM)
+                        .hover(HOVER)
+                        .clickable(),
                 );
                 ui.set_name(d, "graph delete node");
-                ui.add_text(d, Style::default().text_size(12.0).text_color(ERROR), "Take the node out");
+                ui.add_text(
+                    d,
+                    Style::default().text_size(12.0).text_color(ERROR),
+                    "Take the node out",
+                );
                 self.parts.insert(d, Part::Delete);
             }
         }
         self.small(ui, "A new node, as it is written:", MUTED);
-        let f = ui.add_field(side, field_style().full_width().mono().text_size(11.5), "\"name\": Multiply(a: \"uv.x\", b: 2.0)");
+        let f = ui.add_field(
+            side,
+            field_style().full_width().mono().text_size(11.5),
+            "\"name\": Multiply(a: \"uv.x\", b: 2.0)",
+        );
         ui.set_name(f, "graph add node");
         self.parts.insert(f, Part::Add);
     }
@@ -472,7 +594,12 @@ impl ShaderGraphs {
                     };
                     let Some((_, doc)) = &self.open else { return };
                     if graphs::fields_of(doc, &to).is_empty() {
-                        session.say(Level::Warning, format!("`{to}` reads nothing another node gives: its file says what it is"));
+                        session.say(
+                            Level::Warning,
+                            format!(
+                                "`{to}` reads nothing another node gives: its file says what it is"
+                            ),
+                        );
                         return;
                     }
                     self.connecting = Some((name, to));
@@ -480,7 +607,9 @@ impl ShaderGraphs {
                 }
             }
             Part::As(field) if click => {
-                let Some((from, to)) = self.connecting.take() else { return };
+                let Some((from, to)) = self.connecting.take() else {
+                    return;
+                };
                 let Some((_, doc)) = &self.open else { return };
                 let edit = Edit::connect(doc, &from, &to, field);
                 self.edit(ui, session, edit);
@@ -498,7 +627,11 @@ impl ShaderGraphs {
             }
             Part::Input(field) => {
                 if let (Event::Submit(value), Some(node)) = (event, self.chosen.clone()) {
-                    let edit = Edit::Set { node, field: field.into(), value: value.trim().into() };
+                    let edit = Edit::Set {
+                        node,
+                        field: field.into(),
+                        value: value.trim().into(),
+                    };
                     self.edit(ui, session, edit);
                 }
             }
@@ -509,8 +642,19 @@ impl ShaderGraphs {
                         return;
                     };
                     let node = name.trim().trim_matches('"').to_string();
-                    self.edit(ui, session, Edit::Add { node: node.clone(), kind: kind.trim().into() });
-                    if self.open.as_ref().is_some_and(|(_, d)| d.nodes().contains_key(&node)) {
+                    self.edit(
+                        ui,
+                        session,
+                        Edit::Add {
+                            node: node.clone(),
+                            kind: kind.trim().into(),
+                        },
+                    );
+                    if self
+                        .open
+                        .as_ref()
+                        .is_some_and(|(_, d)| d.nodes().contains_key(&node))
+                    {
                         self.chosen = Some(node);
                         self.show(ui);
                     }

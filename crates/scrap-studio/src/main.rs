@@ -24,7 +24,8 @@ fn main() {
         Err(message) => fail(&message, bundled),
     };
     remember(&scene);
-    if let (Some(dir), Some(project)) = (scrap_studio::appearance::config_dir(), session.project()) {
+    if let (Some(dir), Some(project)) = (scrap_studio::appearance::config_dir(), session.project())
+    {
         let root = project.root().to_path_buf();
         if let Err(problem) = scrap_cli::hub::update(&dir, |k| k.opened(&root)) {
             eprintln!("{problem}");

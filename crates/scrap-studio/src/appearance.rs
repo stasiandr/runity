@@ -656,7 +656,7 @@ fn preset_card(ui: &mut Ui, parent: NodeId, p: &Preset) -> NodeId {
             .fixed()
             .padding(5.0)
             .gap(4.0)
-            .radius(6.0)
+            .radius(RADIUS_SM)
             .background(c("BG")),
     );
     // A narrow panel as the Hierarchy, a wide one as the Inspector.

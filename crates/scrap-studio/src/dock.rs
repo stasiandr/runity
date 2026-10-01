@@ -181,6 +181,24 @@ pub enum Zone {
     Bottom,
 }
 
+/// Where a dragged tab would land, as the docks were built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// Built stack `i`: into its tabs, or beside it on an edge.
+    Stack(usize, Zone),
+    /// Built stack `i`'s strip: among its tabs, before the one at `at`.
+    Tab(usize, usize),
+    /// Beside the whole of area `r`, split into more than one stack.
+    Area(usize, Zone),
+}
+
+/// How near the edge of an area, in pixels, a tab goes beside the whole
+/// area rather than beside the stack there.
+const AREA_EDGE: f32 = 14.0;
+
+/// The outline shown where a tab let go over no dock gets its own window.
+const GHOST: (f32, f32) = (220.0, 150.0);
+
 impl Tree {
     /// Tabs, the first on top.
     pub fn stack(tabs: &[Panel]) -> Tree {
@@ -295,6 +313,15 @@ impl Tree {
         } else {
             Tree::split(across, 0.5, old, new)
         };
+    }
+
+    /// Put `panel` among the tabs of the stack at `path`, before the one
+    /// at `at`, on top there.
+    fn insert_tab(&mut self, path: &[u8], panel: Panel, at: usize) {
+        if let Some(Tree::Stack { tabs, active }) = self.at_mut(path) {
+            tabs.insert(at.min(tabs.len()), panel);
+            *active = Some(panel);
+        }
     }
 
     /// The tree without its empty stacks: a split with one gives its place
@@ -676,6 +703,10 @@ pub enum Docked {
     Maximize(Panel),
     /// The padlock of the panel on top was clicked.
     Lock(Panel),
+    /// A tab was let go over no dock — over the view, or out of the
+    /// window — at this point of the window: the panel wants a window of
+    /// its own there.
+    Float(Panel, f32, f32),
 }
 
 pub struct Docks {
@@ -708,7 +739,7 @@ fn tab_style(on: bool) -> Style {
         .padding_x(SPACE_3)
         .gap(6.0)
         .center_items()
-        .radius(6.0)
+        .radius(RADIUS_SM)
         .clickable()
         .draggable();
     if on {
@@ -725,7 +756,7 @@ fn header_style(on: bool) -> Style {
         .size(22.0, 22.0)
         .fixed()
         .center()
-        .radius(6.0)
+        .radius(RADIUS_SM)
         .clickable();
     if on {
         s.background(ACCENT_HOVER).hover(ACCENT.alpha(18))
@@ -738,6 +769,20 @@ fn header_style(on: bool) -> Style {
 fn grown(mut s: Style, grow: f32) -> Style {
     s.layout.flex_grow = grow;
     s
+}
+
+/// The nearest of the distances to the left, right, top and bottom
+/// edges, and that edge.
+fn nearest_edge(left: f32, right: f32, top: f32, bottom: f32) -> (f32, Zone) {
+    [
+        (left, Zone::Left),
+        (right, Zone::Right),
+        (top, Zone::Top),
+        (bottom, Zone::Bottom),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.0.total_cmp(&b.0))
+    .expect("four edges")
 }
 
 /// A stack's or bar's place, for its node's name: the area, then `a` or
@@ -1261,27 +1306,71 @@ impl Docks {
             }
             Event::Drag { .. } => {
                 self.dragging = true;
-                let target = self.drop_target(ui);
-                self.show_drop(ui, target);
+                let (x, y) = ui.pointer();
+                let target = self.drop_target(ui, x, y);
+                let ghost = target.is_none().then_some((x, y));
+                self.show_drop(ui, target, ghost);
                 Some(Docked::Handled)
             }
             Event::DragEnd { .. } => {
                 self.dragging = false;
-                let target = self.drop_target(ui);
-                self.show_drop(ui, None);
-                if let Some((i, zone)) = target {
-                    self.drop(ui, panel, i, zone);
+                let (x, y) = ui.pointer();
+                let target = self.drop_target(ui, x, y);
+                self.show_drop(ui, None, None);
+                match target {
+                    Some(target) => {
+                        self.drop(ui, panel, target);
+                        Some(Docked::Handled)
+                    }
+                    None => Some(Docked::Float(panel, x, y)),
                 }
-                Some(Docked::Handled)
             }
             _ => Some(Docked::Handled),
         }
     }
 
-    /// The stack under the pointer and where on it: over its strip or its
-    /// middle, into its tabs; near an edge, beside it.
-    fn drop_target(&self, ui: &Ui) -> Option<(usize, Zone)> {
-        let (x, y) = ui.pointer();
+    /// A panel in a window of its own dragged by its strip to `(x, y)` of
+    /// the main window, or out of it (`None`): where it would dock lights
+    /// up, and the empty areas show to take it.
+    pub fn drag_in(&mut self, ui: &mut Ui, at: Option<(f32, f32)>) {
+        self.dragging = true;
+        let target = at.and_then(|(x, y)| self.drop_target(ui, x, y));
+        self.show_drop(ui, target, None);
+    }
+
+    /// That panel let go at `(x, y)` of the main window: docked there, and
+    /// `true`, or `false` over no dock.
+    pub fn drop_in(&mut self, ui: &mut Ui, panel: Panel, at: Option<(f32, f32)>) -> bool {
+        self.dragging = false;
+        let target = at.and_then(|(x, y)| self.drop_target(ui, x, y));
+        self.show_drop(ui, None, None);
+        match target {
+            Some(target) => {
+                self.drop(ui, panel, target);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What is under `(x, y)`: near the outer edge of an area of more than
+    /// one stack, beside the whole area; over a stack's strip, among its
+    /// tabs; over its middle, into them; near its edge, beside it.
+    fn drop_target(&self, ui: &Ui, x: f32, y: f32) -> Option<Target> {
+        for (r, slot) in self.slots.iter().enumerate() {
+            if !matches!(self.arrangement.regions[r], Tree::Split { .. }) || !ui.is_shown(*slot) {
+                continue;
+            }
+            let a = ui.rect(*slot);
+            if !a.contains(x, y) {
+                continue;
+            }
+            let (near, zone) =
+                nearest_edge(x - a.x, a.x + a.width - x, y - a.y, a.y + a.height - y);
+            if near < AREA_EDGE {
+                return Some(Target::Area(r, zone));
+            }
+        }
         let i = self
             .stacks
             .iter()
@@ -1289,44 +1378,83 @@ impl Docks {
         let view = &self.stacks[i];
         let r = ui.rect(view.card);
         let strip = ui.rect(view.strip);
-        if view.tabs.is_empty() || y <= strip.y + strip.height {
-            return Some((i, Zone::Center));
+        if view.tabs.is_empty() {
+            return Some(Target::Stack(i, Zone::Center));
+        }
+        if y <= strip.y + strip.height {
+            // Before the first tab the pointer is left of, on its row or a
+            // row above; after them all past the last.
+            let at = view
+                .tabs
+                .iter()
+                .position(|(_, t)| {
+                    let t = ui.rect(*t);
+                    y < t.y + t.height && (y < t.y || x < t.x + t.width / 2.0)
+                })
+                .unwrap_or(view.tabs.len());
+            return Some(Target::Tab(i, at));
         }
         let fx = (x - r.x) / r.width.max(1.0);
         let fy = (y - r.y) / r.height.max(1.0);
-        let (near, zone) = [
-            (fx, Zone::Left),
-            (1.0 - fx, Zone::Right),
-            (fy, Zone::Top),
-            (1.0 - fy, Zone::Bottom),
-        ]
-        .into_iter()
-        .min_by(|a, b| a.0.total_cmp(&b.0))?;
-        Some((i, if near < 0.3 { zone } else { Zone::Center }))
+        let (near, zone) = nearest_edge(fx, 1.0 - fx, fy, 1.0 - fy);
+        Some(Target::Stack(
+            i,
+            if near < 0.3 { zone } else { Zone::Center },
+        ))
     }
 
-    /// Light up where a dragged tab would land: the whole stack, or the
-    /// half of it the new stack would take.
-    fn show_drop(&self, ui: &mut Ui, target: Option<(usize, Zone)>) {
-        let Some((i, zone)) = target else {
-            ui.restyle(self.drop_zone, |s| s.hidden());
-            return;
+    /// Light up where a dragged tab would land: the whole stack, the half
+    /// of it or of its area the new stack would take, or a bar between
+    /// tabs. Over no dock, `ghost`: an outline of the window it would get.
+    fn show_drop(&self, ui: &mut Ui, target: Option<Target>, ghost: Option<(f32, f32)>) {
+        let half = |r: Rect, zone: Zone| {
+            let (w, h) = (r.width / 2.0, r.height / 2.0);
+            match zone {
+                Zone::Center => r,
+                Zone::Left => Rect { width: w, ..r },
+                Zone::Right => Rect {
+                    x: r.x + w,
+                    width: w,
+                    ..r
+                },
+                Zone::Top => Rect { height: h, ..r },
+                Zone::Bottom => Rect {
+                    y: r.y + h,
+                    height: h,
+                    ..r
+                },
+            }
         };
-        let r = ui.rect(self.stacks[i].card);
-        let (w, h) = (r.width / 2.0, r.height / 2.0);
-        let z = match zone {
-            Zone::Center => r,
-            Zone::Left => Rect { width: w, ..r },
-            Zone::Right => Rect {
-                x: r.x + w,
-                width: w,
-                ..r
-            },
-            Zone::Top => Rect { height: h, ..r },
-            Zone::Bottom => Rect {
-                y: r.y + h,
-                height: h,
-                ..r
+        let z = match target {
+            Some(Target::Stack(i, zone)) => half(ui.rect(self.stacks[i].card), zone),
+            Some(Target::Area(r, zone)) => half(ui.rect(self.slots[r]), zone),
+            Some(Target::Tab(i, at)) => {
+                let tabs = &self.stacks[i].tabs;
+                let (t, x) = match tabs.get(at) {
+                    Some((_, t)) => (ui.rect(*t), ui.rect(*t).x - 3.0),
+                    None => {
+                        let t = ui.rect(tabs[tabs.len() - 1].1);
+                        (t, t.x + t.width - 1.0)
+                    }
+                };
+                Rect {
+                    x,
+                    y: t.y,
+                    width: 4.0,
+                    height: t.height,
+                }
+            }
+            None => match ghost {
+                Some((x, y)) => Rect {
+                    x: x - 24.0,
+                    y: y - 12.0,
+                    width: GHOST.0,
+                    height: GHOST.1,
+                },
+                None => {
+                    ui.restyle(self.drop_zone, |s| s.hidden());
+                    return;
+                }
             },
         };
         ui.restyle(self.drop_zone, |s| {
@@ -1334,22 +1462,61 @@ impl Docks {
         });
     }
 
-    /// A tab let go on stack `i`.
-    fn drop(&mut self, ui: &mut Ui, panel: Panel, i: usize, zone: Zone) {
-        let (region, path) = (self.stacks[i].region, self.stacks[i].path.clone());
-        let Some((from, from_path)) = self.place_of(panel) else {
-            return;
+    /// A tab let go on `target`, from its stack or from a window of its own.
+    fn drop(&mut self, ui: &mut Ui, panel: Panel, target: Target) {
+        let (region, path, zone, at) = match target {
+            Target::Stack(i, zone) => (
+                self.stacks[i].region,
+                self.stacks[i].path.clone(),
+                zone,
+                None,
+            ),
+            Target::Tab(i, at) => (
+                self.stacks[i].region,
+                self.stacks[i].path.clone(),
+                Zone::Center,
+                Some(at),
+            ),
+            Target::Area(r, zone) => (r, Vec::new(), zone, None),
         };
-        let own = from == region && from_path == path;
-        // Into its own stack, or beside itself when it is the only tab:
-        // nothing moves.
-        if own && (zone == Zone::Center || self.stacks[i].tabs.len() == 1) {
-            return;
+        let from = self.place_of(panel);
+        if let Some((from, from_path)) = &from {
+            if *from == region && *from_path == path {
+                // Among its own tabs: it moves along the strip.
+                if let Some(at) = at {
+                    if let Some(Tree::Stack { tabs, active }) =
+                        self.arrangement.regions[region].at_mut(&path)
+                    {
+                        let old = tabs.iter().position(|p| *p == panel).unwrap_or(0);
+                        tabs.remove(old);
+                        tabs.insert(if old < at { at - 1 } else { at }.min(tabs.len()), panel);
+                        *active = Some(panel);
+                    }
+                    self.rebuild(ui);
+                    return;
+                }
+                // Into its own stack, or beside itself when it is the only
+                // tab: nothing moves.
+                let alone = matches!(self.arrangement.regions[region].at(&path),
+                    Some(Tree::Stack { tabs, .. }) if tabs.len() == 1);
+                if zone == Zone::Center || alone {
+                    return;
+                }
+            }
         }
         // Out first, in second, and only then are empty stacks taken away:
         // the way to the target is still the same when it is used.
-        self.arrangement.regions[from].remove(panel);
-        self.arrangement.regions[region].insert(&path, panel, zone);
+        match &from {
+            Some((from, _)) => {
+                self.arrangement.regions[*from].remove(panel);
+            }
+            None => self.arrangement.closed.retain(|p| *p != panel),
+        }
+        match at {
+            Some(at) => self.arrangement.regions[region].insert_tab(&path, panel, at),
+            None => self.arrangement.regions[region].insert(&path, panel, zone),
+        }
+        let from = from.map_or(region, |(r, _)| r);
         for r in [from, region] {
             let tree = &mut self.arrangement.regions[r];
             *tree = std::mem::replace(tree, Tree::stack(&[])).pruned();
@@ -1445,11 +1612,18 @@ mod tests {
     /// settings `settings`: that is still the Project Settings tab.
     #[test]
     fn an_old_layouts_settings_is_project_settings() {
-        let mut a =
-            Arrangement::read("(left: [*hierarchy], right: [*inspector], lower: [*settings], closed: [])")
-                .unwrap();
+        let mut a = Arrangement::read(
+            "(left: [*hierarchy], right: [*inspector], lower: [*settings], closed: [])",
+        )
+        .unwrap();
         a.normalize();
-        assert!(matches!(&a.regions[2], Tree::Stack { active: Some(Panel::Settings), .. }));
+        assert!(matches!(
+            &a.regions[2],
+            Tree::Stack {
+                active: Some(Panel::Settings),
+                ..
+            }
+        ));
         assert_eq!(Panel::Settings.label(), "Project Settings");
         assert!(a.closed.contains(&Panel::Preferences));
     }

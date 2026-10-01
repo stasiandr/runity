@@ -55,7 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let t = Instant::now();
     let first = frame(&mut studio);
-    println!("first frame  {first:7.1} ms   (from start {:7.1} ms)", ms(t));
+    println!(
+        "first frame  {first:7.1} ms   (from start {:7.1} ms)",
+        ms(t)
+    );
     for _ in 0..10 {
         frame(&mut studio);
     }
@@ -76,7 +79,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .lines()
         .filter_map(|l| l.split('#').nth(1))
         .filter_map(|l| l.strip_prefix("line "))
-        .map(|l| l.split(" @").next().unwrap_or(l).split(" \"").next().unwrap_or(l).trim().to_string())
+        .map(|l| {
+            l.split(" @")
+                .next()
+                .unwrap_or(l)
+                .split(" \"")
+                .next()
+                .unwrap_or(l)
+                .trim()
+                .to_string()
+        })
         .take(12)
         .collect();
     let mut clicks = Vec::new();
@@ -109,7 +121,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         studio.handle(&InputEvent::MouseDown(MouseButton::Right));
         let mut orbit = Vec::new();
         for i in 0..60 {
-            studio.handle(&InputEvent::MouseMoved { x: x + i as f32 * 4.0, y: y + (i % 7) as f32 });
+            studio.handle(&InputEvent::MouseMoved {
+                x: x + i as f32 * 4.0,
+                y: y + (i % 7) as f32,
+            });
             orbit.push(frame(&mut studio));
         }
         studio.handle(&InputEvent::MouseUp(MouseButton::Right));
@@ -144,7 +159,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // text the same): the worst frame of the second after, as the editor
     // hears of it and reads what it must again.
     let root = studio.session.project().map(|p| p.root().to_path_buf());
-    let prefab = root.and_then(|r| scrap::layout::files(&r, scrap::layout::Kind::Prefab).into_iter().next());
+    let prefab = root.and_then(|r| {
+        scrap::layout::files(&r, scrap::layout::Kind::Prefab)
+            .into_iter()
+            .next()
+    });
     if let Some(prefab) = prefab {
         let mut after = Vec::new();
         for _ in 0..3 {
@@ -175,7 +194,12 @@ fn ms(t: Instant) -> f64 {
 fn report(what: &str, times: &[f64]) {
     let mut sorted = times.to_vec();
     sorted.sort_by(f64::total_cmp);
-    let at = |q: f64| sorted.get(((sorted.len() as f64 - 1.0) * q) as usize).copied().unwrap_or(0.0);
+    let at = |q: f64| {
+        sorted
+            .get(((sorted.len() as f64 - 1.0) * q) as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
     println!(
         "{what:<12} n {:4}  mean {:6.1}  p50 {:6.1}  p95 {:6.1}  worst {:6.1} ms",
         times.len(),
