@@ -31,6 +31,7 @@ fn from_yaml(b: &Yaml, report: &mut Report) -> Motion {
             - settings.f32("m_StartTime").unwrap_or(0.0))
         .max(0.0),
         tracks: Vec::new(),
+        ..Default::default()
     };
     // Unity is left-handed, scrap right-handed: z mirrored, as a scene's
     // positions are, and so the turns about x and y run the other way.
@@ -72,7 +73,7 @@ fn from_yaml(b: &Yaml, report: &mut Report) -> Motion {
                 motion.tracks.push(Track {
                     path: path.clone(),
                     what,
-                    keys,
+                    keys: keys.into_iter().map(Into::into).collect(),
                     ease: Default::default(),
                 });
             }
@@ -117,7 +118,7 @@ fn from_yaml(b: &Yaml, report: &mut Report) -> Motion {
         motion.tracks.push(Track {
             path: c.str("path").unwrap_or("").to_string(),
             what,
-            keys,
+            keys: keys.into_iter().map(Into::into).collect(),
             ease: Default::default(),
         });
     }
@@ -134,7 +135,7 @@ pub fn text(motion: &Motion) -> String {
         let keys: Vec<String> = t
             .keys
             .iter()
-            .map(|(time, v)| format!("({time:?}, {v:?})"))
+            .map(|k| format!("({:?}, {:?})", k.time, k.value))
             .collect();
         let path = if t.path.is_empty() {
             String::new()
@@ -209,7 +210,7 @@ AnimationClip:
                 .tracks
                 .iter()
                 .find(|t| t.path == path && t.what == what)
-                .map(|t| t.keys.clone())
+                .map(|t| t.keys.iter().map(|k| (k.time, k.value)).collect::<Vec<_>>())
         };
         assert_eq!(find("Lid", Property::TurnY), Some(vec![(0.0, -30.0), (1.0, -90.0)]));
         assert_eq!(find("", Property::Z), Some(vec![(0.0, -3.0)]), "mirrored");

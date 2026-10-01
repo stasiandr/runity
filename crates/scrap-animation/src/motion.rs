@@ -41,6 +41,7 @@ use crate::animation::{Channel, Clip, Joint, Path as Part, PoseTransform, Skelet
 use crate::animator::Animator;
 use crate::animgraph::{Controller, Graph};
 use crate::id::EntityId;
+pub use crate::keys::{Key, Tangent};
 
 /// The folder motion clips are in.
 pub const DIR: &str = "clips";
@@ -71,8 +72,9 @@ pub struct Track {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     pub what: Property,
-    /// (seconds, value), in time order.
-    pub keys: Vec<(f32, f32)>,
+    /// (seconds, value), in time order; a key may say how the curve
+    /// passes it — `(0.5, 90.0, Auto)` ([`crate::keys`]).
+    pub keys: Vec<Key>,
     /// The curve from each key to the next: straight by default.
     #[serde(default, skip_serializing_if = "is_linear")]
     pub ease: crate::ease::Ease,
@@ -85,6 +87,11 @@ fn is_linear(ease: &crate::ease::Ease) -> bool {
 /// A clip of tracks.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Motion {
+    /// The model's clip this one is made over, when it is an edit of one
+    /// ([`crate::overlay`]): its tracks are bones by name, and only what
+    /// they key is changed.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::overlay::bare")]
+    pub base: Option<crate::overlay::Base>,
     /// Seconds.
     pub length: f32,
     pub tracks: Vec<Track>,
@@ -99,42 +106,31 @@ impl Motion {
     }
 }
 
-/// The value of keys at a time: linear between, held past either end.
+impl Track {
+    /// Its value at a time, held past either end; a switch steps.
+    pub fn sample(&self, time: f32) -> Option<f32> {
+        if self.what == Property::Active {
+            crate::keys::step(&self.keys, time)
+        } else {
+            crate::keys::sample(&self.keys, self.ease, time)
+        }
+    }
+
+    /// Whether it bends between its keys, rather than going straight.
+    pub fn curved(&self) -> bool {
+        crate::keys::curved(&self.keys, self.ease)
+    }
+}
+
+/// The value of plain keys at a time: linear between, held past either end.
 pub fn sample(keys: &[(f32, f32)], time: f32) -> Option<f32> {
     sample_eased(keys, time, crate::ease::Ease::Linear)
 }
 
-/// The value of keys at a time, on `ease` from each key to the next.
+/// The value of plain keys at a time, on `ease` from each key to the next.
 pub fn sample_eased(keys: &[(f32, f32)], time: f32, ease: crate::ease::Ease) -> Option<f32> {
-    let first = keys.first()?;
-    if time <= first.0 {
-        return Some(first.1);
-    }
-    for pair in keys.windows(2) {
-        let ((t0, v0), (t1, v1)) = (pair[0], pair[1]);
-        if time <= t1 {
-            let f = if t1 > t0 {
-                (time - t0) / (t1 - t0)
-            } else {
-                1.0
-            };
-            return Some(ease.lerp(v0, v1, f));
-        }
-    }
-    keys.last().map(|k| k.1)
-}
-
-/// The value of the last key at or before a time: a switch, which does not
-/// pass through a half.
-pub fn step(keys: &[(f32, f32)], time: f32) -> Option<f32> {
-    let first = keys.first()?;
-    Some(
-        keys.iter()
-            .take_while(|(t, _)| *t <= time)
-            .last()
-            .unwrap_or(first)
-            .1,
-    )
+    let keys: Vec<Key> = keys.iter().map(|&k| k.into()).collect();
+    crate::keys::sample(&keys, ease, time)
 }
 
 /// Which of the graph's clips a line animates with, by the path of each
@@ -156,7 +152,7 @@ pub struct Moving {
     joints: Vec<hecs::Entity>,
     /// Per clip, in the animator's order: the tracks that are not a place.
     #[allow(clippy::type_complexity)]
-    others: Vec<Vec<(hecs::Entity, Property, Vec<(f32, f32)>, crate::ease::Ease)>>,
+    others: Vec<Vec<(hecs::Entity, Track)>>,
     /// What any clip switches on or off, as it was when the line was
     /// dressed: put back while a clip that does not switch it plays —
     /// Unity's Write Defaults. A saw's sparks one state turns off are on
@@ -339,7 +335,7 @@ pub fn attach(
         };
         let names: Vec<String> = clips_of(graph)
             .into_iter()
-            .filter(|c| motions.clips.contains_key(c))
+            .filter(|c| motions.clips.get(c).is_some_and(|m| m.base.is_none()))
             .collect();
         if names.is_empty() {
             scrap_core::world::take_off::<Animates>(world, entity);
@@ -400,7 +396,7 @@ pub fn attach(
                 };
                 match track.what {
                     Property::Active | Property::Volume | Property::ParticleRate => {
-                        other.push((target, track.what, track.keys.clone(), track.ease));
+                        other.push((target, (*track).clone()));
                     }
                     _ => by_path.entry(track.path.as_str()).or_default().push(track),
                 }
@@ -451,7 +447,8 @@ pub fn attach(
             }
         }
         let mut defaults: Vec<(hecs::Entity, Property, f32)> = Vec::new();
-        for (target, what, _, _) in others.iter().flatten() {
+        for (target, track) in others.iter().flatten() {
+            let what = &track.what;
             if *what == Property::Active && !defaults.iter().any(|(t, w, _)| t == target && w == what) {
                 let on = world.get::<&crate::world::Inactive>(*target).is_err();
                 defaults.push((*target, *what, if on { 1.0 } else { 0.0 }));
@@ -501,7 +498,7 @@ const EASED_SAMPLES: usize = 16;
 /// A joint's channels from its tracks: every axis a track does not key
 /// holds the rest's value. A track on a curve is baked into samples
 /// between its keys.
-fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<Channel> {
+pub(crate) fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<Channel> {
     let find = |what: Property| tracks.iter().find(|t| t.what == what);
     let mut out = Vec::new();
     for (axes, path) in [
@@ -523,16 +520,16 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
             .iter()
             .flatten()
             .flat_map(|track| {
-                let eased = track.ease != crate::ease::Ease::Linear;
+                let eased = track.curved();
                 track
                     .keys
                     .windows(2)
                     .flat_map(move |pair| {
-                        let (t0, t1) = (pair[0].0, pair[1].0);
+                        let (t0, t1) = (pair[0].time, pair[1].time);
                         let n = if eased { EASED_SAMPLES } else { 1 };
                         (0..n).map(move |i| t0 + (t1 - t0) * i as f32 / n as f32)
                     })
-                    .chain(track.keys.iter().map(|(t, _)| *t))
+                    .chain(track.keys.iter().map(|k| k.time))
             })
             .collect();
         times.sort_by(f32::total_cmp);
@@ -550,7 +547,7 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
                 let swing = keyed
                     .iter()
                     .flatten()
-                    .filter_map(|k| Some((sample_eased(&k.keys, b, k.ease)? - sample_eased(&k.keys, a, k.ease)?).abs()))
+                    .filter_map(|k| Some((k.sample(b)? - k.sample(a)?).abs()))
                     .fold(0.0f32, f32::max);
                 let pieces = (swing / 90.0).ceil().max(1.0) as usize;
                 for n in 1..pieces {
@@ -569,7 +566,7 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
         for t in &times {
             let v = Vec3::from_array(std::array::from_fn(|i| {
                 keyed[i]
-                    .and_then(|k| sample_eased(&k.keys, *t, k.ease))
+                    .and_then(|k| k.sample(*t))
                     .unwrap_or(base[i])
             }));
             match path {
@@ -628,19 +625,14 @@ pub fn run_with(
                 let said = keyed
                     .into_iter()
                     .flatten()
-                    .any(|(t, w, _, _)| t == target && w == what);
+                    .any(|(t, track)| t == target && track.what == *what);
                 if !said {
                     others.push((*target, *what, *value));
                 }
             }
-            for (target, what, keys, ease) in keyed.into_iter().flatten() {
-                let value = if *what == Property::Active {
-                    step(keys, time)
-                } else {
-                    sample_eased(keys, time, *ease)
-                };
-                if let Some(v) = value {
-                    others.push((*target, *what, v));
+            for (target, track) in keyed.into_iter().flatten() {
+                if let Some(v) = track.sample(time) {
+                    others.push((*target, track.what, v));
                 }
             }
         }
@@ -875,9 +867,9 @@ mod tests {
     fn a_track_on_a_curve_eases_between_its_keys_and_a_straight_one_is_written_as_before() {
         let track: Track =
             ron::from_str(r#"(what: Y, keys: [(0.0, 0.0), (1.0, 10.0)], ease: InQuad)"#).unwrap();
-        assert_eq!(sample_eased(&track.keys, 0.5, track.ease), Some(2.5));
+        assert_eq!(track.sample(0.5), Some(2.5));
         assert_eq!(
-            sample(&track.keys, 0.5),
+            crate::keys::sample(&track.keys, crate::ease::Ease::Linear, 0.5),
             Some(5.0),
             "straight when not asked"
         );
