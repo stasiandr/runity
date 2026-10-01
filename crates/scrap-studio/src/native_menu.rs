@@ -469,8 +469,8 @@ pub fn toggles(action: &Action) -> bool {
             | Action::Play
             | Action::Pause
             | Action::FastGame
-            | Action::Players(_)
             | Action::MuteGame
+            | Action::Players(_)
     )
 }
 

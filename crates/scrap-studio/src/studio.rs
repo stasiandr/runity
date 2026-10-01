@@ -51,6 +51,8 @@ pub const REFERENCE_SCENE: &str = "examples/showreel/content/showreel/maps/first
 const SCENE: ImageId = ImageId(0);
 /// A selected camera's view, in the Scene view's corner.
 const CAMERA_PREVIEW: ImageId = ImageId(2);
+/// The engine's icon, at the toolbar's left.
+const LOGO: ImageId = ImageId(4);
 
 /// The pointer's look, as [`Studio::cursor`] asks for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +165,8 @@ struct Popup {
 /// The toolbar's controls that change with the session.
 struct Toolbar {
     menus: Vec<(NodeId, Vec<MenuItem>)>,
+    /// The project's name beside the icon.
+    project: NodeId,
     scene_name: NodeId,
     modified: NodeId,
     play: NodeId,
@@ -326,14 +330,14 @@ pub struct Studio {
     /// changes whenever that does.
     menu_seen: Option<MenuStamp>,
     menu_revision: u64,
-    /// How many Play starts, as the project's prefs say (read with the
-    /// disk twice a second, not every frame).
-    players: u32,
     /// Whether the game played from here is muted, as `.scrap/editor.ron`
     /// says it: kept here because the menus ask every frame, and read
     /// again with the disk, since another editor on the project may turn
     /// it.
     mute_game: bool,
+    /// How many Play starts, as the project's prefs say (read with the
+    /// disk twice a second, not every frame).
+    players: u32,
     /// The Console line in the status bar.
     status_line: Option<StatusLine>,
 
@@ -742,8 +746,8 @@ impl Studio {
             native_menu: false,
             menu_seen: None,
             menu_revision: 0,
-            players: 1,
             mute_game,
+            players: 1,
             status_line: None,
             snap,
 
@@ -835,7 +839,7 @@ impl Studio {
             saved_layout: String::new(),
             layout_name: Some("Default".into()),
             config_dir: config,
-            pending_images: Vec::new(),
+            pending_images: vec![(LOGO, 64, logo_pixels())],
             scene_before_prefab: None,
             prefab_bar,
             prefab_name,
@@ -1059,8 +1063,8 @@ impl Studio {
             Action::Pause => (playing, s.is_paused()),
             Action::Step | Action::KeepSimulation => (playing, false),
             Action::FastGame => (true, s.fast_game()),
-            Action::Players(n) => (true, self.players == *n),
             Action::MuteGame => (true, self.mute_game),
+            Action::Players(n) => (true, self.players == *n),
             Action::Play => (true, playing),
             Action::ToggleGrid => (true, s.show_grid()),
             Action::ToggleSnap => (true, s.snap().meters > 0.0),
@@ -2874,9 +2878,9 @@ impl Studio {
             return;
         }
         self.polled = Instant::now();
-        // The agent may have chosen another count (start_game's players).
+        // The agent may have chosen another count (start_game's players),
+        // another editor on the project may have muted the game.
         self.players = self.session.players();
-        // Another editor on the project may have muted the game.
         self.mute_game = self.session.mute_game();
         self.save_layout();
         if self.personal_dirty {
@@ -3122,6 +3126,10 @@ impl Studio {
             .map(scrap::layout::name_of)
             .unwrap_or_else(|| "untitled".into());
         ui.set_text(t.scene_name, &name);
+        let project = s.project().map_or("scrap", |p| p.name());
+        if ui.text(t.project) != Some(project) {
+            ui.set_text(t.project, project);
+        }
         let modified = s.is_modified();
         ui.restyle(t.modified, |st| {
             st.opacity(if modified { 1.0 } else { 0.0 })
@@ -3168,6 +3176,13 @@ impl Studio {
         );
         set_icon_button(ui, t.pause, "pause", s.is_paused(), true);
         set_icon_button(ui, t.step, "step-forward", false, true);
+        set_icon_button(
+            ui,
+            t.mute,
+            if self.mute_game { "volume-x" } else { "volume-2" },
+            false,
+            true,
+        );
         set_word(
             ui,
             t.players,
@@ -3176,13 +3191,6 @@ impl Studio {
                 2 => "+1 clone".to_string(),
                 n => format!("+{} clones", n - 1),
             },
-        );
-        set_icon_button(
-            ui,
-            t.mute,
-            if self.mute_game { "volume-x" } else { "volume-2" },
-            false,
-            true,
         );
         ui.restyle(t.play_group, |st| {
             st.border(1.0, if playing { ACCENT.alpha(60) } else { DIVIDER })
@@ -4497,6 +4505,19 @@ impl Studio {
                         },
                     );
                 }
+                Action::MuteGame => {
+                    let on = !self.mute_game;
+                    s.set_mute_game(on);
+                    self.mute_game = on;
+                    s.say(
+                        Level::Info,
+                        if on {
+                            "the game plays muted"
+                        } else {
+                            "the game plays with its sound"
+                        },
+                    );
+                }
                 Action::Players(n) => {
                     let n = s.set_players(n);
                     self.players = n;
@@ -4514,19 +4535,6 @@ impl Studio {
                                 "Play starts the host in the Game view and {} joining it in windows of their own{running}",
                                 if n == 2 { "a clone".to_string() } else { format!("{} clones", n - 1) }
                             )
-                        },
-                    );
-                }
-                Action::MuteGame => {
-                    let on = !self.mute_game;
-                    s.set_mute_game(on);
-                    self.mute_game = on;
-                    s.say(
-                        Level::Info,
-                        if on {
-                            "the game plays muted"
-                        } else {
-                            "the game plays with its sound"
                         },
                     );
                 }
@@ -5124,6 +5132,14 @@ fn splitter(ui: &mut Ui, parent: NodeId, vertical: bool, name: &str) -> NodeId {
     n
 }
 
+/// The toolbar's icon: `assets/icon/scrap-64.png`, as RGBA.
+fn logo_pixels() -> Vec<u8> {
+    image::load_from_memory(include_bytes!("../assets/icon/scrap-64.png"))
+        .expect("the studio's icon is a PNG")
+        .to_rgba8()
+        .into_raw()
+}
+
 fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let bar = ui.add(
         root,
@@ -5150,11 +5166,8 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
         left,
         Style::row().gap(SPACE_2).center_items().padding_x(SPACE_1),
     );
-    ui.add(
-        brand,
-        Style::row().size(8.0, 8.0).radius(4.0).background(ACCENT),
-    );
-    ui.add_text(
+    ui.add_image(brand, Style::default().size(20.0, 20.0).fixed().radius(4.0), LOGO);
+    let project = ui.add_text(
         brand,
         Style::default()
             .text_size(15.0)
@@ -5163,6 +5176,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             .nowrap(),
         "scrap",
     );
+    ui.set_name(project, "project name");
     let mut menus = Vec::new();
     for (title, items) in menu::menu_bar() {
         let m = ui.add(
@@ -5258,6 +5272,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     (
         Toolbar {
             menus,
+            project,
             scene_name,
             modified,
             play,
