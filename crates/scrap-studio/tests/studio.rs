@@ -5792,3 +5792,59 @@ fn a_models_clip_changed_in_the_window_is_an_edit_over_it() {
     click(&mut s, "animation stop");
     assert!(s.session.previewing().is_empty());
 }
+
+#[test]
+fn the_tween_slider_makes_a_breakdown_between_the_keys_around_the_playhead() {
+    let Some((mut s, dir)) = studio() else { return };
+    let crate_ = s.session.add(None, "cube").unwrap();
+    s.session.select(Some(crate_)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    fill(&mut s, "new clip name", "hop");
+    click(&mut s, "new clip");
+    // Keys at 0, and at 1 two metres up (recorded).
+    click(&mut s, "animation key");
+    let p = s.session.transform(crate_).unwrap().position;
+    fill(&mut s, "animation time", "1.0");
+    click(&mut s, "animation record");
+    s.frame();
+    s.session.set_field(crate_, "position", &format!("({:?}, {:?}, {:?})", p.x, p.y + 2.0, p.z)).unwrap();
+    s.frame();
+    s.frame();
+    click(&mut s, "animation record");
+    // The recorded key is chosen, and the slider would move it: a click on
+    // an empty place lets go of it.
+    click(&mut s, "lane summary");
+    // At 0.5, slide three quarters of the way right: a breakdown at 0.5,
+    // three quarters of the way from the key before to the key after.
+    fill(&mut s, "animation time", "0.5");
+    s.ui.paint();
+    let bar = s.ui.rect(s.ui.find("tween slider").unwrap());
+    let (cx, cy) = bar.center();
+    let half = bar.width / 2.0 - 46.0;
+    s.handle(&InputEvent::MouseMoved { x: cx, y: cy });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x: cx + half * 0.25, y: cy });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x: cx + half * 0.5, y: cy });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let text = clip_text(&dir, "hop");
+    let y = p.y + 2.0 * 0.75;
+    assert!(text.contains(&format!("(0.5, {:?}, Auto)", (y * 1000.0).round() / 1000.0)), "{text}");
+    // The view has it there.
+    let shown = s.session.world_position(crate_).unwrap().y;
+    assert!((shown - y).abs() < 0.01, "{shown} not {y}");
+    // One step back takes the breakdown away, key and slide.
+    click(&mut s, "lane summary");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::Z));
+    s.handle(&InputEvent::KeyUp(Key::Z));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    s.frame();
+    let text = clip_text(&dir, "hop");
+    assert!(!text.contains("(0.5,"), "{text}");
+    assert!(text.contains("(1.0,"), "the keys before it stay: {text}");
+}

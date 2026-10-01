@@ -29,6 +29,7 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use scrap::keys::Blend;
 use scrap::motion::{Key as ClipKey, Property, Tangent, Track};
 use scrap::EntityId;
 use scrap_editor::clips::{ClipDoc, ClipKind};
@@ -45,6 +46,8 @@ const ROW_H: f32 = 20.0;
 const RULER_H: f32 = 22.0;
 /// How near, in pixels, a press must be to a key to take it.
 const NEAR: f32 = 7.0;
+/// The tween slider's room past each end, for the overshoot.
+const TWEEN_PAD: f32 = 46.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -114,6 +117,18 @@ pub struct Animation {
     adding: bool,
     /// The seconds written over the ruler, and the times they say.
     ruler_labels: Vec<(NodeId, f32)>,
+    tween: NodeId,
+    tween_label: NodeId,
+    tween_modes: Vec<(NodeId, Blend)>,
+    tween_how: Blend,
+    /// While the slider is held: the clip as it was, and per track the
+    /// chosen keys' places (and, for Default, the values without the
+    /// track at their times).
+    #[allow(clippy::type_complexity)]
+    tweening: Option<(ClipDoc, Vec<(String, Property, Vec<usize>, Vec<(f32, f32)>)>)>,
+    tween_at: f32,
+    /// The press made the keys it moves: their making is the step back.
+    tween_made: bool,
     /// The clips shown on the left, by row.
     clip_rows: Vec<(NodeId, String, ClipKind)>,
     /// The dopesheet's rows: the row, its lane, what it is.
@@ -187,6 +202,19 @@ impl Animation {
         ui.set_name(title, "animation title");
         let stop = button(ui, bar, "animation stop", "Stop", false);
 
+        // The tween slider and what it does.
+        let tweens = ui.add(root, Style::row().full_width().height(26.0).fixed().gap(SPACE_1).padding_x(SPACE_2).center_items());
+        ui.add_text(tweens, caption(), "BLEND");
+        let mut tween_modes = Vec::new();
+        for (label, how) in [("Tween", Blend::Tween), ("Neighbor", Blend::Neighbor), ("Push", Blend::Push), ("Default", Blend::Default)] {
+            let b = button(ui, tweens, &format!("blend {}", label.to_lowercase()), label, how == Blend::Tween);
+            ui.restyle(b, |s| s.height(22.0));
+            tween_modes.push((b, how));
+        }
+        let tween = ui.add(tweens, Style::row().width(280.0).fixed().height(22.0).clickable().draggable());
+        ui.set_name(tween, "tween slider");
+        let tween_label = ui.add_text(tweens, text().width(50.0).fixed().text_color(ACCENT), "");
+        ui.set_name(tween_label, "tween amount");
         let body = ui.add(root, Style::row().fill().full_width());
         // The clips.
         let left = ui.add(body, Style::column().width(170.0).fixed().full_height().padding(SPACE_2).gap(SPACE_1));
@@ -250,6 +278,13 @@ impl Animation {
             add_toggle,
             adding: false,
             ruler_labels: Vec::new(),
+            tween,
+            tween_label,
+            tween_modes,
+            tween_how: Blend::Tween,
+            tweening: None,
+            tween_at: 0.0,
+            tween_made: false,
             clip_rows: Vec::new(),
             row_nodes: Vec::new(),
             add_rows: Vec::new(),
@@ -483,6 +518,7 @@ impl Animation {
 
     fn draw(&mut self, ui: &mut Ui) {
         self.build_rows(ui);
+        self.draw_tween(ui);
         let Some(doc) = self.doc.clone() else {
             for (_, lane, _) in &self.row_nodes {
                 ui.set_drawing(*lane, Drawing::default());
@@ -787,8 +823,10 @@ impl Animation {
 
     /// What a press of Key keys: the chosen rows, or the selected thing's
     /// tracks, or its place and turn.
-    fn key_now(&mut self, ui: &mut Ui, session: &mut Session) {
-        let Some(doc) = &self.doc else { return };
+    /// What Key keys: the chosen rows, or the selected thing's tracks, or
+    /// its place and turn.
+    fn key_targets(&self) -> Vec<(String, Property)> {
+        let Some(doc) = &self.doc else { return Vec::new() };
         let mut tracks: Vec<(String, Property)> = Vec::new();
         for row in &self.chosen_rows {
             match row {
@@ -804,12 +842,118 @@ impl Animation {
                 tracks = TRANSFORM[..6].iter().map(|w| (part.clone(), *w)).collect();
             }
         }
+        tracks.dedup();
+        tracks
+    }
+
+    fn key_now(&mut self, ui: &mut Ui, session: &mut Session) {
+        let tracks = self.key_targets();
         if tracks.is_empty() {
             session.say(Level::Info, "choose the rows to key, or add a track below");
             return;
         }
-        tracks.dedup();
         self.key_tracks(ui, session, tracks);
+    }
+
+    // --- the tween slider ----------------------------------------------------
+
+    /// The slider's amount under a point of it: its middle 0, its ends -1
+    /// and 1, and past them up to 2 to overshoot.
+    fn tween_amount(&self, ui: &Ui, x: f32) -> f32 {
+        let r = ui.rect(self.tween);
+        let half = (r.width / 2.0 - TWEEN_PAD).max(1.0);
+        ((x - r.x - r.width / 2.0) / half).clamp(-2.0, 2.0)
+    }
+
+    /// The slider pressed: what it moves is the chosen keys, or — none
+    /// chosen — a key it makes at the playhead on each track Key would key:
+    /// a breakdown where there was none, as Tween Machine makes one.
+    fn tween_start(&mut self, ui: &mut Ui, session: &mut Session, x: f32) {
+        let (Some(id), Some(_)) = (self.showing, &self.doc) else { return };
+        if self.chosen.is_empty() {
+            let targets = self.key_targets();
+            if targets.is_empty() {
+                session.say(Level::Info, "choose keys, or the rows to make a breakdown in");
+                return;
+            }
+            let before = self.undo.len();
+            self.key_tracks(ui, session, targets);
+            // The made keys and the slide are one step back.
+            self.tween_made = self.undo.len() > before;
+        } else {
+            self.tween_made = false;
+        }
+        let Some(doc) = self.doc.clone() else { return };
+        let mut targets = Vec::new();
+        for t in &doc.tracks {
+            let idx: Vec<usize> = t
+                .keys
+                .iter()
+                .enumerate()
+                .filter(|(_, k)| self.is_chosen(&t.path, t.what, k.time))
+                .map(|(i, _)| i)
+                .collect();
+            if idx.is_empty() {
+                continue;
+            }
+            let defaults: Vec<(f32, f32)> = if self.tween_how == Blend::Default {
+                idx.iter().map(|&i| (t.keys[i].time, session.default_value(id, &doc, &t.path, t.what, t.keys[i].time))).collect()
+            } else {
+                Vec::new()
+            };
+            targets.push((t.path.clone(), t.what, idx, defaults));
+        }
+        self.tweening = Some((doc, targets));
+        let amount = self.tween_amount(ui, x);
+        self.tween_to(ui, amount);
+    }
+
+    fn tween_to(&mut self, ui: &mut Ui, amount: f32) {
+        let Some((from, targets)) = &self.tweening else { return };
+        let mut doc = from.clone();
+        for (path, what, idx, defaults) in targets {
+            let Some(t) = from.track(path, *what) else { continue };
+            let default = |time: f32| defaults.iter().find(|(at, _)| (*at - time).abs() < 1e-4).map_or(0.0, |d| d.1);
+            let keys = scrap::keys::blend(&t.keys, idx, self.tween_how, amount, &default);
+            doc.set_track(Track { keys, ..t.clone() });
+        }
+        self.doc = Some(doc);
+        self.version += 1;
+        self.tween_at = amount;
+        ui.set_text(self.tween_label, &format!("{:+.0}%", amount * 100.0));
+    }
+
+    /// Let go: one step back takes it all, the keys it made with it.
+    fn tween_end(&mut self, ui: &mut Ui, session: &mut Session) {
+        let Some((from, _)) = self.tweening.take() else { return };
+        self.tween_at = 0.0;
+        ui.set_text(self.tween_label, "");
+        if self.doc.as_ref() == Some(&from) {
+            return;
+        }
+        if !self.tween_made {
+            self.undo.push(from);
+        }
+        self.redo.clear();
+        self.write(ui, session);
+    }
+
+    fn draw_tween(&self, ui: &mut Ui) {
+        let r = ui.rect(self.tween);
+        let (mid, half, y) = (r.width / 2.0, (r.width / 2.0 - TWEEN_PAD).max(1.0), r.height / 2.0);
+        let mut lines = vec![line(TWEEN_PAD / 2.0, y, r.width - TWEEN_PAD / 2.0, y, NEUTRAL_800, 2.0)];
+        for t in [-1.0, -0.5, 0.0, 0.5, 1.0f32] {
+            let x = mid + t * half;
+            let h = if t == 0.0 { 7.0 } else { 4.0 };
+            lines.push(line(x, y - h, x, y + h, if t.abs() == 1.0 { LABEL } else { MUTED }, 1.0));
+        }
+        let on = self.tweening.is_some();
+        let x = mid + self.tween_at.clamp(-2.0, 2.0) * half;
+        if on {
+            lines.push(line(mid, y, x, y, ACCENT, 2.0));
+        }
+        let marks = vec![Mark { x, y, size: 11.0, shape: MarkShape::Circle, fill: if on { ACCENT } else { NEUTRAL_300 }, border: BG }];
+        ui.set_drawing(self.tween, Drawing { lines, marks });
     }
 
     fn delete_chosen(&mut self, ui: &mut Ui, session: &mut Session) {
@@ -997,6 +1141,12 @@ impl Animation {
             }
             Event::Changed(_) if node == self.add_filter => self.list_adds(ui, session),
             Event::Click { count, .. } => self.click(ui, session, node, *count, shift, alt, command),
+            Event::Press { x, .. } if node == self.tween => self.tween_start(ui, session, *x),
+            Event::Drag { x, .. } if node == self.tween => {
+                let amount = self.tween_amount(ui, *x);
+                self.tween_to(ui, amount);
+            }
+            Event::DragEnd { .. } if node == self.tween => self.tween_end(ui, session),
             Event::Press { x, y, .. } => self.press(ui, node, *x, *y, shift),
             Event::Drag { dx, dy, x, y } => self.drag_to(ui, session, node, *x, *y, *dx, *dy, alt),
             Event::DragEnd { .. } => self.drag_end(ui, session),
@@ -1044,7 +1194,11 @@ impl Animation {
 
     #[allow(clippy::too_many_arguments)]
     fn click(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, count: u32, shift: bool, _alt: bool, _command: bool) {
-        if node == self.play {
+        if node == self.tween {
+            // Pressed and let go without sliding: the amount where it was
+            // pressed, a preset.
+            self.tween_end(ui, session);
+        } else if node == self.play {
             self.playing = !self.playing && self.doc.is_some();
             self.ticked = None;
         } else if node == self.rec {
@@ -1066,6 +1220,11 @@ impl Animation {
         } else if node == self.curves_button {
             self.mode = Mode::Curves;
             self.range = None;
+        } else if let Some((_, how)) = self.tween_modes.iter().find(|(b, _)| *b == node).copied() {
+            self.tween_how = how;
+            for (b, h) in &self.tween_modes {
+                set_button_primary(ui, *b, *h == how);
+            }
         } else if node == self.add_toggle {
             self.adding = !self.adding;
             let adding = self.adding;

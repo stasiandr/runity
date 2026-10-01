@@ -99,9 +99,8 @@ impl<'de> Deserialize<'de> for Key {
     }
 }
 
-/// A key's slope in and out, per second, as the curve passes it. `None`
-/// for a side the track's ease carries (an `Eased` key between two others
-/// the same).
+/// A key's slope in and out, per second, as the curve passes it; an
+/// `Eased` key's, the straight line to each neighbour.
 pub fn slopes(keys: &[Key], i: usize) -> (f32, f32) {
     let k = keys[i];
     let before = i.checked_sub(1).map(|j| keys[j]);
@@ -180,6 +179,52 @@ pub fn step(keys: &[Key], time: f32) -> Option<f32> {
     Some(if i == 0 { first.value } else { keys[i - 1].value })
 }
 
+/// How the tween slider moves the chosen keys — the breakdowner's family
+/// (Tween Machine, animBot's Tweener, Blender's Graph Editor sliders).
+/// The amount is -1..1, past either end to overshoot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blend {
+    /// Between the keys either side: -1 the one before, 0 halfway, 1 the
+    /// one after — a breakdown, the slider animators name first.
+    Tween,
+    /// From where it is toward the key before (below 0) or after (above).
+    Neighbor,
+    /// Away from the straight line between its neighbours (above 0), or
+    /// toward it: more of the move, or less.
+    Push,
+    /// Toward the value the thing has with no clip (above 0) — the
+    /// scene's, the rest pose's, the model's own clip's — or away.
+    Default,
+}
+
+/// The keys at `chosen` (indices, in order) moved by the slider, each from
+/// where it was. A key's neighbours are the nearest keys either side that
+/// are not chosen, so a run of chosen keys moves as one; a side with none
+/// holds the key where it is. `default` says what [`Blend::Default`] goes
+/// toward at a time.
+pub fn blend(keys: &[Key], chosen: &[usize], how: Blend, amount: f32, default: &dyn Fn(f32) -> f32) -> Vec<Key> {
+    let mut out = keys.to_vec();
+    for &i in chosen {
+        let Some(k) = keys.get(i).copied() else { continue };
+        let before = (0..i).rev().find(|j| !chosen.contains(j)).map(|j| keys[j]);
+        let after = (i + 1..keys.len()).find(|j| !chosen.contains(j)).map(|j| keys[j]);
+        let (b, a) = (before.unwrap_or(k), after.unwrap_or(k));
+        let lerp = |x: f32, y: f32, t: f32| x + (y - x) * t;
+        out[i].value = match how {
+            Blend::Tween => lerp(b.value, a.value, (amount + 1.0) / 2.0),
+            Blend::Neighbor if amount < 0.0 => lerp(k.value, b.value, -amount),
+            Blend::Neighbor => lerp(k.value, a.value, amount),
+            Blend::Push => {
+                let f = if a.time > b.time { (k.time - b.time) / (a.time - b.time) } else { 0.5 };
+                let line = lerp(b.value, a.value, f);
+                line + (k.value - line) * (1.0 + amount)
+            }
+            Blend::Default => lerp(k.value, default(k.time), amount),
+        };
+    }
+    out
+}
+
 fn hermite(p0: f32, m0: f32, p1: f32, m1: f32, t: f32) -> f32 {
     let (t2, t3) = (t * t, t * t * t);
     (2.0 * t3 - 3.0 * t2 + 1.0) * p0 + (t3 - 2.0 * t2 + t) * m0 + (-2.0 * t3 + 3.0 * t2) * p1 + (t3 - t2) * m1
@@ -227,6 +272,34 @@ mod tests {
             let v = sample(&k, Ease::Linear, i as f32 / 100.0).unwrap();
             assert!((-0.001..=10.001).contains(&v), "{v} at {i}");
         }
+    }
+
+    #[test]
+    fn the_tween_slider_breaks_down_between_the_neighbours() {
+        let k = keys("[(0.0, 0.0), (0.5, 3.0), (1.0, 10.0)]");
+        let at = |how, amount| blend(&k, &[1], how, amount, &|_| 1.0)[1].value;
+        assert_eq!(at(Blend::Tween, -1.0), 0.0);
+        assert_eq!(at(Blend::Tween, 0.0), 5.0, "halfway");
+        assert_eq!(at(Blend::Tween, 0.5), 7.5);
+        assert_eq!(at(Blend::Tween, 1.5), 12.5, "overshoot");
+        assert_eq!(at(Blend::Neighbor, 0.0), 3.0, "nothing moves at 0");
+        assert_eq!(at(Blend::Neighbor, -1.0), 0.0);
+        assert_eq!(at(Blend::Neighbor, 0.5), 6.5);
+        // The straight line at 0.5 is 5: 3 is 2 under it.
+        assert_eq!(at(Blend::Push, 1.0), 1.0, "twice as far under");
+        assert_eq!(at(Blend::Push, -1.0), 5.0, "onto the line");
+        assert_eq!(at(Blend::Default, 1.0), 1.0);
+        assert_eq!(at(Blend::Default, 0.5), 2.0);
+    }
+
+    #[test]
+    fn a_run_of_chosen_keys_tweens_between_the_keys_around_it() {
+        let k = keys("[(0.0, 0.0), (0.3, 7.0), (0.6, -2.0), (1.0, 10.0)]");
+        let moved = blend(&k, &[1, 2], Blend::Tween, 0.0, &|_| 0.0);
+        assert_eq!((moved[1].value, moved[2].value), (5.0, 5.0));
+        assert_eq!((moved[0], moved[3]), (k[0], k[3]), "the others stay");
+        // The last key has nothing after it: that side holds it.
+        assert_eq!(blend(&k, &[3], Blend::Tween, 1.0, &|_| 0.0)[3].value, 10.0);
     }
 
     #[test]

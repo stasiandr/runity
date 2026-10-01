@@ -375,6 +375,17 @@ impl Session {
         self.line(id).map(|l| scrap::motion::animates(l).parts.into_iter().map(|(p, _)| p).collect()).unwrap_or_default()
     }
 
+    /// What a track's property would be without the track: the scene's
+    /// for a thing, the rest pose's for a rig's bone, the model's own clip's
+    /// for a model's — what the tween slider's Default blends toward.
+    pub fn default_value(&self, id: EntityId, doc: &ClipDoc, path: &str, what: Property, time: f32) -> f32 {
+        let mut bare = doc.clone();
+        let other = |t: &Track| !(t.path == path && t.what == what);
+        bare.tracks.retain(other);
+        bare.motion.tracks.retain(other);
+        self.current_value(id, &bare, path, what, time)
+    }
+
     /// What a track's property is now, where the document has it: the
     /// first key a new track starts from. A bone's, from the clip shown at
     /// `time`.
