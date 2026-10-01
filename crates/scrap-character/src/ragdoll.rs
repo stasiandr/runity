@@ -423,6 +423,13 @@ pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, _sender: u32, _ti
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("ragdoll", |c: &mut RagdollState| &mut c.ragdoll);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

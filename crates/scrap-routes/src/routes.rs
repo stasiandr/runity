@@ -157,6 +157,13 @@ pub fn run_routes(world: &mut hecs::World, dt: f32) {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("route", |c: &mut Travelling| &mut c.route);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

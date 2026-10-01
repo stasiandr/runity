@@ -145,6 +145,13 @@ impl scrap_core::world::Dress for DistanceFieldDress {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("distance_field", |c: &mut DistanceFieldState| &mut c.field);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

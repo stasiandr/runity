@@ -331,7 +331,7 @@ impl Session {
                             Property::ScaleZ => place.scale.z = v,
                             Property::Active => scrap::world::set_active(&mut self.world, target, v > 0.5),
                             other => {
-                                let was = scrap::motion::access(&self.world, target, other, Some(v));
+                                let was = scrap::motion::set(&mut self.world, target, other, v);
                                 if let Some(was) = was {
                                     self.posed_from.entry((target, other.clone())).or_insert(was);
                                 }
@@ -481,11 +481,21 @@ impl Session {
                 }
             }
         }
-        for name in ["light", "camera", "sound", "particles"] {
-            if let Some(raw) = desc.parts.raw(name) {
+        // Its engine parts', each whose module moves it live.
+        for name in desc.parts.names() {
+            if !scrap::motion::movable_part(&name) {
+                continue;
+            }
+            if let Some(raw) = desc.parts.raw(&name) {
                 for (p, v) in scrap::numbers::all(raw) {
                     out.push((Property::Field(format!("{name}.{p}")), v));
                 }
+            }
+        }
+        // The scene's own look, from the entity a clip plays on.
+        if path.is_empty() {
+            for (part, p, v) in scrap::world::scene_numbers(self.history.scene()) {
+                out.push((Property::Field(format!("scene.{part}.{p}")), v));
             }
         }
         for (name, value) in &desc.components {
@@ -535,6 +545,11 @@ impl Session {
                     Property::Active => if desc.inactive { 0.0 } else { 1.0 },
                     // As the document has it: what it was before a clip
                     // was shown on it, or what it is.
+                    Property::Field(f) if f.starts_with("scene.") => {
+                        let rest = &f["scene.".len()..];
+                        let Some((part, p)) = rest.split_once('.') else { return 0.0 };
+                        scrap::world::scene_number(self.history.scene(), part, p).unwrap_or(0.0)
+                    }
                     other => {
                         let Some(target) = self.world_entity(desc.id) else { return 0.0 };
                         self.posed_from

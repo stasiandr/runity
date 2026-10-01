@@ -5963,3 +5963,38 @@ fn a_shader_graphs_numbers_are_tracks_by_the_names_the_graph_gives_them() {
     let said = s.ui.dump();
     assert!(said.contains("\"Flow\""), "named as the graph names it");
 }
+
+#[test]
+fn a_clip_moves_the_scenes_fog_from_the_entity_it_plays_on() {
+    use scrap::motion::Property;
+    let Some((mut s, dir)) = studio() else { return };
+    let rock = s.session.find("boulder").unwrap();
+    s.session.select(Some(rock)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    fill(&mut s, "new clip name", "dusk");
+    click(&mut s, "new clip");
+    click(&mut s, "animation add");
+    click(&mut s, "add to (itself)");
+    click(&mut s, "add  Fog end");
+    let text = clip_text(&dir, "dusk");
+    assert!(text.contains("what: Field(\"scene.fog.end\"), keys: [(0.0, "), "{text}");
+    // Pulled in to 5 m at the end; halfway, the view's fog halfway there.
+    let end = Property::Field("scene.fog.end".into());
+    let doc = s.session.open_clip(rock, "dusk").unwrap();
+    let from = doc.track("", &end).unwrap().keys[0].value;
+    let path = scrap::layout::find(&dir, scrap::layout::Kind::Clip, "dusk").unwrap();
+    let up = text.replace(
+        &format!("what: Field(\"scene.fog.end\"), keys: [(0.0, {from:?}, Auto)]"),
+        &format!("what: Field(\"scene.fog.end\"), keys: [(0.0, {from:?}, Auto), (1.0, 5.0, Auto)]"),
+    );
+    assert_ne!(up, text);
+    std::fs::write(&path, up).unwrap();
+    click(&mut s, "clip dusk");
+    fill(&mut s, "animation time", "0.5");
+    s.frame();
+    let shown = s.session.shown_number(rock, "", &end).unwrap();
+    assert!((shown - (from + 5.0) / 2.0).abs() < 0.01, "{shown}");
+    click(&mut s, "animation stop");
+    assert_eq!(s.session.shown_number(rock, "", &end), None, "the scene's own again");
+}

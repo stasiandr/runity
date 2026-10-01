@@ -741,6 +741,15 @@ impl scrap_core::world::Dress for HeightfieldDress {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("shallow_water", |c: &mut ShallowState| &mut c.water);
+    scrap_core::numbers::register_part("ripples", |c: &mut RipplesState| &mut c.ripples);
+    scrap_core::numbers::register_part("snow_cover", |c: &mut SnowState| &mut c.cover);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

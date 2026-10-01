@@ -482,13 +482,16 @@ pub fn upload_material_maps(
 /// post-processing — around what is in the world. What a game and the
 /// editor draw a scene with, so both show the same picture.
 pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -> Frame {
+    // What clips move of the scene's look, over what its file says.
+    let looked = scene_looked(world, scene);
+    let look = looked.as_ref().unwrap_or(scene);
     let mut frame = build_frame(
         world,
         camera,
-        scene_lighting(&scene.sun()),
-        scene_fog(&scene.fog()),
+        scene_lighting(&look.sun()),
+        scene_fog(&look.fog()),
     );
-    scene_look(&mut frame, scene);
+    scene_look(&mut frame, look);
     post_volumes(&mut frame, world);
     frame.texture_views = texture_views(world, scene, camera);
     frame
@@ -530,6 +533,101 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
         frame.screen_space_reflections = ssr;
     }
     frame.fullscreen = scene.part::<crate::fullscreen::FullscreenPass>();
+}
+
+/// Numbers of the scene's own parts — its fog, its sun, its sky — that a
+/// clip on this entity moves, as `(part, path, value)`: a day turning to
+/// dusk is a clip of the sun's height and the fog's colour. Laid over the
+/// scene's when a frame is built ([`scene_looked`]); the scene's file is
+/// never touched.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SceneOverrides(pub Vec<(String, String, f32)>);
+
+impl SceneOverrides {
+    /// Set one, in place of what it was.
+    pub fn set(&mut self, part: &str, path: &str, value: f32) {
+        match self.0.iter_mut().find(|(p, q, _)| p == part && q == path) {
+            Some(slot) => slot.2 = value,
+            None => self.0.push((part.to_string(), path.to_string(), value)),
+        }
+    }
+
+    pub fn get(&self, part: &str, path: &str) -> Option<f32> {
+        self.0.iter().find(|(p, q, _)| p == part && q == path).map(|o| o.2)
+    }
+}
+
+/// Each of a scene's own parts a clip can move a number of, by name, with
+/// how to read and write one of its numbers.
+macro_rules! scene_parts {
+    ($($t:ty),* $(,)?) => {
+        /// The names of the scene's parts whose numbers clips can move.
+        pub const SCENE_PARTS: &[&str] = &[$(<$t as scrap_core::parts::Part>::NAME),*];
+
+        /// A number of a scene's own part, by the part's name and the path
+        /// in it; what it is by default where the scene does not say.
+        pub fn scene_number(scene: &crate::scene::Scene, part: &str, path: &str) -> Option<f32> {
+            $(if part == <$t as scrap_core::parts::Part>::NAME {
+                let value: $t = scene.part::<$t>().unwrap_or_default();
+                return scrap_core::numbers::get(&value, path);
+            })*
+            None
+        }
+
+        fn set_scene_number(scene: &mut crate::scene::Scene, part: &str, path: &str, to: f32) -> bool {
+            $(if part == <$t as scrap_core::parts::Part>::NAME {
+                let mut value: $t = scene.part::<$t>().unwrap_or_default();
+                let done = scrap_core::numbers::set(&mut value, path, to);
+                if done {
+                    scene.parts.set(&value);
+                }
+                return done;
+            })*
+            false
+        }
+
+        /// Every number of the scene's own parts, by part and path, as the
+        /// scene has it or by default: what a track could move.
+        pub fn scene_numbers(scene: &crate::scene::Scene) -> Vec<(String, String, f32)> {
+            let mut out = Vec::new();
+            $({
+                let value: $t = scene.part::<$t>().unwrap_or_default();
+                if let Ok(text) = ron::to_string(&value) {
+                    for (path, v) in scrap_core::numbers::all(&text) {
+                        out.push((<$t as scrap_core::parts::Part>::NAME.to_string(), path, v));
+                    }
+                }
+            })*
+            out
+        }
+    };
+}
+
+scene_parts!(
+    crate::scene::Sun,
+    crate::scene::Fog,
+    crate::render::Sky,
+    crate::post::PostProcess,
+    crate::ssao::AmbientOcclusion,
+    crate::volume::VolumetricFog,
+    crate::foliage::Wind,
+    crate::weather::Weather,
+);
+
+/// The scene's look with what clips have moved in it ([`SceneOverrides`]),
+/// as a scene of only its parts — what [`scene_frame`] and the editor build
+/// their frame from; `None` when no clip moves any.
+pub fn scene_looked(world: &World, scene: &crate::scene::Scene) -> Option<crate::scene::Scene> {
+    let moved: Vec<(String, String, f32)> =
+        world.query::<&SceneOverrides>().iter().flat_map(|o| o.0.iter().cloned()).collect();
+    if moved.is_empty() {
+        return None;
+    }
+    let mut looked = crate::scene::Scene { parts: scene.parts.clone(), entities: Vec::new() };
+    for (part, path, v) in moved {
+        set_scene_number(&mut looked, &part, &path, v);
+    }
+    Some(looked)
 }
 
 /// The camera a scene's view describes.
@@ -1014,4 +1112,17 @@ fn build_frame_seen(
         ambient_occlusion: Default::default(),
         ray_tracing: Default::default(),
     }
+}
+
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("camera", |c: &mut CameraLens| &mut c.0);
+    scrap_core::numbers::register_part("light", |c: &mut LightSource| &mut c.0);
+    scrap_core::numbers::register_part("reflection_probe", |c: &mut ProbeBox| &mut c.0);
+    scrap_core::numbers::register_part("irradiance_volume", |c: &mut VolumeBox| &mut c.0);
+    scrap_core::numbers::register_part("render_texture", |c: &mut ToTexture| &mut c.0);
+    scrap_core::numbers::register_part("post_volume", |c: &mut PostVolumeBox| &mut c.0);
+    scrap_core::numbers::register_part("decal", |c: &mut Pressing| &mut c.0);
 }

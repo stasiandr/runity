@@ -475,6 +475,13 @@ impl scrap_core::world::Dress for HairDress {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("hair", |c: &mut HairState| &mut c.hair);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

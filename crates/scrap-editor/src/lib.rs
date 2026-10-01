@@ -4080,7 +4080,11 @@ impl Session {
     /// The scene as a camera sees it, lit and fogged as the scene says, with
     /// nothing of the editor's drawn over it.
     fn base_frame(&self, camera: Camera) -> Frame {
-        let scene = self.history.scene();
+        let document = self.history.scene();
+        // A clip shown that moves the scene's look: laid over it, as the
+        // game lays it.
+        let looked = scrap::world::scene_looked(&self.world, document);
+        let scene = looked.as_ref().unwrap_or(document);
         let mut frame = Frame {
             camera,
             // From the scene's hour, like every other tool: an editor
@@ -4107,7 +4111,7 @@ impl Session {
         // The scene's own sky and post-processing, as the game draws it.
         scrap::world::scene_look(&mut frame, scene);
         scrap::world::post_volumes(&mut frame, &self.world);
-        frame.texture_views = scrap::world::texture_views(&self.world, scene, camera);
+        frame.texture_views = scrap::world::texture_views(&self.world, document, camera);
         frame
     }
 

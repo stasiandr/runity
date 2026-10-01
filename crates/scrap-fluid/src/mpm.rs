@@ -740,6 +740,13 @@ impl scrap_core::world::Dress for MpmDress {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("mpm", |c: &mut MpmState| &mut c.mpm);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

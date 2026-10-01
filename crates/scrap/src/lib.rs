@@ -172,8 +172,48 @@ pub mod motion {
     /// [`access`].
     pub fn run(world: &mut hecs::World, dt: f32) {
         run_with(world, dt, &mut |world, entity, what, value| {
-            access(world, entity, what, Some(value));
+            set(world, entity, what, value);
         })
+    }
+
+    /// Set a property of an entity as a clip or a tween does ([`access`]),
+    /// giving it what holds a scene's numbers the first time it moves one.
+    /// What it was, where it had one.
+    pub fn set(world: &mut hecs::World, entity: hecs::Entity, what: &Property, value: f32) -> Option<f32> {
+        if matches!(what, Property::Field(p) if p.starts_with("scene."))
+            && world.get::<&crate::world::SceneOverrides>(entity).is_err()
+        {
+            let _ = world.insert_one(entity, crate::world::SceneOverrides::default());
+        }
+        access(world, entity, what, Some(value))
+    }
+
+    /// Every module's parts whose numbers clips can move, once
+    /// ([`crate::numbers::register_part`]).
+    pub fn register_numbers() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            scrap_render::register_numbers();
+            scrap_audio::register_numbers();
+            scrap_physics::register_numbers();
+            #[cfg(feature = "character")]
+            scrap_character::register_numbers();
+            #[cfg(feature = "destruction")]
+            scrap_destruction::register_numbers();
+            #[cfg(feature = "fluid")]
+            scrap_fluid::register_numbers();
+            #[cfg(feature = "soft")]
+            scrap_soft::register_numbers();
+            #[cfg(feature = "routes")]
+            scrap_routes::register_numbers();
+            crate::numbers::register_part("stream", |c: &mut crate::streaming::StreamPart| &mut c.0);
+        });
+    }
+
+    /// Whether clips can move the numbers of the part a line calls `name`.
+    pub fn movable_part(name: &str) -> bool {
+        register_numbers();
+        crate::numbers::has_part(name)
     }
 
     /// A property of an entity a clip or a tween hands over, as it is now;
@@ -183,9 +223,14 @@ pub mod motion {
     /// * `Volume`, `ParticleRate` — its sound's and its particles';
     /// * `Material("emission.r")` — a number of its own material
     ///   ([`crate::material::NUMBERS`]), on each of its pieces;
-    /// * `Field("light.intensity")` — a number of an engine part it has:
-    ///   `light`, `camera`, `sound`, `particles`, by the path the part's
-    ///   file writes it at;
+    /// * `Field("light.intensity")` — a number of an engine part it has,
+    ///   any whose module keeps it where it reads it every frame (light,
+    ///   camera, sound, particles, decal, rope, ocean, smoke…), by the path
+    ///   the part's file writes it at ([`register_numbers`]);
+    /// * `Field("scene.fog.density")` — a number of the scene's own look
+    ///   (sun, fog, sky, post, ambient occlusion, volumetric fog, wind,
+    ///   weather), laid over the scene's by
+    ///   [`crate::world::scene_looked`];
     /// * `Field("components.player.speed")` — a number of a game's
     ///   component that can be written down ([`crate::numbers`]).
     pub fn access(world: &hecs::World, entity: hecs::Entity, what: &Property, to: Option<f32>) -> Option<f32> {
@@ -228,31 +273,26 @@ pub mod motion {
             }
             Property::Field(path) => {
                 let (part, rest) = path.split_once('.')?;
-                fn inner<C: hecs::Component, T: serde::Serialize + serde::de::DeserializeOwned>(
-                    world: &hecs::World,
-                    entity: hecs::Entity,
-                    pick: fn(&mut C) -> &mut T,
-                    path: &str,
-                    to: Option<f32>,
-                ) -> Option<f32> {
-                    let mut c = world.get::<&mut C>(entity).ok()?;
-                    let value = pick(&mut c);
-                    let now = crate::numbers::get(&*value, path)?;
-                    if let Some(v) = to {
-                        crate::numbers::set(value, path, v);
-                    }
-                    Some(now)
-                }
                 match part {
                     "components" => {
-                        let (name, inner_path) = rest.split_once('.')?;
-                        crate::numbers::component(world, entity, name, inner_path, to)
+                        let (name, inner) = rest.split_once('.')?;
+                        crate::numbers::component(world, entity, name, inner, to)
                     }
-                    "light" => inner::<LightSource, _>(world, entity, |c| &mut c.0, rest, to),
-                    "camera" => inner::<CameraLens, _>(world, entity, |c| &mut c.0, rest, to),
-                    "sound" => inner::<Sounding, _>(world, entity, |c| &mut c.0, rest, to),
-                    "particles" => inner::<crate::particles::Emitting, _>(world, entity, |c| &mut c.emitter, rest, to),
-                    _ => None,
+                    // The scene's own look: what this entity's clips laid
+                    // over it, `None` while they have not.
+                    "scene" => {
+                        let (name, inner) = rest.split_once('.')?;
+                        let mut moved = world.get::<&mut crate::world::SceneOverrides>(entity).ok()?;
+                        let now = moved.get(name, inner);
+                        if let Some(v) = to {
+                            moved.set(name, inner, v);
+                        }
+                        now.or(to)
+                    }
+                    _ => {
+                        register_numbers();
+                        crate::numbers::part(world, entity, part, rest, to)
+                    }
                 }
             }
             _ => None,
@@ -274,7 +314,7 @@ pub mod tween {
             dt,
             &|world, entity, what| crate::motion::access(world, entity, what, None),
             &mut |world, entity, what, value| {
-                crate::motion::access(world, entity, what, Some(value));
+                crate::motion::set(world, entity, what, value);
             },
         )
     }

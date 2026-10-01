@@ -593,6 +593,13 @@ impl scrap_core::world::Dress for SoftBodyDress {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("soft_body", |c: &mut SoftBodyState| &mut c.body);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

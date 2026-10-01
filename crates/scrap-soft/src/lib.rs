@@ -70,3 +70,16 @@ mod manifest {
         assert!(problems.is_empty(), "{problems:?}");
     }
 }
+
+/// Lets clips move the numbers of this crate's parts on the entities that
+/// have them: each part, by its name, where its module keeps it.
+pub fn register_numbers() {
+    grains::register_numbers();
+    field::register_numbers();
+    jiggle::register_numbers();
+    cloth::register_numbers();
+    fluid::register_numbers();
+    softbody::register_numbers();
+    hair::register_numbers();
+    rope::register_numbers();
+}

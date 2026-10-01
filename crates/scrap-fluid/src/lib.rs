@@ -49,3 +49,13 @@ mod manifest {
         assert!(problems.is_empty(), "{problems:?}");
     }
 }
+
+/// Lets clips move the numbers of this crate's parts on the entities that
+/// have them: each part, by its name, where its module keeps it.
+pub fn register_numbers() {
+    floats::register_numbers();
+    ocean::register_numbers();
+    heightfield::register_numbers();
+    smoke::register_numbers();
+    mpm::register_numbers();
+}

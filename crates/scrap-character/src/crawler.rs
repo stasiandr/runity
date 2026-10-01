@@ -191,6 +191,13 @@ impl CrawlerState {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("crawler", |c: &mut CrawlerState| &mut c.crawler);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -40,3 +40,11 @@ pub struct Takeover {
     /// Radians a second about each axis.
     pub spin: glam::Vec3,
 }
+
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("joint", |c: &mut Jointed| &mut c.0);
+    scrap_core::numbers::register_part("joint_break", |c: &mut JointBreak| &mut c.0);
+}

@@ -273,6 +273,13 @@ pub fn run_footprints(world: &mut hecs::World, dt: f32) {
     }
 }
 
+
+/// Lets clips move the numbers of this module's parts as the world holds
+/// them (`Property::Field("<part>.<path>")`, `scrap_core::numbers`).
+pub(crate) fn register_numbers() {
+    scrap_core::numbers::register_part("footprints", |c: &mut Trail| &mut c.settings);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
