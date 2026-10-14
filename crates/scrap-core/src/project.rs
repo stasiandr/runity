@@ -508,7 +508,8 @@ impl Project {
         }
         match kind {
             Kind::Scene => self.content().join(MAPS),
-            Kind::Screen => self.content().join("ui/screens"),
+            Kind::Screen | Kind::HtmlScreen => self.content().join("ui/screens"),
+            Kind::Stylesheet => self.content().join("ui"),
             _ => self.content(),
         }
     }

@@ -3588,6 +3588,7 @@ dependencies = [
  "ron",
  "scrap-engine",
  "scrap-import",
+ "scrap-ui",
  "serde",
  "serde_json",
 ]
@@ -4003,6 +4004,8 @@ dependencies = [
  "resvg",
  "scrap-core",
  "scrap-gpu",
+ "serde",
+ "serde_json",
  "taffy",
  "wgpu",
 ]

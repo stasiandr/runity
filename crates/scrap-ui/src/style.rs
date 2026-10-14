@@ -121,6 +121,17 @@ pub struct TextStyle {
     pub mono: bool,
     /// One line, cut at the node's width rather than wrapped.
     pub nowrap: bool,
+    /// Where the lines sit across the node's box: CSS's `text-align`.
+    pub align: TextAlign,
+}
+
+/// Where a text's lines sit across its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 impl Default for TextStyle {
@@ -132,6 +143,7 @@ impl Default for TextStyle {
             weight: 400,
             mono: false,
             nowrap: false,
+            align: TextAlign::Left,
         }
     }
 }
@@ -495,6 +507,12 @@ impl Style {
 
     pub fn nowrap(mut self) -> Self {
         self.text.nowrap = true;
+        self
+    }
+
+    /// The lines centred, or to the right, across the node's box.
+    pub fn text_align(mut self, align: TextAlign) -> Self {
+        self.text.align = align;
         self
     }
 

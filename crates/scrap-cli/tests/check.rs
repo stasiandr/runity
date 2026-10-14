@@ -350,6 +350,30 @@ fn a_screen_with_two_elements_of_one_id_is_found() {
 }
 
 #[test]
+fn an_html_screen_is_read_as_the_game_would_and_its_mistakes_named_where_they_are() {
+    let project = project("html-screens");
+    write(
+        &project.content().join("ui/screens/menu.screen.html"),
+        "<link rel=stylesheet href=menu.css>\n<button id=play>@menu.play</button>\n<img src=logo.png>",
+    );
+    write(
+        &project.content().join("ui/screens/menu.css"),
+        "button {\n  width: 200px;\n  float: left;\n}",
+    );
+    let errors = errors(&check(&project));
+    let line = one_containing(&errors, "`float` is not a property");
+    assert!(
+        line.contains("ui/screens/menu.css") && line.contains("3:3"),
+        "{line}"
+    );
+    let line = one_containing(&errors, "`<img>` is not read yet");
+    assert!(
+        line.contains("ui/screens/menu.screen.html") && line.contains("3:1"),
+        "{line}"
+    );
+}
+
+#[test]
 fn a_word_a_language_lacks_is_listed() {
     let project = project("strings");
     assert!(errors_of(&project).is_empty(), "{:#?}", errors_of(&project));

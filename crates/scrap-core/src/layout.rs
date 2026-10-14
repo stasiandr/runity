@@ -35,6 +35,10 @@ pub enum Kind {
     Shader,
     /// A screen of the game's UI.
     Screen,
+    /// A screen of the game's UI written in HTML (docs/html-ui.md).
+    HtmlScreen,
+    /// CSS an HTML screen links.
+    Stylesheet,
     /// Which animation plays when: an Animator Controller.
     Animator,
     /// A clip that moves things, not bones.
@@ -50,12 +54,14 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order a listing shows them.
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Scene,
         Kind::Prefab,
         Kind::Material,
         Kind::Shader,
         Kind::Screen,
+        Kind::HtmlScreen,
+        Kind::Stylesheet,
         Kind::Animator,
         Kind::Clip,
         Kind::Dialogue,
@@ -71,6 +77,8 @@ impl Kind {
             Kind::Material => ".scrmat",
             Kind::Shader => ".wgsl",
             Kind::Screen => ".screen.ron",
+            Kind::HtmlScreen => ".screen.html",
+            Kind::Stylesheet => ".css",
             Kind::Animator => ".animator.ron",
             Kind::Clip => ".clip.ron",
             Kind::Dialogue => ".dialogue.ron",
@@ -102,6 +110,8 @@ impl Kind {
             Kind::Material => "material",
             Kind::Shader => "shader",
             Kind::Screen => "screen",
+            Kind::HtmlScreen => "HTML screen",
+            Kind::Stylesheet => "stylesheet",
             Kind::Animator => "animator",
             Kind::Clip => "clip",
             Kind::Dialogue => "dialogue",
@@ -113,9 +123,11 @@ impl Kind {
 
 /// The extensions that say a kind, the longest first so `.cases.ron` is
 /// not taken for something else.
-const SUFFIXES: [(&str, Kind); 14] = [
+const SUFFIXES: [(&str, Kind); 16] = [
     (".scene.ron", Kind::Scene),
     (".screen.ron", Kind::Screen),
+    (".screen.html", Kind::HtmlScreen),
+    (".css", Kind::Stylesheet),
     (".animator.ron", Kind::Animator),
     (".dialogue.ron", Kind::Dialogue),
     (".quest.ron", Kind::Quest),
@@ -386,6 +398,11 @@ mod tests {
             kind_of("content/game/ui/screens/hud.screen.ron"),
             Some(Kind::Screen)
         );
+        assert_eq!(
+            kind_of("content/game/ui/screens/hud.screen.html"),
+            Some(Kind::HtmlScreen)
+        );
+        assert_eq!(kind_of("content/game/ui/hud.css"), Some(Kind::Stylesheet));
         assert_eq!(
             kind_of("content/game/cook/cook.animator.ron"),
             Some(Kind::Animator)

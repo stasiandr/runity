@@ -18,6 +18,8 @@ glam = "0.32"
 glyphon = "0.12.0"
 scrap-core = { version = "0.1.0", path = "../scrap-core" }
 scrap-gpu = { version = "0.1.0", path = "../scrap-gpu" }
+serde = "1.0.229"
+serde_json = "1.0.151"
 resvg = { version = "0.45", default-features = false }
 taffy = "0.14"
 wgpu = "30"
