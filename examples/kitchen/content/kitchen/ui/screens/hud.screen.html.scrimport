@@ -1,4 +1,4 @@
 ImportSettings(
-    source: "content/kitchen/ui/screens/hud.screen.ron",
+    source: "content/kitchen/ui/screens/hud.screen.html",
     id: Some("5341f76dd0bec5658cb7df9453ce0d2c"),
 )

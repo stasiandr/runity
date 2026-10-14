@@ -536,6 +536,11 @@ impl shell::Game for Game {
     fn overlay(&mut self) -> &Ui {
         &self.ui
     }
+
+    /// The screens written in HTML — the HUD — over the overlay.
+    fn ui(&mut self) -> Option<&mut scrap::scrap_ui::Ui> {
+        Some(&mut self.front.ui)
+    }
 }
 
 fn main() -> anyhow::Result<()> {

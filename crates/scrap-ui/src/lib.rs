@@ -27,10 +27,11 @@ mod style;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 use scrap_core::input::{InputEvent, Key, MouseButton};
+use scrap_core::web_time::Instant;
 use taffy::{AvailableSpace, TaffyTree};
 
 pub use field::Clipboard;
@@ -357,6 +358,33 @@ impl Ui {
             clipboard: Box::new(field::LocalClipboard::default()),
             palette: HashMap::new(),
         }
+    }
+
+    /// Add a font from its file's bytes (TTF or OTF), for text whose style
+    /// names its family — CSS's `font-family: "Kenney Future"`. Returns
+    /// the families the file has.
+    pub fn add_font(&mut self, bytes: Vec<u8>) -> Vec<String> {
+        let db = self.fonts.db_mut();
+        let before: std::collections::HashSet<_> = db.faces().map(|f| f.id).collect();
+        db.load_font_data(bytes);
+        let mut names: Vec<String> = db
+            .faces()
+            .filter(|f| !before.contains(&f.id))
+            .flat_map(|f| f.families.iter().map(|(n, _)| n.clone()))
+            .collect();
+        names.sort();
+        names.dedup();
+        // Text already shaped may have fallen back for want of it.
+        self.layout_dirty = true;
+        names
+    }
+
+    /// Whether a family is there to set text in: Inter, or one added.
+    pub fn has_font(&self, family: &str) -> bool {
+        self.fonts
+            .db()
+            .faces()
+            .any(|f| f.families.iter().any(|(n, _)| n == family))
     }
 
     /// The window's size in logical pixels, and its pixels per point.
@@ -1491,7 +1519,9 @@ fn shape(fonts: &mut FontSystem, node: &mut Node) {
     };
     text.buffer
         .set_metrics(Metrics::new(style.size, style.size * style.line_height));
-    let family = if style.mono {
+    let family = if let Some(name) = style.family.as_deref() {
+        Family::Name(name)
+    } else if style.mono {
         Family::Monospace
     } else {
         Family::Name(SANS)

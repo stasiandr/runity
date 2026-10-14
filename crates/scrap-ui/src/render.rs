@@ -509,6 +509,37 @@ impl UiRenderer {
         }
     }
 
+    /// Draw what [`UiRenderer::prepare`] uploaded into `view`, over what
+    /// is there: a game's UI over its frame, on a thread that has no
+    /// [`Ui`] to prepare from.
+    pub fn draw_prepared(&self, gpu: &Gpu, view: &wgpu::TextureView) {
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("scrap-ui"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scrap-ui"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.render(&mut pass);
+        }
+        gpu.queue.submit(Some(encoder.finish()));
+    }
+
     /// Prepare and draw in one go, into `view`, over what is there or over
     /// `clear`.
     pub fn draw(

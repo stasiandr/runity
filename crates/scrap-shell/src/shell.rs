@@ -219,6 +219,17 @@ pub trait Game {
     /// carry it across.
     fn patched(&mut self, _ctx: &mut Context) {}
 
+    /// The game's UI tree, drawn over the scene and the overlay: where its
+    /// screens written in HTML live (`scrap::html`, docs/html-ui.md). The
+    /// shell lays it out for a 1280×720 frame scaled to the window, as
+    /// Unity's Canvas Scaler does ([`scrap_ui::markup::fit`]), and hands it
+    /// the pointer and the keys of the frame before calling
+    /// [`Game::frame`], where the game reads `ui.events()`. `None` by
+    /// default: a game without one pays nothing for it.
+    fn ui(&mut self) -> Option<&mut scrap_ui::Ui> {
+        None
+    }
+
     /// What to draw over the scene. Empty by default.
     fn overlay(&mut self) -> &crate::ui::Ui {
         // A shared empty list, so a game with no overlay allocates nothing
@@ -343,6 +354,7 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         suspended: false,
         debugger: Default::default(),
         frozen: None,
+        ui_input: Vec::new(),
     };
     shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
     #[cfg(target_os = "ios")]
@@ -373,6 +385,10 @@ struct Drawing {
     surface: Surface,
     renderer: Renderer,
     overlay: crate::ui_render::UiRenderer,
+    /// What draws the game's UI tree ([`Game::ui`]): made the first frame
+    /// the game has one, prepared on the loop's thread — where the tree
+    /// is — and drawn wherever the frame is.
+    screens: Option<scrap_ui::render::UiRenderer>,
 }
 
 /// A frame to draw, and what drew it back.
@@ -381,6 +397,8 @@ struct Job {
     drawing: Box<Drawing>,
     frame: Frame,
     ui: crate::ui::Ui,
+    /// The game's UI tree was prepared for this frame: draw it.
+    screens: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -417,6 +435,7 @@ impl RenderThread {
                         &d.surface,
                         &mut d.renderer,
                         &mut d.overlay,
+                        d.screens.as_ref().filter(|_| job.screens),
                         &job.frame,
                         &job.ui,
                         &mut times,
@@ -482,6 +501,9 @@ struct Shell<G: Game> {
     /// The Frame Debugger's window (F9), and the frame it takes apart.
     debugger: frame_debugger::Panel,
     frozen: Option<Frame>,
+    /// What came from the window since the last frame, for the game's UI
+    /// tree ([`Game::ui`]): handed to it just before the frame.
+    ui_input: Vec<InputEvent>,
 }
 
 impl<G: Game> Shell<G> {
@@ -563,11 +585,13 @@ enum Drawn {
 /// Draw `frame` and the overlay into the next swapchain image and show it,
 /// timing the CPU's part: acquiring (the wait for the screen), drawing,
 /// presenting.
+#[allow(clippy::too_many_arguments)]
 fn draw_frame(
     gpu: &Gpu,
     surface: &Surface,
     renderer: &mut Renderer,
     overlay: &mut crate::ui_render::UiRenderer,
+    screens: Option<&scrap_ui::render::UiRenderer>,
     frame: &Frame,
     ui: &crate::ui::Ui,
     times: &mut Vec<(&'static str, Duration)>,
@@ -586,6 +610,11 @@ fn draw_frame(
     renderer.draw_ui_pictures(gpu, overlay, frame);
     renderer.render_to_frame(gpu, &acquired, frame);
     overlay.render_to_frame(gpu, &acquired, ui);
+    // The game's UI tree last, over everything: into the frame seen as
+    // plain bytes, since it blends as a browser does.
+    if let Some(screens) = screens {
+        screens.draw_prepared(gpu, &acquired.ui_view());
+    }
     let drawn_at = Instant::now();
     times.push(("render", drawn_at - acquired_at));
     acquired.present(gpu);
@@ -605,6 +634,36 @@ fn set_captured(window: &Window, on: bool) {
         let _ = window.set_cursor_grab(CursorGrabMode::None);
     }
     window.set_cursor_visible(!on);
+}
+
+/// Fit the game's UI tree to a frame `size` physical pixels and hand it
+/// what came from the window since the last frame; without a tree, that
+/// is dropped.
+fn feed_ui<G: Game>(game: &mut G, input: &mut Vec<InputEvent>, size: (u32, u32)) {
+    let Some(ui) = game.ui() else {
+        input.clear();
+        return;
+    };
+    let scale = scrap_ui::markup::fit(ui, size.0, size.1);
+    for event in input.drain(..) {
+        for event in scrap_ui::markup::pointer(&event, scale) {
+            ui.handle(&event);
+        }
+    }
+}
+
+/// Upload what changed in the game's UI tree for a frame `size` physical
+/// pixels: whether there is one to draw.
+fn prepare_ui<G: Game>(game: &mut G, gpu: &Gpu, drawing: &mut Drawing, size: (u32, u32)) -> bool {
+    let Some(ui) = game.ui() else {
+        return false;
+    };
+    let format = drawing.surface.format().remove_srgb_suffix();
+    let screens = drawing
+        .screens
+        .get_or_insert_with(|| scrap_ui::render::UiRenderer::new(gpu, format));
+    screens.prepare(gpu, ui, size.0, size.1);
+    true
 }
 
 impl<G: Game> Shell<G> {
@@ -653,7 +712,10 @@ impl<G: Game> Shell<G> {
         // A script's input due by now, as if the keys were pressed.
         if let Some((script, began)) = self.script.as_mut() {
             let seconds = began.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
-            script.play(seconds, &mut self.input);
+            for event in script.due(seconds) {
+                self.input.handle(&event);
+                self.ui_input.push(event);
+            }
             quit |= script.over(seconds);
         }
         // The pointer the game asked for, captured or free, applied once the
@@ -677,6 +739,10 @@ impl<G: Game> Shell<G> {
             self.loop_times.record("steps", self.last_steps);
         }
         self.stepped_ahead = false;
+
+        // The game's UI tree, fitted to the window, gets the frame's pointer
+        // and keys before the game reads what they did.
+        feed_ui(&mut self.game, &mut self.ui_input, size);
 
         let start = Instant::now();
         let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
@@ -713,6 +779,11 @@ impl<G: Game> Shell<G> {
             _ => None,
         };
 
+        let screens = {
+            let d = state.drawing.as_deref_mut().expect("back from the render thread");
+            prepare_ui(&mut self.game, &state.gpu, d, size)
+        };
+
         let mut times = Vec::with_capacity(3);
         #[cfg(not(target_arch = "wasm32"))]
         let threaded = self.render_thread && !quit && self.last_steps >= THREAD_FROM;
@@ -730,7 +801,12 @@ impl<G: Game> Shell<G> {
                 let drawing = state.drawing.take().expect("back from the render thread");
                 thread
                     .jobs
-                    .send(Job { drawing, frame, ui })
+                    .send(Job {
+                        drawing,
+                        frame,
+                        ui,
+                        screens,
+                    })
                     .expect("the render thread is gone");
                 let start = Instant::now();
                 quit |= run_steps(&mut self.game, &mut self.time, &self.input, size);
@@ -752,6 +828,7 @@ impl<G: Game> Shell<G> {
                 &d.surface,
                 &mut d.renderer,
                 &mut d.overlay,
+                d.screens.as_ref().filter(|_| screens),
                 &frame,
                 padded.as_ref().unwrap_or_else(|| self.game.overlay()),
                 &mut times,
@@ -1098,6 +1175,7 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                 }
                 for event in translate(&event) {
                     self.input.handle(&event);
+                    self.ui_input.push(event);
                 }
             }
             // Captured, the pointer's position means nothing: only how far
@@ -1115,10 +1193,20 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                 for event in pad.touch(touch.id, phase, x, y, self.captured) {
                     self.input.handle(&event);
                 }
+                // A menu is pressed with a finger where the pad is not up.
+                if !self.captured {
+                    self.ui_input.push(InputEvent::Touch {
+                        id: touch.id,
+                        phase,
+                        x,
+                        y,
+                    });
+                }
             }
             other => {
                 for event in translate(&other) {
                     self.input.handle(&event);
+                    self.ui_input.push(event);
                 }
             }
         }
@@ -1143,6 +1231,7 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
         #[cfg(target_arch = "wasm32")]
         for event in crate::web::drain() {
             self.input.handle(&event);
+            self.ui_input.push(event);
         }
         if let Some(pads) = self.pads.as_mut() {
             while let Some(event) = pads.next_event() {
@@ -1175,6 +1264,7 @@ fn running(gpu: Gpu, window: Arc<Window>) -> Result<Running, String> {
             surface,
             renderer,
             overlay,
+            screens: None,
         })),
         #[cfg(not(target_arch = "wasm32"))]
         render: None,

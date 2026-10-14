@@ -114,6 +114,10 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
     let mut renderer = Renderer::new(&gpu, &target);
     super::startup("renderer");
     let mut overlay = crate::ui_render::UiRenderer::new(&gpu, &target);
+    // The game's UI tree (`Game::ui`), when it has one, and what came from
+    // the editor's view for it since the last frame.
+    let mut screens: Option<scrap_ui::render::UiRenderer> = None;
+    let mut ui_input: Vec<scrap_core::input::InputEvent> = Vec::new();
     let mut time = Time::new(config.time);
     let mut input = Input::new();
     let mut pads = gilrs::Gilrs::new().ok();
@@ -165,7 +169,10 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                         target = OffscreenTarget::new(&gpu, w, h);
                     }
                 }
-                Ok(ToGame::Input(event)) => input.handle(&event),
+                Ok(ToGame::Input(event)) => {
+                    input.handle(&event);
+                    ui_input.push(event);
+                }
                 Ok(ToGame::Command(line)) => commands.push(line),
                 Err(_) => {
                     post(&outbox, |o| o.closed = true);
@@ -191,7 +198,10 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                         target = OffscreenTarget::new(&gpu, w, h);
                     }
                 }
-                Ok(ToGame::Input(event)) => input.handle(&event),
+                Ok(ToGame::Input(event)) => {
+                    input.handle(&event);
+                    ui_input.push(event);
+                }
                 Ok(ToGame::Command(line)) => commands.push(line),
                 Ok(ToGame::Play) => {}
                 Err(TryRecvError::Empty) => break,
@@ -230,6 +240,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         let steps = Instant::now();
         quit |= run_steps(&mut game, &mut time, &input, (target.width, target.height));
         loop_times.record("steps", steps.elapsed());
+        super::feed_ui(&mut game, &mut ui_input, (target.width, target.height));
         let framed = Instant::now();
         let mut ctx = ctx!();
         let frame = hot(|| game.frame(&mut ctx));
@@ -248,6 +259,12 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         renderer.draw_ui_pictures(&gpu, &mut overlay, &frame);
         renderer.render(&gpu, &target, &frame);
         overlay.render(&gpu, &target, game.overlay());
+        if let Some(ui) = game.ui() {
+            let screens = screens.get_or_insert_with(|| {
+                scrap_ui::render::UiRenderer::new(&gpu, target.format().remove_srgb_suffix())
+            });
+            screens.draw(&gpu, &target.ui_view(), target.width, target.height, ui, None);
+        }
         let pixels = target.read_rgba(&gpu);
         loop_times.record("render", drawn.elapsed());
         let size = (target.width, target.height);

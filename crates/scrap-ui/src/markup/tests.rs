@@ -75,7 +75,7 @@ fn hud() -> (Screen, Ui) {
 fn a_screen_is_built_from_its_html_and_css_and_shows_the_model() {
     let (screen, mut ui) = hud();
     let dump = ui.dump();
-    assert!(dump.contains("#clock \"1:30\""), "{dump}");
+    assert_eq!(screen.text(&ui, "clock").as_deref(), Some("1:30"), "{dump}");
     assert!(dump.contains("\"Score: 40\""), "{dump}");
     assert!(dump.contains("\"1. Soup\""), "{dump}");
     assert!(dump.contains("\"2. Salad\""), "{dump}");
@@ -118,13 +118,13 @@ fn changing_the_model_changes_only_what_it_shows() {
     screen.set("round.clock", "1:29");
     screen.set("round.over", true);
     screen.update(&mut ui);
-    assert_eq!(ui.text(clock), Some("1:29"));
+    assert_eq!(screen.text(&ui, "clock").as_deref(), Some("1:29"));
     assert_eq!(
         screen.node("clock"),
         Some(clock),
         "the same node, not a new one"
     );
-    assert!(ui.dump().contains("#leave \"@hud.leave\""));
+    assert_eq!(screen.text(&ui, "leave").as_deref(), Some("@hud.leave"));
 }
 
 #[test]
@@ -297,7 +297,11 @@ fn a_saved_file_rebuilds_the_screen_and_a_broken_one_keeps_the_last() {
     ui.paint();
     let play = screen.node("play").unwrap();
     assert_eq!(ui.rect(play).width, 300.0);
-    assert_eq!(ui.text(play), Some("Play"), "the model outlives the file");
+    assert_eq!(
+        screen.text(&ui, "play").as_deref(),
+        Some("Play"),
+        "the model outlives the file"
+    );
 
     std::fs::write(&css, "button { width: lots; }").unwrap();
     later(&css, 4);
@@ -349,15 +353,38 @@ fn words_starting_with_at_are_in_the_current_language() {
     std::fs::write(dir.join("ru.ron"), r#"{"hud.leave": "Выйти"}"#).unwrap();
     let mut screen =
         Screen::from_source("s.html", "<button id=leave>@hud.leave</button>", &[]).unwrap();
-    screen.set_strings(scrap_core::strings::Strings::load(&dir, "ru").unwrap());
+    screen.set_strings(&scrap_core::strings::Strings::load(&dir, "ru").unwrap());
     let mut ui = Ui::new();
     let root = ui.root();
     screen.mount(&mut ui, root);
-    assert_eq!(ui.text(screen.node("leave").unwrap()), Some("Выйти"));
+    assert_eq!(screen.text(&ui, "leave").as_deref(), Some("Выйти"));
 }
 
 #[test]
 fn the_words_a_screen_asks_a_language_for_are_listed() {
     let (screen, _) = hud();
     assert_eq!(screen.keys(), ["hud.leave"]);
+}
+
+#[test]
+fn a_screen_is_fitted_to_the_window_as_a_canvas_scaler_does() {
+    let mut ui = Ui::new();
+    // Twice the reference: everything twice as big.
+    assert_eq!(fit(&mut ui, 2560, 1440), 2.0);
+    assert_eq!(ui.viewport(), (1280.0, 720.0, 2.0));
+    // Wider than 16:9: by the height, more room across.
+    assert_eq!(fit(&mut ui, 3440, 1440), 2.0);
+    assert_eq!(ui.viewport(), (1720.0, 720.0, 2.0));
+    // A phone held upright: by the width.
+    let s = fit(&mut ui, 640, 1280);
+    assert_eq!(s, 0.5);
+    // A click at physical (200, 100) is at CSS (400, 200).
+    let moved = pointer(
+        &scrap_core::input::InputEvent::MouseMoved { x: 200.0, y: 100.0 },
+        s,
+    );
+    assert_eq!(
+        moved,
+        [scrap_core::input::InputEvent::MouseMoved { x: 400.0, y: 200.0 }]
+    );
 }

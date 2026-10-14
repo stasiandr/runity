@@ -2327,11 +2327,12 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
 
 /// The kinds of the project's own text assets — prefabs, scenes, animator
 /// graphs, screens — which get a sidecar with an ID and nothing to import.
-const TEXT_ASSETS: [scrap::layout::Kind; 4] = [
+const TEXT_ASSETS: [scrap::layout::Kind; 5] = [
     scrap::layout::Kind::Prefab,
     scrap::layout::Kind::Scene,
     scrap::layout::Kind::Animator,
     scrap::layout::Kind::Screen,
+    scrap::layout::Kind::HtmlScreen,
 ];
 
 /// Whether a file is one of [`TEXT_ASSETS`], by its path in the project.

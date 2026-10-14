@@ -996,15 +996,26 @@ pub fn apply(
             }
         }
         "font-family" => {
-            let first = v.split(',').next().unwrap_or("").trim().trim_matches(['"', '\'']);
+            // The first family named: a generic one, or a font the game
+            // added (`Ui::add_font`), which the screen checks when built.
+            let first = v
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches(['"', '\''])
+                .trim();
             match first {
-                "monospace" => style.text.mono = true,
-                "sans-serif" | "Inter" | "system-ui" => style.text.mono = false,
-                _ => {
-                    return Err(format!(
-                        "`font-family: {v}`: `sans-serif` (Inter) or `monospace`; a game's own font is not read yet"
-                    ))
+                "monospace" => {
+                    style.text.mono = true;
+                    style.text.family = None;
                 }
+                "sans-serif" | "Inter" | "system-ui" => {
+                    style.text.mono = false;
+                    style.text.family = None;
+                }
+                "" => return Err("`font-family` wants a name".into()),
+                name => style.text.family = Some(name.into()),
             }
         }
         "line-height" => {

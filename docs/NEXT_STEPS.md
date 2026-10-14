@@ -229,9 +229,11 @@
 - [ ] Компоненты экрана: экран ставит кусок UI, как сцена префаб (docs/ui.md)
 - [x] Экраны на HTML и CSS: `scrap_ui::markup`, привязки к модели, `.screen.html`
       и `.css` в индексе, `scrap check` (docs/html-ui.md, 2026-10-14)
-- [ ] Оболочка рисует `scrap-ui` в игре: ввод, масштаб, поток рендера
-      (этап 4 docs/ui.md) — без этого экран на HTML только в тестах
-- [ ] Kitchen переезжает на `.screen.html`, `.screen.ron` уходит до 2026-12-31
+- [x] Оболочка рисует `scrap-ui` в игре (`Game::ui`): ввод, масштаб, поток
+      рендера, Game view редактора, браузер (2026-10-15)
+- [x] HUD kitchen на `.screen.html`: карточки заказов — `data-bind-for`
+- [ ] Остальные экраны kitchen и `kitchen-web` на `.screen.html`, `.screen.ron`
+      уходит до 2026-12-31
 
 # Графовые редакторы
 

@@ -57,6 +57,8 @@ struct Render {
     target: scrap::OffscreenTarget,
     renderer: scrap::Renderer,
     overlay: scrap::ui_render::UiRenderer,
+    /// What draws the HTML screens, as the shell does.
+    screens: scrap::scrap_ui::render::UiRenderer,
 }
 
 impl Peer {
@@ -534,8 +536,14 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     for id in ["host", "friends", "who", "music", "sfx", "language", "quit", "status", "best"] {
         assert!(ids(&front.menu).contains(&id.to_string()), "menu has no `{id}`");
     }
+    // The HUD is HTML: its elements by id, once built — `leave` only
+    // shows over a round, so it is looked for in the file.
+    let mut hud = crate::front::Front::load(&root).unwrap();
+    hud.hud.set("shown", true);
+    hud.hud.set("round.open", true);
+    hud.hud.update(&mut hud.ui);
     for id in ["clock", "score", "players", "note", "keys", "leave"] {
-        assert!(ids(&front.hud).contains(&id.to_string()), "hud has no `{id}`");
+        assert!(hud.hud.node(id).is_some(), "hud has no `{id}`");
     }
     for id in ["score", "served", "best", "again", "menu", "wait"] {
         assert!(ids(&front.results).contains(&id.to_string()), "results have no `{id}`");
@@ -548,10 +556,11 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     }
     // Every @key the screens, the code and the chef use, in English and
     // Russian.
-    let mut keys: Vec<String> = [&front.menu, &front.hud, &front.results, &front.lobby, &front.pause, &front.lost]
+    let mut keys: Vec<String> = [&front.menu, &front.results, &front.lobby, &front.pause, &front.lost]
         .iter()
         .flat_map(|s| scrap::screen::Screen::keys(s.layout()))
         .collect();
+    keys.extend(front.hud.keys());
     let code = ["src/front.rs", "src/items/item.rs"]
         .map(|f| std::fs::read_to_string(root.join(f)).unwrap())
         .join("\n");
@@ -620,11 +629,13 @@ impl Render {
         let renderer = scrap::Renderer::new(&gpu, &target);
         let mut overlay = scrap::ui_render::UiRenderer::new(&gpu, &target);
         overlay.use_font(crate::front::FONT.to_vec()).expect("the kitchen's font");
+        let screens = scrap::scrap_ui::render::UiRenderer::new(&gpu, target.format().remove_srgb_suffix());
         Some(Self {
             gpu,
             target,
             renderer,
             overlay,
+            screens,
         })
     }
 }
@@ -660,7 +671,10 @@ impl Peer {
         let mut widgets = scrap::widgets::Widgets::with_style(crate::front::style());
         let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), "en").unwrap();
         let size = scrap::glam::Vec2::new(r.target.width as f32, r.target.height as f32);
+        let html = front.is_some();
         if let Some(front) = front {
+            // Laid out for this picture as the shell lays it out for a window.
+            scrap::html::fit(&mut front.ui, r.target.width, r.target.height);
             front.draw(
                 &self.world,
                 &self.party,
@@ -671,8 +685,12 @@ impl Peer {
                 &strings,
             );
             front.floaters(&camera, size, &mut ui, 0.3);
+            r.overlay.render(&r.gpu, &r.target, &ui);
+            r.screens.draw(&r.gpu, &r.target.ui_view(), r.target.width, r.target.height, &mut front.ui, None);
         }
-        r.overlay.render(&r.gpu, &r.target, &ui);
+        if !html {
+            r.overlay.render(&r.gpu, &r.target, &ui);
+        }
         let pixels = r.target.read_rgba(&r.gpu);
         let dir = root.join("target/shots");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1420,4 +1438,44 @@ fn a_players_here_reaches_everyone() {
     guest.party.publish(PING, &Ping { at: [1.0, 1.3, -2.0] });
     let pinged = |p: &Peer| p.events.iter().any(|e| e.decode::<Ping>(PING) == Some(Ping { at: [1.0, 1.3, -2.0] }));
     until(&mut host, &mut guest, |h, g| pinged(h) && pinged(g));
+}
+
+/// The HUD is a screen in HTML (ui/screens/hud.screen.html): it shows the
+/// round from the model the front fills, and its "Leave" — pressed as the
+/// shell presses it, by the pointer in the UI tree — takes the player out.
+#[test]
+fn the_html_hud_shows_the_round_and_its_leave_button_takes_the_player_out() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    let mut k = Peer::alone();
+    k.open();
+    k.want(Food::Onion);
+    let strings = scrap::strings::Strings::load(root.join(scrap::strings::DIR), "en").unwrap();
+    let draw = |k: &Peer, front: &mut crate::front::Front| {
+        scrap::html::fit(&mut front.ui, 1920, 1080);
+        let mut ui = scrap::ui::Ui::new();
+        front.draw(
+            &k.world,
+            &k.party,
+            &mut scrap::widgets::Widgets::new(),
+            &mut ui,
+            &scrap::input::Input::default(),
+            scrap::glam::Vec2::new(1920.0, 1080.0),
+            &strings,
+        )
+    };
+    assert_eq!(draw(&k, &mut front), None);
+    assert!(front.hud.missing().is_empty(), "{:?}", front.hud.missing());
+    let dump = front.ui.dump();
+    assert!(dump.contains("\"Onion soup\""), "the order's card, in English: {dump}");
+    assert!(front.hud.text(&front.ui, "score").is_some_and(|s| s.starts_with("Score")), "{dump}");
+    assert_eq!(front.hud.text(&front.ui, "leave").as_deref(), Some("Leave"));
+    // Laid out for 1280×720 and scaled to the window: the button in its
+    // corner.
+    let leave = front.hud.node("leave").unwrap();
+    let r = front.ui.rect(leave);
+    assert_eq!((r.x + r.width, r.y + r.height), (1260.0, 704.0), "{r:?}");
+    front.ui.click(leave);
+    assert_eq!(draw(&k, &mut front), Some(crate::front::Wish::Leave));
 }

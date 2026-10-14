@@ -1,0 +1,62 @@
+/* The kitchen's look: Kenney's UI pack — warm orange buttons, dark
+   panels, a green that says "still time" — in Kenney Future, which the
+   game adds to the UI (`Ui::add_font`). Laid out for 1280×720; the window
+   scales it. */
+
+:root {
+  --cream: #fff6e8;
+  --panel: rgba(58, 42, 36, 0.88);
+  --orange: rgba(232, 106, 23, 0.97);
+  --orange-lit: #f5873a;
+  --green: #5aa832;
+  --red: #d64541;
+}
+
+body { font-family: "Kenney Future"; color: var(--cream); }
+
+.hud { width: 100%; height: 100%; padding: 12px 24px; }
+
+.top { flex-direction: row; align-items: flex-start; }
+.side { flex: 1; }
+.right { align-items: flex-end; gap: 6px; padding-top: 4px; }
+.clock { font-size: 36px; }
+.score { font-size: 28px; }
+.players { font-size: 15px; }
+
+.orders { position: absolute; left: 16px; top: 16px; width: 240px; gap: 8px; }
+.card {
+  height: 58px;
+  padding: 6px 12px;
+  gap: 8px;
+  background: var(--panel);
+  border-radius: 10px;
+}
+.dish { font-size: 20px; }
+.patience { height: 12px; background: var(--orange); border-radius: 6px; }
+.left { height: 100%; background: var(--green); border-radius: 6px; }
+.hurry .left { background: var(--red); }
+
+.bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 16px;
+  align-items: center;
+  gap: 18px;
+}
+.note { font-size: 24px; }
+.keys { font-size: 12px; }
+
+#leave {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  width: 110px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
+  background: var(--orange);
+  border-radius: 10px;
+}
+#leave:hover { background: var(--orange-lit); }
+#leave:active { background: var(--panel); }

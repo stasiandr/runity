@@ -627,6 +627,13 @@ pub mod prelude {
 pub use scrap_core::shape;
 pub mod netsim;
 pub use scrap_overlay::screen;
+/// The UI of the game and of the editor: one retained tree, laid out by
+/// taffy, drawn on the engine's device (docs/ui.md). A game hands the
+/// shell its tree through `Game::ui`.
+pub use scrap_ui;
+/// Screens written in HTML and CSS, built into a [`scrap_ui::Ui`] and
+/// bound to the game's model (docs/html-ui.md): `scrap::html::Screen`.
+pub use scrap_ui::markup as html;
 #[cfg(feature = "character")]
 pub mod character;
 #[cfg(feature = "destruction")]

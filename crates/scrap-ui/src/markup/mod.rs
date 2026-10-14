@@ -104,6 +104,53 @@ impl fmt::Display for Problems {
 
 impl std::error::Error for Problems {}
 
+/// The frame screens are written for, in CSS pixels: a window of any
+/// other size shows them scaled, as Unity's Canvas Scaler does — by its
+/// height, or by its width when it is narrower than 16:9 — so a HUD laid
+/// out once is laid out at every resolution, and `px` means the same on a
+/// laptop and a 4K screen.
+pub const REFERENCE: (f32, f32) = (1280.0, 720.0);
+
+/// Lay `ui` out for a window `width` × `height` physical pixels: what a
+/// game's shell does every frame. Returns the scale, CSS pixel to physical.
+pub fn fit(ui: &mut Ui, width: u32, height: u32) -> f32 {
+    let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+    let scale = (h / REFERENCE.1).min(w / REFERENCE.0).max(0.01);
+    ui.set_viewport(w / scale, h / scale, scale);
+    scale
+}
+
+/// A shell's input event, in the window's physical pixels, as the UI
+/// wants it: positions in CSS pixels at `scale` (what [`fit`] returned),
+/// and a finger as the mouse. Nothing for what the UI does not read.
+pub fn pointer(
+    event: &scrap_core::input::InputEvent,
+    scale: f32,
+) -> Vec<scrap_core::input::InputEvent> {
+    use scrap_core::input::{InputEvent as E, MouseButton, TouchPhase};
+    match event {
+        E::MouseMoved { x, y } => vec![E::MouseMoved {
+            x: x / scale,
+            y: y / scale,
+        }],
+        E::Touch { phase, x, y, .. } => {
+            let at = E::MouseMoved {
+                x: x / scale,
+                y: y / scale,
+            };
+            match phase {
+                TouchPhase::Started => vec![at, E::MouseDown(MouseButton::Left)],
+                TouchPhase::Moved => vec![at],
+                TouchPhase::Ended | TouchPhase::Cancelled => {
+                    vec![at, E::MouseUp(MouseButton::Left)]
+                }
+            }
+        }
+        E::MouseMotion { .. } | E::PadDown(_) | E::PadUp(_) | E::PadMoved { .. } => Vec::new(),
+        other => vec![other.clone()],
+    }
+}
+
 /// The look every screen starts from — a browser's own stylesheet, for
 /// the tags read here.
 const UA: &str = include_str!("ua.css");
@@ -144,8 +191,6 @@ struct Tmpl {
     classes: Vec<String>,
     inline: Vec<css::Decl>,
     kind: Kind,
-    /// Its own words, when it holds words only.
-    text: Option<Template>,
     kids: Vec<TKid>,
     show_if: Option<Template>,
     toggles: Vec<(String, Template)>,
@@ -281,7 +326,8 @@ pub struct Screen {
     since_poll: f32,
     model: Value,
     dirty: bool,
-    strings: Option<scrap_core::strings::Strings>,
+    /// The words `@key` texts are shown in, as last given.
+    strings: Option<scrap_core::strings::Table>,
     mounted: Option<Mounted>,
     targets: HashMap<NodeId, Target>,
     /// The nodes of elements with an id of their own, not ones inside them.
@@ -336,7 +382,6 @@ impl Screen {
             }
         }
         fn walk(t: &Tmpl, out: &mut Vec<String>) {
-            out.extend(t.text.as_ref().and_then(literal).map(str::to_string));
             if let Kind::Field { placeholder, .. } = &t.kind {
                 out.extend(placeholder.strip_prefix('@').map(str::to_string));
             }
@@ -414,10 +459,14 @@ impl Screen {
         &self.model
     }
 
-    /// `@key` texts in this table's language from now on.
-    pub fn set_strings(&mut self, strings: scrap_core::strings::Strings) {
-        self.strings = Some(strings);
-        self.dirty = true;
+    /// `@key` texts in these words from now on. Cheap when they are the
+    /// same as last time, so a game calls it every frame and a language
+    /// switched, or a translator's save, shows at once.
+    pub fn set_strings(&mut self, strings: &scrap_core::strings::Strings) {
+        if self.strings.as_ref() != Some(strings.table()) {
+            self.strings = Some(strings.table().clone());
+            self.dirty = true;
+        }
     }
 
     /// The paths the screen asks for that the model does not have — the
@@ -466,6 +515,18 @@ impl Screen {
         walk(&m.inst, &|n| {
             self.own_id.contains(&n) && self.targets.get(&n).is_some_and(|t| t.id == id)
         })
+    }
+
+    /// The words the element with this id shows (the first, in a list):
+    /// its text boxes, joined. What a test or an agent reads.
+    pub fn text(&self, ui: &Ui, id: &str) -> Option<String> {
+        let node = self.node(id)?;
+        let words: Vec<&str> = ui
+            .children(node)
+            .into_iter()
+            .filter_map(|c| ui.text(c))
+            .collect();
+        (!words.is_empty()).then(|| words.concat())
     }
 
     /// Bring the built tree up to the model, the window and the language:
@@ -599,7 +660,6 @@ impl Screen {
             .iter()
             .map(|(p, v, at)| (p.clone(), v.text(&scope, &mut missing), *at))
             .collect();
-        let text = t.text.as_ref().map(|tt| tt.text(&scope, &mut missing));
         self.missing.extend(missing);
 
         let me = Owned {
@@ -610,6 +670,11 @@ impl Screen {
         let mut chain = walk.chain.clone();
         chain.push(me);
         let mut style = self.compute(t, &chain, &walk.text, &bound, walk.viewport);
+        if let Some(family) = style.text.family.as_deref() {
+            if !ui.has_font(family) {
+                self.missing.insert(format!("font `{family}`"));
+            }
+        }
         if !shown {
             style.layout.display = taffy::Display::None;
         }
@@ -651,10 +716,6 @@ impl Screen {
         }
         if t.id.is_some() {
             self.own_id.insert(node);
-        }
-        if let (Some(text), false) = (&text, matches!(t.kind, Kind::Field { .. })) {
-            let words = self.say(text);
-            ui.set_text(node, &words);
         }
 
         // What is inside.
@@ -761,9 +822,10 @@ impl Screen {
 
     /// `@key` in the current language; anything else as it is.
     fn say(&self, text: &str) -> String {
-        match &self.strings {
-            Some(s) => s.resolve(text).to_string(),
-            None => text.to_string(),
+        match (&self.strings, text.strip_prefix('@')) {
+            // A key the language lacks shows as itself, as `Strings` does.
+            (Some(table), Some(key)) => table.get(key).map_or(key, String::as_str).to_string(),
+            _ => text.to_string(),
         }
     }
 
@@ -1058,7 +1120,6 @@ fn compile(
         classes: e.classes().map(str::to_string).collect(),
         inline: Vec::new(),
         kind,
-        text: None,
         kids: Vec::new(),
         show_if: None,
         toggles: Vec::new(),
@@ -1213,7 +1274,7 @@ fn compile(
                 "both `data-bind-value` and words inside: one or the other",
             ));
         }
-        t.text = match value {
+        let text = match value {
             Some(v) => Some(v),
             None if !words.is_empty() => match Template::parse(words) {
                 Ok(v) => Some(v),
@@ -1224,12 +1285,17 @@ fn compile(
             },
             None => None,
         };
-        if matches!(t.kind, Kind::Field { .. }) && t.text.is_some() {
+        if matches!(t.kind, Kind::Field { .. }) && text.is_some() {
             problems.push(Problem::new(
                 name,
                 e.at,
                 "an `<input>` holds nothing: `value=\"…\"`",
             ));
+        } else if let Some(text) = text {
+            // In a box of its own inside the element, as CSS's anonymous
+            // box: the element's `align-items` and `justify-content` place
+            // it, and `text-align` sets its lines.
+            t.kids.push(TKid::Text(text));
         }
     } else {
         if value.is_some() {
