@@ -8,15 +8,25 @@ use scrap::scrap_ui::Ui;
 
 use crate::front::{Front, Press};
 
+const HTML: &str = include_str!("../content/magistral/ui/screens/game.screen.html");
+const CSS: &str = include_str!("../content/magistral/ui/screens/game.css");
+
 pub struct Table {
     pub screen: Screen,
     pub ui: Ui,
 }
 
 impl Table {
+    /// The screen from its files, read again as they are saved; in the
+    /// browser, as the build baked it in.
     pub fn load(root: &Path) -> Result<Table, String> {
         let path = root.join("content/magistral/ui/screens/game.screen.html");
-        let mut screen = Screen::load(&path).map_err(|p| p.to_string())?;
+        let mut screen = if cfg!(target_arch = "wasm32") {
+            Screen::from_source("game.screen.html", HTML, &[("game.css", CSS)])
+        } else {
+            Screen::load(&path)
+        }
+        .map_err(|p| p.to_string())?;
         let mut ui = Ui::new();
         let parent = ui.root();
         screen.mount(&mut ui, parent);

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Магистраль</title>
+<meta name="description" content="Железнодорожный рогалик-декбилдер на движке scrap: кладите рельсы, пускайте составы, платите по векселям.">
+<style>
+  :root { --paper: #f2ebd9; --ink: #2b2418; --muted: #6b5d45; --brass: #a8792b; color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--paper); color: var(--ink);
+    font: 15px/1.45 Georgia, "PT Serif", "Times New Roman", serif; }
+  canvas#scrap { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; outline: none; }
+  #cover { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px max(16px, env(safe-area-inset-left, 0px)); text-align: center; background: var(--paper); transition: opacity .4s; }
+  #cover.gone { opacity: 0; pointer-events: none; }
+  #cover h1 { margin: 0; font-size: clamp(32px, 7vw, 56px); letter-spacing: .04em; text-wrap: balance; }
+  #cover .rule { width: min(320px, 70vw); height: 6px; border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink);
+    background: repeating-linear-gradient(90deg, var(--ink) 0 3px, transparent 3px 14px); }
+  #cover p { margin: 0; max-width: 32em; color: var(--muted); }
+  #cover.failed .rule { background: none; }
+  #cover small { display: block; margin-top: 8px; text-align: left; white-space: pre-wrap; max-height: 40vh; overflow: auto; user-select: text; }
+  @keyframes run { to { background-position: 14px 0; } }
+  #cover:not(.failed) .rule { animation: run .6s linear infinite; }
+</style>
+</head>
+<body>
+<canvas id="scrap" tabindex="0"></canvas>
+<div id="cover">
+  <h1>Магистраль</h1>
+  <div class="rule"></div>
+  <p id="cover-text">Прокладываем пути…</p>
+</div>
+<script type="module">
+  const cover = document.getElementById("cover");
+  const text = document.getElementById("cover-text");
+  const fail = (html) => { cover.classList.add("failed"); cover.classList.remove("gone"); text.innerHTML = html; };
+  const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  const oops = (why) => fail("Что-то сломалось.<small>" + esc(why) + "</small>");
+  addEventListener("error", (e) => oops(e.error ? (e.error.stack || e.error) : e.message));
+  addEventListener("unhandledrejection", (e) => oops(e.reason && (e.reason.stack || e.reason)));
+  const error = console.error.bind(console);
+  console.error = (...args) => { error(...args); const s = args.join(" "); if (/panicked|RuntimeError|unreachable/.test(s)) oops(s); };
+
+  async function start() {
+    if (!navigator.gpu) {
+      fail("Игре нужен WebGPU, а этот браузер его не даёт.<br>Откройте страницу в свежем Chrome, Edge или Safari 26+ на компьютере.");
+      return;
+    }
+    const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+    if (!adapter) {
+      fail("WebGPU есть, но видеокарту браузер не отдал.<br>Проверьте, что аппаратное ускорение включено.");
+      return;
+    }
+    const wasm = await import("./magistral.js");
+    // The game's first frame hides the cover.
+    const canvas = document.getElementById("scrap");
+    const watch = setInterval(() => {
+      if (canvas.width > 0 && performance.now() > 600) { cover.classList.add("gone"); clearInterval(watch); canvas.focus(); }
+    }, 100);
+    try {
+      await wasm.default();
+    } catch (e) {
+      // winit leaves its event loop by throwing; that is not a failure.
+      if (!String(e).includes("Using exceptions for control flow")) throw e;
+    }
+  }
+  start();
+</script>
+</body>
+</html>

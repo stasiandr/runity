@@ -26,6 +26,9 @@ use table::Table;
 
 /// The numbers as saved, or as shipped when the file does not read.
 pub fn config(root: &Path) -> Config {
+    if cfg!(target_arch = "wasm32") {
+        return Config::default();
+    }
     let path = root.join("content/magistral/core/rules.ron");
     match std::fs::read_to_string(&path)
         .map_err(|e| e.to_string())
@@ -58,16 +61,26 @@ impl shell::Game for Game {
     }
 }
 
+/// A seed nobody chose: the clock, or in the browser its randomness.
+fn fresh_seed() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        let random = || (js_sys::Math::random() * u32::MAX as f64) as u64;
+        return random() << 32 | random();
+    }
+    #[allow(unreachable_code)]
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.as_nanos() as u64)
+}
+
 fn main() -> anyhow::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let seed = std::env::var("MAGISTRAL_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(1, |d| d.as_nanos() as u64)
-        });
+        .unwrap_or_else(fresh_seed);
     let front = Front::new(Arc::new(config(root)), seed);
     let mut table = Table::load(root).map_err(anyhow::Error::msg)?;
     table.show(&front);

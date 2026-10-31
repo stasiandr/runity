@@ -11,4 +11,7 @@ publish = false
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
+
+# The depth report plays seeds side by side; the game in a browser has no threads.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1"
