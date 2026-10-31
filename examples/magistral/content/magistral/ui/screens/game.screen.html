@@ -1,0 +1,95 @@
+<!-- The whole game on one screen: the stage and the till up top, the map
+     on the left, contracts, trains and what happened on the right, the
+     hand along the bottom; the market and the end of the run over it.
+     src/front.rs fills the model `v` (Front::view) and turns clicks on
+     these ids into presses. docs/html-ui.md in the engine says what reads. -->
+<link rel="stylesheet" href="game.css">
+
+<div class="game">
+  <header class="top">
+    <span class="title">Магистраль</span>
+    <span class="stat">{{v.top.stage}}</span>
+    <span class="stat">{{v.top.turn}}</span>
+    <span class="stat money">{{v.top.money}}</span>
+    <span class="stat due">{{v.top.due}}</span>
+    <span class="stat">{{v.top.energy}}</span>
+    <span class="stat small">{{v.top.deck}}</span>
+  </header>
+
+  <!-- Words are drawn over every box, so what is under a panel is not
+       drawn at all while the panel is up. -->
+  <main class="middle" data-bind-if="{{!(v.market.pick || v.market.remove || v.over)}}">
+    <div class="board">
+      <div id="cell" class="cell" data-bind-for="c:{{v.board}}" data-bind-style-background="{{c.color}}"
+           data-bind-class-toggle="mark:{{c.mark}}; station:{{c.station}}">
+        <div class="rail rn" data-bind-if="{{c.n}}"></div>
+        <div class="rail rs" data-bind-if="{{c.s}}"></div>
+        <div class="rail re" data-bind-if="{{c.e}}"></div>
+        <div class="rail rw" data-bind-if="{{c.w}}"></div>
+        <div class="rail rc" data-bind-if="{{c.track}}"></div>
+        <span class="label" data-bind-if="{{c.label != ''}}">{{c.label}}</span>
+        <div class="train" data-bind-if="{{c.train}}"></div>
+      </div>
+    </div>
+
+    <aside class="side">
+      <h3>Контракты</h3>
+      <span class="line" data-bind-for="k:{{v.contracts}}" data-bind-class-toggle="on:{{k.on}}">{{k.text}}</span>
+      <h3>Поезда</h3>
+      <span class="hint" data-bind-if="{{v.trains.length == 0}}">Поездов пока нет</span>
+      <button id="train" class="line train-row" data-bind-for="t:{{v.trains}}" data-bind-class-toggle="on:{{t.on}}">{{t.text}}</button>
+      <span class="prompt">{{v.prompt}}</span>
+      <span class="hint">{{v.hint}}</span>
+      <div class="tools">
+        <button id="hint">Совет ИИ</button>
+        <button id="auto">Ход ИИ</button>
+        <button id="cancel">Отмена</button>
+        <button id="again">Новая дорога</button>
+      </div>
+      <h3>Журнал</h3>
+      <span class="log" data-bind-for="l:{{v.log}}">{{l}}</span>
+    </aside>
+  </main>
+
+  <footer class="bottom" data-bind-if="{{!(v.market.pick || v.market.remove || v.over)}}">
+    <div class="hand">
+      <button id="card" class="card" data-bind-for="h:{{v.hand}}"
+              data-bind-class-toggle="selected:{{h.selected}}; dim:{{!h.playable}}">
+        <span class="cost">{{h.cost}}</span>
+        <span class="name">{{h.name}}</span>
+        <p class="text">{{h.text}}</p>
+      </button>
+    </div>
+    <button id="end" class="end">Конец хода</button>
+  </footer>
+
+  <div class="veil" data-bind-if="{{v.market.pick || v.market.remove}}">
+    <div class="panel">
+      <h2>{{v.market.title}}</h2>
+      <span class="prompt">{{v.prompt}}</span>
+      <div class="offers" data-bind-if="{{v.market.pick}}">
+        <button id="offer" class="card" data-bind-for="o:{{v.market.offers}}">
+          <span class="cost">{{o.cost}}</span>
+          <span class="name">{{o.name}}</span>
+          <p class="text">{{o.text}}</p>
+        </button>
+      </div>
+      <div class="deck" data-bind-if="{{v.market.remove}}">
+        <button id="remove" class="line" data-bind-for="d:{{v.market.deck}}" data-bind-class-toggle="dim:{{!d.on}}">{{d.text}}</button>
+      </div>
+      <div class="tools">
+        <button id="skip">Ничего</button>
+        <button id="hint2">Совет ИИ</button>
+        <button id="auto2">Ход ИИ</button>
+      </div>
+      <span class="hint">{{v.hint}}</span>
+    </div>
+  </div>
+
+  <div class="veil" data-bind-if="{{v.over}}">
+    <div class="panel">
+      <h2>{{v.result}}</h2>
+      <button id="again2">Новая дорога</button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,46 @@
+// The numbers of Magistral. The `depth` command reads this file, so a
+// changed number shows in the next report; the game reads it on start.
+(
+    turns_per_stage: 8,
+    // What the bank takes at the end of each stage; the run is as long as this list.
+    payments: [10, 24, 42, 66, 96],
+    start_money: 3,
+    hand: 5,
+    energy: 3,
+    // Throwing a card out of the deck at the market.
+    remove_cost: 5,
+    stock_cap: 4,
+    warehouse_cap: 10,
+    // Steel a factory makes a turn, from one coal and one ore each.
+    factory_rate: 2,
+    max_trains: 6,
+    // Coal, ore, grain, steel: coins for a unit delivered.
+    price: [1, 1, 2, 5],
+    // A delivery earns +1 a unit for every this many cells of the route.
+    distance_bonus_every: 4,
+    subsidy_money: 6,
+    subsidy_debt: 9,
+    shares_price: 5,
+    shares_income: 1,
+    cards: {
+        Path:       (cost: 1, cells: 2),
+        Mainline:   (cost: 2, cells: 4),
+        Bridge:     (cost: 2, cells: 3),
+        Tunnel:     (cost: 2, cells: 3),
+        Station:    (cost: 1),
+        Loco:       (cost: 2, speed: 3, capacity: 2),
+        Freight:    (cost: 2, speed: 2, capacity: 5),
+        Express:    (cost: 2, speed: 5, capacity: 1),
+        Survey:     (cost: 0, draw: 2),
+        Overtime:   (cost: 0, draw: 1, energy: 1),
+        Dispatcher: (cost: 1),
+        Warehouse:  (cost: 1),
+        Subsidy:    (cost: 0),
+        Shares:     (cost: 1),
+        Timetable:  (cost: 1),
+        Writeoff:   (cost: 1),
+    },
+    start_deck: [Path, Path, Path, Path, Path, Station, Station, Loco, Survey, Dispatcher],
+    // What the market offers between stages.
+    pool: [Mainline, Bridge, Tunnel, Freight, Express, Overtime, Warehouse, Subsidy, Shares, Timetable, Writeoff, Station, Loco],
+)

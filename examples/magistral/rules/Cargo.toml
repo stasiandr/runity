@@ -1,0 +1,14 @@
+[package]
+name = "magistral-rules"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The rules of Magistral without the engine: a state, its moves, the AIs
+# that play it and the depth report. The game crate draws this state; the
+# `depth` command plays it thousands of times.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+rayon = "1"

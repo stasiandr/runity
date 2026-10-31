@@ -1,0 +1,120 @@
+/* Magistral: a railway company's ledger — paper, ink and brass. Laid out
+   for 1280×720; the window scales it. */
+
+:root {
+  --paper: #f3ead8;
+  --ink: #2b2620;
+  --panel: #e4d7bc;
+  --brass: #b5832c;
+  --rail: #3b3631;
+  --mark: #f2c230;
+  --dim: #8f8574;
+}
+
+body { color: var(--ink); background: var(--paper); }
+
+.game { width: 100%; height: 100%; background: var(--paper); }
+
+.top {
+  flex-direction: row;
+  align-items: center;
+  gap: 22px;
+  height: 46px;
+  padding: 0 18px;
+  background: var(--rail);
+  color: var(--paper);
+}
+.title { font-size: 22px; font-weight: 700; color: var(--brass); }
+.stat { font-size: 16px; }
+.money { color: #f7d774; font-weight: 700; }
+.due { color: #f4a68a; }
+.small { font-size: 13px; color: #cfc3aa; }
+
+.middle { flex-direction: row; gap: 16px; padding: 10px 16px; flex: 1; }
+
+.board {
+  flex-direction: row;
+  flex-wrap: wrap;
+  width: 498px;
+  height: 498px;
+  gap: 2px;
+  padding: 2px;
+  background: #7d725f;
+}
+.cell {
+  width: 56px;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(0, 0, 0, 0);
+  cursor: pointer;
+}
+.cell:hover { border-color: #ffffff; }
+.cell.station { border-color: var(--rail); }
+.cell.mark { border-color: var(--mark); }
+.cell.mark:hover { border-color: #ffffff; }
+.rail { position: absolute; background: var(--rail); }
+.rn { top: 0; left: 25px; width: 6px; height: 31px; }
+.rs { bottom: 0; left: 25px; width: 6px; height: 31px; }
+.re { right: 0; top: 25px; width: 31px; height: 6px; }
+.rw { left: 0; top: 25px; width: 31px; height: 6px; }
+.rc { left: 22px; top: 22px; width: 12px; height: 12px; border-radius: 6px; }
+.label { font-size: 12px; font-weight: 700; padding: 1px 3px; background: rgba(243, 234, 216, 0.85); border-radius: 3px; }
+.train { position: absolute; top: 4px; right: 4px; width: 16px; height: 16px; background: #c0392b; border-radius: 8px; border: 2px solid var(--ink); }
+
+.side { flex: 1; gap: 4px; }
+h3 { font-size: 15px; font-weight: 700; margin-top: 6px; color: var(--brass); }
+h2 { font-size: 24px; font-weight: 700; }
+.line { font-size: 14px; padding: 3px 6px; color: var(--dim); text-align: left; justify-content: flex-start; background: transparent; border-radius: 4px; }
+.line.on { color: var(--ink); background: var(--panel); }
+.train-row:hover { background: var(--panel); }
+.prompt { font-size: 15px; font-weight: 700; margin-top: 8px; }
+.hint { font-size: 14px; color: #6a4f1c; }
+.log { font-size: 13px; color: var(--dim); }
+
+.tools { flex-direction: row; gap: 8px; margin-top: 4px; }
+button {
+  padding: 6px 12px;
+  font-size: 14px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--dim);
+  border-radius: 6px;
+  cursor: pointer;
+}
+button:hover { background: #efe3c8; }
+
+.bottom {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  height: 150px;
+  padding: 8px 16px 12px 16px;
+  background: var(--panel);
+}
+.hand { flex-direction: row; gap: 10px; flex: 1; }
+.card {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: 150px;
+  height: 126px;
+  padding: 8px;
+  gap: 4px;
+  background: var(--paper);
+  border: 2px solid var(--rail);
+  border-radius: 8px;
+}
+.card:hover { border-color: var(--brass); }
+.card.selected { border-color: var(--mark); background: #fff6d6; }
+.card.dim { opacity: 0.5; }
+.cost { font-size: 13px; font-weight: 700; color: var(--paper); background: var(--brass); padding: 1px 7px; border-radius: 9px; }
+.name { font-size: 16px; font-weight: 700; }
+.text { flex-direction: column; align-items: stretch; width: 130px; font-size: 12px; white-space: normal; }
+.end { width: 140px; height: 60px; font-size: 18px; font-weight: 700; background: var(--brass); color: var(--paper); }
+.end:hover { background: #c99a45; }
+
+.veil { position: absolute; inset: 0; align-items: center; justify-content: center; background: rgba(43, 38, 32, 0.6); }
+.panel { width: 640px; padding: 24px; gap: 12px; background: var(--paper); border-radius: 12px; border: 2px solid var(--rail); align-items: center; }
+.offers { flex-direction: row; gap: 12px; }
+.deck { gap: 4px; width: 320px; }

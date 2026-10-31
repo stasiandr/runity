@@ -1,0 +1,16 @@
+(
+    name: "magistral",
+    engine: "0.1.0",
+    game: (
+        start_scene: "main",
+        title: "Магистраль",
+        width: 1280,
+        height: 720,
+        steps_per_second: 60,
+        language: "ru",
+    ),
+    modules: [
+        "ui",
+        "shell",
+    ],
+)

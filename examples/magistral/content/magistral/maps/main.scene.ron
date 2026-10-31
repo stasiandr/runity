@@ -1,0 +1,5 @@
+// Magistral is drawn on its screen (ui/screens/game.screen.html); the
+// scene is empty, there for the tools that open a project at its start scene.
+(
+    entities: [],
+)
