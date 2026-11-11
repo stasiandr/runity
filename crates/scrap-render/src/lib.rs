@@ -61,7 +61,7 @@ pub mod world_look;
 
 pub use material::{Material, Shading};
 pub use render::{
-    Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
+    Camera, Draw, FogSettings, Frame, FrameView, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle, ViewRect,
 };
 pub use passes::Passes;
 pub use world_look::build_frame;

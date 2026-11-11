@@ -1063,6 +1063,7 @@ fn build_frame_seen(
     smoke.sort_by(|a, b| d(a).total_cmp(&d(b)));
     Frame {
         camera,
+        views: Vec::new(),
         lighting,
         reflection_probes,
         irradiance_volumes,

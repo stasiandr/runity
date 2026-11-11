@@ -719,6 +719,11 @@ pub struct Draw {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
     pub camera: Camera,
+    /// Split screen: when there are any, each is drawn with its own camera
+    /// into its rect of the picture, at its aspect, and `camera` is not
+    /// drawn ([`views`]). None (the default) draws `camera` over the whole
+    /// picture.
+    pub views: Vec<FrameView>,
     pub lighting: Lighting,
     pub fog: FogSettings,
     pub shadows: ShadowSettings,
@@ -826,6 +831,7 @@ impl Frame {
     fn shallow(&self) -> Frame {
         let Frame {
             camera,
+            views,
             lighting,
             fog,
             shadows,
@@ -863,6 +869,7 @@ impl Frame {
         } = self;
         Frame {
             camera: camera.clone(),
+            views: views.clone(),
             lighting: lighting.clone(),
             fog: fog.clone(),
             shadows: shadows.clone(),
@@ -905,6 +912,7 @@ impl Default for Frame {
     fn default() -> Self {
         Self {
             camera: Camera::default(),
+            views: Vec::new(),
             lighting: Lighting::default(),
             fog: FogSettings::default(),
             shadows: ShadowSettings::default(),
@@ -1091,6 +1099,10 @@ struct CasterUniform {
 }
 
 pub use crate::lights::MAX_LIGHTS;
+
+#[path = "views.rs"]
+mod views;
+pub use views::{FrameView, ViewRect};
 
 /// A light at a point, fading to nothing at `range` — a campfire, a lamp,
 /// a torch. Unity's Point Light, or with `spot` its Spot Light.
@@ -1623,6 +1635,9 @@ pub struct Renderer {
     /// its instances in that list, not in the frame's. With the buffer
     /// they were made for, to make them again when it is.
     kept_groups: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup),
+    /// Split screen's views after the first, and their pictures
+    /// ([`views`]).
+    views: views::Views,
 }
 
 /// Where the scene is drawn before post-processing turns it into a picture.
@@ -4271,6 +4286,7 @@ impl Renderer {
             volumes,
             fog_bind_group,
             kept_groups,
+            views: views::Views::new(),
             started: web_time::Instant::now(),
             bolt: None,
             occlusion,
@@ -6148,7 +6164,11 @@ impl Renderer {
         let frame = owned.as_ref().unwrap_or(frame);
         self.bake_unity_sky(gpu, frame);
         self.bake_probes(gpu, frame);
-        self.render_view(gpu, Some(view), width, height, frame, None);
+        if frame.views.is_empty() {
+            self.render_view(gpu, Some(view), width, height, frame, None);
+        } else {
+            self.render_views(gpu, view, (width, height), frame);
+        }
     }
 
     /// Which passes run: the game's graphics settings. [`Passes::MAX`]

@@ -27,6 +27,7 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
         gpu,
         &target,
         &Frame {
+            views: Vec::new(),
             // Counted in exact colours: no sky, no post-processing.
             sky: scrap::render::Sky {
                 mode: scrap::render::SkyMode::Color,
@@ -184,6 +185,7 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         pose: None,
     };
     let base = Frame {
+        views: Vec::new(),
         // Counted in exact colours: no sky, no post-processing.
         sky: scrap::render::Sky {
             mode: scrap::render::SkyMode::Color,

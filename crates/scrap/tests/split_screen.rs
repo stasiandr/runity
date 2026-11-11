@@ -1,0 +1,117 @@
+//! Split screen (scrap-render's `views`): one frame, two cameras, each in
+//! its half of the picture with the whole pipeline — sun and shadows,
+//! a lamp, post — and its own aspect; a frame of one view over the whole
+//! picture is the picture a frame without views makes.
+
+use scrap::glam::{Mat4, Vec3};
+use scrap::render::{Camera, Draw, Frame, FrameView, Lighting, Sky, SkyMode, TextureHandle, ViewRect};
+use scrap::{builtin, Gpu, Material, OffscreenTarget, Renderer};
+
+const WIDTH: u32 = 256;
+const HEIGHT: u32 = 128;
+
+/// A floor, a red box to the west and a blue one to the east, lit by the
+/// sun and a warm lamp.
+fn scene(renderer: &mut Renderer, gpu: &Gpu, taa: bool) -> Frame {
+    let plane = renderer.upload_mesh_owned(gpu, &builtin::plane(1.0, 1));
+    let cube = renderer.upload_mesh_owned(gpu, &builtin::cube(1.0));
+    let draw = |mesh, transform, material| Draw { mesh, transform, texture: TextureHandle::WHITE, material, pose: None };
+    Frame {
+        sky: Sky { mode: SkyMode::Color, ..Default::default() },
+        clear_color: Vec3::new(0.05, 0.05, 0.05),
+        lighting: Lighting::default(),
+        lights: [-10.0, 10.0]
+            .map(|x| scrap::render::PointLight {
+                position: Vec3::new(x, 2.0, 1.5),
+                color: Vec3::new(4.0, 3.2, 2.4),
+                range: 8.0,
+                spot: None,
+                shadows: true,
+                falloff: Default::default(),
+                inner_cone: None,
+            })
+            .to_vec(),
+        post: scrap::post::PostProcess { enabled: true, fxaa: !taa, taa, ..scrap::post::PostProcess::OFF },
+        draws: vec![
+            draw(plane, Mat4::from_scale(Vec3::splat(30.0)), Material::new(0.5, 0.5, 0.5)),
+            draw(cube, Mat4::from_translation(Vec3::new(-10.0, 0.5, 0.0)), Material::new(0.9, 0.1, 0.1)),
+            draw(cube, Mat4::from_translation(Vec3::new(10.0, 0.5, 0.0)), Material::new(0.1, 0.2, 0.9)),
+        ],
+        ..Frame::default()
+    }
+}
+
+fn looking_at(x: f32) -> Camera {
+    Camera { position: Vec3::new(x, 2.5, 3.5), target: Vec3::new(x, 0.5, 0.0), ..Camera::default() }
+}
+
+/// Red minus blue, summed over a part of the picture's columns.
+fn redness(pixels: &[u8], columns: std::ops::Range<u32>) -> i64 {
+    let mut sum = 0i64;
+    for y in 0..HEIGHT {
+        for x in columns.clone() {
+            let p = ((y * WIDTH + x) * 4) as usize;
+            sum += pixels[p] as i64 - pixels[p + 2] as i64;
+        }
+    }
+    sum
+}
+
+fn shot(renderer: &mut Renderer, gpu: &Gpu, target: &OffscreenTarget, frame: &Frame, times: usize) -> Vec<u8> {
+    for _ in 0..times {
+        renderer.render(gpu, target, frame);
+    }
+    target.read_rgba(gpu)
+}
+
+#[test]
+fn two_cameras_each_draw_their_half_of_the_picture() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    for taa in [false, true] {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let mut frame = scene(&mut renderer, &gpu, taa);
+        frame.views = vec![
+            FrameView { camera: looking_at(-10.0), rect: ViewRect::LEFT },
+            FrameView { camera: looking_at(10.0), rect: ViewRect::RIGHT },
+        ];
+        // A few frames: TAA's history has gathered, each view its own.
+        let pixels = shot(&mut renderer, &gpu, &target, &frame, 4);
+        let (left, right) = (redness(&pixels, 0..WIDTH / 2), redness(&pixels, WIDTH / 2..WIDTH));
+        eprintln!("taa {taa}: left {left}, right {right}");
+        assert!(left > 0, "the left half sees the red box (taa {taa}): {left}");
+        assert!(right < 0, "the right half sees the blue box (taa {taa}): {right}");
+        if let (Ok(dir), false) = (std::env::var("DUMP"), taa) {
+            image::save_buffer(format!("{dir}/split_screen.png"), &pixels, WIDTH, HEIGHT, image::ColorType::Rgba8).unwrap();
+        }
+        // Swapped: the halves swap.
+        frame.views.swap(0, 1);
+        frame.views[0].rect = ViewRect::LEFT;
+        frame.views[1].rect = ViewRect::RIGHT;
+        let pixels = shot(&mut renderer, &gpu, &target, &frame, 4);
+        assert!(redness(&pixels, 0..WIDTH / 2) < 0 && redness(&pixels, WIDTH / 2..WIDTH) > 0);
+    }
+}
+
+#[test]
+fn one_view_over_the_whole_picture_is_the_picture_without_views() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let mut frame = scene(&mut renderer, &gpu, false);
+    frame.camera = looking_at(-10.0);
+    let plain = shot(&mut renderer, &gpu, &target, &frame, 2);
+    frame.views = vec![FrameView {
+        camera: frame.camera,
+        rect: ViewRect::Share { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
+    }];
+    let viewed = shot(&mut renderer, &gpu, &target, &frame, 2);
+    let worst = plain.iter().zip(&viewed).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+    assert!(worst <= 2, "a whole-picture view differs from no views by {worst}");
+}

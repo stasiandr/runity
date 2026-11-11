@@ -16,6 +16,7 @@ const SIZE: u32 = 32;
 fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 4] {
     let mesh = renderer.upload_mesh_owned(gpu, &builtin::cube(2.0));
     let frame = Frame {
+        views: Vec::new(),
         // Counted in exact colours: no sky, no post-processing.
         sky: scrap::render::Sky {
             mode: scrap::render::SkyMode::Color,

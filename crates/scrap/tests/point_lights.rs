@@ -18,6 +18,7 @@ fn shoot(
 ) -> Vec<u8> {
     let floor = renderer.upload_mesh_owned(gpu, &builtin::plane(1.0, 1));
     let frame = Frame {
+        views: Vec::new(),
         // Counted in exact colours: no sky, no post-processing.
         sky: scrap::render::Sky {
             mode: scrap::render::SkyMode::Color,

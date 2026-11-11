@@ -31,6 +31,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
     let plane = builtin::plane(2.0, 1);
     let mesh = renderer.upload_mesh_owned(gpu, &plane);
     let frame = Frame {
+        views: Vec::new(),
         // Counted in exact colours: no sky, no post-processing.
         sky: scrap::render::Sky {
             mode: scrap::render::SkyMode::Color,

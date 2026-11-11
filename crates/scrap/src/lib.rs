@@ -822,7 +822,7 @@ fn grow(lines: &mut [EntityDesc]) {
 }
 pub use project::{Project, ProjectError};
 pub use render::{
-    Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
+    Camera, Draw, FogSettings, Frame, FrameView, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle, ViewRect,
 };
 #[cfg(feature = "spline")]
 pub use scene::{Along, Spline};

@@ -32,6 +32,7 @@ fn shoot(
 ) -> Vec<u8> {
     let target = OffscreenTarget::new(gpu, SIZE, SIZE);
     let frame = Frame {
+        views: Vec::new(),
         // Counted in exact colours: no sky, no post-processing.
         sky: scrap::render::Sky {
             mode: scrap::render::SkyMode::Color,
