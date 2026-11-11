@@ -325,3 +325,33 @@ fn a_menu_of_widgets_draws_where_it_says() {
         "filled {filled:?} against empty {empty:?}"
     );
 }
+
+/// A 2 × 2 checker drawn 64 pixels wide: read nearest-texel it is four
+/// flat squares to their very edges (pixel art scaled up stays crisp);
+/// read blended, the middle of it runs one colour into the other.
+#[test]
+fn a_nearest_picture_stays_flat_squares_when_drawn_large() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut overlay = UiRenderer::new(&gpu, &target);
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let checker: Vec<u8> = [red, blue, blue, red].concat();
+    let crisp = overlay.add_image_nearest(&gpu, 2, 2, &checker);
+    let soft = overlay.add_image(&gpu, 2, 2, &checker);
+    let mut ui = Ui::new();
+    ui.quad(Quad::new(0.0, 0.0, 64.0, 64.0, Vec4::ONE).image(crisp, [0.0, 0.0, 1.0, 1.0]));
+    ui.quad(Quad::new(128.0, 0.0, 64.0, 64.0, Vec4::ONE).image(soft, [0.0, 0.0, 1.0, 1.0]));
+    overlay.render(&gpu, &target, &ui);
+    let pixels = target.read_rgba(&gpu);
+    // Right next to the seam between the red and blue squares.
+    let left = pixel(&pixels, 30, 10);
+    let right = pixel(&pixels, 33, 10);
+    assert!(left[0] > 250 && left[2] < 5, "nearest: red up to the seam, got {left:?}");
+    assert!(right[2] > 250 && right[0] < 5, "nearest: blue right after it, got {right:?}");
+    let blended = pixel(&pixels, 128 + 30, 10);
+    assert!(blended[0] < 250 && blended[2] > 5, "blended: the seam runs together, got {blended:?}");
+}

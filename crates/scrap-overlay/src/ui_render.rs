@@ -58,6 +58,8 @@ pub struct UiRenderer {
     images: Vec<wgpu::BindGroup>,
     image_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Reads a picture texel by texel: pixel art scaled by whole steps.
+    nearest: wgpu::Sampler,
     /// Whether what is drawn into takes sRGB: a picture's texels are
     /// uploaded as the target reads them.
     srgb: bool,
@@ -84,6 +86,17 @@ impl UiRenderer {
     /// `height`, top row first, sRGB as an image file has it.
     pub fn add_image(&mut self, gpu: &Gpu, width: u32, height: u32, rgba: &[u8]) -> UiImage {
         let group = picture(gpu, &self.image_layout, &self.sampler, width, height, rgba, self.srgb);
+        self.images.push(group);
+        UiImage(self.images.len() as u32 - 1)
+    }
+
+    /// The same, read nearest-texel: every texel of the picture stays a
+    /// block of flat colour however large it is drawn — pixel-art icons
+    /// and 9-slice frames drawn at 2× or 3× stay crisp, where the blended
+    /// read of [`UiRenderer::add_image`] would smear them. (Drawn smaller
+    /// than it is, a nearest picture drops texels; draw those blended.)
+    pub fn add_image_nearest(&mut self, gpu: &Gpu, width: u32, height: u32, rgba: &[u8]) -> UiImage {
+        let group = picture(gpu, &self.image_layout, &self.nearest, width, height, rgba, self.srgb);
         self.images.push(group);
         UiImage(self.images.len() as u32 - 1)
     }
@@ -162,6 +175,12 @@ impl UiRenderer {
             label: Some("ui picture"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let nearest = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui picture, nearest"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         let srgb = format.is_srgb();
@@ -250,6 +269,7 @@ impl UiRenderer {
             images: vec![white],
             image_layout,
             sampler,
+            nearest,
             srgb,
         }
     }
