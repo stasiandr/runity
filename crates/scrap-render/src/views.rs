@@ -12,12 +12,14 @@
 //! view draws with the renderer's own state: a game of one view is drawn
 //! as it always was.
 //!
-//! Not per view yet (shared, so wrong under split screen when on): the
-//! upscaler's history (MetalFX temporal, dynamic resolution) and ReSTIR's
-//! reservoirs. Volumetric fog keeps no history: its froxels are made
-//! again for each view's camera, so it is each view's own. The lamps'
-//! shadow maps are drawn again for every view, though they do not depend
-//! on it.
+//! The upscaler is each view's own too — its picture, its temporal
+//! history (MetalFX temporal, DLSS), the dynamic scale it settled at — so
+//! each half of a split screen is drawn at the render scale and made up to
+//! its own size as a lone camera would be. Not per view yet (shared, so
+//! wrong under split screen when on): ReSTIR's reservoirs. Volumetric fog
+//! keeps no history: its froxels are made again for each view's camera, so
+//! it is each view's own. The lamps' shadow maps are drawn again for every
+//! view, though they do not depend on it.
 
 use glam::Mat4;
 
@@ -122,6 +124,7 @@ pub(super) struct ViewState {
     lens: crate::lens::LensRenderer,
     clouds: crate::clouds::CloudRenderer,
     tools: Option<crate::tools::Tools>,
+    upscaler: crate::upscale::Upscaler,
 }
 
 /// The pictures views are drawn into before they are laid into the
@@ -258,6 +261,7 @@ impl Renderer {
             lens: crate::lens::LensRenderer::new(gpu),
             clouds: crate::clouds::CloudRenderer::new(gpu),
             tools: None,
+            upscaler: crate::upscale::Upscaler::new(gpu),
         }
     }
 
@@ -278,6 +282,7 @@ impl Renderer {
         swap(&mut self.lens, &mut s.lens);
         swap(&mut self.clouds, &mut s.clouds);
         swap(&mut self.tools, &mut s.tools);
+        swap(&mut self.upscaler, &mut s.upscaler);
         // Targets made at another sample count are made again.
         let held = s.samples;
         s.samples = self.samples;

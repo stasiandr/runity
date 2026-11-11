@@ -203,3 +203,52 @@ fn volumetric_fog_in_each_view_is_that_views_own() {
         assert!(mean < 2.0, "view {v}'s fog is another camera's: {mean} off");
     }
 }
+
+/// The upscaler is each view's own: drawn at half the size and made up
+/// (the device's best — MetalFX temporal with TAA on an Apple GPU, its
+/// history the view's — and the engine's own spatial one), each half of a
+/// split frame is the picture its camera makes alone at that render scale,
+/// not the other camera's history blended in.
+#[test]
+fn the_upscaler_in_each_view_is_that_views_own() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    for method in [scrap::upscale::Method::Auto, scrap::upscale::Method::Shader] {
+        let scaled = |frame: &mut Frame| {
+            frame.post.upscaling = scrap::upscale::Upscaling { enabled: true, scale: 0.5, method, ..scrap::upscale::Upscaling::OFF };
+        };
+        let half = OffscreenTarget::new(&gpu, WIDTH / 2, HEIGHT);
+        let alone: Vec<Vec<u8>> = [-10.0, 10.0]
+            .iter()
+            .map(|x| {
+                let mut renderer = Renderer::new(&gpu, &half);
+                let mut frame = scene(&mut renderer, &gpu, true);
+                scaled(&mut frame);
+                frame.camera = looking_at(*x);
+                shot(&mut renderer, &gpu, &half, &frame, 8)
+            })
+            .collect();
+        let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+        let mut renderer = Renderer::new(&gpu, &target);
+        let mut frame = scene(&mut renderer, &gpu, true);
+        scaled(&mut frame);
+        frame.views = vec![FrameView::new(looking_at(-10.0), ViewRect::LEFT), FrameView::new(looking_at(10.0), ViewRect::RIGHT)];
+        let split = shot(&mut renderer, &gpu, &target, &frame, 8);
+        eprintln!("{method:?}: upscaled by {:?}", renderer.upscaled());
+        for (v, picture) in alone.iter().enumerate() {
+            let mut sum = 0u64;
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH / 2 {
+                    let a = ((y * (WIDTH / 2) + x) * 4) as usize;
+                    let b = ((y * WIDTH + x + v as u32 * WIDTH / 2) * 4) as usize;
+                    sum += (0..3).map(|c| picture[a + c].abs_diff(split[b + c]) as u64).sum::<u64>();
+                }
+            }
+            let mean = sum as f32 / (WIDTH / 2 * HEIGHT * 3) as f32;
+            eprintln!("{method:?} view {v}: {mean} off its camera alone");
+            assert!(mean < 0.25, "{method:?}: view {v} is upscaled from another camera's picture: {mean} off");
+        }
+    }
+}
