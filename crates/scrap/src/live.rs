@@ -52,6 +52,10 @@ pub struct LiveScene {
     stamps: Stamps,
     meshes: HashMap<String, MeshHandle>,
     since_poll: f32,
+    /// The scene's files and the library looked at on a thread of their
+    /// own ([`scrap_core::watch`]): [`Self::poll`] reads them again only
+    /// when it says something changed. Made at the first poll.
+    watch: Option<scrap_core::watch::Watch>,
     components: Components,
     /// Where to tell an editor what the world is like, when one started
     /// this game (`SCRAP_STATE_FILE`); see [`LiveScene::report`].
@@ -196,6 +200,7 @@ impl LiveScene {
                 stamps,
                 meshes: HashMap::new(),
                 since_poll: 0.0,
+                watch: None,
                 components: {
                     let mut components = Components::new();
                     crate::netsim::register(&mut components);
@@ -702,7 +707,22 @@ impl LiveScene {
             Reload::default()
         } else {
             self.since_poll = 0.0;
-            self.reload(world, gpu, renderer)
+            // The files are looked at on the watch's thread: the frame
+            // reads them only when something changed — the look itself
+            // (every prefab's and library file's stamp) took ~150 ms a
+            // quarter second in a project with a few thousand files.
+            if self.watch.is_none() {
+                let (path, project) = (self.path.clone(), self.project.clone());
+                self.watch = scrap_core::watch::Watch::spawn(std::time::Duration::from_secs_f32(POLL_SECONDS), move || look(&path, project.as_ref()));
+            }
+            match &self.watch {
+                Some(watch) if !watch.changed() => {
+                    let mut out = Reload::default();
+                    self.upload_maps(world, gpu, renderer, &mut out);
+                    out
+                }
+                _ => self.reload(world, gpu, renderer),
+            }
         };
         out.problems.extend(ordered);
         out
@@ -779,6 +799,13 @@ impl LiveScene {
             }
         }
         // What a reload brought in may draw with maps not uploaded yet.
+        self.upload_maps(world, gpu, renderer, &mut out);
+        out
+    }
+
+    /// Terrains and material maps not on the GPU yet, put there: what a
+    /// reload brought in, or what the game spawned since.
+    fn upload_maps(&mut self, world: &mut World, gpu: &Gpu, renderer: &mut Renderer, out: &mut Reload) {
         crate::terrain::upload_terrains(world, gpu, renderer);
         out.problems.extend(crate::world::upload_material_maps(
             world,
@@ -786,7 +813,6 @@ impl LiveScene {
             gpu,
             renderer,
         ));
-        out
     }
 
     fn reload_library(
@@ -911,6 +937,23 @@ fn read(path: &Path, project: Option<&Project>) -> anyhow::Result<(Scene, Prefab
             .map(|p| format!("{}: prefab {} — {}", p.entity_name, p.prefab, p.reason)),
     );
     Ok((instanced.scene, prefabs, problems))
+}
+
+/// A fingerprint of everything a reload reads: the scene, every prefab,
+/// every file of the library — what the watch's thread compares.
+fn look(path: &Path, project: Option<&Project>) -> u64 {
+    let stamps = stamps(path, project);
+    let mut library: Vec<(PathBuf, Option<SystemTime>)> = project
+        .map(|p| crate::files::read_dir(p.library()).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| {
+            let stamp = crate::files::modified(&p);
+            (p, stamp)
+        })
+        .collect();
+    library.sort();
+    scrap_core::watch::fingerprint(stamps.iter().chain(library.iter()).map(|(p, s)| (p.as_path(), *s)))
 }
 
 /// When each file a scene is read from last changed.

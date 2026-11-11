@@ -219,7 +219,7 @@ pub fn walk(root: impl AsRef<Path>) -> Vec<PathBuf> {
                 continue;
             }
             if crate::files::is_dir(&path) && !crate::files::is_file(&path) {
-                if (folder == root && SKIPPED.contains(&name.as_str())) || ignored(&path) {
+                if (folder == root && SKIPPED.contains(&name.as_str())) || ignored(&path) || cargo_build(&folder, &name) {
                     continue;
                 }
                 folders.push(path);
@@ -230,6 +230,15 @@ pub fn walk(root: impl AsRef<Path>) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// A crate's build folder, anywhere in a project: `target` beside a
+/// `Cargo.toml` (a game's own crates, a server). Tens of thousands of
+/// files nobody made by hand — walked, they made every look at a project
+/// (a game's hot reload four times a second, `scrap sync`) cost a hundred
+/// milliseconds and more.
+fn cargo_build(folder: &Path, name: &str) -> bool {
+    name == "target" && crate::files::is_file(&folder.join("Cargo.toml"))
 }
 
 /// A path relative to `root`, forward slashes; the path itself when it is
@@ -384,6 +393,25 @@ pub fn in_developers(relative: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A crate's `target` inside a project (the game's own crates, a
+    /// server) is not walked; a folder called `target` that is no crate's
+    /// build is content like any other.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_crates_build_folder_is_not_walked() {
+        let root = std::env::temp_dir().join(format!("scrap_walk_cargo_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["crates/rules/target/debug", "crates/rules/src", "content/target"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in ["crates/rules/Cargo.toml", "crates/rules/target/debug/a.prefab", "crates/rules/src/b.prefab", "content/target/c.prefab"] {
+            std::fs::write(root.join(file), "").unwrap();
+        }
+        let found: Vec<String> = files(&root, Kind::Prefab).iter().map(|p| relative(&root, p)).collect();
+        assert_eq!(found, ["content/target/c.prefab", "crates/rules/src/b.prefab"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_extension_says_the_kind_and_the_folder_does_not() {

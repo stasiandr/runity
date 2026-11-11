@@ -1837,6 +1837,9 @@ pub struct MaterialShaders {
     /// frame.
     found: Vec<std::path::PathBuf>,
     since_walk: Option<u32>,
+    /// After the first walk the project is walked on a thread of its own
+    /// ([`scrap_core::watch`]); what it found last, taken when it changes.
+    walker: Option<(scrap_core::watch::Watch, std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>)>,
 }
 
 impl MaterialShaders {
@@ -1850,6 +1853,7 @@ impl MaterialShaders {
             stamps: Default::default(),
             found: Vec::new(),
             since_walk: None,
+            walker: None,
         }
     }
 
@@ -1866,8 +1870,36 @@ impl MaterialShaders {
         renderer: &mut Renderer,
         gpu: &Gpu,
     ) -> Vec<(String, Result<(), String>)> {
-        // In a browser the files never change under the game: one walk.
-        if self.since_walk.is_none_or(|n| n >= Self::WALK_EVERY && !cfg!(target_arch = "wasm32")) {
+        // The first walk here (and one asked for: `look_again`); then on
+        // the walker's thread, a new file taken in when its list changes —
+        // a walk on the frame stalled it every second (~130 ms in a game's
+        // project). In a browser the files never change under the game:
+        // one walk.
+        if self.since_walk.is_none() {
+            self.found = scrap_core::layout::files(&self.dir, scrap_core::layout::Kind::Shader);
+            self.since_walk = Some(0);
+            if self.walker.is_none() {
+                let list = std::sync::Arc::new(std::sync::Mutex::new(self.found.clone()));
+                let (dir, put) = (self.dir.clone(), list.clone());
+                let every = std::time::Duration::from_secs(1);
+                self.walker = scrap_core::watch::Watch::spawn(every, move || {
+                    let found = scrap_core::layout::files(&dir, scrap_core::layout::Kind::Shader);
+                    let print = scrap_core::watch::fingerprint(found.iter().map(|p| (p.as_path(), None)));
+                    if let Ok(mut list) = put.lock() {
+                        *list = found;
+                    }
+                    print
+                })
+                .map(|watch| (watch, list));
+            }
+        } else if let Some((watch, list)) = &self.walker {
+            if watch.changed() {
+                if let Ok(list) = list.lock() {
+                    self.found = list.clone();
+                }
+            }
+        } else if self.since_walk.is_some_and(|n| n >= Self::WALK_EVERY) && !cfg!(target_arch = "wasm32") {
+            // No thread to walk on: as before, every so many polls.
             self.found = scrap_core::layout::files(&self.dir, scrap_core::layout::Kind::Shader);
             self.since_walk = Some(0);
         }

@@ -60,6 +60,7 @@ pub mod time;
 pub mod timers;
 pub mod table;
 pub mod tuned;
+pub mod watch;
 pub mod wind;
 pub mod world;
 
