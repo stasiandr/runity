@@ -170,6 +170,10 @@ NEXT_STEPS.
 `"menu/back"`) и `schemes` (Control Schemes: устройства схемы;
 `Actions::update` включает схему устройства, которого игрок коснулся
 последним, и привязки чужих устройств молчат, как у PlayerInput).
+Двое за одной машиной (2026-11-11, [split-screen.md](split-screen.md)):
+геймпады по слотам (`PadSlots`, `Input::pad`), `keyboards` — стороны
+клавиатуры, и `Seat` — та же карта действий для игрока N (`held_by`,
+`axis_by`).
 
 ## Ответы постулатам
 
