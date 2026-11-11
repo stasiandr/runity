@@ -5938,7 +5938,12 @@ impl Renderer {
 
     /// Draw one frame into an offscreen target.
     pub fn render(&mut self, gpu: &Gpu, target: &OffscreenTarget, frame: &Frame) {
+        // A split frame's views are drawn in the renderer's format and laid
+        // into the target in its own: a window's renderer can draw one into
+        // an RGBA picture (crate::views).
+        self.views.target_format = (target.format != self.format).then_some(target.format);
         self.render_into(gpu, &target.view, target.width, target.height, frame);
+        self.views.target_format = None;
     }
 
     /// Cull what last frame's depth says is hidden, on the GPU, or not

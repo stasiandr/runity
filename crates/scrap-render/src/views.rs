@@ -134,12 +134,18 @@ pub(super) struct Views {
     states: Vec<ViewState>,
     /// Each view's picture: the texture, its view and its size.
     pictures: Vec<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
-    blit: Option<Blit>,
+    /// What lays the pictures, one per format laid into.
+    blits: Vec<(wgpu::TextureFormat, Blit)>,
+    /// The format of the target being drawn now, when it is not the
+    /// renderer's own: a window's renderer drawing a split frame into an
+    /// RGBA picture of its own (a portrait, a shot) lays the views in
+    /// that picture's format, not the window's.
+    pub(super) target_format: Option<wgpu::TextureFormat>,
 }
 
 impl Views {
     pub(super) fn new() -> Self {
-        Self { states: Vec::new(), pictures: Vec::new(), blit: None }
+        Self { states: Vec::new(), pictures: Vec::new(), blits: Vec::new(), target_format: None }
     }
 }
 
@@ -358,10 +364,11 @@ impl Renderer {
 
     /// Lay each view's picture into its rect, what no view covers black.
     fn lay_views(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32), frame: &Frame) {
-        if self.views.blit.is_none() {
-            self.views.blit = Some(blit(gpu, self.format));
+        let format = self.views.target_format.unwrap_or(self.format);
+        if !self.views.blits.iter().any(|(f, _)| *f == format) {
+            self.views.blits.push((format, blit(gpu, format)));
         }
-        let blit = self.views.blit.as_ref().expect("made above");
+        let blit = &self.views.blits.iter().find(|(f, _)| *f == format).expect("made above").1;
         let groups: Vec<wgpu::BindGroup> = self
             .views
             .pictures
@@ -427,4 +434,36 @@ mod tests {
         let cut = ViewRect::Pixels { x: 1200, y: 0, width: 400, height: 100 }.pixels((1280, 720));
         assert_eq!(cut, (1200, 0, 80, 100), "cut to the target");
     }
+
+    /// A window's renderer (BGRA) drawing a split frame into an RGBA
+    /// picture of its own — Not Divinity's portraits — lays the views in
+    /// the picture's format: the blit was the window's, and the device
+    /// refused the pass (the game crashed on its first portrait).
+    #[test]
+    fn a_split_frame_is_laid_into_a_target_of_another_format() {
+        let Ok(gpu) = Gpu::headless_blocking(false) else {
+            eprintln!("skipping: no adapter");
+            return;
+        };
+        let target = crate::gpu::OffscreenTarget::new(&gpu, 64, 32);
+        assert_ne!(target.format, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut renderer = Renderer::with_format(&gpu, wgpu::TextureFormat::Bgra8UnormSrgb, 64, 32, true);
+        let camera = super::super::Camera::default();
+        let frame = Frame {
+            sky: super::super::Sky { mode: super::super::SkyMode::Color, ..Default::default() },
+            clear_color: glam::Vec3::new(1.0, 0.0, 0.0),
+            post: crate::post::PostProcess::OFF,
+            views: vec![FrameView::new(camera, ViewRect::LEFT), FrameView::new(camera, ViewRect::RIGHT)],
+            ..Frame::default()
+        };
+        for _ in 0..2 {
+            renderer.render(&gpu, &target, &frame);
+        }
+        let px = target.read_rgba(&gpu);
+        for at in [0usize, 63, 64 * 31] {
+            let p = &px[at * 4..at * 4 + 4];
+            assert!(p[0] > 200 && p[2] < 40, "red stays red in RGBA: {p:?}");
+        }
+    }
 }
+
