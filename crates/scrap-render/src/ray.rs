@@ -276,27 +276,14 @@ impl RayScene {
     }
 
     pub(crate) fn new(gpu: &Gpu) -> Self {
-        use wgpu::util::DeviceExt;
         let vertices: [crate::asset::Vertex; 3] = std::array::from_fn(|i| crate::asset::Vertex {
             position: [i as f32 * 1e-3, -1.0e6, (i / 2) as f32 * 1e-3],
             normal: [0.0, 1.0, 0.0],
             uv: [0.0, 0.0],
         });
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT;
-        let vb = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("placeholder"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage,
-            });
-        let ib = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("placeholder"),
-                contents: bytemuck::cast_slice(&[0u32, 1, 2]),
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT,
-            });
+        let vb = gpu.buffer_init("placeholder", bytemuck::cast_slice(&vertices), usage);
+        let ib = gpu.buffer_init("placeholder", bytemuck::cast_slice(&[0u32, 1, 2]), wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT);
         let placeholder = blas(gpu, &vb, 3, &ib, 3, false);
         let capacity = 64;
         let mut scene = Self {

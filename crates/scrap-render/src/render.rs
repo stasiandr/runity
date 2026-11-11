@@ -2350,12 +2350,7 @@ const COLOR_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![18
 
 /// A buffer of white vertex colours, `count` of them.
 fn white_buffer(gpu: &Gpu, count: u64) -> wgpu::Buffer {
-    use wgpu::util::DeviceExt;
-    gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("white vertex colours"),
-        contents: &vec![255u8; count as usize * 4],
-        usage: wgpu::BufferUsages::VERTEX,
-    })
+    gpu.buffer_init("white vertex colours", &vec![255u8; count as usize * 4], wgpu::BufferUsages::VERTEX)
 }
 
 pub(crate) fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
@@ -4550,14 +4545,7 @@ impl Renderer {
 
     /// Give an uploaded mesh its per-vertex joint bindings.
     fn attach_skin(&mut self, gpu: &Gpu, handle: MeshHandle, bindings: &[SkinVertex]) {
-        use wgpu::util::DeviceExt;
-        let buffer = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("skin"),
-                contents: bytemuck::cast_slice(bindings),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let buffer = gpu.buffer_init("skin", bytemuck::cast_slice(bindings), wgpu::BufferUsages::VERTEX);
         if let Some(mesh) = self.meshes.get_mut(handle.0 as usize) {
             mesh.skin = Some(buffer);
         }
@@ -4568,14 +4556,9 @@ impl Renderer {
     /// drawn with the material a line gives that run. `None` for a mesh of
     /// one run, or a run it does not have.
     pub fn mesh_part(&mut self, gpu: &Gpu, whole: MeshHandle, part: usize) -> Option<MeshHandle> {
-        use wgpu::util::DeviceExt;
         let run = self.mesh_runs.get(&whole.0)?.get(part)?;
         let mesh = self.meshes.get(whole.0 as usize)?;
-        let indices = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh part"),
-            contents: bytemuck::cast_slice(run),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let indices = gpu.buffer_init("mesh part", bytemuck::cast_slice(run), wgpu::BufferUsages::INDEX);
         let piece = GpuMesh {
             vertices: mesh.vertices.clone(),
             colors: mesh.colors.clone(),
@@ -4764,16 +4747,11 @@ impl Renderer {
         cut: Option<Option<(Vec<u32>, Vec<crate::cluster::ClusterRaw>)>>,
     ) -> GpuMesh {
         let bounds = crate::asset::Bounds::of(vertices);
-        use wgpu::util::DeviceExt;
 
         // Its own colours, one to a vertex; the white ones otherwise, grown
         // to reach its last vertex.
         let colors = (colors.len() == vertices.len() && !colors.is_empty()).then(|| {
-            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("vertex colours"),
-                contents: bytemuck::cast_slice(colors),
-                usage: wgpu::BufferUsages::VERTEX,
-            })
+            gpu.buffer_init("vertex colours", bytemuck::cast_slice(colors), wgpu::BufferUsages::VERTEX)
         });
         if colors.is_none() && vertices.len() as u64 > self.white_capacity {
             self.white_capacity = (vertices.len() as u64).next_power_of_two();
@@ -4803,20 +4781,8 @@ impl Renderer {
         // its coarser levels come after, for its clusters alone.
         let own = indices.len();
         let indices = clustered.as_ref().map_or(indices, |(sorted, _)| sorted.as_slice());
-        let vertex_buffer = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("vertices"),
-                contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | usage,
-            });
-        let index_buffer = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("indices"),
-                contents: bytemuck::cast_slice(indices),
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | usage,
-            });
+        let vertex_buffer = gpu.buffer_init("vertices", bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | usage);
+        let index_buffer = gpu.buffer_init("indices", bytemuck::cast_slice(indices), wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | usage);
         let blas = (traced && !indices.is_empty()).then(|| {
             crate::ray::blas(
                 gpu,
@@ -4895,12 +4861,7 @@ impl Renderer {
                 self.meshes.get_mut(handle.0 as usize)
             };
             let Some(mesh) = slot.filter(|m| m.vertices == which) else { continue };
-            use wgpu::util::DeviceExt;
-            mesh.indices = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("indices"),
-                contents: bytemuck::cast_slice(&sorted),
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
-            });
+            mesh.indices = gpu.buffer_init("indices", bytemuck::cast_slice(&sorted), wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE);
             mesh.clusters = Some(crate::cluster::MeshClusters::new(gpu, &clusters));
         }
     }
@@ -10046,3 +10007,39 @@ mod half_float_tests {
     }
 }
 
+
+#[cfg(test)]
+mod web_upload_tests {
+    use super::*;
+
+    /// Buffers are made empty and filled through the queue (never mapped at
+    /// creation: WebKit's WebGPU failed there), never zero-sized, a whole
+    /// number of 4 bytes — on a device kept to the web's limits, an empty
+    /// mesh, a single triangle, a skin, vertex colours and odd-sized
+    /// contents go up without a validation error.
+    #[test]
+    fn uploads_suit_a_strict_webgpu() {
+        let Ok(gpu) = Gpu::like_the_web_blocking() else {
+            eprintln!("skipping: no adapter");
+            return;
+        };
+        let target = crate::gpu::OffscreenTarget::new(&gpu, 64, 64);
+        let mut renderer = Renderer::new(&gpu, &target);
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        for n in [0usize, 1, 2, 3, 5, 7] {
+            let b = gpu.buffer_init("odd", &vec![7u8; n], wgpu::BufferUsages::VERTEX);
+            assert_eq!(b.size(), (n.div_ceil(4).max(1) * 4) as u64, "{n} bytes");
+            assert!(b.usage().contains(wgpu::BufferUsages::COPY_DST));
+        }
+        let empty = renderer.upload(&gpu, &[], &[], &[], None);
+        let v = |x: f32, y: f32| crate::asset::Vertex { position: [x, y, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 0.0] };
+        let tri = [v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0)];
+        let one = renderer.upload(&gpu, &tri, &[[255, 0, 0, 255]; 3], &[0, 1, 2], None);
+        renderer.attach_skin(&gpu, one, &[bytemuck::Zeroable::zeroed(); 3]);
+        let frame = Frame { post: crate::post::PostProcess::OFF, ..Frame::default() };
+        renderer.render(&gpu, &target, &frame);
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
+        assert_ne!(empty, one);
+    }
+}

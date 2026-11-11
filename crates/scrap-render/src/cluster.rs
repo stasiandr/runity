@@ -479,13 +479,8 @@ pub(crate) struct MeshClusters {
 
 impl MeshClusters {
     pub(crate) fn new(gpu: &Gpu, clusters: &[ClusterRaw]) -> Self {
-        use wgpu::util::DeviceExt;
         Self {
-            buffer: gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("clusters"),
-                contents: bytemuck::cast_slice(clusters),
-                usage: wgpu::BufferUsages::STORAGE,
-            }),
+            buffer: gpu.buffer_init("clusters", bytemuck::cast_slice(clusters), wgpu::BufferUsages::STORAGE),
             count: clusters.len() as u32,
             spheres: clusters.to_vec(),
         }

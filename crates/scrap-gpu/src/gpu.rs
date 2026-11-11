@@ -93,6 +93,33 @@ impl std::fmt::Display for GpuError {
 impl std::error::Error for GpuError {}
 
 impl Gpu {
+    /// A buffer holding `contents`: made empty and filled through the
+    /// queue, never mapped at creation — WebKit's WebGPU (iPhone Safari)
+    /// failed the first mesh upload where wgpu wraps a buffer mapped at
+    /// creation in a `Uint8Array`, which Chrome let pass. Never empty (four
+    /// bytes at least: a zero-sized buffer is another thing browsers
+    /// differ on), its size a whole number of 4 bytes (the tail written
+    /// padded with zeros). `COPY_DST` is added to `usage`.
+    pub fn buffer_init(&self, label: &str, contents: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
+        let size = (contents.len() as u64).div_ceil(4).max(1) * 4;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let whole = contents.len() / 4 * 4;
+        if whole > 0 {
+            self.queue.write_buffer(&buffer, 0, &contents[..whole]);
+        }
+        if whole < contents.len() {
+            let mut tail = [0u8; 4];
+            tail[..contents.len() - whole].copy_from_slice(&contents[whole..]);
+            self.queue.write_buffer(&buffer, whole as u64, &tail);
+        }
+        buffer
+    }
+
     /// Open a device with no window and no display.
     ///
     /// `prefer_software` forces the fallback adapter even where a card
