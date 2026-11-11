@@ -60,8 +60,11 @@ impl Surface {
             .unwrap_or(capabilities.formats[0]);
         let view_format = format.add_srgb_suffix();
 
+        // Copied from as well where the platform lets a swapchain be: what
+        // a shot of the window as it is shown reads (`AcquiredFrame::read_rgba`).
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | (capabilities.usages & wgpu::TextureUsages::COPY_SRC);
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format,
             width: width.max(1),
             height: height.max(1),
@@ -197,6 +200,63 @@ impl AcquiredFrame {
     /// The frame as it is: what the 3D renderer draws into.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// What has been drawn into the frame so far as RGBA8 pixels (sRGB
+    /// bytes, row padding removed): a shot of the window as it will be
+    /// shown. Waits on the GPU — for a tool or a test asking for one frame,
+    /// never every frame. `None` where the swapchain cannot be copied from
+    /// or is not 8-bit BGRA/RGBA.
+    pub fn read_rgba(&self, gpu: &Gpu) -> Option<Vec<u8>> {
+        let texture = &self.texture.texture;
+        if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return None;
+        }
+        let bgra = match texture.format() {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => true,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => false,
+            _ => return None,
+        };
+        let (width, height) = (texture.width(), texture.height());
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded = (width * 4).div_ceil(align) * align;
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("window shot"),
+            size: (padded * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("window shot") });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(height) },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        receiver.recv().ok()?.ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for row in 0..height {
+            let start = (row * padded) as usize;
+            pixels.extend_from_slice(&data[start..start + (width * 4) as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        if bgra {
+            for p in pixels.chunks_exact_mut(4) {
+                p.swap(0, 2);
+            }
+        }
+        Some(pixels)
     }
 
     /// Hand it to the compositor. Everything drawn into it must already be

@@ -852,9 +852,82 @@ impl InputScript {
     }
 }
 
+/// Input read from a file as it is written (`SCRAP_INPUT_LIVE=path`): a
+/// line an event, as a script names it (`KeyDown(Space)`), taken one a
+/// frame in the order written — so a `KeyDown` and its `KeyUp` written
+/// together are a tap. What drives a running game from outside it, a
+/// line at a time: a tool, an agent looking at its frames between keys.
+#[derive(Debug)]
+pub struct LiveInput {
+    path: std::path::PathBuf,
+    read: usize,
+    queued: std::collections::VecDeque<InputEvent>,
+}
+
+/// The variable naming the file live input is read from.
+pub const LIVE_VAR: &str = "SCRAP_INPUT_LIVE";
+
+impl LiveInput {
+    /// The file `SCRAP_INPUT_LIVE` names, if any (made empty).
+    pub fn from_env() -> Option<Self> {
+        let path = std::path::PathBuf::from(std::env::var_os(LIVE_VAR)?);
+        if let Err(e) = std::fs::write(&path, "") {
+            eprintln!("{}: {e}", path.display());
+            return None;
+        }
+        Some(Self { path, read: 0, queued: Default::default() })
+    }
+
+    /// The next event written, if any, into `input`.
+    pub fn play(&mut self, input: &mut Input) {
+        if self.queued.is_empty() {
+            if let Ok(text) = std::fs::read_to_string(&self.path) {
+                // Whole lines only: one being written waits for its end.
+                let fresh = text.get(self.read..).unwrap_or_default();
+                if let Some(end) = fresh.rfind('\n') {
+                    for line in fresh[..end].lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")) {
+                        match ron::from_str::<InputEvent>(line) {
+                            Ok(event) => self.queued.push_back(event),
+                            Err(e) => eprintln!("{}: {line}: {e}", self.path.display()),
+                        }
+                    }
+                    self.read += end + 1;
+                }
+            }
+        }
+        if let Some(event) = self.queued.pop_front() {
+            input.handle(&event);
+        }
+    }
+}
+
 #[cfg(test)]
 mod script_tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn live_input_is_taken_a_line_a_frame_as_it_is_written() {
+        let path = std::env::temp_dir().join(format!("scrap_live_input_{}", std::process::id()));
+        std::fs::write(&path, "").unwrap();
+        let mut live = LiveInput { path: path.clone(), read: 0, queued: Default::default() };
+        let mut input = Input::new();
+        live.play(&mut input);
+        assert!(!input.any_held());
+        std::fs::write(&path, "KeyDown(Space)\nKeyUp(Space)\nKeyDown(W").unwrap();
+        live.play(&mut input);
+        assert!(input.pressed(Key::Space));
+        input.begin_frame();
+        live.play(&mut input);
+        assert!(!input.held(Key::Space) && input.released(Key::Space));
+        input.begin_frame();
+        live.play(&mut input);
+        assert!(!input.held(Key::W), "half a line waits");
+        std::fs::write(&path, "KeyDown(Space)\nKeyUp(Space)\nKeyDown(W)\n").unwrap();
+        live.play(&mut input);
+        assert!(input.held(Key::W));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn a_script_plays_its_events_when_they_are_due() {

@@ -109,6 +109,8 @@ struct Game {
     noise: noise::Noise,
     /// The player's choices kept between runs: volumes, the best score.
     prefs: scrap::player_prefs::PlayerPrefs,
+    /// The world from outside (`SCRAP_CONTROL=1`, `scrap world …`).
+    world_control: scrap::world_control::WorldControl,
 }
 
 impl Game {
@@ -536,6 +538,16 @@ impl shell::Game for Game {
     fn overlay(&mut self) -> &Ui {
         &self.ui
     }
+
+    /// `SCRAP_CONTROL=1`: the world's commands on the kitchen's components
+    /// (docs/world-control.md) — all a game needs to be driven from outside.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn control(&mut self, _ctx: &mut Context, cmd: &str, args: &scrap::world_control::Value) -> scrap::world_control::Answer {
+        match cmd {
+            "help" => scrap::world_control::Answer::Done(scrap::world_control::help()),
+            _ => self.world_control.answer(&mut self.world, &self.components, cmd, args),
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -655,6 +667,7 @@ fn main() -> anyhow::Result<()> {
         party,
         lobby,
         components: game_components(),
+        world_control: Default::default(),
         audio,
         sounds: scrap::audio::Sources::new(),
         motions,

@@ -48,6 +48,17 @@ use scrap_core::web_time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
 mod embedded;
 mod frame_debugger;
+/// A running game driven from outside (`SCRAP_CONTROL`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+pub mod control;
+/// Programs of the control's commands, in Rhai (`script`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+pub mod script;
+/// A window the caller's own loop draws into.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+mod pumped;
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+pub use pumped::Pumped;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -77,6 +88,19 @@ pub struct WindowConfig {
     /// standard layout on iOS and Android and with `SCRAP_TOUCH_PAD=1`;
     /// none elsewhere. A game lays out its own or turns it off.
     pub touch_pad: Option<crate::touch_pad::TouchLayout>,
+    /// Where the control socket listens (`control`): a running game
+    /// driven from outside its window — shots, input, pause and step, the
+    /// game's own commands. `SCRAP_CONTROL=1` (or a path) by default;
+    /// none, the default without it. Never in a browser or on a phone.
+    pub control: Option<std::path::PathBuf>,
+}
+
+/// The control socket `SCRAP_CONTROL` asks for, where there can be one.
+fn control_from_env() -> Option<std::path::PathBuf> {
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+    return std::env::var(control::CONTROL_VAR).ok().filter(|v| v != "0").map(|v| control::socket_for(&v));
+    #[cfg(any(target_arch = "wasm32", target_os = "ios", target_os = "android"))]
+    None
 }
 
 /// Whether the platform owns the screen and gives it to the game whole:
@@ -98,6 +122,7 @@ impl Default for WindowConfig {
                 Err(_) => cfg!(any(target_os = "ios", target_os = "android")),
             }
             .then(crate::touch_pad::TouchLayout::standard),
+            control: control_from_env(),
         }
     }
 }
@@ -137,8 +162,13 @@ pub struct Context<'a> {
     /// the last frame ([`scrap_core::embed::ToGame::Command`]): none in a
     /// window of its own.
     pub commands: &'a [String],
+    /// Whether the window fills its screen now ([`Context::set_fullscreen`]).
+    pub fullscreen: bool,
+    /// Input the game asked to be played ([`Context::inject`]).
+    injected: Vec<(u32, InputEvent)>,
     quit: bool,
     capture: Option<bool>,
+    fullscreen_asked: Option<bool>,
     asked: TimeAsk,
 }
 
@@ -189,6 +219,23 @@ impl Context<'_> {
         self.asked = self.asked.and(asked);
     }
 
+    /// Fill the screen with the window (borderless, the screen's own
+    /// mode: no mode switch, so it is quick and other windows stay
+    /// reachable) or give it back its frame. Done after this call to the
+    /// game returns; nothing where the platform owns the screen (a page,
+    /// a phone). `SCRAP_FULLSCREEN=1` starts a window filling it.
+    pub fn set_fullscreen(&mut self, on: bool) {
+        self.fullscreen_asked = Some(on);
+    }
+
+    /// Play `event` as if a device sent it, `after` frames from now (0:
+    /// before the next frame's steps): what a control command that acts
+    /// like a player (`Game::control`) presses and lets go with. Only
+    /// with the control socket on; nothing otherwise.
+    pub fn inject(&mut self, after: u32, event: InputEvent) {
+        self.injected.push((after, event));
+    }
+
     pub fn aspect(&self) -> f32 {
         self.size.0 as f32 / self.size.1.max(1) as f32
     }
@@ -218,6 +265,16 @@ pub trait Game {
     /// fields needs a restart. Keep state in the world, where this can
     /// carry it across.
     fn patched(&mut self, _ctx: &mut Context) {}
+
+    /// A request from the control socket (`SCRAP_CONTROL`, module
+    /// `control`) that the shell does not answer itself: the game's own —
+    /// its state, its cheats, a player's move. Called during the frame,
+    /// after [`Game::frame`]; [`control::Answer::Pending`] is asked again
+    /// next frame. Unknown by default.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+    fn control(&mut self, _ctx: &mut Context, _cmd: &str, _args: &control::Value) -> control::Answer {
+        control::Answer::Unknown
+    }
 
     /// What to draw over the scene. Empty by default.
     fn overlay(&mut self) -> &crate::ui::Ui {
@@ -327,6 +384,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         time,
         input: Input::new(),
         script: scrap_core::input::InputScript::from_env().map(|s| (s, None)),
+        #[cfg(not(target_arch = "wasm32"))]
+        live_input: scrap_core::input::LiveInput::from_env(),
         render_thread,
         stepped_ahead: false,
         last_steps: Duration::ZERO,
@@ -347,6 +406,14 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         suspended: false,
         debugger: Default::default(),
         frozen: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        frame_log: FrameLog::from_env(),
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        desk: None,
+        recent: Default::default(),
+        scale_before_pause: 1.0,
+        forced_steps: 0,
+        last_began: None,
     };
     shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
     #[cfg(target_os = "ios")]
@@ -454,6 +521,9 @@ struct Shell<G: Game> {
     /// Input played from a file (`SCRAP_INPUT_SCRIPT`), and when it began:
     /// the first frame drawn, the game loaded.
     script: Option<(scrap_core::input::InputScript, Option<Instant>)>,
+    /// Input read from a file as it is written (`SCRAP_INPUT_LIVE`).
+    #[cfg(not(target_arch = "wasm32"))]
+    live_input: Option<scrap_core::input::LiveInput>,
     /// Draw on a render thread when the steps are worth it (never in the
     /// browser).
     render_thread: bool,
@@ -486,6 +556,19 @@ struct Shell<G: Game> {
     /// The Frame Debugger's window (F9), and the frame it takes apart.
     debugger: frame_debugger::Panel,
     frozen: Option<Frame>,
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_log: Option<FrameLog>,
+    /// The control socket and what it asked for (`control`).
+    #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+    desk: Option<control::Desk>,
+    /// The last frames: interval ms, steps, GPU ms — `perf` on the socket.
+    recent: std::collections::VecDeque<(f32, u32, f32)>,
+    /// The time scale before a pause from the socket.
+    scale_before_pause: f32,
+    /// Steps run by the socket's `step`, while paused.
+    forced_steps: u64,
+    /// When the last turn began (the frames' intervals).
+    last_began: Option<Instant>,
 }
 
 impl<G: Game> Shell<G> {
@@ -507,8 +590,11 @@ impl<G: Game> Shell<G> {
             cursor_captured: captured,
             loop_times,
             commands: &[],
+            fullscreen: !SCREEN_IS_GIVEN && state.window.fullscreen().is_some(),
+            injected: Vec::new(),
             quit: false,
             capture: None,
+            fullscreen_asked: None,
             asked: TimeAsk::default(),
         }
     }
@@ -590,6 +676,31 @@ fn draw_frame(
     renderer.draw_ui_pictures(gpu, overlay, frame);
     renderer.render_to_frame(gpu, &acquired, frame);
     overlay.render_to_frame(gpu, &acquired, ui);
+    use std::sync::atomic::Ordering;
+    let turn = TURN.fetch_add(1, Ordering::Relaxed);
+    let game_wants = SHOTS_WANTED.load(Ordering::Relaxed) > 0;
+    let desk_wants = DESK_WANTED.load(Ordering::Relaxed) > 0;
+    if game_wants || desk_wants {
+        if let Some(rgba) = acquired.read_rgba(gpu) {
+            let shot = WindowShot { width: acquired.width, height: acquired.height, rgba, turn };
+            if desk_wants {
+                DESK_WANTED.fetch_sub(1, Ordering::Relaxed);
+                if let Ok(mut shots) = DESK_SHOTS.lock() {
+                    shots.push(shot.clone());
+                }
+            }
+            if game_wants {
+                SHOTS_WANTED.fetch_sub(1, Ordering::Relaxed);
+                if let Ok(mut shots) = SHOTS.lock() {
+                    shots.push(shot);
+                }
+            }
+        } else {
+            // Nothing to read here: nobody waits for ever.
+            SHOTS_WANTED.store(0, Ordering::Relaxed);
+            DESK_WANTED.store(0, Ordering::Relaxed);
+        }
+    }
     let drawn_at = Instant::now();
     times.push(("render", drawn_at - acquired_at));
     acquired.present(gpu);
@@ -654,11 +765,26 @@ impl<G: Game> Shell<G> {
         }
 
         let mut quit = false;
+        let turn_began = Instant::now();
+        let steps_before = self.time.step();
+        let mut steps_ms = 0.0f32;
         // A script's input due by now, as if the keys were pressed.
         if let Some((script, began)) = self.script.as_mut() {
             let seconds = began.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
             script.play(seconds, &mut self.input);
             quit |= script.over(seconds);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(live) = self.live_input.as_mut() {
+            live.play(&mut self.input);
+        }
+        // The control socket: what came, the input due, the shell's own
+        // commands answered; the game's are asked after its frame.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        {
+            if let Some(desk) = self.desk.as_mut() {
+                quit |= desk_before(desk, &mut self.input, &mut self.time, &mut self.scale_before_pause, self.forced_steps, &self.recent, &self.config.title, size);
+            }
         }
         // The pointer the game asked for, captured or free, applied once the
         // frame is done.
@@ -674,10 +800,23 @@ impl<G: Game> Shell<G> {
             let asked = ctx.asked;
             self.time.ask(asked);
         }
+        // Paused from the socket: only the steps it asked for.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        if let Some(desk) = self.desk.as_mut().filter(|d| d.paused && d.steps_owed > 0) {
+            let owed = std::mem::take(&mut desk.steps_owed);
+            for _ in 0..owed {
+                let mut ctx = StepContext { time: &self.time, input: &self.input, size, quit: false, asked: TimeAsk::default() };
+                let game = &mut self.game;
+                hot(|| game.step(&mut ctx));
+                quit |= ctx.quit;
+                self.forced_steps += 1;
+            }
+        }
         if !self.stepped_ahead {
             let start = Instant::now();
             quit |= run_steps(&mut self.game, &mut self.time, &self.input, size);
             self.last_steps = start.elapsed();
+            steps_ms += self.last_steps.as_secs_f32() * 1e3;
             self.loop_times.record("steps", self.last_steps);
         }
         self.stepped_ahead = false;
@@ -688,11 +827,35 @@ impl<G: Game> Shell<G> {
         let frame = hot(|| game.frame(&mut ctx));
         quit |= ctx.quit;
         wanted = ctx.capture.or(wanted);
+        let fullscreen = ctx.fullscreen_asked;
+        let mut injected = std::mem::take(&mut ctx.injected);
         let asked = ctx.asked;
         self.time.ask(asked);
+        let frame_ms = start.elapsed().as_secs_f32() * 1e3;
         self.loop_times.record("frame", start.elapsed());
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        {
+            // The game's own commands, with the frame's context.
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+            if let Some(desk) = self.desk.as_mut() {
+                let game = &mut self.game;
+                desk_game(desk, game, &mut ctx);
+            }
+            injected.append(&mut ctx.injected);
+            quit |= ctx.quit;
+            if let Some(desk) = self.desk.as_mut() {
+                let turn = TURN.load(std::sync::atomic::Ordering::Relaxed);
+                desk.due.extend(injected.drain(..).map(|(after, e)| (turn + 1 + after as u64, e)));
+            }
+        }
+        drop(injected);
         if let Some(on) = wanted {
             self.wants_capture = on;
+        }
+        if let (Some(on), false) = (fullscreen, SCREEN_IS_GIVEN) {
+            if on != state.window.fullscreen().is_some() {
+                state.window.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
+            }
         }
         if let Some(on) = wanted.map(|on| on && self.focused).filter(|on| *on != self.captured) {
             set_captured(&state.window, on);
@@ -739,6 +902,7 @@ impl<G: Game> Shell<G> {
                 let start = Instant::now();
                 quit |= run_steps(&mut self.game, &mut self.time, &self.input, size);
                 let took = start.elapsed();
+                steps_ms += took.as_secs_f32() * 1e3;
                 let done = thread.done.recv().expect("the render thread panicked");
                 state.drawing = Some(done.drawing);
                 times = done.times;
@@ -761,6 +925,51 @@ impl<G: Game> Shell<G> {
                 &mut times,
             )
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(log) = self.frame_log.as_mut() {
+            use std::io::Write;
+            let ms = |name: &str| times.iter().find(|(n, _)| *n == name).map_or(0.0, |(_, t)| t.as_secs_f32() * 1e3);
+            let interval = log.last.map_or(0.0, |l| (turn_began - l).as_secs_f32() * 1e3);
+            log.last = Some(turn_began);
+            let (gpu_ms, stats) = state.drawing.as_ref().map_or((0.0, Default::default()), |d| {
+                (d.renderer.gpu_times().iter().map(|(_, t)| *t).sum::<f32>(), d.renderer.stats())
+            });
+            let note = NOTE.lock().map(|n| n.replace(',', ";")).unwrap_or_default();
+            let _ = writeln!(
+                log.out,
+                "{},{:.3},{:.2},{},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.2},{},{},{},{},{},{}",
+                TURN.load(std::sync::atomic::Ordering::Relaxed),
+                (turn_began - log.began).as_secs_f32(),
+                interval,
+                self.time.step() - steps_before,
+                steps_ms,
+                frame_ms,
+                ms("acquire"),
+                ms("render"),
+                ms("present"),
+                size.0,
+                size.1,
+                state.window.scale_factor(),
+                gpu_ms,
+                stats.submitted,
+                stats.drawn,
+                stats.triangles,
+                stats.batches,
+                stats.shadow_casters,
+                note,
+            );
+            // Each line out at once: a lagging game is often killed, not quit.
+            let _ = log.out.flush();
+        }
+        {
+            let interval = self.last_began.map_or(0.0, |l| (turn_began - l).as_secs_f32() * 1e3);
+            self.last_began = Some(turn_began);
+            let gpu_ms = state.drawing.as_ref().map_or(0.0, |d| d.renderer.gpu_times().iter().map(|(_, t)| *t).sum::<f32>());
+            if self.recent.len() >= 600 {
+                self.recent.pop_front();
+            }
+            self.recent.push_back((interval, (self.time.step() - steps_before) as u32, gpu_ms));
+        }
         for (name, took) in times {
             self.loop_times.record(name, took);
         }
@@ -796,6 +1005,12 @@ impl<G: Game> Shell<G> {
                 if let Some(d) = state.drawing.as_ref() {
                     d.surface.reconfigure(&state.gpu);
                 }
+                // No picture to wait for (a window minimised, hidden, the
+                // screen asleep, a fullscreen switch under way): without a
+                // pause the loop turned a few thousand times a second on a
+                // core of its own until the screen took frames again.
+                #[cfg(not(target_arch = "wasm32"))]
+                std::thread::sleep(Duration::from_millis(8));
             }
             Drawn::Failed(e) => {
                 eprintln!("{e}");
@@ -825,6 +1040,259 @@ impl<G: Game> Shell<G> {
 
         if quit {
             event_loop.exit();
+        }
+    }
+}
+
+/// The control socket at the start of a turn: requests taken in, the
+/// input due played, shots written, the shell's own commands answered.
+/// Whether one asked to quit.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[allow(clippy::too_many_arguments)]
+fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, scale_before_pause: &mut f32, forced_steps: u64, recent: &std::collections::VecDeque<(f32, u32, f32)>, title: &str, size: (u32, u32)) -> bool {
+    use control::{Until, Value};
+    use std::sync::atomic::Ordering;
+    let turn = TURN.load(Ordering::Relaxed);
+    desk.take_new(turn);
+    for event in desk.due_by(turn) {
+        input.handle(&event);
+    }
+    // Shots the window kept, written for the jobs that asked.
+    for shot in DESK_SHOTS.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default() {
+        let Some(job) = desk.shots.iter_mut().find(|j| j.left > 0 && j.from_turn <= shot.turn) else { continue };
+        job.left -= 1;
+        let index = job.armed_count - job.left - 1;
+        let written = control::write_shot(&shot, job, index);
+        let id = job.request;
+        if let Some(r) = desk.waiting.iter_mut().find(|r| r.turn == id && r.cmd == "shot") {
+            if let Some(Until::Shots { files, .. }) = r.until.as_mut() {
+                files.push(written.unwrap_or_else(|e| Value::String(e)));
+            }
+        }
+    }
+    desk.shots.retain(|j| j.left > 0);
+    for job in desk.shots.iter_mut().filter(|j| !j.armed && j.from_turn <= turn) {
+        job.armed = true;
+        DESK_WANTED.fetch_add(job.left, Ordering::Relaxed);
+    }
+    let mut quit = false;
+    let steps_now = forced_steps;
+    for mut r in std::mem::take(&mut desk.waiting) {
+        let timeout = r.timeout();
+        if r.began.elapsed().as_secs_f32() > timeout {
+            let what = r.cmd.clone();
+            r.answer(Err(format!("{what}: timed out after {timeout:.0} s")));
+            continue;
+        }
+        match r.until.as_mut() {
+            Some(Until::Turn(t)) => {
+                if turn >= *t {
+                    r.answer(Ok(control::json::json!({ "turn": turn })));
+                } else {
+                    desk.waiting.push(r);
+                }
+                continue;
+            }
+            Some(Until::Step(n)) => {
+                if steps_now >= *n {
+                    r.answer(Ok(control::json::json!({ "steps": steps_now, "turn": turn })));
+                } else {
+                    desk.waiting.push(r);
+                }
+                continue;
+            }
+            Some(Until::Shots { want, files }) => {
+                if files.len() >= *want {
+                    let files = std::mem::take(files);
+                    r.answer(Ok(Value::Array(files)));
+                } else {
+                    desk.waiting.push(r);
+                }
+                continue;
+            }
+            Some(Until::Game) => {
+                desk.waiting.push(r);
+                continue;
+            }
+            Some(Until::Script) => {
+                match desk.script.as_ref().map(|s| s.done.try_recv()) {
+                    Some(Ok(result)) => {
+                        desk.script = None;
+                        r.answer(Ok(result));
+                    }
+                    Some(Err(std::sync::mpsc::TryRecvError::Empty)) => desk.waiting.push(r),
+                    _ => {
+                        desk.script = None;
+                        r.answer(Err("the script's thread ended without a word".into()));
+                    }
+                }
+                continue;
+            }
+            None => {}
+        }
+        let arg = |name: &str| r.args.get(name).and_then(Value::as_f64);
+        match r.cmd.as_str() {
+            "hello" => {
+                let answer = control::json::json!({
+                    "game": title, "size": [size.0, size.1], "paused": desk.paused,
+                    "turn": turn, "steps": time.step(), "fixed_delta": time.settings().fixed_delta,
+                    "pid": std::process::id(),
+                });
+                r.answer(Ok(answer));
+            }
+            "pause" => {
+                if !desk.paused {
+                    desk.paused = true;
+                    *scale_before_pause = time.settings().scale;
+                    time.set_scale(0.0);
+                }
+                r.answer(Ok(control::json::json!({ "paused": true, "turn": turn })));
+            }
+            "resume" => {
+                if desk.paused {
+                    desk.paused = false;
+                    time.set_scale(*scale_before_pause);
+                }
+                r.answer(Ok(control::json::json!({ "paused": false, "turn": turn })));
+            }
+            "step" => {
+                if !desk.paused {
+                    desk.paused = true;
+                    *scale_before_pause = time.settings().scale;
+                    time.set_scale(0.0);
+                }
+                let n = arg("steps").unwrap_or(1.0).max(0.0) as u32;
+                desk.steps_owed += n;
+                r.until = Some(Until::Step(steps_now + desk.steps_owed as u64));
+                desk.waiting.push(r);
+            }
+            "frames" => {
+                let n = arg("frames").unwrap_or(1.0).max(0.0) as u64;
+                r.until = Some(Until::Turn(turn + n));
+                desk.waiting.push(r);
+            }
+            "time_scale" => {
+                let scale = arg("scale").unwrap_or(1.0).max(0.0) as f32;
+                if desk.paused {
+                    *scale_before_pause = scale;
+                } else {
+                    time.set_scale(scale);
+                }
+                r.answer(Ok(control::json::json!({ "scale": scale })));
+            }
+            "input" => match control::events_of(&r.args) {
+                Ok(events) => {
+                    let n = events.len();
+                    for (after, event) in events {
+                        if after == 0 {
+                            input.handle(&event);
+                        } else {
+                            desk.due.push((turn + after, event));
+                        }
+                    }
+                    r.answer(Ok(control::json::json!({ "events": n, "turn": turn })));
+                }
+                Err(e) => r.answer(Err(e)),
+            },
+            "shot" => {
+                let frames = arg("frames").unwrap_or(1.0).clamp(1.0, 16.0) as u32;
+                let after = arg("after").unwrap_or(0.0).max(0.0) as u64;
+                let path = r.args.get("path").and_then(Value::as_str).map(std::path::PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("scrap-shot.png"));
+                let crop = match r.args.get("half").and_then(Value::as_str) {
+                    Some("p1" | "left" | "1") => Some((0, 0, size.0 / 2, size.1)),
+                    Some("p2" | "right" | "2") => Some((size.0 / 2, 0, size.0 - size.0 / 2, size.1)),
+                    _ => r.args.get("crop").and_then(Value::as_array).filter(|c| c.len() == 4).map(|c| {
+                        let n = |i: usize| c[i].as_u64().unwrap_or(0) as u32;
+                        (n(0), n(1), n(2), n(3))
+                    }),
+                };
+                let width = arg("width").map(|w| w as u32);
+                desk.shots.push(control::ShotJob { from_turn: turn + after, left: frames, armed_count: frames, armed: false, path, crop, width, request: turn });
+                r.until = Some(Until::Shots { want: frames as usize, files: Vec::new() });
+                desk.waiting.push(r);
+            }
+            "perf" => {
+                let n = arg("frames").unwrap_or(240.0).max(1.0) as usize;
+                let recent: Vec<&(f32, u32, f32)> = recent.iter().rev().take(n).collect();
+                let mut intervals: Vec<f32> = recent.iter().map(|r| r.0).filter(|v| *v > 0.0).collect();
+                intervals.sort_by(f32::total_cmp);
+                let avg = if intervals.is_empty() { 0.0 } else { intervals.iter().sum::<f32>() / intervals.len() as f32 };
+                let pick = |q: f32| intervals.get(((intervals.len() as f32 * q) as usize).min(intervals.len().saturating_sub(1))).copied().unwrap_or(0.0);
+                let steps = recent.iter().map(|r| r.1 as f32).sum::<f32>() / recent.len().max(1) as f32;
+                let gpu = recent.iter().map(|r| r.2).sum::<f32>() / recent.len().max(1) as f32;
+                let answer = control::json::json!({
+                    "frames": intervals.len(), "fps": if avg > 0.0 { 1000.0 / avg } else { 0.0 },
+                    "avg_ms": avg, "p50_ms": pick(0.5), "p99_ms": pick(0.99), "max_ms": intervals.last().copied().unwrap_or(0.0),
+                    "steps_per_frame": steps, "gpu_ms": gpu, "size": [size.0, size.1],
+                });
+                r.answer(Ok(answer));
+            }
+            "script" => {
+                if desk.script.is_some() {
+                    r.answer(Err("busy: a script is under way (script_cancel stops it)".into()));
+                    continue;
+                }
+                let source = match (r.args.get("source").and_then(Value::as_str), r.args.get("path").and_then(Value::as_str)) {
+                    (Some(s), _) => Ok(s.to_string()),
+                    (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}")),
+                    _ => Err("script wants source=… or path=…".to_string()),
+                };
+                match source {
+                    Ok(source) => {
+                        if r.args.get("timeout").is_none() {
+                            if let Value::Object(o) = &mut r.args {
+                                o.insert("timeout".into(), Value::from(600));
+                            }
+                        }
+                        let library = match r.args.get("lib").and_then(Value::as_str).map(|p| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))) {
+                            Some(Err(e)) => {
+                                r.answer(Err(e));
+                                continue;
+                            }
+                            Some(Ok(l)) => Some(l),
+                            None => None,
+                        };
+                        desk.script = Some(script::start(source, library, desk.to_loop.clone()));
+                        r.until = Some(Until::Script);
+                        desk.waiting.push(r);
+                    }
+                    Err(e) => r.answer(Err(e)),
+                }
+            }
+            "script_cancel" => {
+                let running = desk.script.as_ref().map(|s| s.cancel.store(true, Ordering::Relaxed)).is_some();
+                r.answer(Ok(control::json::json!({ "cancelled": running })));
+            }
+            "quit" => {
+                r.answer(Ok(control::json::json!({ "quit": true })));
+                quit = true;
+            }
+            // The game's: asked after its frame.
+            _ => {
+                r.until = Some(Until::Game);
+                desk.waiting.push(r);
+            }
+        }
+    }
+    quit
+}
+
+/// The game's commands waiting on the desk, asked with the frame's
+/// context; answered, failed, or kept for the next frame.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+fn desk_game<G: Game>(desk: &mut control::Desk, game: &mut G, ctx: &mut Context) {
+    use control::{Answer, Until};
+    for r in std::mem::take(&mut desk.waiting) {
+        if !matches!(r.until, Some(Until::Game)) {
+            desk.waiting.push(r);
+            continue;
+        }
+        let (cmd, args) = (r.cmd.clone(), r.args.clone());
+        match hot(|| game.control(ctx, &cmd, &args)) {
+            Answer::Done(v) => r.answer(Ok(v)),
+            Answer::Failed(e) => r.answer(Err(e)),
+            Answer::Pending => desk.waiting.push(r),
+            Answer::Unknown => r.answer(Err(format!("unknown command `{cmd}`"))),
         }
     }
 }
@@ -890,6 +1358,13 @@ impl<G: Game> Shell<G> {
 
     /// The device and the window are there: the game starts.
     fn begin(&mut self, mut state: Running) {
+        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        if let Some(socket) = self.config.control.clone() {
+            match control::Desk::open(&socket, &self.config.title) {
+                Ok(desk) => self.desk = Some(desk),
+                Err(e) => eprintln!("control {}: {e}", socket.display()),
+            }
+        }
         let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured, &self.loop_times);
         self.game.start(&mut ctx);
         startup("the game started");
@@ -910,6 +1385,83 @@ static CANVAS_CAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 
 pub fn set_canvas_height_cap(pixels: u32) {
     CANVAS_CAP.store(pixels, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A word on the frames from now on in `SCRAP_FRAME_LOG`'s last column —
+/// what the game is showing (`title`, `fight 85%`), so a slow frame is
+/// read against where it happened. Nothing else reads it.
+pub fn note_frame(text: &str) {
+    if let Ok(mut note) = NOTE.lock() {
+        if note.as_str() != text {
+            note.clear();
+            note.push_str(text);
+        }
+    }
+}
+
+static NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// A frame of the window as it was shown: the scene and the overlay,
+/// RGBA8 (sRGB bytes), the drawable's size in pixels.
+#[derive(Debug, Clone)]
+pub struct WindowShot {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// The loop's turn it was drawn on (consecutive shots differ by one).
+    pub turn: u64,
+}
+
+/// Keep the next `frames` frames the window shows ([`take_shots`]): each
+/// one waits on the GPU, so this is for a tool, a check or a player's
+/// screenshot key, not every frame. Nothing where the platform's swapchain
+/// cannot be read.
+pub fn capture_frames(frames: u32) {
+    SHOTS_WANTED.fetch_add(frames, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The frames kept since the last call ([`capture_frames`]).
+pub fn take_shots() -> Vec<WindowShot> {
+    SHOTS.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default()
+}
+
+static SHOTS_WANTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The control socket's shots, apart from the game's own.
+static DESK_WANTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static DESK_SHOTS: std::sync::Mutex<Vec<WindowShot>> = std::sync::Mutex::new(Vec::new());
+static SHOTS: std::sync::Mutex<Vec<WindowShot>> = std::sync::Mutex::new(Vec::new());
+static TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `SCRAP_FRAME_LOG=path`: a line per frame, CSV — when, how long since
+/// the last, the fixed steps run and what they took, the game's frame,
+/// the wait for the screen, the drawing, the present, the drawable's
+/// pixels and the display's scale, the GPU's time (with
+/// `SCRAP_GPU_TIMES`), what the renderer drew, and the game's note
+/// ([`note_frame`]). What a "the game lags" is measured with in the real
+/// window, where the offscreen numbers miss the screen.
+#[cfg(not(target_arch = "wasm32"))]
+struct FrameLog {
+    out: std::io::BufWriter<std::fs::File>,
+    began: Instant,
+    last: Option<Instant>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FrameLog {
+    fn from_env() -> Option<Self> {
+        let path = std::env::var_os("SCRAP_FRAME_LOG")?;
+        let file = match std::fs::File::create(&path) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("SCRAP_FRAME_LOG {}: {e}", std::path::Path::new(&path).display());
+                return None;
+            }
+        };
+        let mut out = std::io::BufWriter::new(file);
+        use std::io::Write;
+        let _ = writeln!(out, "turn,t,interval_ms,steps,steps_ms,frame_ms,acquire_ms,render_ms,present_ms,width,height,scale,gpu_ms,submitted,drawn,triangles,batches,shadow_casters,note");
+        Some(Self { out, began: Instant::now(), last: None })
+    }
 }
 
 /// The canvas the game draws on: the page's `#scrap`, or a new one over
@@ -1005,6 +1557,9 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                 self.config.width,
                 self.config.height,
             ));
+        }
+        if !SCREEN_IS_GIVEN && std::env::var("SCRAP_FULLSCREEN").is_ok_and(|v| v == "1") {
+            attributes = attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
         if let Some((x, y, width, height)) = std::env::var(WINDOW_VAR)
             .ok()

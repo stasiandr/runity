@@ -41,6 +41,13 @@ use crate::world::SceneId;
 
 type Insert = fn(&RawValue, &mut World, hecs::Entity) -> Result<(), String>;
 type Remove = fn(&mut World, hecs::Entity);
+/// Whether an entity has the component.
+type Has = fn(&World, hecs::Entity) -> bool;
+/// A component's value on an entity as JSON (`None`: not on it), and one
+/// put on from JSON — the world control's read and write
+/// (`scrap::world_control`): for the components that can be written out.
+type ReadJson = fn(&World, hecs::Entity) -> Option<serde_json::Value>;
+type WriteJson = fn(serde_json::Value, &mut World, hecs::Entity) -> Result<(), String>;
 /// A component's value on an entity, as RON — for the ones that go over the
 /// network.
 type Write = fn(&World, hecs::Entity) -> Option<String>;
@@ -56,6 +63,11 @@ pub type TakeState = fn(&mut World, hecs::Entity, u32, u64, &[u8]);
 #[derive(Default, Clone)]
 pub struct Components {
     by_name: BTreeMap<String, (Insert, Remove)>,
+    /// Whether an entity has each one, for all of them.
+    has: BTreeMap<String, Has>,
+    /// The ones that can be written out (saved, networked or inspected),
+    /// read and written as JSON.
+    json: BTreeMap<String, (ReadJson, WriteJson)>,
     /// The ones marked networked, and how to write each out.
     networked: BTreeMap<String, Write>,
     /// The ones a save game keeps, and how to write each out.
@@ -115,6 +127,25 @@ fn remove<T: hecs::Component>(world: &mut World, entity: hecs::Entity) {
     crate::world::take_off::<T>(world, entity);
 }
 
+fn has<T: hecs::Component>(world: &World, entity: hecs::Entity) -> bool {
+    world.get::<&T>(entity).is_ok()
+}
+
+fn read_json<T: hecs::Component + serde::Serialize>(world: &World, entity: hecs::Entity) -> Option<serde_json::Value> {
+    let value = world.get::<&T>(entity).ok()?;
+    serde_json::to_value(&*value).ok()
+}
+
+fn write_json<T: hecs::Component + DeserializeOwned>(value: serde_json::Value, world: &mut World, entity: hecs::Entity) -> Result<(), String> {
+    let value: T = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    world.insert_one(entity, value).map_err(|_| "the entity is gone".to_string())
+}
+
+/// Why a component cannot be read, and how to make it so.
+fn opaque(name: &str) -> String {
+    format!("`{name}` is write-only here: it can be put on from RON and taken off, not read — derive serde::Serialize on its struct and register it with register_saved / register_inspected (build.rs does it for a component file whose struct derives Serialize)")
+}
+
 impl Components {
     pub fn new() -> Self {
         Self::default()
@@ -124,6 +155,7 @@ impl Components {
     pub fn register<T: hecs::Component + DeserializeOwned>(&mut self, name: &str) -> &mut Self {
         self.by_name
             .insert(name.to_string(), (insert::<T>, remove::<T>));
+        self.has.insert(name.to_string(), has::<T>);
         self.shapes.insert(
             name.to_string(),
             crate::shape::of::<T> as fn() -> crate::shape::Shape,
@@ -200,6 +232,7 @@ impl Components {
     {
         self.register::<T>(name);
         self.networked.insert(name.to_string(), write::<T>);
+        self.json.insert(name.to_string(), (read_json::<T>, write_json::<T>));
         self.reorder();
         self
     }
@@ -229,10 +262,60 @@ impl Components {
     {
         self.register::<T>(name);
         self.saved.insert(name.to_string(), write::<T>);
+        self.json.insert(name.to_string(), (read_json::<T>, write_json::<T>));
         // What can be written down can be moved by a clip, a number at a
         // time (`Property::Field("components.<name>.<path>")`).
         crate::numbers::register::<T>(name);
         self
+    }
+
+    /// Say that `name` means `T`, readable and writable by the world
+    /// control (`scrap::world_control`) though neither saved nor
+    /// networked: what a component that can be written out but is the
+    /// game's own business at run time registers as.
+    pub fn register_inspected<T>(&mut self, name: &str) -> &mut Self
+    where
+        T: hecs::Component + DeserializeOwned + serde::Serialize,
+    {
+        self.register::<T>(name);
+        self.json.insert(name.to_string(), (read_json::<T>, write_json::<T>));
+        self
+    }
+
+    /// Whether `entity` has the component called `name`.
+    pub fn has(&self, name: &str, world: &World, entity: hecs::Entity) -> bool {
+        self.has.get(name).is_some_and(|has| has(world, entity))
+    }
+
+    /// The components on `entity`, by name.
+    pub fn on(&self, world: &World, entity: hecs::Entity) -> Vec<&str> {
+        self.has.iter().filter(|(_, has)| has(world, entity)).map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// Whether the world control can read and write `name` (it derives
+    /// `Serialize` and is registered saved, networked or inspected); the
+    /// others can only be put on from text (a scene's line) and taken off.
+    pub fn is_inspectable(&self, name: &str) -> bool {
+        self.json.contains_key(name)
+    }
+
+    /// `name`'s value on `entity` as JSON: `Ok(None)` when it is not
+    /// there, an error when it cannot be read (not inspectable).
+    pub fn read_json(&self, name: &str, world: &World, entity: hecs::Entity) -> Result<Option<serde_json::Value>, String> {
+        if !self.by_name.contains_key(name) {
+            return Err(format!("no component `{name}` registered"));
+        }
+        let (read, _) = self.json.get(name).ok_or_else(|| opaque(name))?;
+        Ok(read(world, entity))
+    }
+
+    /// Put `name` on `entity` from JSON (replacing it if there).
+    pub fn write_json(&self, name: &str, value: serde_json::Value, world: &mut World, entity: hecs::Entity) -> Result<(), String> {
+        if !self.by_name.contains_key(name) {
+            return Err(format!("no component `{name}` registered"));
+        }
+        let (_, write) = self.json.get(name).ok_or_else(|| opaque(name))?;
+        write(value, world, entity)
     }
 
     pub fn is_saved(&self, name: &str) -> bool {

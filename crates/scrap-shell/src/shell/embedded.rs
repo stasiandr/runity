@@ -134,8 +134,11 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 cursor_captured: captured,
                 loop_times: &loop_times,
                 commands: &commands,
+                fullscreen: false,
+                injected: Vec::new(),
                 quit: false,
                 capture: None,
+                fullscreen_asked: None,
                 asked: TimeAsk::default(),
             }
         };

@@ -10,6 +10,7 @@
 //! scrap modules [sync] [PROJECT]  the engine's modules; Cargo.toml from scrap.ron
 //! scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]  frames against budgets.ron
+//! scrap world <command> [key=value …]  a running game's world, shots, input, time (docs/world-control.md)
 //! scrap frame-debug SCENE [PROJECT] [--seconds S] [--stop N] [--size WxH] [--out FILE]  a frame's passes and draws
 //! scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform P]  a folder to ship
 //! scrap cook  [PROJECT] --platform desktop|mobile|web --out DIR  the library cooked
@@ -158,6 +159,11 @@ scrap frame-debug SCENE [PROJECT] [--seconds S] [--stop N] [--size WxH] [--out F
     plays the scene S seconds first, as the game's fixed steps do: its
     animators started (a character in its clip's pose, not the bind pose),
     physics, ropes and water run. What did not resolve is said on stderr.
+scrap world <command> [key=value …]
+    A running game started with its control on (SCRAP_CONTROL=1): its
+    world queried, read, written, snapshotted, waited on; shots, input,
+    pause and step; the game's own resources and commands. `scrap world
+    help` lists them (docs/world-control.md).
 scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]
     Draw every scene (or one) offscreen at budgets.ron's size and measure
     it: the GPU's milliseconds a frame (over N frames, 10), the draws, the
@@ -405,6 +411,8 @@ fn run() -> Result<ExitCode> {
         }
         "rebuild-time" => rebuild_time(&rest),
         "perf" => perf(&rest),
+        #[cfg(unix)]
+        "world" => scrap_cli::world::run(&rest),
         "frame-debug" => frame_debug(&rest),
         "merge" => merge(&rest),
         "build" => build(&rest),

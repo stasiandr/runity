@@ -1421,3 +1421,34 @@ fn a_players_here_reaches_everyone() {
     let pinged = |p: &Peer| p.events.iter().any(|e| e.decode::<Ping>(PING) == Some(Ping { at: [1.0, 1.3, -2.0] }));
     until(&mut host, &mut guest, |h, g| pinged(h) && pinged(g));
 }
+
+/// The world control on the kitchen's own components, headless: the
+/// items queried by name, one read and written by a field, a snapshot's
+/// diff after the game ran — no code of the kitchen's for any of it.
+#[test]
+fn the_world_control_reads_and_writes_the_kitchens_components() {
+    use scrap::world_control::{serde_json, Answer, WorldControl};
+    let mut k = Peer::alone();
+    k.seconds(0.2);
+    let components = game_components();
+    let mut wc = WorldControl::new();
+    let done = |a: Answer| match a {
+        Answer::Done(v) => v,
+        other => panic!("{other:?}"),
+    };
+    let listed = done(wc.answer(&mut k.world, &components, "components", &serde_json::Value::Null));
+    assert!(listed.to_string().contains("\"name\":\"item\""), "{listed}");
+    // A cook: the kitchen's own `seat` on it, written through by name.
+    let all = done(wc.answer(&mut k.world, &components, "query", &serde_json::json!({ "with": "transform", "limit": 1000 })));
+    let with_any = all["entities"].as_array().unwrap().iter().find(|e| e["components"].as_array().is_some_and(|c| !c.is_empty())).cloned();
+    let some = with_any.unwrap_or_else(|| panic!("no entity with a kitchen component: {all}"));
+    let id = some["id"].clone();
+    let item = done(wc.answer(&mut k.world, &components, "get", &serde_json::json!({ "entity": id })));
+    done(wc.answer(&mut k.world, &components, "snapshot", &serde_json::json!({ "name": "a" })));
+    let moved = done(wc.answer(&mut k.world, &components, "get", &serde_json::json!({ "entity": id, "component": "transform" })));
+    let mut there = moved.clone();
+    there["position"][1] = serde_json::json!(5.0);
+    done(wc.answer(&mut k.world, &components, "set", &serde_json::json!({ "entity": id, "component": "transform", "value": there })));
+    let d = done(wc.answer(&mut k.world, &components, "diff", &serde_json::json!({ "a": "a" })));
+    assert!(d["changed"].to_string().contains("position.1"), "{d} (item {item})");
+}

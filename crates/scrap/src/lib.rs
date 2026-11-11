@@ -157,6 +157,9 @@ pub use scrap_render::upscale;
 pub use scrap_render::vsm;
 pub use scrap_render::zfight;
 pub mod live;
+/// A running game's world from outside it: query, read, write, snapshot,
+/// diff, wait (docs/world-control.md).
+pub mod world_control;
 pub use scrap_core::merge;
 pub use scrap_core::numbers;
 pub use scrap_render::material;
