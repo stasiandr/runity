@@ -398,6 +398,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
                 None
             }
         },
+        #[cfg(target_arch = "wasm32")]
+        page_slots: scrap_core::input::PadSlots::new(),
         captured: false,
         wants_capture: false,
         focused: true,
@@ -540,6 +542,9 @@ struct Shell<G: Game> {
     /// Gamepads, and the player slot each is in. `None` where the platform
     /// has no way to ask — the game still runs, on keyboard and mouse.
     pads: Option<(gilrs::Gilrs, scrap_core::input::PadSlots)>,
+    /// The page's pad's slot where there are no `pads` to share theirs.
+    #[cfg(target_arch = "wasm32")]
+    page_slots: scrap_core::input::PadSlots,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
     /// What the game last asked of the pointer: captured only while the
@@ -1730,8 +1735,14 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         #[cfg(target_arch = "wasm32")]
-        for event in crate::web::drain() {
-            self.input.handle(&event);
+        for said in crate::web::drain() {
+            let slots = match self.pads.as_mut() {
+                Some((_, slots)) => slots,
+                None => &mut self.page_slots,
+            };
+            for event in page_pad_events(slots, said) {
+                self.input.handle(&event);
+            }
         }
         if let Some((pads, slots)) = self.pads.as_mut() {
             // Pads in before the loop began say nothing of it: they take
@@ -1860,6 +1871,44 @@ fn pad_events(
         other => {
             let pad = slots.slot(device).unwrap_or_else(|| slots.connect(device));
             translate_pad(other).and_then(|e| on_slot(pad, e)).into_iter().collect()
+        }
+    }
+}
+
+/// What the page's pad on the screen said (the browser's `web.rs`): it
+/// came or went, or a stick or button of it moved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PagePad {
+    Shown(bool),
+    Event(InputEvent),
+}
+
+/// The device id the page's pad takes its slot by (no real pad has it).
+pub const PAGE_PAD: u64 = u64::MAX;
+
+/// The page's pad as a pad of its own: a slot taken when it comes (or at
+/// its first touch), its sticks and buttons on that slot, the slot left
+/// when it goes.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn page_pad_events(slots: &mut scrap_core::input::PadSlots, said: PagePad) -> Vec<InputEvent> {
+    match said {
+        PagePad::Shown(true) => match slots.slot(PAGE_PAD) {
+            Some(_) => Vec::new(),
+            None => vec![InputEvent::PadConnected(slots.connect(PAGE_PAD))],
+        },
+        PagePad::Shown(false) => slots.disconnect(PAGE_PAD).map(InputEvent::PadDisconnected).into_iter().collect(),
+        PagePad::Event(event) => {
+            let mut out = Vec::new();
+            let pad = match slots.slot(PAGE_PAD) {
+                Some(pad) => pad,
+                None => {
+                    let pad = slots.connect(PAGE_PAD);
+                    out.push(InputEvent::PadConnected(pad));
+                    pad
+                }
+            };
+            out.extend(on_slot(pad, event));
+            out
         }
     }
 }
@@ -2057,6 +2106,29 @@ mod pad_tests {
         );
         assert_eq!(pad_events(&mut slots, 7, EventType::Disconnected), [InputEvent::PadDisconnected(0)]);
         assert_eq!(pad_events(&mut slots, 7, EventType::Disconnected), [], "gone already");
+    }
+
+    #[test]
+    fn the_pages_pad_is_a_pad_of_its_own() {
+        let mut slots = scrap_core::input::PadSlots::new();
+        assert_eq!(pad_events(&mut slots, 7, EventType::Connected), [InputEvent::PadConnected(0)]);
+        // Shown: the next slot, said once.
+        assert_eq!(page_pad_events(&mut slots, PagePad::Shown(true)), [InputEvent::PadConnected(1)]);
+        assert_eq!(page_pad_events(&mut slots, PagePad::Shown(true)), []);
+        assert_eq!(
+            page_pad_events(&mut slots, PagePad::Event(InputEvent::PadDown(PadButton::South))),
+            [InputEvent::PadDownOn { pad: 1, button: PadButton::South }]
+        );
+        assert_eq!(
+            page_pad_events(&mut slots, PagePad::Event(InputEvent::PadMoved { axis: PadAxis::LeftX, value: -1.0 })),
+            [InputEvent::PadMovedOn { pad: 1, axis: PadAxis::LeftX, value: -1.0 }]
+        );
+        // Hidden: its slot left, as a pad unplugged; a touch after brings it back.
+        assert_eq!(page_pad_events(&mut slots, PagePad::Shown(false)), [InputEvent::PadDisconnected(1)]);
+        assert_eq!(
+            page_pad_events(&mut slots, PagePad::Event(InputEvent::PadUp(PadButton::South))),
+            [InputEvent::PadConnected(1), InputEvent::PadUpOn { pad: 1, button: PadButton::South }]
+        );
     }
 }
 
