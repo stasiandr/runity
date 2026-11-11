@@ -159,10 +159,19 @@ pub struct Cooked {
 /// with `zstd`, every asset's body compressed (a download's, a phone's
 /// storage: [`scrap::asset::FLAG_ZSTD`], unpacked as it is read).
 pub fn cook_library(library: &Path, out: &Path, coding: TextureCoding, zstd: bool, cache: &Path) -> Result<Cooked> {
+    cook_library_with(library, out, coding, zstd, false, cache)
+}
+
+/// [`cook_library`], and with `adpcm` every sound as IMA ADPCM
+/// ([`scrap::adpcm`]): a download's — a browser's page fetches every sound
+/// a game has before it starts, and four bits a sample are an eighth of
+/// the importer's decoded `f32`. The mixer decodes each once, when first
+/// played.
+pub fn cook_library_with(library: &Path, out: &Path, coding: TextureCoding, zstd: bool, adpcm: bool, cache: &Path) -> Result<Cooked> {
     std::fs::create_dir_all(out).with_context(|| format!("making {}", out.display()))?;
     let mut files: Vec<PathBuf> = Vec::new();
     collect(library, &mut files)?;
-    let cooked = scrap_core::jobs::map(&files, 1, |file| cook_file(library, file, out, coding, zstd, cache));
+    let cooked = scrap_core::jobs::map(&files, 1, |file| cook_file(library, file, out, coding, zstd, adpcm, cache));
     let mut report = Cooked::default();
     for done in cooked {
         let (what, bytes_in, bytes_out) = done?;
@@ -199,7 +208,7 @@ fn collect(dir: &Path, into: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zstd: bool, cache: &Path) -> Result<(Done, u64, u64)> {
+fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zstd: bool, adpcm: bool, cache: &Path) -> Result<(Done, u64, u64)> {
     let to = out.join(file.strip_prefix(library).unwrap_or(file));
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
@@ -217,12 +226,13 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
     }
     let texture = asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::asset::TEXTURE);
     let mesh = asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::asset::MESH);
-    if !texture && !(asset && zstd) {
+    let sound = adpcm && asset && scrap::asset::kind_of(&bytes).is_ok_and(|k| k == scrap::sound::SOUND);
+    if !texture && !sound && !(asset && zstd) {
         std::fs::write(&to, &bytes)?;
         return Ok((Done::Copied, bytes.len() as u64, bytes.len() as u64));
     }
     // Kept by what it was made from, and how.
-    let key = format!("{:032x}-{coding:?}{}.scrasset", fnv128(&bytes), if zstd { "-zstd5" } else { "" });
+    let key = format!("{:032x}-{coding:?}{}{}.scrasset", fnv128(&bytes), if zstd { "-zstd5" } else { "" }, if sound { "-adpcm" } else { "" });
     let kept = cache.join(&key);
     if let Ok(done) = std::fs::read(&kept) {
         std::fs::write(&to, &done)?;
@@ -240,6 +250,17 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
             }
             None => (Done::Copied, bytes.clone()),
         }
+    } else if sound {
+        let body = scrap::asset::split_header(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        let mut asset: scrap::sound::SoundAsset = rkyv::from_bytes::<scrap::sound::SoundAsset, rkyv::rancor::Error>(body)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        let (rate, samples) = if asset.samples.is_empty() { crate::decode_sound(&asset.encoded, None)? } else { (asset.sample_rate, std::mem::take(&mut asset.samples)) };
+        asset.encoded = scrap::adpcm::encode_wav(&samples, rate);
+        asset.samples = Vec::new();
+        asset.sample_rate = rate;
+        let header = &bytes[..bytes.len() - body.len()];
+        let body = rkyv::to_bytes::<rkyv::rancor::Error>(&asset).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        (Done::Compressed, [header, body.as_slice()].concat())
     } else if mesh && zstd {
         let body = scrap::asset::split_header(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
         let mut asset: MeshAsset = rkyv::from_bytes::<MeshAsset, rkyv::rancor::Error>(body)
@@ -360,5 +381,28 @@ mod tests {
         assert!(cook_texture(&odd, TextureCoding::Bc7).is_none());
         let cooked = cook_texture(&checker(8), TextureCoding::Bc7).unwrap();
         assert!(cook_texture(&cooked, TextureCoding::Astc4x4).is_none());
+    }
+
+    /// A web build's sounds: cooked as IMA ADPCM, a fraction of the bytes,
+    /// and read back as long as they were.
+    #[test]
+    fn a_web_cook_makes_sounds_adpcm() {
+        let dir = std::env::temp_dir().join(format!("scrap-cook-sound-{}", std::process::id()));
+        let (library, out, cache) = (dir.join("library"), dir.join("out"), dir.join("cache"));
+        std::fs::create_dir_all(&library).unwrap();
+        let samples: Vec<f32> = (0..16000).flat_map(|i| {
+            let v = (i as f32 * 0.07).sin() * 0.4;
+            [v, v]
+        }).collect();
+        let sound = scrap::sound::SoundAsset { id: scrap::asset::AssetId(9), name: "hum".into(), sample_rate: 16000, samples, encoded: Vec::new(), seconds: 1.0 };
+        let bytes = scrap::asset::to_bytes(&sound, scrap::sound::SOUND).unwrap();
+        std::fs::write(library.join("hum.scrasset"), &bytes).unwrap();
+        let done = cook_library_with(&library, &out, TextureCoding::Bc7, true, true, &cache).unwrap();
+        assert!(done.bytes_out * 6 < done.bytes_in, "{} → {}", done.bytes_in, done.bytes_out);
+        let cooked = scrap::asset::read(out.join("hum.scrasset")).unwrap();
+        let back = scrap::asset::view::<scrap::sound::SoundAsset>(&cooked).map(|s| (s.samples.len(), s.encoded.to_vec())).unwrap();
+        assert_eq!(back.0, 0);
+        assert_eq!(scrap::adpcm::decode_wav(&back.1).unwrap().1.len(), 16000);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

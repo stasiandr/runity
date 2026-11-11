@@ -111,7 +111,7 @@ scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform desktop|mobile|
     BC7 for desktop (the default), ASTC for mobile, none as imported.
 scrap cook [PROJECT] --platform desktop|mobile|web --out DIR
     The library cooked for a platform into DIR, for a build made by other
-    means: web cooks it twice, DIR/bc7 and DIR/astc, for a page to fetch
+    means: web cooks it twice (its sounds as IMA ADPCM), DIR/bc7 and DIR/astc, for a page to fetch
     the one its browser samples.
 scrap git-setup [PROJECT]
     Turn on the scene merge driver in this clone: scenes and prefabs merge
@@ -944,6 +944,7 @@ fn cook(rest: &[String]) -> Result<ExitCode> {
     use scrap::asset::TextureCoding;
     // What each set is cooked into, and whether its assets are compressed:
     // a download's and a phone's are.
+    let web = platform.as_deref() == Some("web");
     let sets: Vec<(PathBuf, TextureCoding, bool)> = match platform.as_deref() {
         Some("web") => vec![(out.join("bc7"), TextureCoding::Bc7, true), (out.join("astc"), TextureCoding::Astc4x4, true)],
         Some("desktop") => vec![(out.clone(), TextureCoding::Bc7, false)],
@@ -952,7 +953,8 @@ fn cook(rest: &[String]) -> Result<ExitCode> {
     };
     for (folder, coding, zstd) in sets {
         let started = std::time::Instant::now();
-        let done = scrap_cli::build::cook(&project, &folder, coding, zstd)?;
+        // A page fetches every sound before it starts: web's are IMA ADPCM.
+        let done = scrap_cli::build::cook_with(&project, &folder, coding, zstd, web)?;
         println!(
             "{coding:?} into {}: {} textures encoded, {} assets compressed, {} from the cache, {} files as they were, {} stale left out; {:.1} MB to {:.1} MB in {:.1} s",
             folder.display(),

@@ -1311,10 +1311,10 @@ fn build_mips(width: u32, height: u32, pixels: &[u8], srgb: bool) -> Vec<Texture
 /// Mono is duplicated to both channels here rather than at playback, so the
 /// mixer has one layout and no branch — and so a sound that was mono is not
 /// quietly louder than one that was stereo.
-/// A sound file — WAV, MP3, Ogg Vorbis, FLAC — as a sound asset: decoded to
-/// interleaved stereo when it is short, kept as its compressed bytes (to
-/// be streamed) when it is longer than [`scrap::asset::LONG_SOUND_SECONDS`].
-pub fn sound_from_file(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<SoundAsset> {
+/// A sound file's bytes — WAV, MP3, Ogg Vorbis, FLAC; `extension` a hint —
+/// decoded to its sample rate and interleaved stereo (mono doubled, more
+/// than two channels down to the first two).
+pub fn decode_sound(bytes: &[u8], extension: Option<&str>) -> Result<(u32, Vec<f32>)> {
     use symphonia::core::audio::sample::Sample;
     use symphonia::core::codecs::audio::AudioDecoderOptions;
     use symphonia::core::errors::Error;
@@ -1323,37 +1323,20 @@ pub fn sound_from_file(path: impl AsRef<Path>, settings: &ImportSettings) -> Res
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
 
-    let path = path.as_ref();
-    let bytes = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
-    let source = MediaSourceStream::new(
-        Box::new(std::io::Cursor::new(bytes.clone())),
-        Default::default(),
-    );
+    let source = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.to_vec())), Default::default());
     let mut hint = Hint::new();
-    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+    if let Some(extension) = extension {
         hint.with_extension(extension);
     }
     let mut format = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            source,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    let track = format
-        .default_track(TrackType::Audio)
-        .with_context(|| format!("{}: no sound in it", path.display()))?;
+        .probe(&hint, source, FormatOptions::default(), MetadataOptions::default())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let track = format.default_track(TrackType::Audio).context("no sound in it")?;
     let track_id = track.id;
-    let params = track
-        .codec_params
-        .as_ref()
-        .and_then(|p| p.audio())
-        .with_context(|| format!("{}: not a sound track", path.display()))?
-        .clone();
+    let params = track.codec_params.as_ref().and_then(|p| p.audio()).context("not a sound track")?.clone();
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(&params, &AudioDecoderOptions::default())
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut rate = params.sample_rate.unwrap_or(44_100);
     let mut samples: Vec<f32> = Vec::new();
     let mut chunk: Vec<f32> = Vec::new();
@@ -1361,7 +1344,7 @@ pub fn sound_from_file(path: impl AsRef<Path>, settings: &ImportSettings) -> Res
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
-            Err(e) => return Err(anyhow::anyhow!("{}: {e}", path.display())),
+            Err(e) => return Err(anyhow::anyhow!("{e}")),
         };
         if packet.track_id != track_id {
             continue;
@@ -1381,9 +1364,20 @@ pub fn sound_from_file(path: impl AsRef<Path>, settings: &ImportSettings) -> Res
                 }
             }
             Err(Error::DecodeError(_)) => {}
-            Err(e) => return Err(anyhow::anyhow!("{}: {e}", path.display())),
+            Err(e) => return Err(anyhow::anyhow!("{e}")),
         }
     }
+    Ok((rate, samples))
+}
+
+/// A sound file — WAV, MP3, Ogg Vorbis, FLAC — as a sound asset: decoded to
+/// interleaved stereo when it is short, kept as its compressed bytes (to
+/// be streamed) when it is longer than [`scrap::asset::LONG_SOUND_SECONDS`].
+pub fn sound_from_file(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<SoundAsset> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    let extension = path.extension().and_then(|e| e.to_str());
+    let (rate, samples) = decode_sound(&bytes, extension).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     let seconds = samples.len() as f32 / 2.0 / rate.max(1) as f32;
     let long = seconds > scrap::asset::LONG_SOUND_SECONDS;
     Ok(SoundAsset {

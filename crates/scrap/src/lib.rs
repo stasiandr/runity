@@ -619,6 +619,7 @@ pub mod save {
     }
 }
 pub use scrap_audio::sound;
+pub use scrap_audio::adpcm;
 pub use scrap_core::defaults;
 /// The scene file as the core has it: a line's identity, place and tree,
 /// its modules' fields as parts (docs/modules.md).

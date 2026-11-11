@@ -62,8 +62,13 @@ impl Platform {
 /// `project`'s library into `out`, its textures cooked into `coding`'s
 /// blocks, what was encoded before taken from the project's cache.
 pub fn cook(project: &Project, out: &Path, coding: scrap::asset::TextureCoding, zstd: bool) -> Result<scrap_import::cook::Cooked> {
+    cook_with(project, out, coding, zstd, false)
+}
+
+/// [`cook`], and with `adpcm` the sounds as IMA ADPCM (a web build's).
+pub fn cook_with(project: &Project, out: &Path, coding: scrap::asset::TextureCoding, zstd: bool, adpcm: bool) -> Result<scrap_import::cook::Cooked> {
     let cache = project.root().join(".scrap").join("cook");
-    scrap_import::cook::cook_library(&project.root().join(LIBRARY), out, coding, zstd, &cache)
+    scrap_import::cook::cook_library_with(&project.root().join(LIBRARY), out, coding, zstd, adpcm, &cache)
 }
 
 /// How a game is compiled (DNA, "Два профиля сборки игры"): for speed,

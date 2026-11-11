@@ -155,6 +155,9 @@ pub struct Audio<B: Backend = CpalBackend> {
     /// Game. Read by the mixer's own thread, so shared rather than a field
     /// it is sent.
     muted: Arc<AtomicBool>,
+    /// Sounds cooked as IMA ADPCM (a web build's), decoded the first time
+    /// each plays and kept: by name and length.
+    decoded: std::collections::HashMap<(String, usize), StaticSoundData>,
 }
 
 impl<B: Backend> Audio<B>
@@ -194,6 +197,7 @@ where
             master: 1.0,
             groups: Default::default(),
             muted,
+            decoded: Default::default(),
         })
     }
 
@@ -268,6 +272,30 @@ where
     ) -> Result<Playing, String> {
         let rate = kira::PlaybackRate(pitch.max(0.01) as f64);
         let volume = gain_to_decibels(gain);
+        // Cooked small (IMA ADPCM, `scrap cook --platform web`): decoded
+        // once, then played from memory like an imported one.
+        if sound.encoded.starts_with(b"RIFF") {
+            let key = (sound.name.to_string(), sound.encoded.len());
+            if !self.decoded.contains_key(&key) {
+                if let Some((sample_rate, frames)) = crate::adpcm::decode_wav(&sound.encoded) {
+                    let frames: Vec<kira::Frame> = frames.into_iter().map(|[l, r]| kira::Frame { left: l, right: r }).collect();
+                    let data = StaticSoundData { sample_rate, frames: frames.into(), settings: Default::default(), slice: None };
+                    self.decoded.insert(key.clone(), data);
+                }
+            }
+            if let Some(data) = self.decoded.get(&key) {
+                let mut data = data.clone().volume(volume).playback_rate(rate);
+                if looped {
+                    data = data.loop_region(0.0..);
+                }
+                let handle = match group {
+                    Some(group) => self.group(group)?.0.play(data),
+                    None => self.manager.play(data),
+                }
+                .map_err(|e| e.to_string())?;
+                return Ok(Playing(Handle::Decoded(handle)));
+            }
+        }
         // The browser has no thread to stream on: a long sound is decoded
         // whole when it starts instead.
         #[cfg(target_arch = "wasm32")]
@@ -713,6 +741,23 @@ mod tests {
         b.extend_from_slice(&data.to_le_bytes());
         b.resize(b.len() + data as usize, 0);
         b
+    }
+
+    /// A sound cooked for a page (IMA ADPCM) plays from memory, decoded
+    /// once however often it plays.
+    #[test]
+    fn a_cooked_sound_is_decoded_once_and_played() {
+        let mut audio = silent();
+        let cooked = crate::asset::SoundAsset { samples: Vec::new(), encoded: crate::adpcm::encode_wav(&tone().samples, 8000), ..tone() };
+        let bytes = crate::asset::to_bytes(&cooked, crate::sound::SOUND).unwrap();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        for _ in 0..3 {
+            let mut playing = audio.play_in("sfx", sound, 0.8).expect("it plays");
+            assert!(playing.is_playing());
+            playing.stop();
+        }
+        assert_eq!(audio.decoded.len(), 1);
+        assert_eq!(audio.decoded.values().next().unwrap().frames.len(), 8000, "as long as it was");
     }
 
     #[test]
