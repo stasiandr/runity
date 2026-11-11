@@ -83,6 +83,14 @@ pub struct Limits {
     pub unseen_facing: Option<(Vec3, f32)>,
 }
 
+/// Two draws that look the same wherever they overlap: one flat colour
+/// (no maps, the white texture) and the same material — whichever wins a
+/// pixel paints it the same, so nothing flickers.
+pub fn same_flat_look(a: &Draw, b: &Draw) -> bool {
+    let flat = |d: &Draw| d.texture == TextureHandle::WHITE && d.material.maps().next().is_none();
+    a.material == b.material && flat(a) && flat(b)
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Self { coplanar: 0.002, near: 0.006, parallel: 0.999, min_area: 1e-4, skip_both_transparent: true, only_seen: true, back_to_back: false, unseen_facing: None }
@@ -264,6 +272,9 @@ pub fn overlaps<'g>(draws: &[Draw], geometry: impl Fn(MeshHandle) -> Option<&'g 
                         continue;
                     }
                     if limits.skip_both_transparent && a.material.surface == SurfaceType::Transparent && b.material.surface == SurfaceType::Transparent {
+                        continue;
+                    }
+                    if same_flat_look(a, b) {
                         continue;
                     }
                     let pair = (ti.min(ui), ti.max(ui));
@@ -761,9 +772,13 @@ mod tests {
         MeshGeometry::new(positions, indices)
     }
 
+    /// A draw at `at`, coloured by where it is (two draws in one place
+    /// look the same; elsewhere they differ, so they can fight).
     fn draw(at: Vec3) -> Draw {
-        Draw { mesh: MeshHandle::TEST, transform: Mat4::from_translation(at), texture: TextureHandle::WHITE, pose: None, material: Material::default() }
+        let c = [0.3 + 0.1 * at.x.abs().fract(), 0.3 + 0.1 * at.y.abs().fract(), 0.3 + 0.1 * at.z.abs().fract()];
+        Draw { mesh: MeshHandle::TEST, transform: Mat4::from_translation(at), texture: TextureHandle::WHITE, pose: None, material: Material::new(c[0], c[1], c[2]) }
     }
+
 
     #[test]
     fn a_decal_flush_with_its_floor_fights_and_one_lifted_does_not() {
@@ -820,7 +835,7 @@ mod tests {
         // Two slabs' tops in one plane, the shared strip under a lid box
         // sitting on them: nobody sees it.
         let cube = cube();
-        let slab = |z: f32| Draw { transform: Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.0, 0.4), Default::default(), Vec3::new(0.0, 0.5, z)), ..draw(Vec3::ZERO) };
+        let slab = |z: f32| Draw { material: Material::new(z, 0.5, 0.5), transform: Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.0, 0.4), Default::default(), Vec3::new(0.0, 0.5, z)), ..draw(Vec3::ZERO) };
         let lid = Draw { transform: Mat4::from_scale_rotation_translation(Vec3::new(3.0, 0.5, 1.0), Default::default(), Vec3::new(0.0, 1.2, 0.0)), ..draw(Vec3::ZERO) };
         let open = overlaps(&[slab(0.0), slab(0.2)], |_| Some(&cube), &Limits::default());
         assert!(!open.is_empty());
@@ -837,7 +852,7 @@ mod tests {
         let cube = cube();
         let turn = Mat4::from_rotation_y(0.52);
         let a = Draw { transform: turn * Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 0.2), Default::default(), Vec3::new(0.0, 1.5, 0.0)), ..draw(Vec3::ZERO) };
-        let b = Draw { transform: turn * Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 0.2), Default::default(), Vec3::new(0.0, 1.5, 0.1)), ..draw(Vec3::ZERO) };
+        let b = Draw { material: Material::new(0.9, 0.2, 0.2), transform: turn * Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 0.2), Default::default(), Vec3::new(0.0, 1.5, 0.1)), ..draw(Vec3::ZERO) };
         let found = overlaps(&[a, b], |_| Some(&cube), &Limits::default());
         let area: f32 = found.iter().map(|o| o.area).sum();
         // Top, bottom (2 × 0.1) and the two ends (3 × 0.1).
