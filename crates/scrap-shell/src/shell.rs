@@ -897,6 +897,17 @@ impl<G: Game> Shell<G> {
     }
 }
 
+/// The tallest the picture is drawn in a browser, in pixels (0: as tall as
+/// the canvas is on the screen, times the device's pixel ratio). The page
+/// stretches it over the canvas: a game's render scale on the web, where a
+/// laptop's 2x screen would otherwise ask for four times the pixels of its
+/// window. Nothing on the desktop, whose window is its own size.
+static CANVAS_CAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_canvas_height_cap(pixels: u32) {
+    CANVAS_CAP.store(pixels, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The canvas the game draws on: the page's `#scrap`, or a new one over
 /// the whole page.
 #[cfg(target_arch = "wasm32")]
@@ -925,7 +936,15 @@ fn canvas_pixels(window: &Window) -> (u32, u32) {
     let Some(canvas) = window.canvas() else {
         return window.inner_size().into();
     };
-    let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
+    let mut ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
+    // A game's cap on the picture's height (`set_canvas_height_cap`): the
+    // page stretches a smaller picture over the canvas, the cheapest
+    // render scale there is.
+    let cap = CANVAS_CAP.load(std::sync::atomic::Ordering::Relaxed);
+    let tall = canvas.client_height() as f64 * ratio;
+    if cap > 0 && tall > cap as f64 {
+        ratio *= cap as f64 / tall;
+    }
     let width = (canvas.client_width() as f64 * ratio).round().max(1.0) as u32;
     let height = (canvas.client_height() as f64 * ratio).round().max(1.0) as u32;
     if canvas.width() != width {

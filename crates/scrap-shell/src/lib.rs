@@ -17,7 +17,7 @@ mod ios;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
-pub use shell::{run, Game, StepContext, WindowConfig};
+pub use shell::{run, set_canvas_height_cap, Game, StepContext, WindowConfig};
 pub use touch_pad::{TouchButton, TouchLayout, TouchPad};
 
 // The core, the GPU, the render and the overlay, under the names this
