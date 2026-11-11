@@ -25,10 +25,30 @@ use super::{
 use crate::gpu::Gpu;
 
 /// One camera's part of the picture.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FrameView {
     pub camera: super::Camera,
     pub rect: ViewRect,
+    /// Drawn in this view only, besides the frame's own draws — Unity's
+    /// culling mask, said from the other end: what one player must see
+    /// and the other must not. A wall cut down to a stub on the side of
+    /// this view's camera while the other view sees it whole, a marker
+    /// over one player's own hero. They light, shadow and cull as the
+    /// frame's draws do, in this view's pass alone.
+    pub draws: Vec<super::Draw>,
+}
+
+impl FrameView {
+    /// `camera` drawing into `rect`, with nothing of its own.
+    pub fn new(camera: super::Camera, rect: ViewRect) -> Self {
+        Self { camera, rect, draws: Vec::new() }
+    }
+
+    /// With `draws` seen in this view alone.
+    pub fn with_draws(mut self, draws: Vec<super::Draw>) -> Self {
+        self.draws = draws;
+        self
+    }
 }
 
 /// Where in the target a view is drawn, from its top left.
@@ -297,6 +317,7 @@ impl Renderer {
             let mut drawn = frame.shallow();
             drawn.camera = view.camera;
             drawn.views = Vec::new();
+            drawn.draws.extend(view.draws.iter().cloned());
             let picture = self.view_picture(gpu, i, (w, h));
             if i > 0 {
                 if states.len() < i {

@@ -75,8 +75,8 @@ fn two_cameras_each_draw_their_half_of_the_picture() {
         let mut renderer = Renderer::new(&gpu, &target);
         let mut frame = scene(&mut renderer, &gpu, taa);
         frame.views = vec![
-            FrameView { camera: looking_at(-10.0), rect: ViewRect::LEFT },
-            FrameView { camera: looking_at(10.0), rect: ViewRect::RIGHT },
+            FrameView::new(looking_at(-10.0), ViewRect::LEFT),
+            FrameView::new(looking_at(10.0), ViewRect::RIGHT),
         ];
         // A few frames: TAA's history has gathered, each view its own.
         let pixels = shot(&mut renderer, &gpu, &target, &frame, 4);
@@ -107,11 +107,45 @@ fn one_view_over_the_whole_picture_is_the_picture_without_views() {
     let mut frame = scene(&mut renderer, &gpu, false);
     frame.camera = looking_at(-10.0);
     let plain = shot(&mut renderer, &gpu, &target, &frame, 2);
-    frame.views = vec![FrameView {
-        camera: frame.camera,
-        rect: ViewRect::Share { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
-    }];
+    frame.views = vec![FrameView::new(frame.camera, ViewRect::Share { x: 0.0, y: 0.0, width: 1.0, height: 1.0 })];
     let viewed = shot(&mut renderer, &gpu, &target, &frame, 2);
     let worst = plain.iter().zip(&viewed).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
     assert!(worst <= 2, "a whole-picture view differs from no views by {worst}");
+}
+
+/// A view's own draws are drawn in that view and no other: both cameras
+/// look at one spot, and a red box put in the left view's draws is red on
+/// the left and absent on the right — the stub of a wall one player sees
+/// while the other sees it whole.
+#[test]
+fn a_views_own_draws_are_seen_in_that_view_alone() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let mut frame = scene(&mut renderer, &gpu, false);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+    let red = Draw {
+        mesh: cube,
+        transform: Mat4::from_translation(Vec3::new(0.0, 0.5, 0.0)),
+        texture: TextureHandle::WHITE,
+        material: Material::new(0.9, 0.05, 0.05),
+        pose: None,
+    };
+    frame.views = vec![
+        FrameView::new(looking_at(0.0), ViewRect::LEFT).with_draws(vec![red]),
+        FrameView::new(looking_at(0.0), ViewRect::RIGHT),
+    ];
+    let pixels = shot(&mut renderer, &gpu, &target, &frame, 2);
+    let (left, right) = (redness(&pixels, 0..WIDTH / 2), redness(&pixels, WIDTH / 2..WIDTH));
+    eprintln!("left {left}, right {right}");
+    assert!(left > right + 1000, "the left view draws its own red box: {left} vs {right}");
+    // The frame's own draws are untouched: drawn again without views'
+    // draws, the left half is as plain as the right.
+    frame.views[0].draws.clear();
+    let pixels = shot(&mut renderer, &gpu, &target, &frame, 2);
+    let (left, right) = (redness(&pixels, 0..WIDTH / 2), redness(&pixels, WIDTH / 2..WIDTH));
+    assert!((left - right).abs() < 1000, "without it the halves agree: {left} vs {right}");
 }
