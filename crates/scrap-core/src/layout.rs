@@ -133,6 +133,20 @@ const SUFFIXES: [(&str, Kind); 14] = [
 /// Folders at the root the walk does not go into: derived, or code.
 pub const SKIPPED: [&str; 4] = ["library", "target", "build", "src"];
 
+/// A folder holding a file of this name is not the project's content,
+/// wherever it lies: no walk goes into it — `scrap sync` imports nothing
+/// from it and writes no sidecar there, `scrap check` does not look for
+/// one. For what lives in a project but is another tool's: a DCC's work
+/// folder, a generator's renders and sources, a vendored repository (as
+/// `CACHEDIR.TAG` marks a cache for backup tools). The folder itself
+/// says so, so moving it keeps it out.
+pub const IGNORE_MARKER: &str = ".scrapignore";
+
+/// Whether `folder` holds an [`IGNORE_MARKER`].
+pub fn ignored(folder: &Path) -> bool {
+    crate::files::is_file(&folder.join(IGNORE_MARKER))
+}
+
 /// Where a person tries things out (Unreal's `Developers/`): read by the
 /// editor like the rest, never shipped by `scrap build`.
 pub const DEVELOPERS: &str = "developers";
@@ -205,7 +219,7 @@ pub fn walk(root: impl AsRef<Path>) -> Vec<PathBuf> {
                 continue;
             }
             if crate::files::is_dir(&path) && !crate::files::is_file(&path) {
-                if folder == root && SKIPPED.contains(&name.as_str()) {
+                if (folder == root && SKIPPED.contains(&name.as_str())) || ignored(&path) {
                     continue;
                 }
                 folders.push(path);

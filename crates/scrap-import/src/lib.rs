@@ -2534,7 +2534,9 @@ pub fn importable(path: &Path) -> bool {
 /// skipped: `.gitkeep`, editor droppings, a `.git` someone nested. So is,
 /// in a project's root, what is derived or code — `library/`, `target/`,
 /// `build/`, `src/` ([`scrap::layout::SKIPPED`]) — so a project's root can
-/// be walked for its content, wherever it lies (docs/layout.md).
+/// be walked for its content, wherever it lies (docs/layout.md). And so is
+/// any folder holding a `.scrapignore` ([`scrap::layout::ignored`]):
+/// another tool's, kept in the project.
 pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
@@ -2547,6 +2549,9 @@ pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
             continue;
         }
         if path.is_dir() {
+            if scrap::layout::ignored(&path) {
+                continue;
+            }
             walk(&path, visit);
         } else {
             visit(&path);

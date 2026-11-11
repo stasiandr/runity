@@ -488,3 +488,26 @@ fn prefabs_scenes_graphs_and_screens_get_an_id_that_follows_a_move() {
     assert!(!root.join("prefabs/door.prefab.scrimport").exists());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A folder that holds a `.scrapignore` is another tool's: `sync` imports
+/// nothing from it and writes no sidecar into it, however deep, while the
+/// project's own sources beside it are imported as ever.
+#[test]
+fn a_folder_with_a_scrapignore_is_left_alone() {
+    let root = std::env::temp_dir().join(format!("scrap-ignored-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = scrap::Project::create(&root, "ignored").unwrap();
+    let square = "v 0 0 0\nv 1 0 0\nv 1 0 1\nf 1 2 3\n";
+    write_all(root.join("content/rock.obj"), square).unwrap();
+    write_all(root.join("tools/kit/out/rock_raw.obj"), square).unwrap();
+    write_all(root.join("tools/.scrapignore"), "the voxel factory's work\n").unwrap();
+    let synced = scrap_import::sync(&project);
+    assert_eq!(synced.len(), 1, "only the project's own rock: {synced:?}");
+    assert!(sidecar_for(&root.join("content/rock.obj")).is_file());
+    assert!(!sidecar_for(&root.join("tools/kit/out/rock_raw.obj")).exists(), "nothing written into it");
+    let mut seen = Vec::new();
+    scrap_import::walk(&root, &mut |p| seen.push(p.to_path_buf()));
+    assert!(seen.iter().all(|p| !p.starts_with(root.join("tools"))), "{seen:?}");
+    assert!(scrap::layout::walk(&root).iter().all(|p| !p.starts_with(root.join("tools"))));
+    let _ = std::fs::remove_dir_all(&root);
+}
