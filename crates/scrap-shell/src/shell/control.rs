@@ -59,6 +59,9 @@ pub(super) struct Request {
     /// The loop's turn it arrived on, and what it waits for.
     pub turn: u64,
     pub until: Option<Until>,
+    /// Frames drawn when it was taken (a shot that waits on a window
+    /// showing nothing gives up).
+    pub drawn_then: u64,
 }
 
 pub(super) enum Until {
@@ -95,7 +98,7 @@ impl Request {
     /// Answered once: `{"v":1,"re":id,"ok":…,"seq":n,"frame":turn,"result"|"error","code"}`.
     pub fn answer(self, answer: Result<Value, String>) {
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let frame = super::TURN.load(std::sync::atomic::Ordering::Relaxed);
+        let frame = super::LOOP_TURN.load(std::sync::atomic::Ordering::Relaxed);
         let line = match answer {
             Ok(result) => json::json!({ "v": VERSION, "re": self.id, "ok": true, "seq": seq, "frame": frame, "result": result }),
             Err(error) => {
@@ -230,6 +233,7 @@ fn serve(stream: std::os::unix::net::UnixStream, token: &str, to_loop: &Sender<R
                     began: Instant::now(),
                     turn: 0,
                     until: None,
+                    drawn_then: 0,
                 };
                 if to_loop.send(request).is_err() {
                     return;
@@ -306,7 +310,7 @@ pub(super) fn write_shot(shot: &super::WindowShot, job: &ShotJob, index: u32) ->
 /// The loop's turn now (the frame a request's answer is tagged with):
 /// what a game's own multi-frame command counts by.
 pub fn frame() -> u64 {
-    super::TURN.load(std::sync::atomic::Ordering::Relaxed)
+    super::LOOP_TURN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

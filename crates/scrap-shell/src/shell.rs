@@ -766,6 +766,7 @@ impl<G: Game> Shell<G> {
 
         let mut quit = false;
         let turn_began = Instant::now();
+        LOOP_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let steps_before = self.time.step();
         let mut steps_ms = 0.0f32;
         // A script's input due by now, as if the keys were pressed.
@@ -844,7 +845,7 @@ impl<G: Game> Shell<G> {
             injected.append(&mut ctx.injected);
             quit |= ctx.quit;
             if let Some(desk) = self.desk.as_mut() {
-                let turn = TURN.load(std::sync::atomic::Ordering::Relaxed);
+                let turn = LOOP_TURN.load(std::sync::atomic::Ordering::Relaxed);
                 desk.due.extend(injected.drain(..).map(|(after, e)| (turn + 1 + after as u64, e)));
             }
         }
@@ -1052,7 +1053,9 @@ impl<G: Game> Shell<G> {
 fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, scale_before_pause: &mut f32, forced_steps: u64, recent: &std::collections::VecDeque<(f32, u32, f32)>, title: &str, size: (u32, u32)) -> bool {
     use control::{Until, Value};
     use std::sync::atomic::Ordering;
-    let turn = TURN.load(Ordering::Relaxed);
+    let turn = LOOP_TURN.load(Ordering::Relaxed);
+    // Shots count the frames drawn, the rest the loop's turns.
+    let drawn = TURN.load(Ordering::Relaxed);
     desk.take_new(turn);
     for event in desk.due_by(turn) {
         input.handle(&event);
@@ -1071,7 +1074,7 @@ fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, sca
         }
     }
     desk.shots.retain(|j| j.left > 0);
-    for job in desk.shots.iter_mut().filter(|j| !j.armed && j.from_turn <= turn) {
+    for job in desk.shots.iter_mut().filter(|j| !j.armed && j.from_turn <= drawn) {
         job.armed = true;
         DESK_WANTED.fetch_add(job.left, Ordering::Relaxed);
     }
@@ -1102,6 +1105,10 @@ fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, sca
                 continue;
             }
             Some(Until::Shots { want, files }) => {
+                if files.is_empty() && turn > r.turn + 240 && drawn == r.drawn_then {
+                    r.answer(Err("no frame was shown for 240 turns: the window is hidden, minimised, or the screen is asleep or locked".into()));
+                    continue;
+                }
                 if files.len() >= *want {
                     let files = std::mem::take(files);
                     r.answer(Ok(Value::Array(files)));
@@ -1207,8 +1214,9 @@ fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, sca
                     }),
                 };
                 let width = arg("width").map(|w| w as u32);
-                desk.shots.push(control::ShotJob { from_turn: turn + after, left: frames, armed_count: frames, armed: false, path, crop, width, request: turn });
+                desk.shots.push(control::ShotJob { from_turn: drawn + after, left: frames, armed_count: frames, armed: false, path, crop, width, request: turn });
                 r.until = Some(Until::Shots { want: frames as usize, files: Vec::new() });
+                r.drawn_then = drawn;
                 desk.waiting.push(r);
             }
             "perf" => {
@@ -1431,6 +1439,9 @@ static DESK_WANTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 static DESK_SHOTS: std::sync::Mutex<Vec<WindowShot>> = std::sync::Mutex::new(Vec::new());
 static SHOTS: std::sync::Mutex<Vec<WindowShot>> = std::sync::Mutex::new(Vec::new());
 static TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The loop's turns, drawn or not (a window the screen takes no frames
+/// from still turns): what the control socket's waits and answers count.
+static LOOP_TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `SCRAP_FRAME_LOG=path`: a line per frame, CSV — when, how long since
 /// the last, the fixed steps run and what they took, the game's frame,

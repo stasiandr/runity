@@ -89,7 +89,7 @@ pub(super) fn start(source: String, library: Option<String>, to_loop: Sender<Req
 /// One command from a script: sent as a client's, waited for.
 fn command(to_loop: &Sender<Request>, name: &str, args: Value) -> Result<Value, String> {
     let (reply, answer) = channel();
-    let request = Request { id: Value::Null, cmd: name.to_string(), args, reply, began: Instant::now(), turn: 0, until: None };
+    let request = Request { id: Value::Null, cmd: name.to_string(), args, reply, began: Instant::now(), turn: 0, until: None, drawn_then: 0 };
     to_loop.send(request).map_err(|_| "the game is gone".to_string())?;
     let line = answer.recv().map_err(|_| "the game is gone".to_string())?;
     let v: Value = json::from_str(&line).map_err(|e| e.to_string())?;
