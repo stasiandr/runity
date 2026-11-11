@@ -310,8 +310,12 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
     }
     let event_loop = builder.build()?;
     // Poll rather than Wait: a game draws continuously, and waiting for an
-    // event means the world only advances when the mouse moves.
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // event means the world only advances when the mouse moves. In the
+    // browser the redraw asked for each turn is the page's animation frame,
+    // which keeps the game going by itself; Poll there schedules a task
+    // after task between frames — a busy loop that took the page's main
+    // thread from everything else on it (its sound's buffers among them).
+    event_loop.set_control_flow(if cfg!(target_arch = "wasm32") { ControlFlow::Wait } else { ControlFlow::Poll });
     let time = Time::new(config.time);
     let render_thread = config.render_thread && cfg!(not(target_arch = "wasm32"));
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]

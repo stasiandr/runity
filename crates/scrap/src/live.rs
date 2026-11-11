@@ -694,7 +694,11 @@ impl LiveScene {
         #[cfg(not(feature = "wires"))]
         let ordered: Vec<String> = Vec::new();
         self.since_poll += delta;
-        let mut out = if self.since_poll < POLL_SECONDS {
+        // In a browser the files are what the page mounted and nothing
+        // writes them behind the game's back: there is nothing to reload,
+        // and looking (every prefab's stamp over the whole mounted project)
+        // took seconds a look there — the page drew two frames a second.
+        let mut out = if self.since_poll < POLL_SECONDS || cfg!(target_arch = "wasm32") {
             Reload::default()
         } else {
             self.since_poll = 0.0;

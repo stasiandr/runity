@@ -1866,7 +1866,8 @@ impl MaterialShaders {
         renderer: &mut Renderer,
         gpu: &Gpu,
     ) -> Vec<(String, Result<(), String>)> {
-        if self.since_walk.is_none_or(|n| n >= Self::WALK_EVERY) {
+        // In a browser the files never change under the game: one walk.
+        if self.since_walk.is_none_or(|n| n >= Self::WALK_EVERY && !cfg!(target_arch = "wasm32")) {
             self.found = scrap_core::layout::files(&self.dir, scrap_core::layout::Kind::Shader);
             self.since_walk = Some(0);
         }

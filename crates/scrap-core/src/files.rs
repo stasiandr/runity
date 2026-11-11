@@ -174,7 +174,7 @@ pub fn is_file(path: impl AsRef<Path>) -> bool {
 pub fn is_dir(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
     in_memory(path, |map, p| {
-        map.keys().any(|k| k != p && k.starts_with(p))
+        map.range(p.to_path_buf()..).take_while(|(k, _)| k.starts_with(p)).any(|(k, _)| k != p)
     }) || (!cfg!(target_arch = "wasm32") && path.is_dir())
 }
 
@@ -186,8 +186,14 @@ pub fn exists(path: impl AsRef<Path>) -> bool {
 /// What is directly in a folder — files and folders — by full path, sorted.
 pub fn list(path: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
     let path = path.as_ref();
+    // The keys under a folder lie together in the map's order (a path's
+    // order is its components'): a range, not a walk over every file — a
+    // game's whole mounted project is thousands of them, and a tree walked
+    // folder by folder over all of them took seconds in a browser.
     let mut out: Vec<PathBuf> = in_memory(path, |map, p| {
-        map.keys()
+        map.range(p.to_path_buf()..)
+            .map(|(k, _)| k)
+            .take_while(|k| k.starts_with(p))
             .filter_map(|k| {
                 let rest = k.strip_prefix(p).ok()?;
                 let first = rest.components().next()?;
