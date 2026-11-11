@@ -100,6 +100,32 @@ impl Playing {
             Handle::Streamed(h) => h.set_volume(volume, kira::Tween::default()),
         }
     }
+
+    /// Where it sits between the speakers as it plays: −1 the left only, 0
+    /// both alike, 1 the right only. Split screen's sound — the left
+    /// player's interface a little to the left — and anything a game pans
+    /// itself, the mixer placing sounds by distance alone ([`Audio::play_at`]).
+    /// Not a number is the middle.
+    pub fn set_panning(&mut self, pan: f32) {
+        let pan = if pan.is_nan() { 0.0 } else { pan.clamp(-1.0, 1.0) };
+        let panning = kira::Panning(pan);
+        match &mut self.0 {
+            Handle::Decoded(h) => h.set_panning(panning, kira::Tween::default()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Handle::Streamed(h) => h.set_panning(panning, kira::Tween::default()),
+        }
+    }
+
+    /// Whether it is still playing (or about to): false once a one-shot has
+    /// run out or it was stopped — what a game counts its voices by.
+    pub fn is_playing(&self) -> bool {
+        let state = match &self.0 {
+            Handle::Decoded(h) => h.state(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Handle::Streamed(h) => h.state(),
+        };
+        !matches!(state, kira::sound::PlaybackState::Stopped)
+    }
 }
 
 impl std::fmt::Debug for Playing {
@@ -783,6 +809,24 @@ mod tests {
         let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
         let mut playing = audio.play(sound, 1.0).expect("it starts");
         playing.set_volume(0.5);
+        assert!(playing.is_playing(), "started, not yet run out");
+        playing.stop();
+    }
+
+    #[test]
+    fn a_playing_sound_is_panned_left_and_right_and_never_to_nan() {
+        // Split screen: the left player's sounds a little to the left. The
+        // mixer has no device here, so what is checked is that panning is
+        // taken at either end and in between, and that nonsense is the
+        // middle rather than a NaN voice (which silences the whole mix).
+        let mut audio = silent();
+        let bytes = archived();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        let mut playing = audio.play_in("ui", sound, 1.0).expect("it starts");
+        for pan in [-1.0, -0.3, 0.0, 0.3, 1.0, 5.0, f32::NAN] {
+            playing.set_panning(pan);
+        }
+        assert!(playing.is_playing());
         playing.stop();
     }
 
