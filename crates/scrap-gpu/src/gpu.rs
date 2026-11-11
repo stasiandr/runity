@@ -99,6 +99,24 @@ impl Gpu {
     /// exists, which is what a golden-image run wants: the reference should
     /// not change because the machine running it has a different card.
     pub async fn headless(prefer_software: bool) -> Result<Self, GpuError> {
+        Self::open(prefer_software, false).await
+    }
+
+    /// A device with no window, kept to what a browser's WebGPU gives —
+    /// Chrome's on a Mac (thirty vertex attributes, forty-eight sampled
+    /// textures and ten storage buffers a stage), no binding arrays, no
+    /// ray queries, no mesh shaders, no timestamps: the web build's
+    /// renderer, on this machine's card, where a test can look at it.
+    pub async fn like_the_web() -> Result<Self, GpuError> {
+        Self::open(false, true).await
+    }
+
+    /// [`Gpu::like_the_web`], for callers that are not already async.
+    pub fn like_the_web_blocking() -> Result<Self, GpuError> {
+        pollster::block_on(Self::like_the_web())
+    }
+
+    async fn open(prefer_software: bool, web: bool) -> Result<Self, GpuError> {
         // DLSS asks for its own Vulkan extensions when the instance and the
         // device are made, so where it may be wanted both are made through
         // it; anything that goes wrong there leaves the plain way.
@@ -147,7 +165,8 @@ impl Gpu {
         let ray_tracing = adapter
             .features()
             .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
-            && std::env::var_os(NO_RAY_TRACING_VAR).is_none();
+            && std::env::var_os(NO_RAY_TRACING_VAR).is_none()
+            && !web;
         // Mesh shaders likewise: an experiment on top, the terrain's fine
         // grid drawn by task and mesh stages where there are any.
         let bindless_features = wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -156,11 +175,13 @@ impl Gpu {
         let bindless = adapter.features().contains(bindless_features)
             && adapter.limits().max_binding_array_elements_per_shader_stage >= 4096
             && adapter.limits().max_vertex_attributes >= 19
-            && std::env::var_os("SCRAP_NO_BINDLESS").is_none();
+            && std::env::var_os("SCRAP_NO_BINDLESS").is_none()
+            && !web;
         let mesh_shaders = adapter
             .features()
             .contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER)
-            && std::env::var_os(MESH_SHADERS_VAR).is_some();
+            && std::env::var_os(MESH_SHADERS_VAR).is_some()
+            && !web;
         let mut required_limits =
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
         // A skinned draw takes nineteen vertex attributes: an instance's
@@ -197,6 +218,11 @@ impl Gpu {
         if mesh_shaders {
             required_limits = required_limits.using_recommended_minimum_mesh_shader_values();
         }
+        if web {
+            required_limits.max_vertex_attributes = required_limits.max_vertex_attributes.min(30);
+            required_limits.max_storage_buffers_per_shader_stage = required_limits.max_storage_buffers_per_shader_stage.min(10);
+            required_limits.max_sampled_textures_per_shader_stage = required_limits.max_sampled_textures_per_shader_stage.min(48);
+        }
         let mut required_features = wgpu::Features::empty();
         // Indirect draws that start past the first instance: what the
         // occlusion culling draws with.
@@ -204,7 +230,7 @@ impl Gpu {
             required_features |= wgpu::Features::INDIRECT_FIRST_INSTANCE;
         }
         // Timestamps at the passes' ends, for the GPU profiler.
-        if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) && !web {
             required_features |= wgpu::Features::TIMESTAMP_QUERY;
         }
         // Block-compressed textures, as a build for a platform cooks them

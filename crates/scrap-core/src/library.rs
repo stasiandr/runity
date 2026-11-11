@@ -36,11 +36,24 @@ fn name_of(bytes: &[u8], _kind: AssetKind) -> Option<String> {
     asset::head_of(bytes).ok().map(|(_, _, name)| name)
 }
 
+/// An asset's bytes where its archive can be read in place.
+type Aligned = rkyv::util::AlignedVec<16>;
+
+fn aligned(bytes: Vec<u8>) -> Aligned {
+    let mut out = Aligned::with_capacity(bytes.len());
+    out.extend_from_slice(&bytes);
+    out
+}
+
 /// One asset's bytes, plus where they came from.
 struct Entry {
     /// Read when first asked for in a library opened lazily
     /// ([`Library::open_lazy`]), and given back by [`Library::release`].
-    bytes: std::sync::OnceLock<Vec<u8>>,
+    /// Kept sixteen-aligned: an archive's fields (a `u128` id) are read in
+    /// place, and an allocator owes a `Vec<u8>` no more than byte
+    /// alignment — the browser's gives eight, and every other asset's
+    /// archive then fails its check and reads as missing.
+    bytes: std::sync::OnceLock<Aligned>,
     /// Whether the bytes can be read again from `path`: not for assets
     /// handed in as bytes (the web's).
     on_disk: bool,
@@ -183,8 +196,8 @@ impl Library {
         let bytes = asset::read(&entry.path).ok()?;
         // Sound before it is kept: every later look is a cast.
         asset::kind_of(&bytes).ok().filter(|k| *k == entry.kind)?;
-        let _ = entry.bytes.set(bytes);
-        entry.bytes.get().map(Vec::as_slice)
+        let _ = entry.bytes.set(aligned(bytes));
+        entry.bytes.get().map(|b| b.as_slice())
     }
 
     /// Give back the bytes of every asset read from disk that `keep` does
@@ -209,7 +222,7 @@ impl Library {
         self.entries
             .iter()
             .filter_map(|e| e.bytes.get())
-            .map(Vec::len)
+            .map(|b| b.len())
             .sum()
     }
 
@@ -237,7 +250,7 @@ impl Library {
         let index = self.entries.len();
         let on_disk = crate::files::is_file(&path);
         self.entries.push(Entry {
-            bytes: std::sync::OnceLock::from(bytes),
+            bytes: std::sync::OnceLock::from(aligned(bytes)),
             on_disk,
             id,
             kind,
@@ -425,7 +438,7 @@ impl Library {
             }
             self.by_id.insert(id, index);
 
-            self.entries[index].bytes = std::sync::OnceLock::from(bytes);
+            self.entries[index].bytes = std::sync::OnceLock::from(aligned(bytes));
             self.entries[index].id = id;
             self.entries[index].kind = kind;
             self.entries[index].modified = now;
