@@ -149,3 +149,57 @@ fn a_views_own_draws_are_seen_in_that_view_alone() {
     let (left, right) = (redness(&pixels, 0..WIDTH / 2), redness(&pixels, WIDTH / 2..WIDTH));
     assert!((left - right).abs() < 1000, "without it the halves agree: {left} vs {right}");
 }
+
+/// Volumetric fog is each view's own: the grid of lit air is made again
+/// for each view's camera (it keeps no history between frames), so the
+/// right half of a split frame is the right camera's picture alone — fog,
+/// lamps' glow through it and all — and the left the left's.
+#[test]
+fn volumetric_fog_in_each_view_is_that_views_own() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let foggy = |frame: &mut Frame| {
+        frame.volumetric_fog = scrap::volume::VolumetricFog { enabled: true, density: 0.08, ..scrap::volume::VolumetricFog::OFF };
+    };
+    let half = OffscreenTarget::new(&gpu, WIDTH / 2, HEIGHT);
+    let alone: Vec<Vec<u8>> = [-10.0, 10.0]
+        .iter()
+        .map(|x| {
+            let mut renderer = Renderer::new(&gpu, &half);
+            let mut frame = scene(&mut renderer, &gpu, false);
+            foggy(&mut frame);
+            frame.camera = looking_at(*x);
+            shot(&mut renderer, &gpu, &half, &frame, 3)
+        })
+        .collect();
+    // The fog is there to see: the left camera without it differs.
+    let clear = {
+        let mut renderer = Renderer::new(&gpu, &half);
+        let mut frame = scene(&mut renderer, &gpu, false);
+        frame.camera = looking_at(-10.0);
+        shot(&mut renderer, &gpu, &half, &frame, 3)
+    };
+    let fogged: u64 = clear.iter().zip(&alone[0]).map(|(a, b)| a.abs_diff(*b) as u64).sum();
+    assert!(fogged as f32 / clear.len() as f32 > 2.0, "the fog shows: {fogged}");
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let mut frame = scene(&mut renderer, &gpu, false);
+    foggy(&mut frame);
+    frame.views = vec![FrameView::new(looking_at(-10.0), ViewRect::LEFT), FrameView::new(looking_at(10.0), ViewRect::RIGHT)];
+    let split = shot(&mut renderer, &gpu, &target, &frame, 3);
+    for (v, picture) in alone.iter().enumerate() {
+        let mut sum = 0u64;
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH / 2 {
+                let a = ((y * (WIDTH / 2) + x) * 4) as usize;
+                let b = ((y * WIDTH + x + v as u32 * WIDTH / 2) * 4) as usize;
+                sum += (0..3).map(|c| picture[a + c].abs_diff(split[b + c]) as u64).sum::<u64>();
+            }
+        }
+        let mean = sum as f32 / (WIDTH / 2 * HEIGHT * 3) as f32;
+        eprintln!("view {v}: {mean} off its camera alone");
+        assert!(mean < 2.0, "view {v}'s fog is another camera's: {mean} off");
+    }
+}

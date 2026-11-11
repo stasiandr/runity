@@ -13,9 +13,11 @@
 //! as it always was.
 //!
 //! Not per view yet (shared, so wrong under split screen when on): the
-//! upscaler's history (MetalFX temporal, dynamic resolution), ReSTIR's
-//! reservoirs and volumetric fog's froxel history. The lamps' shadow
-//! maps are drawn again for every view, though they do not depend on it.
+//! upscaler's history (MetalFX temporal, dynamic resolution) and ReSTIR's
+//! reservoirs. Volumetric fog keeps no history: its froxels are made
+//! again for each view's camera, so it is each view's own. The lamps'
+//! shadow maps are drawn again for every view, though they do not depend
+//! on it.
 
 use glam::Mat4;
 
