@@ -98,17 +98,60 @@ pub fn on_write(f: impl Fn(&Path, &[u8]) + Send + Sync + 'static) {
 pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
     let path = path.as_ref();
     if cfg!(target_arch = "wasm32") || in_memory(path, |map, p| map.contains_key(p)) {
-        let path = normal(path);
-        mounted()
-            .lock()
-            .unwrap()
-            .insert(path.clone(), bytes.as_ref().to_vec());
-        if let Some(f) = written().lock().unwrap().as_ref() {
-            f(&path, bytes.as_ref());
-        }
+        write_memory(path, bytes.as_ref());
         return Ok(());
     }
     std::fs::write(path, bytes)
+}
+
+/// A file put in memory, and the web host told.
+fn write_memory(path: &Path, bytes: &[u8]) {
+    let path = normal(path);
+    mounted().lock().unwrap().insert(path.clone(), bytes.to_vec());
+    if let Some(f) = written().lock().unwrap().as_ref() {
+        f(&path, bytes);
+    }
+}
+
+/// Called with every file removed from memory: how the web host forgets a
+/// player's file it kept (a save deleted when its run ends).
+type Removed = Box<dyn Fn(&Path) + Send + Sync>;
+
+fn removed() -> &'static Mutex<Option<Removed>> {
+    static REMOVED: OnceLock<Mutex<Option<Removed>>> = OnceLock::new();
+    REMOVED.get_or_init(Default::default)
+}
+
+/// Be told of every file removed from memory from now on.
+pub fn on_remove(f: impl Fn(&Path) + Send + Sync + 'static) {
+    *removed().lock().unwrap() = Some(Box::new(f));
+}
+
+/// Remove a file: from disk on the desktop, from memory where the files
+/// are mounted (and the web host told, so it forgets its copy too).
+pub fn remove(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    let gone = mounted().lock().unwrap().remove(&normal(path)).is_some();
+    if gone || cfg!(target_arch = "wasm32") {
+        if let Some(f) = removed().lock().unwrap().as_ref() {
+            f(&normal(path));
+        }
+        return if gone { Ok(()) } else { Err(not_found(path)) };
+    }
+    std::fs::remove_file(path)
+}
+
+/// Rename a file — a save written beside and then put in place: on disk
+/// as `std::fs::rename`, in memory as a write of the new and a removal of
+/// the old (each told to the web host).
+pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+    let (from, to) = (from.as_ref(), to.as_ref());
+    if cfg!(target_arch = "wasm32") || in_memory(from, |map, p| map.contains_key(p)) {
+        let bytes = read(from)?;
+        write_memory(to, &bytes);
+        return remove(from);
+    }
+    std::fs::rename(from, to)
 }
 
 /// Make a folder and its parents; in memory a folder is only its files, so
@@ -229,5 +272,13 @@ mod tests {
         assert!(modified(root.join("ui/menu.ron")).is_none());
         write(root.join("ui/menu.ron"), "(x)").unwrap();
         assert_eq!(read_to_string(root.join("ui/menu.ron")).unwrap(), "(x)");
+        // A save put in place and then deleted, all in memory.
+        mount(root, [("ui/save.tmp".to_string(), b"run".to_vec())]);
+        rename(root.join("ui/save.tmp"), root.join("ui/save.ron")).unwrap();
+        assert!(!is_file(root.join("ui/save.tmp")));
+        assert_eq!(read_to_string(root.join("ui/save.ron")).unwrap(), "run");
+        remove(root.join("ui/save.ron")).unwrap();
+        assert!(!is_file(root.join("ui/save.ron")));
+        assert!(remove(root.join("ui/save.ron")).is_err());
     }
 }
