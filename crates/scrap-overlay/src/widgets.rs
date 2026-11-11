@@ -17,10 +17,16 @@
 //! list or lets go of a text field. Left and right move a highlighted
 //! slider; up and down, an open list's choice. The mouse moving hides the
 //! highlight again.
+//!
+//! Each [`Widgets`] is one focus: two players working two menus at once
+//! keep one each, and feed each its own player's moves
+//! ([`Widgets::begin_frame_with`]) — from their pad ([`Moves::from_pad`])
+//! or from their keys, through their action map — with the mouse off for
+//! the one that has none ([`Widgets::set_mouse`]).
 
 use glam::Vec4;
 
-use crate::input::{Input, MouseButton};
+use crate::input::{Input, MouseButton, PadAxis, PadButton, PadState};
 use crate::ui::{Quad, TextRun, Ui};
 
 /// What widgets look like.
@@ -136,7 +142,61 @@ pub struct Widgets {
     /// A highlighted slider's or open list's step this frame: −1, 0 or 1.
     nudge: f32,
     stick_was: glam::Vec2,
+    /// The mouse does not work these widgets: another player's hand is
+    /// on it ([`Widgets::set_mouse`]).
+    no_mouse: bool,
     pub style: Style,
+}
+
+/// One player's moves on a screen this frame: what the highlight answers
+/// to. Made from a pad ([`Moves::from_pad`]) or by the game from its own
+/// actions — a keyboard player's arrows and Enter.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Moves {
+    /// A step pressed this frame — the d-pad, an arrow key — in screen
+    /// directions, y down: one of the four unit vectors.
+    pub step: Option<glam::Vec2>,
+    /// Where a stick is now, screen directions (y down): a push past half
+    /// is a step, once until it comes back.
+    pub stick: glam::Vec2,
+    /// Press what is highlighted (South).
+    pub accept: bool,
+    /// Close an open list, let go of a field (East).
+    pub back: bool,
+    /// The mouse moved or was pressed: the highlight hides.
+    pub pointer: bool,
+}
+
+impl Moves {
+    /// A pad's moves: the d-pad, the left stick, South and East.
+    pub fn from_pad(pad: &PadState) -> Self {
+        let step = if pad.pressed(PadButton::DPadUp) {
+            Some(glam::Vec2::NEG_Y)
+        } else if pad.pressed(PadButton::DPadDown) {
+            Some(glam::Vec2::Y)
+        } else if pad.pressed(PadButton::DPadLeft) {
+            Some(glam::Vec2::NEG_X)
+        } else if pad.pressed(PadButton::DPadRight) {
+            Some(glam::Vec2::X)
+        } else {
+            None
+        };
+        Self {
+            step,
+            stick: glam::Vec2::new(pad.axis(PadAxis::LeftX), -pad.axis(PadAxis::LeftY)),
+            accept: pad.pressed(PadButton::South),
+            back: pad.pressed(PadButton::East),
+            pointer: false,
+        }
+    }
+
+    /// Every pad's and the mouse's: what [`Widgets::begin_frame`] takes.
+    pub fn from_input(input: &Input) -> Self {
+        Self {
+            pointer: input.mouse_motion() != glam::Vec2::ZERO || input.mouse_pressed(MouseButton::Left),
+            ..Self::from_pad(input.any_pad())
+        }
+    }
 }
 
 /// How the pad treats a widget.
@@ -173,39 +233,32 @@ impl Widgets {
     /// Take the pad's moves for this frame: call once before drawing the
     /// widgets. Without it they answer the mouse only.
     pub fn begin_frame(&mut self, input: &Input) {
-        use crate::input::{PadAxis, PadButton};
+        self.begin_frame_with(Moves::from_input(input));
+    }
+
+    /// [`Self::begin_frame`] with one player's moves: their pad, or their
+    /// keys — a focus of their own.
+    pub fn begin_frame_with(&mut self, moves: Moves) {
         self.last = std::mem::take(&mut self.seen);
         self.press = false;
         self.nudge = 0.0;
-        if input.mouse_motion() != glam::Vec2::ZERO || input.mouse_pressed(MouseButton::Left) {
+        if moves.pointer && !self.no_mouse {
             self.pad = false;
         }
-        // Screen directions, y down.
-        let stick = glam::Vec2::new(
-            input.pad_axis(PadAxis::LeftX),
-            -input.pad_axis(PadAxis::LeftY),
-        );
+        let stick = moves.stick;
         let pushed = stick.length() > 0.5 && self.stick_was.length() <= 0.5;
         self.stick_was = stick;
-        let direction = if input.pad_pressed(PadButton::DPadUp) {
-            Some(glam::Vec2::NEG_Y)
-        } else if input.pad_pressed(PadButton::DPadDown) {
-            Some(glam::Vec2::Y)
-        } else if input.pad_pressed(PadButton::DPadLeft) {
-            Some(glam::Vec2::NEG_X)
-        } else if input.pad_pressed(PadButton::DPadRight) {
-            Some(glam::Vec2::X)
-        } else if pushed {
-            Some(if stick.x.abs() > stick.y.abs() {
-                glam::Vec2::new(stick.x.signum(), 0.0)
-            } else {
-                glam::Vec2::new(0.0, stick.y.signum())
+        let direction = moves.step.or_else(|| {
+            pushed.then(|| {
+                if stick.x.abs() > stick.y.abs() {
+                    glam::Vec2::new(stick.x.signum(), 0.0)
+                } else {
+                    glam::Vec2::new(0.0, stick.y.signum())
+                }
             })
-        } else {
-            None
-        };
-        let south = input.pad_pressed(PadButton::South);
-        if input.pad_pressed(PadButton::East) {
+        });
+        let south = moves.accept;
+        if moves.back {
             self.open = None;
             self.focused = None;
         }
@@ -258,6 +311,22 @@ impl Widgets {
             self.selected = Some(next);
             self.focused = None;
         }
+    }
+
+    /// Whether the mouse works these widgets (it does by default). Off for
+    /// a player's own focus when the mouse is another's, or nobody's.
+    pub fn set_mouse(&mut self, on: bool) {
+        self.no_mouse = !on;
+        if !on {
+            self.active = None;
+        }
+    }
+
+    /// Which widget the highlight is on, by the frame's last places: for
+    /// tests and for a game that draws its own cursor.
+    pub fn highlighted_rect(&self) -> Option<Rect> {
+        let id = self.selected.filter(|_| self.pad)?;
+        self.last.iter().chain(&self.seen).find(|(i, _, _)| *i == id).map(|(_, r, _)| *r)
     }
 
     /// [`Self::begin_frame`] for a frame the pad is playing the game, not
@@ -314,6 +383,9 @@ impl Widgets {
     /// over it, whether it is held on it, and whether it was just released
     /// on it having gone down on it.
     fn track(&mut self, input: &Input, rect: Rect, id: u64) -> (bool, bool, bool) {
+        if self.no_mouse {
+            return (false, false, false);
+        }
         let over = rect.contains(input.mouse_position());
         if over && input.mouse_pressed(MouseButton::Left) {
             self.active = Some(id);
@@ -431,7 +503,7 @@ impl Widgets {
         if pressed && self.highlighted(id) {
             self.focused = Some(id);
         }
-        if input.mouse_pressed(MouseButton::Left) {
+        if !self.no_mouse && input.mouse_pressed(MouseButton::Left) {
             self.focused = if over {
                 Some(id)
             } else {
@@ -517,7 +589,7 @@ impl Widgets {
                     rect.width,
                     rect.height,
                 );
-                let hovered = row.contains(input.mouse_position());
+                let hovered = !self.no_mouse && row.contains(input.mouse_position());
                 let color = if hovered || i == *chosen {
                     self.style.hover
                 } else {
@@ -533,7 +605,7 @@ impl Widgets {
                     self.open = None;
                 }
             }
-            if input.mouse_pressed(MouseButton::Left) && !over {
+            if !self.no_mouse && input.mouse_pressed(MouseButton::Left) && !over {
                 let below = Rect::new(
                     rect.x,
                     rect.y + rect.height,
@@ -581,7 +653,7 @@ impl Widgets {
         offset: &mut f32,
     ) -> f32 {
         let id = key(rect, "scroll");
-        let over = rect.contains(input.mouse_position());
+        let over = !self.no_mouse && rect.contains(input.mouse_position());
         if over {
             *offset -= input.scroll().y * 40.0;
         }

@@ -26,6 +26,12 @@
 //! from what [`Screen::draw`] returns: `if done.clicked("play")`. Saving
 //! the file moves the button in the running game (DNA, postulate 1); a save
 //! that does not parse is reported and the last good layout stays.
+//!
+//! A screen is laid out over the whole window, or over a part of it
+//! ([`Region`], [`Screen::draw_region`]): a split screen's half, each
+//! player's HUD and inventory in their own. Anchors are the region's
+//! corners and edges, the 1280×720 frame (or the region's own reference
+//! size) is scaled into it, and nothing is drawn outside it.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -172,6 +178,63 @@ pub fn scale_of(size: Vec2) -> f32 {
     (size.y / REFERENCE_HEIGHT).min(size.x / REFERENCE_WIDTH)
 }
 
+/// A part of the window a screen is laid out in: its rect in pixels, and
+/// the size it is laid out for — 1280×720 unless said, scaled into the
+/// rect as the whole window's is ([`scale_of`]). A HUD made for a half of
+/// a split screen says `with_reference(640.0, 720.0)` and keeps its sizes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Region {
+    pub rect: Rect,
+    pub reference: Vec2,
+}
+
+impl Region {
+    /// `rect`, laid out for 1280×720.
+    pub fn new(rect: Rect) -> Self {
+        Self {
+            rect,
+            reference: Vec2::new(REFERENCE_WIDTH, REFERENCE_HEIGHT),
+        }
+    }
+
+    /// The whole window of `size`: what [`Screen::draw`] lays out in.
+    pub fn whole(size: Vec2) -> Self {
+        Self::new(Rect::new(0.0, 0.0, size.x, size.y))
+    }
+
+    /// The same rect, laid out for `width` × `height`.
+    pub fn with_reference(mut self, width: f32, height: f32) -> Self {
+        self.reference = Vec2::new(width.max(1.0), height.max(1.0));
+        self
+    }
+
+    /// How much what was laid out at the reference size is scaled.
+    pub fn scale(&self) -> f32 {
+        (self.rect.height / self.reference.y).min(self.rect.width / self.reference.x)
+    }
+
+    /// Where a box laid out in the reference frame is in the window — for
+    /// immediate-mode widgets drawn in the region: `at` from the anchor,
+    /// `size`, both in reference pixels, as an element of a file is.
+    pub fn place(&self, anchor: Anchor, at: Vec2, size: Vec2) -> Rect {
+        place_at(anchor, at, size, *self)
+    }
+
+    /// Cut what is added to `ui` from now on to the region, until
+    /// [`Ui::pop_clip`].
+    pub fn clip(&self, ui: &mut Ui) {
+        ui.push_clip(self.rect.x, self.rect.y, self.rect.width, self.rect.height);
+    }
+
+    fn origin(&self) -> Vec2 {
+        Vec2::new(self.rect.x, self.rect.y)
+    }
+
+    fn size(&self) -> Vec2 {
+        Vec2::new(self.rect.width, self.rect.height)
+    }
+}
+
 impl Layout {
     /// What cannot mean anything: two elements with one id.
     pub fn problems(&self) -> Vec<String> {
@@ -186,18 +249,27 @@ impl Layout {
 
     /// Where an element is on a screen of this size, in pixels.
     pub fn rect(&self, id: &str, screen: Vec2) -> Option<Rect> {
+        self.rect_in(id, Region::whole(screen))
+    }
+
+    /// Where an element is when the screen is laid out in `region`.
+    pub fn rect_in(&self, id: &str, region: Region) -> Option<Rect> {
         self.elements
             .iter()
             .find(|e| e.id == id)
-            .map(|e| place(e, screen))
+            .map(|e| place(e, region))
     }
 }
 
-fn place(e: &Element, screen: Vec2) -> Rect {
-    let scale = scale_of(screen);
-    let size = Vec2::new(e.size.0, e.size.1) * scale;
-    let f = e.anchor.fraction();
-    let top_left = screen * f + Vec2::new(e.at.0, e.at.1) * scale - size * f;
+fn place(e: &Element, region: Region) -> Rect {
+    place_at(e.anchor, Vec2::new(e.at.0, e.at.1), Vec2::new(e.size.0, e.size.1), region)
+}
+
+fn place_at(anchor: Anchor, at: Vec2, size: Vec2, region: Region) -> Rect {
+    let scale = region.scale();
+    let size = size * scale;
+    let f = anchor.fraction();
+    let top_left = region.origin() + region.size() * f + at * scale - size * f;
     Rect::new(top_left.x, top_left.y, size.x, size.y)
 }
 
@@ -346,7 +418,22 @@ impl Screen {
     /// Draw every element for a screen of `size` pixels, in file order, and
     /// say what the player did.
     pub fn draw(&mut self, widgets: &mut Widgets, ui: &mut Ui, input: &Input, size: Vec2) -> Done {
-        self.draw_in(widgets, ui, input, size, None)
+        self.draw_in(widgets, ui, input, Region::whole(size), None, false)
+    }
+
+    /// Draw every element laid out in `region` of the window — a half of
+    /// a split screen — cut to it, and say what the player did. `strings`
+    /// puts every `@key` in the current language. `widgets` is the focus
+    /// it is worked with: one per player ([`Widgets::begin_frame_with`]).
+    pub fn draw_region(
+        &mut self,
+        widgets: &mut Widgets,
+        ui: &mut Ui,
+        input: &Input,
+        region: Region,
+        strings: Option<&crate::strings::Strings>,
+    ) -> Done {
+        self.draw_in(widgets, ui, input, region, strings, true)
     }
 
     /// [`Screen::draw`], with every `@key` text in the current language of
@@ -359,7 +446,7 @@ impl Screen {
         size: Vec2,
         strings: &crate::strings::Strings,
     ) -> Done {
-        self.draw_in(widgets, ui, input, size, Some(strings))
+        self.draw_in(widgets, ui, input, Region::whole(size), Some(strings), false)
     }
 
     /// Every `@key` the screen's texts ask for.
@@ -387,11 +474,31 @@ impl Screen {
         widgets: &mut Widgets,
         ui: &mut Ui,
         input: &Input,
-        size: Vec2,
+        region: Region,
+        strings: Option<&crate::strings::Strings>,
+        clip: bool,
+    ) -> Done {
+        if clip {
+            let r = region.rect;
+            ui.push_clip(r.x, r.y, r.width, r.height);
+        }
+        let done = self.draw_elements(widgets, ui, input, region, strings);
+        if clip {
+            ui.pop_clip();
+        }
+        done
+    }
+
+    fn draw_elements(
+        &mut self,
+        widgets: &mut Widgets,
+        ui: &mut Ui,
+        input: &Input,
+        region: Region,
         strings: Option<&crate::strings::Strings>,
     ) -> Done {
         let mut done = Done::default();
-        let scale = scale_of(size);
+        let scale = region.scale();
         // The widgets' look grows with the screen, as the layout does, and
         // is theirs again after.
         let base = widgets.style;
@@ -399,7 +506,7 @@ impl Screen {
         widgets.style = style;
         let elements = self.layout.elements.clone();
         for e in elements.iter().filter(|e| !self.hidden.contains(&e.id)) {
-            let rect = place(e, size);
+            let rect = place(e, region);
             let label = |own: &str| {
                 let text = self
                     .texts
@@ -770,4 +877,80 @@ mod tests {
             ui.texts
         );
     }
+
+    #[test]
+    fn a_screen_laid_out_in_half_the_window_keeps_to_that_half() {
+        let layout: Layout = ron::from_str(
+            r#"(elements: [
+                (id: "name", anchor: TopLeft, at: (20, 20), size: (300, 30), kind: Text("Игрок 2")),
+                (id: "hp", anchor: BottomLeft, at: (20, -20), size: (400, 20), kind: Bar),
+                (id: "wide", anchor: TopRight, at: (100, 0), size: (300, 30), kind: Panel),
+            ])"#,
+        )
+        .unwrap();
+        let mut screen = Screen::from_layout(layout.clone());
+        // The right half of 1280x720, laid out for a half: scale 1, the
+        // anchors its corners — for a file's elements and code's boxes alike.
+        let half = Region::new(Rect::new(640.0, 0.0, 640.0, 720.0)).with_reference(640.0, 720.0);
+        assert_eq!(half.scale(), 1.0);
+        assert_eq!(layout.rect_in("name", half), Some(Rect::new(660.0, 20.0, 300.0, 30.0)));
+        assert_eq!(layout.rect_in("hp", half), Some(Rect::new(660.0, 680.0, 400.0, 20.0)));
+        assert_eq!(half.place(Anchor::BottomLeft, Vec2::new(20.0, -20.0), Vec2::new(400.0, 20.0)), Rect::new(660.0, 680.0, 400.0, 20.0));
+        // The 1280x720 frame in a half: scaled to fit its width.
+        assert_eq!(Region::new(half.rect).scale(), 0.5);
+        let mut ui = Ui::new();
+        screen.draw_region(&mut Widgets::new(), &mut ui, &Input::default(), half, None);
+        assert_eq!(ui.texts[0].clip, Some([640.0, 0.0, 1280.0, 720.0]), "words are cut to the half");
+        // What hangs off the half's right edge is cut there.
+        assert!(ui.quads.iter().all(|q| q.x >= 640.0 && q.x + q.width <= 1280.0));
+        // The whole window, as before: no cut.
+        let mut ui = Ui::new();
+        screen.draw(&mut Widgets::new(), &mut ui, &Input::default(), Vec2::new(1280.0, 720.0));
+        assert_eq!(ui.texts[0].clip, None);
+    }
+
+    #[test]
+    fn two_players_work_two_menus_at_once_each_with_their_own_focus() {
+        use crate::widgets::Moves;
+        let layout: Layout = ron::from_str(
+            r#"(elements: [
+                (id: "resume", anchor: Center, at: (0, -30), size: (200, 40), kind: Button("Дальше")),
+                (id: "quit", anchor: Center, at: (0, 30), size: (200, 40), kind: Button("Выйти")),
+            ])"#,
+        )
+        .unwrap();
+        let regions = [
+            Region::new(Rect::new(0.0, 0.0, 640.0, 720.0)).with_reference(640.0, 720.0),
+            Region::new(Rect::new(640.0, 0.0, 640.0, 720.0)).with_reference(640.0, 720.0),
+        ];
+        let mut screens = [Screen::from_layout(layout.clone()), Screen::from_layout(layout)];
+        let mut focus = [Widgets::new(), Widgets::new()];
+        for w in &mut focus {
+            w.set_mouse(false);
+        }
+        let input = Input::default();
+        let mut frame = |moves: [Moves; 2]| -> [Done; 2] {
+            let mut ui = Ui::new();
+            [0, 1].map(|p| {
+                focus[p].begin_frame_with(moves[p]);
+                screens[p].draw_region(&mut focus[p], &mut ui, &input, regions[p], None)
+            })
+        };
+        let still = Moves::default();
+        let down = Moves { step: Some(Vec2::Y), ..still };
+        let accept = Moves { accept: true, ..still };
+        frame([still, still]);
+        // Each wakes its own highlight on the first button of its half.
+        frame([down, down]);
+        // Player 2 steps down to Quit; player 1 stays on Resume.
+        frame([still, down]);
+        let done = frame([accept, accept]);
+        assert!(done[0].clicked("resume") && !done[0].clicked("quit"), "{:?}", done[0]);
+        assert!(done[1].clicked("quit") && !done[1].clicked("resume"), "{:?}", done[1]);
+        let mut from_pad = crate::input::Input::new();
+        from_pad.handle(&crate::input::InputEvent::PadDownOn { pad: 1, button: crate::input::PadButton::South });
+        assert!(Moves::from_pad(from_pad.pad(1).unwrap()).accept);
+        assert!(!from_pad.pad(0).is_some_and(|p| Moves::from_pad(p).accept));
+    }
 }
+
