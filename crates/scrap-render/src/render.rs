@@ -533,6 +533,12 @@ pub struct FrameStats {
 #[serde(default)]
 pub struct ShadowSettings {
     pub enabled: bool,
+    /// The sun casts: its cascades (or virtual maps) and contact shadows.
+    /// Off, only the lamps' maps are drawn — a place the sun barely lights
+    /// (a dungeon's faint fill from above) pays nothing for a shadow nobody
+    /// sees: the cascades redraw every caster in reach three or four times
+    /// a view, which on a floor of a thousand pieces is most of a frame.
+    pub sun: bool,
     /// Side of each cascade's square depth map. 2048 is enough for a
     /// valley; 1024 for a clearing; more costs memory and fill, not
     /// detail, once the map is finer than the screen. (URP packs its
@@ -633,6 +639,7 @@ impl Default for ShadowSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            sun: true,
             resolution: 2048,
             depth_bias: 1.0,
             normal_bias: 1.0,
@@ -651,6 +658,7 @@ impl Default for ShadowSettings {
 impl ShadowSettings {
     pub const OFF: ShadowSettings = ShadowSettings {
         enabled: false,
+        sun: false,
         resolution: 1,
         depth_bias: 0.0,
         normal_bias: 0.0,
@@ -6775,6 +6783,7 @@ impl Renderer {
         // Contact shadows read the prepass's depth, the screen's: not for a
         // probe's face, and not when rays already find every shadow.
         let contact_on = frame.shadows.enabled
+            && frame.shadows.sun
             && frame.shadows.contact > 0.0
             && probe.is_none()
             && !traced_sun;
@@ -6782,6 +6791,7 @@ impl Renderer {
         // face and a picture keep the cascades, so the pages stay the
         // screen's.
         let virtual_on = frame.shadows.enabled
+            && frame.shadows.sun
             && frame.shadows.virtual_maps
             && !traced_sun
             && probe.is_none()
@@ -6799,7 +6809,7 @@ impl Renderer {
         if restir_on && self.restir.resize(gpu, (width, height)) {
             self.rebind(gpu);
         }
-        let mut cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
+        let mut cascades = if frame.shadows.enabled && frame.shadows.sun && !traced_sun && !virtual_on {
             self.cascades(frame, sun, aspect)
         } else {
             Vec::new()

@@ -17,6 +17,17 @@ fn shadow_under(
     card: Material,
     texture: impl FnOnce(&mut Renderer, &Gpu) -> TextureHandle,
 ) -> Option<Vec<u8>> {
+    shadow_under_with(card, texture, ShadowSettings::default(), None)
+}
+
+/// `shadow_under` with these shadow settings, and lit by a shadowed lamp
+/// overhead at `lamp` metres instead of the sun when one is given.
+fn shadow_under_with(
+    card: Material,
+    texture: impl FnOnce(&mut Renderer, &Gpu) -> TextureHandle,
+    shadows: ShadowSettings,
+    lamp: Option<f32>,
+) -> Option<Vec<u8>> {
     let gpu = Gpu::headless_blocking(false).ok()?;
     let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
     let mut renderer = Renderer::new(&gpu, &target);
@@ -36,12 +47,24 @@ fn shadow_under(
         },
         lighting: Lighting {
             sun_direction: Vec3::new(0.0, -1.0, 0.001).normalize(),
-            sun_intensity: 1.0,
+            sun_intensity: if lamp.is_some() { 0.0 } else { 1.0 },
             sky_color: Vec3::splat(0.1),
             ground_color: Vec3::splat(0.1),
             ..Lighting::default()
         },
-        shadows: ShadowSettings::default(),
+        lights: lamp
+            .map(|y| scrap::render::PointLight {
+                position: Vec3::new(0.0, y, 0.001),
+                color: Vec3::splat(12.0),
+                range: 12.0,
+                spot: None,
+                shadows: true,
+                falloff: Default::default(),
+                inner_cone: None,
+            })
+            .into_iter()
+            .collect(),
+        shadows,
         clear_color: Vec3::ZERO,
         draws: vec![
             Draw {
@@ -118,6 +141,26 @@ fn a_card_cut_out_by_its_alpha_throws_a_shadow_with_the_same_holes() {
         holed_lit > holed_dark / 3 && holed_dark > holed_lit / 3,
         "a cut-out card lets light through its holes: {holed_dark} dark, {holed_lit} lit"
     );
+}
+
+/// A sun that does not cast (`shadows.sun: false`, a dungeon's faint fill
+/// from above): no cascades are drawn and the floor under a solid card is
+/// lit — while a lamp's shadow is still drawn under the same settings.
+#[test]
+fn a_sun_that_does_not_cast_leaves_the_lamps_their_shadows() {
+    let solid = Material::new(0.5, 0.5, 0.5);
+    let no_sun = ShadowSettings { sun: false, ..ShadowSettings::default() };
+    let Some(sunlit) = shadow_under_with(solid, |_, _| TextureHandle::WHITE, no_sun, None) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let (dark, lit) = census(&sunlit);
+    assert!(lit > dark * 10, "the sun casts nothing: {dark} dark, {lit} lit");
+    let lamplit = shadow_under_with(solid, |_, _| TextureHandle::WHITE, no_sun, Some(4.0)).unwrap();
+    let open = shadow_under_with(Material { alpha: 0.0, surface: SurfaceType::Transparent, ..solid }, |_, _| TextureHandle::WHITE, no_sun, Some(4.0)).unwrap();
+    let brightness = |p: &[u8]| p.chunks(4).map(|c| c[0] as u64).sum::<u64>();
+    eprintln!("under the card by the lamp {}, without the card {}", brightness(&lamplit), brightness(&open));
+    assert!(brightness(&lamplit) * 2 < brightness(&open), "the lamp's shadow is still drawn: {} vs {} without the card", brightness(&lamplit), brightness(&open));
 }
 
 #[test]
