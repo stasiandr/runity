@@ -859,7 +859,10 @@ pub fn pictures_of(document: &gltf::Document, images: &[gltf::image::Data]) -> S
         m.alpha = a;
         m.metallic = pbr.metallic_factor();
         m.smoothness = 1.0 - pbr.roughness_factor();
-        m.emission = gm.emissive_factor();
+        // KHR_materials_emissive_strength: Blender writes an emission
+        // stronger than 1 as the factor and this, which multiplies it.
+        let strength = gm.emissive_strength().unwrap_or(1.0);
+        m.emission = gm.emissive_factor().map(|c| c * strength);
         match gm.alpha_mode() {
             gltf::material::AlphaMode::Opaque => {}
             gltf::material::AlphaMode::Mask => m.alpha_clip = gm.alpha_cutoff().unwrap_or(0.5),

@@ -67,6 +67,7 @@ fn forest(dir: &Path, stump_x: f32) -> PathBuf {
     let gltf = format!(
         r#"{{
   "asset": {{"version": "2.0"}},
+  "extensionsUsed": ["KHR_materials_emissive_strength"],
   "scene": 0,
   "scenes": [{{"nodes": [{roots}]}}],
   "nodes": [{nodes}],
@@ -76,7 +77,7 @@ fn forest(dir: &Path, stump_x: f32) -> PathBuf {
   ],
   "materials": [
     {{"name": "bark", "pbrMetallicRoughness": {{"baseColorFactor": [0.3, 0.2, 0.1, 1.0], "roughnessFactor": 0.9, "metallicFactor": 0.0}}}},
-    {{"name": "moss", "doubleSided": true, "alphaMode": "MASK", "alphaCutoff": 0.4, "pbrMetallicRoughness": {{"baseColorFactor": [0.1, 0.5, 0.1, 1.0], "roughnessFactor": 0.25, "metallicFactor": 0.0}}}}
+    {{"name": "moss", "doubleSided": true, "alphaMode": "MASK", "alphaCutoff": 0.4, "emissiveFactor": [1.0, 0.5, 0.25], "extensions": {{"KHR_materials_emissive_strength": {{"emissiveStrength": 4.0}}}}, "pbrMetallicRoughness": {{"baseColorFactor": [0.1, 0.5, 0.1, 1.0], "roughnessFactor": 0.25, "metallicFactor": 0.0}}}}
   ],
   "buffers": [{{"uri": "forest.bin", "byteLength": {len}}}],
   "bufferViews": [
@@ -143,6 +144,11 @@ fn a_gltf_scene_is_a_prefab_of_its_nodes_with_one_model_per_shared_mesh() {
     );
     assert_eq!(moss.render_face, scrap::material::RenderFace::Both);
     assert!((moss.alpha_clip - 0.4).abs() < 1e-4);
+    assert_eq!(
+        moss.emission,
+        [4.0, 2.0, 1.0],
+        "an emission stronger than 1 is its factor times KHR_materials_emissive_strength"
+    );
 
     let (prefabs, problems) = Prefabs::of(&project);
     assert!(problems.is_empty(), "{problems:?}");

@@ -12,7 +12,7 @@ repository.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 glam = "0.32"
-gltf = { version = "1.4.1", default-features = false, features = ["utils", "import", "names"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "import", "names", "KHR_materials_emissive_strength"] }
 hound = "3.5.1"
 tiff = "0.11"
 weezl = "0.1"
