@@ -95,9 +95,20 @@ pub fn declared_slots(shader: &str) -> Vec<(String, TextureHandle)> {
 /// the low halves, the material's own textures in the high — what the
 /// bindless shader indexes by ([`crate::bindless`]; its array holds
 /// fewer than 65536). Without bindless the shader does not read them.
-fn packed(maps: Maps) -> [u32; 4] {
-    std::array::from_fn(|i| (maps[i].0 & 0xffff) | (maps[i + 4].0 << 16))
+///
+/// A map read nearest-texel ([`crate::asset::TextureFilter::Nearest`]) says
+/// so in its half's top bit, [`NEAREST`]: the bindless shader reads it
+/// through the point sampler.
+fn packed(maps: Maps, textures: &[GpuTexture]) -> [u32; 4] {
+    let nearest = |h: TextureHandle| textures.get(h.0 as usize).is_some_and(|t| t.nearest);
+    std::array::from_fn(|i| {
+        let low = (maps[i].0 & 0x7fff) | if nearest(maps[i]) { NEAREST } else { 0 };
+        low | (maps[i + 4].0 << 16)
+    })
 }
+
+/// The bit of a packed map handle that says it is read nearest-texel.
+const NEAREST: u32 = 0x8000;
 
 impl MeshHandle {
     /// A handle that refers to nothing, for tests that build a draw list
@@ -1336,6 +1347,8 @@ type BatchKey = (Option<Look>, MeshHandle, Maps);
 
 struct GpuTexture {
     view: wgpu::TextureView,
+    /// Read nearest-texel, through the point sampler.
+    nearest: bool,
 }
 
 fn gpu_has_first_instance(occlusion: &crate::occlusion::Occlusion) -> bool {
@@ -1521,6 +1534,8 @@ pub struct Renderer {
     bindless: Option<crate::bindless::Bindless>,
     texture_layout: wgpu::BindGroupLayout,
     texture_sampler: wgpu::Sampler,
+    /// The sampler of the textures read nearest-texel.
+    point_sampler: wgpu::Sampler,
     /// Kept to rebuild the pipelines when the shader is reloaded.
     pipeline_layout: wgpu::PipelineLayout,
     /// The terrain's mesh-shader group and pipeline layouts, its uniform,
@@ -3931,6 +3946,18 @@ impl Renderer {
             anisotropy_clamp: 16,
             ..Default::default()
         });
+        // For the textures read nearest-texel: a palette's blocks stay
+        // blocks however near, and none runs into the next.
+        let point_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("surface, nearest"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
 
         let pipeline_layout = gpu
             .device
@@ -4273,6 +4300,7 @@ impl Renderer {
             bindless: bindless_on.then(crate::bindless::Bindless::new),
             texture_layout,
             texture_sampler,
+            point_sampler,
             pipeline_layout,
             terrain_mesh_layouts,
             terrain_mesh_buffer,
@@ -4852,7 +4880,8 @@ impl Renderer {
         let id = crate::asset::AssetId::from(&texture.id);
         let coding = texture.coding.native();
         let view = self.texture_view(gpu, &levels, texture.srgb, coding);
-        self.textures.push(GpuTexture { view });
+        let nearest = texture.filter.native() == crate::asset::TextureFilter::Nearest;
+        self.textures.push(GpuTexture { view, nearest });
         let handle = TextureHandle(self.textures.len() as u32 - 1);
         self.by_asset.insert(id, handle);
         self.texture_names.insert(handle.0, texture.name.as_str().into());
@@ -4890,6 +4919,7 @@ impl Renderer {
             by_asset: &self.by_asset,
             shader_textures: &self.shader_textures,
             moving: &self.material_shadows,
+            textures: &self.textures,
         }
     }
 
@@ -4908,7 +4938,7 @@ impl Renderer {
     fn prepare_maps(&mut self, gpu: &Gpu, sets: impl IntoIterator<Item = Maps>) {
         if let Some(bindless) = &mut self.bindless {
             let views: Vec<&wgpu::TextureView> = self.textures.iter().map(|t| &t.view).collect();
-            if let Some(group) = bindless.group(gpu, &self.texture_layout, &views, &self.texture_sampler) {
+            if let Some(group) = bindless.group(gpu, &self.texture_layout, &views, &self.texture_sampler, &self.point_sampler) {
                 self.map_groups.insert(crate::bindless::KEY, group);
             }
             return;
@@ -4925,6 +4955,7 @@ impl Renderer {
                     .expect("the white texture is always there")
                     .view
             };
+            let nearest = |handle: TextureHandle| self.textures.get(handle.0 as usize).is_some_and(|t| t.nearest);
             let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("surface maps"),
                 layout: &self.texture_layout,
@@ -4935,7 +4966,8 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                        // The colour map's filter is the draw's.
+                        resource: wgpu::BindingResource::Sampler(if nearest(maps[0]) { &self.point_sampler } else { &self.texture_sampler }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -4999,7 +5031,7 @@ impl Renderer {
             return TextureHandle::WHITE;
         }
         let view = self.texture_view(gpu, levels, srgb, crate::asset::TextureCoding::Rgba8);
-        self.textures.push(GpuTexture { view });
+        self.textures.push(GpuTexture { view, nearest: false });
         TextureHandle(self.textures.len() as u32 - 1)
     }
 
@@ -5091,7 +5123,8 @@ impl Renderer {
             }
             let first = (want as usize).min(levels.len().saturating_sub(1));
             let view = self.texture_view(gpu, &levels[first..], asset.srgb, asset.coding.native());
-            self.textures[handle.0 as usize] = GpuTexture { view };
+            let nearest = asset.filter.native() == crate::asset::TextureFilter::Nearest;
+            self.textures[handle.0 as usize] = GpuTexture { view, nearest };
             if let Some(s) = self.streams.get_mut(&handle) {
                 s.first = first as u32;
             }
@@ -6236,9 +6269,9 @@ impl Renderer {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             match self.by_asset.get(&id) {
-                Some(handle) => self.textures[handle.0 as usize] = GpuTexture { view },
+                Some(handle) => self.textures[handle.0 as usize] = GpuTexture { view, nearest: false },
                 None => {
-                    self.textures.push(GpuTexture { view });
+                    self.textures.push(GpuTexture { view, nearest: false });
                     let handle = TextureHandle(self.textures.len() as u32 - 1);
                     self.by_asset.insert(id, handle);
                 }
@@ -7433,7 +7466,7 @@ impl Renderer {
         let prepared = scrap_core::jobs::map(&frame.draws, 256, |draw| {
             let mut raw = instance_of(draw.transform, &draw.material);
             let maps = this.maps_of(draw);
-            raw.maps = packed(maps);
+            raw.maps = packed(maps, this.textures);
             let skinned = draw.pose.is_some()
                 && this
                     .meshes
@@ -7639,7 +7672,7 @@ impl Renderer {
                 };
                 let maps = self.maps_of(draw);
                 let mut raw = instance_of(draw.transform, &draw.material);
-                raw.maps = packed(maps);
+                raw.maps = packed(maps, &self.textures);
                 index.push(&mut pool, list, (self.shadow_look(&draw.material), draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
@@ -7667,7 +7700,7 @@ impl Renderer {
         for draw in &frame.overlay_draws {
             let maps = self.maps_of(draw);
             let mut raw = instance_of(draw.transform, &draw.material);
-            raw.maps = packed(maps);
+            raw.maps = packed(maps, &self.textures);
             push_in_order(&mut overlay_batches, (None, draw.mesh, self.batch_maps(maps)), raw);
         }
         // Outlined things, into the mask: each colour a number (the red
@@ -7687,7 +7720,7 @@ impl Renderer {
             let mut material = draw.material;
             material.base_color = [(index + 1) as f32 / 255.0, 0.0, 0.0];
             let mut raw = instance_of(draw.transform, &material);
-            raw.maps = packed(self.maps_of(draw));
+            raw.maps = packed(self.maps_of(draw), &self.textures);
             push(
                 &mut outline_batches,
                 (None, draw.mesh, self.batch_maps(self.maps_of(draw))),
@@ -8901,6 +8934,8 @@ struct DrawLookup<'a> {
     /// The material shaders that move their vertices: drawn whole, never a
     /// coarser level — a flag simplified to two triangles cannot wave.
     moving: &'a scrap_core::hash::FastMap<crate::asset::AssetId, [wgpu::RenderPipeline; 4]>,
+    /// The uploaded textures: which are read nearest-texel.
+    textures: &'a [GpuTexture],
 }
 
 impl DrawLookup<'_> {
@@ -9827,7 +9862,7 @@ mod tests {
     #[test]
     fn an_instances_eight_handles_go_two_to_a_number() {
         let maps: Maps = std::array::from_fn(|i| TextureHandle(i as u32 + 1));
-        let packed = packed(maps);
+        let packed = packed(maps, &[]);
         for i in 0..4 {
             assert_eq!(packed[i] & 0xffff, maps[i].0, "the map in the low half");
             assert_eq!(packed[i] >> 16, maps[i + 4].0, "the material's own in the high");

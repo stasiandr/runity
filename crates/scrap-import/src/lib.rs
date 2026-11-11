@@ -41,7 +41,7 @@ use anyhow::{Context, Result};
 use scrap::animation::{Channel, Clip, Joint, Path as AnimPath, PoseTransform, Skeleton};
 use scrap::asset::{
     AssetId, Bounds, MaterialAsset, MeshAsset, MeshSkin, SoundAsset, Submesh,
-    TextureAsset, TextureLevel, Vertex,
+    TextureAsset, TextureFilter, TextureLevel, Vertex,
 };
 use scrap::material::{Material, Shading};
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,16 @@ pub struct ImportSettings {
     /// For an image, and for a scene's textures. `None` keeps the size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_size: Option<u32>,
+    /// How its pictures are read between texels — an image's, and a
+    /// scene's or a model's own: `Nearest` takes the nearest texel whole
+    /// and keeps no mips (a voxel kit's palette of flat colour blocks,
+    /// pixel art), `Linear` (the default) blends and has mips.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub filter: TextureFilter,
+}
+
+fn is_linear(f: &TextureFilter) -> bool {
+    *f == TextureFilter::Linear
 }
 
 /// A clip cut from a take: frames `from` to `to` of the take `take` (its
@@ -168,6 +178,7 @@ impl Default for ImportSettings {
             alpha_from: None,
             clips: Vec::new(),
             max_size: None,
+            filter: TextureFilter::Linear,
         }
     }
 }
@@ -205,6 +216,17 @@ impl ImportSettings {
             ron::ser::to_string_pretty(self, pretty)? + "\n",
         )?;
         Ok(())
+    }
+
+    /// A texture as this import reads it ([`ImportSettings::filter`]): a
+    /// point-sampled one keeps no mips — a mip would blend the very texels
+    /// it is there to keep apart.
+    pub fn filtered(&self, mut texture: TextureAsset) -> TextureAsset {
+        texture.filter = self.filter;
+        if self.filter == TextureFilter::Nearest {
+            texture.mips.clear();
+        }
+        texture
     }
 
     /// The asset's ID: the one stored, or on a first import one derived
@@ -655,7 +677,7 @@ pub fn gltf_model(path: &Path, settings: &ImportSettings) -> Result<(MeshAsset, 
     let look = if settings.keep_uvs || own.is_some() {
         None
     } else {
-        gltf_look(&document, &images, &mut vertices, &painted, path)
+        gltf_look(&document, &images, &mut vertices, &painted, path).map(|t| settings.filtered(t))
     };
 
     let mesh = MeshAsset {
@@ -1075,6 +1097,7 @@ fn gltf_look(
                 mips,
                 srgb: true,
                 coding: Default::default(),
+                filter: Default::default(),
             });
         }
     }
@@ -1129,6 +1152,7 @@ fn gltf_look(
         mips: Vec::new(),
         srgb: true,
         coding: Default::default(),
+        filter: Default::default(),
     })
 }
 
@@ -1174,7 +1198,7 @@ pub fn texture_from_image(
         }
     }
     let (width, height, pixels, mips) = capped(width, height, pixels, settings.srgb, settings.max_size);
-    Ok(TextureAsset {
+    Ok(settings.filtered(TextureAsset {
         id: settings.asset_id(),
         name: path
             .file_stem()
@@ -1186,7 +1210,8 @@ pub fn texture_from_image(
         mips,
         srgb: settings.srgb,
         coding: Default::default(),
-    })
+        filter: Default::default(),
+    }))
 }
 
 /// An image and its mips, halved first until neither side is over `max`

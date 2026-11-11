@@ -31,6 +31,7 @@ fn half_texture() -> Vec<u8> {
         mips: Vec::new(),
         srgb: true,
         coding: Default::default(),
+        filter: Default::default(),
     };
     scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE).unwrap()
 }

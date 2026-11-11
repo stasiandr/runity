@@ -6,7 +6,8 @@
 //! look *and* maps: forty crates of forty pictures are forty draws. With
 //! it, where the device has texture binding arrays indexed per fragment
 //! (Metal, Vulkan and DX12 on current hardware; `Gpu::bindless`), group 1
-//! is one array of every uploaded texture and the sampler, each instance
+//! is one array of every uploaded texture and the samplers (blended, and
+//! nearest-texel for a map whose handle says so), each instance
 //! carries its handles (an eighteenth vertex attribute: the four maps'
 //! and its material's own four textures', two to a number), and the
 //! shader reads `textures[handle]`: forty crates of one mesh are one draw.
@@ -46,18 +47,27 @@ const SHADER: &str = r#"// maps: bindless (bindless.rs)
 // textures in the high.
 @group(1) @binding(0) var map_textures: binding_array<texture_2d<f32>>;
 @group(1) @binding(1) var surface_sampler: sampler;
+// For a map whose handle has its top bit (0x8000) set: read nearest-texel,
+// its only level (render.rs, `packed`).
+@group(1) @binding(2) var point_sampler: sampler;
 
+fn map_at(handle: u32, uv: vec2<f32>) -> vec4<f32> {
+    let index = handle & 0x7fffu;
+    let blended = textureSample(map_textures[index], surface_sampler, uv);
+    let nearest = textureSampleLevel(map_textures[index], point_sampler, uv, 0.0);
+    return select(blended, nearest, (handle & 0x8000u) != 0u);
+}
 fn surface_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.x & 0xffffu], surface_sampler, uv);
+    return map_at(maps.x & 0xffffu, uv);
 }
 fn normal_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.y & 0xffffu], surface_sampler, uv);
+    return map_at(maps.y & 0xffffu, uv);
 }
 fn mask_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.z & 0xffffu], surface_sampler, uv);
+    return map_at(maps.z & 0xffffu, uv);
 }
 fn emission_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.w & 0xffffu], surface_sampler, uv);
+    return map_at(maps.w & 0xffffu, uv);
 }
 fn texture_at(in: SurfaceIn, slot: u32, uv: vec2<f32>) -> vec4<f32> {
     let dx = dpdx(uv);
@@ -89,7 +99,7 @@ pub(crate) fn prepared(source: &str, on: bool) -> String {
     )
 }
 
-/// Group 1, bindless: the array, partly bound, and the sampler.
+/// Group 1, bindless: the array, partly bound, and the two samplers.
 pub(crate) fn layout(gpu: &Gpu) -> wgpu::BindGroupLayout {
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("surface maps (bindless)"),
@@ -106,6 +116,12 @@ pub(crate) fn layout(gpu: &Gpu) -> wgpu::BindGroupLayout {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
@@ -137,6 +153,7 @@ impl Bindless {
         layout: &wgpu::BindGroupLayout,
         views: &[&wgpu::TextureView],
         sampler: &wgpu::Sampler,
+        point: &wgpu::Sampler,
     ) -> Option<wgpu::BindGroup> {
         if self.made_with == Some(views.len()) {
             return None;
@@ -154,6 +171,10 @@ impl Bindless {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(point),
                 },
             ],
         }))

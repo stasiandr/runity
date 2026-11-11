@@ -63,6 +63,7 @@ pub fn cook_texture(texture: &TextureAsset, coding: TextureCoding) -> Option<Tex
             .collect(),
         srgb: texture.srgb,
         coding,
+        filter: texture.filter,
     })
 }
 
@@ -300,6 +301,7 @@ mod tests {
             mips,
             srgb: true,
             coding: TextureCoding::Rgba8,
+            filter: Default::default(),
         }
     }
 

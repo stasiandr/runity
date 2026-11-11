@@ -222,6 +222,7 @@ fn texture(id: u128, rgba: [u8; 4]) -> Vec<u8> {
         mips: Vec::new(),
         srgb: false,
         coding: Default::default(),
+        filter: Default::default(),
     };
     scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE).unwrap()
 }

@@ -38,6 +38,7 @@ fn picture() -> TextureAsset {
         mips,
         srgb: true,
         coding: TextureCoding::Rgba8,
+        filter: Default::default(),
     }
 }
 

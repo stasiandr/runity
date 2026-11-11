@@ -39,7 +39,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use glam::{Quat, Vec3};
 use scrap::asset::{
-    AssetId, Bounds, MaterialAsset, MeshAsset, Submesh, TextureAsset, Vertex,
+    AssetId, Bounds, MaterialAsset, MeshAsset, Submesh, TextureAsset, TextureFilter, Vertex,
 };
 use scrap::material::{Material, RenderFace, SurfaceType};
 use scrap::scene::{Body, Collider, MaterialRef};
@@ -543,7 +543,12 @@ fn materials(
         let on_disk = beside?.join(file);
         on_disk.is_file().then(|| (on_disk, lexical(&named_in.join(file))))
     };
-    let cap = settings.max_size.map(|m| format!("@{m}")).unwrap_or_default();
+    // A picture capped or point-sampled is another asset than the same
+    // file read whole and blended.
+    let mut cap = settings.max_size.map(|m| format!("@{m}")).unwrap_or_default();
+    if settings.filter == TextureFilter::Nearest {
+        cap.push_str("#nearest");
+    }
 
     // Textures, each built once per way it is read: an image that is both a
     // colour map and something else is two assets, sRGB and linear.
@@ -594,7 +599,9 @@ fn materials(
             pixels,
             srgb,
             coding: Default::default(),
+            filter: Default::default(),
         };
+        let asset = settings.filtered(asset);
         written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?));
         textures.insert((index, srgb), id);
         Ok(Some(id))
@@ -662,7 +669,7 @@ fn materials(
             if let Some(asset) = asset {
                 let (width, height, pixels, mips) =
                     capped(asset.width, asset.height, asset.pixels, false, settings.max_size);
-                let asset = TextureAsset { width, height, pixels, mips, ..asset };
+                let asset = settings.filtered(TextureAsset { width, height, pixels, mips, ..asset });
                 written.push((id, scrap::asset::to_bytes(&asset, scrap::asset::TEXTURE)?));
             }
         }
@@ -810,6 +817,7 @@ fn mask(
         pixels,
         srgb: false,
         coding: Default::default(),
+        filter: Default::default(),
     })
 }
 

@@ -166,6 +166,30 @@ pub struct TextureAsset {
     pub srgb: bool,
     /// How `pixels` and each level's are stored.
     pub coding: TextureCoding,
+    /// How it is sampled between its texels.
+    pub filter: TextureFilter,
+}
+
+/// How a texture is read between its texels: blended (`Linear`, with mips
+/// for the distance) or the nearest texel whole (`Nearest`, no mips) — a
+/// palette of flat colour blocks a voxel kit paints with, pixel art, a
+/// lookup table: anything whose texels must not run into each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Archive, Serialize, Deserialize, serde::Serialize, serde::Deserialize)]
+#[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq))]
+pub enum TextureFilter {
+    #[default]
+    Linear,
+    Nearest,
+}
+
+impl ArchivedTextureFilter {
+    /// The filter, off the archive.
+    pub fn native(&self) -> TextureFilter {
+        match self {
+            ArchivedTextureFilter::Linear => TextureFilter::Linear,
+            ArchivedTextureFilter::Nearest => TextureFilter::Nearest,
+        }
+    }
 }
 
 
