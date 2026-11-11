@@ -44,6 +44,29 @@
 //! the player last touched a device of is on ([`Actions::update`]), and a
 //! binding of another counts for nothing — Unity's PlayerInput switching
 //! between keyboard and pad.
+//!
+//! Two players on one machine ask the same file for each of them, seated
+//! at their own devices ([`Seat`]): a pad's slot, and one side of the
+//! keyboard. The sides are `keyboards` — named sets of key bindings that
+//! count only for a player seated there; keys outside them count for every
+//! player with a keyboard:
+//!
+//! ```text
+//! (
+//!     actions: { "use": [Pad(South)], "pause": [Key(P), Pad(Start)] },
+//!     axes: { "move_x": (analog: [LeftX]) },
+//!     keyboards: {
+//!         "wasd": (actions: { "use": [Key(Space)] },
+//!                  axes: { "move_x": (negative: [Key(A)], positive: [Key(D)]) }),
+//!         "arrows": (actions: { "use": [Key(Enter)] },
+//!                    axes: { "move_x": (negative: [Key(Left)], positive: [Key(Right)]) }),
+//!     },
+//! )
+//! ```
+//!
+//! `actions.held_by(&input, &Seat::pad(1).with_keyboard("arrows"), "use")`
+//! is player 2's Enter or South on the second pad; `actions.held(&input,
+//! "use")` is still anyone's.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -51,7 +74,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::input::{Input, Key, MouseButton, PadAxis, PadButton};
+use crate::input::{Input, Key, MouseButton, PadAxis, PadButton, PadState};
 
 /// One thing that can trigger an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,16 +131,121 @@ pub struct ActionMap {
     /// Unity's Control Schemes, by name: the devices each is made of.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemes: BTreeMap<String, Vec<Device>>,
+    /// Sides of one keyboard two players share, by name: key bindings
+    /// that count only for a player seated at that side ([`Seat`]), and
+    /// for the merged view of everything.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keyboards: BTreeMap<String, ActionMap>,
+}
+
+/// Which pads count for a [`Seat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pads {
+    #[default]
+    None,
+    /// Every pad at once: the merged pad.
+    Any,
+    /// One player slot's pad ([`crate::input::PadSlots`]).
+    Slot(usize),
+}
+
+/// Which keys count for a [`Seat`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Keys {
+    #[default]
+    None,
+    /// The whole keyboard: every side's keys, and the shared ones.
+    All,
+    /// One side (a `keyboards` entry), and the shared keys.
+    Side(String),
+}
+
+/// One player's devices: which pad, which keys and whether the mouse
+/// count for what they ask. [`Seat::everything`] is what the plain
+/// questions ([`Actions::held`] and the rest) ask with.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Seat {
+    pub pads: Pads,
+    pub keys: Keys,
+    pub mouse: bool,
+}
+
+impl Seat {
+    /// Every device: one player at the whole machine.
+    pub fn everything() -> Self {
+        Self {
+            pads: Pads::Any,
+            keys: Keys::All,
+            mouse: true,
+        }
+    }
+
+    /// Slot `slot`'s pad alone.
+    pub fn pad(slot: usize) -> Self {
+        Self {
+            pads: Pads::Slot(slot),
+            ..Self::default()
+        }
+    }
+
+    /// One side of the keyboard alone (a `keyboards` entry).
+    pub fn keyboard(side: &str) -> Self {
+        Self {
+            keys: Keys::Side(side.to_string()),
+            ..Self::default()
+        }
+    }
+
+    /// The same, the keyboard's side `side` too.
+    pub fn with_keyboard(mut self, side: &str) -> Self {
+        self.keys = Keys::Side(side.to_string());
+        self
+    }
+
+    /// The same, the whole keyboard and the mouse too.
+    pub fn with_whole_keyboard(mut self) -> Self {
+        self.keys = Keys::All;
+        self.mouse = true;
+        self
+    }
+
+    /// The same, slot `slot`'s pad too.
+    pub fn with_pad(mut self, slot: usize) -> Self {
+        self.pads = Pads::Slot(slot);
+        self
+    }
+
+    fn pad_of<'a>(&self, input: &'a Input) -> Option<&'a PadState> {
+        match self.pads {
+            Pads::None => None,
+            Pads::Any => Some(input.any_pad()),
+            Pads::Slot(slot) => input.pad(slot),
+        }
+    }
+
+    fn side_counts(&self, side: Option<&str>) -> bool {
+        match (&self.keys, side) {
+            (Keys::None, _) => false,
+            (Keys::All, _) | (Keys::Side(_), None) => true,
+            (Keys::Side(mine), Some(side)) => mine == side,
+        }
+    }
 }
 
 impl ActionMap {
     /// What does not hold together, in words: a map inside a map.
     pub fn problems(&self) -> Vec<String> {
-        self.maps
+        let maps = self
+            .maps
             .iter()
-            .filter(|(_, m)| !m.maps.is_empty())
-            .map(|(name, _)| format!("map `{name}` has maps of its own; a map is one level"))
-            .collect()
+            .filter(|(_, m)| !m.maps.is_empty() || !m.keyboards.is_empty())
+            .map(|(name, _)| format!("map `{name}` has maps or keyboards of its own; a map is one level"));
+        let sides = self
+            .keyboards
+            .iter()
+            .filter(|(_, m)| !m.maps.is_empty() || !m.keyboards.is_empty() || !m.schemes.is_empty())
+            .map(|(name, _)| format!("keyboard `{name}` has maps, keyboards or schemes of its own; a side is bindings"));
+        maps.chain(sides).collect()
     }
 }
 
@@ -184,16 +312,18 @@ impl Actions {
     }
 
     /// The maps an action or axis called `name` is looked for in, with
-    /// the name there: the always-on one, then every map switched on — or,
-    /// for `"menu/back"`, the map `menu` alone.
-    fn looked_in(&self, name: &str) -> Vec<(&ActionMap, String)> {
+    /// the name there and the keyboard side the map is (`None`: shared):
+    /// the always-on one, then every map switched on — or, for
+    /// `"menu/back"`, the map `menu` alone — and then the keyboards' sides,
+    /// whose keys count for whoever sits there.
+    fn looked_in(&self, name: &str) -> Vec<(&ActionMap, String, Option<&str>)> {
         if let Some((map, action)) = name.split_once('/') {
             return self
                 .map
                 .maps
                 .get(map)
                 .filter(|_| self.map_enabled(map))
-                .map(|m| (m, action.to_string()))
+                .map(|m| (m, action.to_string(), None))
                 .into_iter()
                 .collect();
         }
@@ -205,7 +335,13 @@ impl Actions {
                     .filter(|(n, _)| self.map_enabled(n))
                     .map(|(_, m)| m),
             )
-            .map(|m| (m, name.to_string()))
+            .map(|m| (m, name.to_string(), None))
+            .chain(
+                self.map
+                    .keyboards
+                    .iter()
+                    .map(|(side, m)| (m, name.to_string(), Some(side.as_str()))),
+            )
             .collect()
     }
 
@@ -217,13 +353,28 @@ impl Actions {
         }
     }
 
-    fn bindings(&self, name: &str) -> Vec<Binding> {
+    /// Whether `binding`, of a map of side `side`, counts for `seat`.
+    fn seated(&self, seat: &Seat, binding: Binding, side: Option<&str>) -> bool {
+        self.counts(binding.device())
+            && match binding {
+                // A side's own pad bindings are as anyone's: sides are keys.
+                Binding::Key(_) => seat.side_counts(side),
+                Binding::Mouse(_) => seat.mouse,
+                Binding::Pad(_) => seat.pads != Pads::None,
+            }
+    }
+
+    fn bindings(&self, seat: &Seat, name: &str) -> Vec<Binding> {
         self.looked_in(name)
             .into_iter()
-            .filter_map(|(map, name)| map.actions.get(&name))
-            .flatten()
-            .copied()
-            .filter(|b| self.counts(b.device()))
+            .flat_map(|(map, name, side)| {
+                map.actions
+                    .get(&name)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(move |b| self.seated(seat, *b, side))
+            })
             .collect()
     }
 
@@ -276,54 +427,78 @@ impl Actions {
     }
 
     pub fn held(&self, input: &Input, name: &str) -> bool {
-        self.bindings(name).iter().any(|b| held(input, *b))
+        self.held_by(input, &Seat::everything(), name)
     }
 
     /// Pressed this frame by any of its bindings.
     pub fn pressed(&self, input: &Input, name: &str) -> bool {
-        self.bindings(name).iter().any(|b| match *b {
-            Binding::Key(key) => input.pressed(key),
-            Binding::Mouse(button) => input.mouse_pressed(button),
-            Binding::Pad(button) => input.pad_pressed(button),
-        })
+        self.pressed_by(input, &Seat::everything(), name)
     }
 
     pub fn released(&self, input: &Input, name: &str) -> bool {
-        self.bindings(name).iter().any(|b| match *b {
-            Binding::Key(key) => input.released(key),
-            Binding::Mouse(button) => input.mouse_released(button),
-            Binding::Pad(button) => input.pad_released(button),
-        })
+        self.released_by(input, &Seat::everything(), name)
     }
 
     /// −1..1: −1, 0 or 1 from keys and buttons — 0 when both sides are
     /// held — or, when none is, from its sticks.
     pub fn axis(&self, input: &Input, name: &str) -> f32 {
-        let axes: Vec<Axis> = self
+        self.axis_by(input, &Seat::everything(), name)
+    }
+
+    /// [`Actions::held`] for one player: only what `seat`'s devices hold.
+    pub fn held_by(&self, input: &Input, seat: &Seat, name: &str) -> bool {
+        self.bindings(seat, name)
+            .iter()
+            .any(|b| held(input, seat, *b))
+    }
+
+    /// [`Actions::pressed`] for one player.
+    pub fn pressed_by(&self, input: &Input, seat: &Seat, name: &str) -> bool {
+        let pad = seat.pad_of(input);
+        self.bindings(seat, name).iter().any(|b| match *b {
+            Binding::Key(key) => input.pressed(key),
+            Binding::Mouse(button) => input.mouse_pressed(button),
+            Binding::Pad(button) => pad.is_some_and(|p| p.pressed(button)),
+        })
+    }
+
+    /// [`Actions::released`] for one player.
+    pub fn released_by(&self, input: &Input, seat: &Seat, name: &str) -> bool {
+        let pad = seat.pad_of(input);
+        self.bindings(seat, name).iter().any(|b| match *b {
+            Binding::Key(key) => input.released(key),
+            Binding::Mouse(button) => input.mouse_released(button),
+            Binding::Pad(button) => pad.is_some_and(|p| p.released(button)),
+        })
+    }
+
+    /// [`Actions::axis`] for one player: their keys, or their pad's sticks.
+    pub fn axis_by(&self, input: &Input, seat: &Seat, name: &str) -> f32 {
+        let axes: Vec<(Axis, Option<&str>)> = self
             .looked_in(name)
             .into_iter()
-            .filter_map(|(map, name)| map.axes.get(&name).cloned())
+            .filter_map(|(map, name, side)| map.axes.get(&name).cloned().map(|a| (a, side)))
             .collect();
-        let counted = |bindings: &[Binding]| -> Vec<Binding> {
+        let counted = |bindings: &[Binding], side: Option<&str>| -> Vec<Binding> {
             bindings
                 .iter()
                 .copied()
-                .filter(|b| self.counts(b.device()))
+                .filter(|b| self.seated(seat, *b, side))
                 .collect()
         };
-        let positive: Vec<Binding> = axes.iter().flat_map(|a| counted(&a.positive)).collect();
-        let negative: Vec<Binding> = axes.iter().flat_map(|a| counted(&a.negative)).collect();
-        let side = |bindings: &[Binding]| f32::from(bindings.iter().any(|b| held(input, *b)));
-        let pressed = positive.iter().chain(&negative).any(|b| held(input, *b));
+        let positive: Vec<Binding> = axes.iter().flat_map(|(a, s)| counted(&a.positive, *s)).collect();
+        let negative: Vec<Binding> = axes.iter().flat_map(|(a, s)| counted(&a.negative, *s)).collect();
+        let side = |bindings: &[Binding]| f32::from(bindings.iter().any(|b| held(input, seat, *b)));
+        let pressed = positive.iter().chain(&negative).any(|b| held(input, seat, *b));
         if pressed {
             return side(&positive) - side(&negative);
         }
-        if !self.counts(Device::Gamepad) {
+        let Some(pad) = seat.pad_of(input).filter(|_| self.counts(Device::Gamepad)) else {
             return 0.0;
-        }
+        };
         axes.iter()
-            .flat_map(|a| &a.analog)
-            .map(|a| input.pad_axis(*a))
+            .flat_map(|(a, _)| &a.analog)
+            .map(|a| pad.axis(*a))
             .fold(
                 0.0,
                 |best: f32, v| if v.abs() > best.abs() { v } else { best },
@@ -415,6 +590,9 @@ impl Actions {
                 known.push(format!("{map}/{name}"));
             }
         }
+        for inner in self.map.keyboards.values() {
+            known.extend(inner.actions.keys().chain(inner.axes.keys()).cloned());
+        }
         let known: Vec<&str> = known.iter().map(String::as_str).collect();
         names
             .iter()
@@ -433,11 +611,11 @@ impl Actions {
     }
 }
 
-fn held(input: &Input, binding: Binding) -> bool {
+fn held(input: &Input, seat: &Seat, binding: Binding) -> bool {
     match binding {
         Binding::Key(key) => input.held(key),
         Binding::Mouse(button) => input.mouse_held(button),
-        Binding::Pad(button) => input.pad_held(button),
+        Binding::Pad(button) => seat.pad_of(input).is_some_and(|p| p.held(button)),
     }
 }
 
@@ -633,5 +811,43 @@ mod tests {
             0.0,
             "focus lost lets go of the pad too"
         );
+    }
+
+    #[test]
+    fn two_players_ask_one_file_each_at_their_own_pad_and_side_of_the_keyboard() {
+        use crate::input::{PadAxis, PadButton};
+        let map: ActionMap = ron::from_str(
+            r#"(
+                actions: { "use": [Pad(South)], "pause": [Key(P), Pad(Start)] },
+                axes: { "move_x": (analog: [LeftX]) },
+                keyboards: {
+                    "wasd": (actions: { "use": [Key(Space)] }, axes: { "move_x": (negative: [Key(A)], positive: [Key(D)]) }),
+                    "arrows": (actions: { "use": [Key(Enter)] }, axes: { "move_x": (negative: [Key(Left)], positive: [Key(Right)]) }),
+                },
+            )"#,
+        )
+        .unwrap();
+        assert!(map.problems().is_empty());
+        let actions = Actions::new(map);
+        let one = Seat::pad(0).with_keyboard("wasd");
+        let two = Seat::pad(1).with_keyboard("arrows");
+        let mut input = Input::new();
+        input.handle(&InputEvent::PadDownOn { pad: 1, button: PadButton::South });
+        input.handle(&InputEvent::PadMovedOn { pad: 0, axis: PadAxis::LeftX, value: -1.0 });
+        input.handle(&InputEvent::KeyDown(Key::Right));
+        assert!(actions.pressed_by(&input, &two, "use") && !actions.held_by(&input, &one, "use"));
+        assert_eq!(actions.axis_by(&input, &one, "move_x"), -1.0, "player 1's stick");
+        assert_eq!(actions.axis_by(&input, &two, "move_x"), 1.0, "player 2's arrow");
+        assert!(actions.held(&input, "use"), "anyone's, merged, as before");
+        // A shared key counts for both; a side's for its own.
+        input.handle(&InputEvent::KeyDown(Key::P));
+        input.handle(&InputEvent::KeyDown(Key::Space));
+        assert!(actions.pressed_by(&input, &one, "pause") && actions.pressed_by(&input, &two, "pause"));
+        assert!(actions.held_by(&input, &one, "use"));
+        assert!(!actions.held_by(&input, &Seat::keyboard("arrows"), "use"), "Space is the other side's");
+        // The whole keyboard for one player (a debug switch): every side.
+        let all = Seat::pad(0).with_whole_keyboard();
+        assert_eq!(actions.axis_by(&input, &all, "move_x"), 1.0);
+        assert!(actions.missing(&["use", "move_x", "pause"]).is_empty());
     }
 }

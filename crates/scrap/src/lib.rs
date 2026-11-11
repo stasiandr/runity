@@ -797,7 +797,7 @@ pub use refs::{AssetLink, MaterialLink, ModelLink, PrefabLink, SceneLink, SoundL
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 #[cfg(feature = "input")]
-pub use actions::{Actions, Binding};
+pub use actions::{Actions, Binding, Seat};
 pub use components::{ComponentProblem, Components};
 pub use live::{Instance, LiveScene, Reload, Spawned};
 pub use material::{Material, Shading};

@@ -6,7 +6,7 @@
 
 pub mod actions;
 
-pub use actions::{Actions, Binding};
+pub use actions::{Actions, Binding, Keys, Pads, Seat};
 
 // The core, under the names this module's code knows it by.
 #[allow(unused_imports)]

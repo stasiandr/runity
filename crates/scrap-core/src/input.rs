@@ -197,6 +197,28 @@ pub enum InputEvent {
         axis: PadAxis,
         value: f32,
     },
+    /// A button of one pad, by its player slot ([`PadSlots`]): the pad's
+    /// own state ([`Input::pad`]) and the merged one ([`Input::pad_held`])
+    /// both see it. What the window sends for a real pad, and what a
+    /// script writes to be the second player: `PadDownOn(pad: 1, button:
+    /// South)`.
+    PadDownOn {
+        pad: usize,
+        button: PadButton,
+    },
+    PadUpOn {
+        pad: usize,
+        button: PadButton,
+    },
+    PadMovedOn {
+        pad: usize,
+        axis: PadAxis,
+        value: f32,
+    },
+    /// A pad came into a slot, or went out of it: everything it held is let
+    /// go, and the slot waits for it ([`PadSlots`]).
+    PadConnected(usize),
+    PadDisconnected(usize),
     /// A finger on a touch screen, by the id the platform gives it for as
     /// long as it is down.
     Touch {
@@ -233,6 +255,119 @@ pub struct Touch {
     pub ended: bool,
 }
 
+/// One pad's buttons and sticks: held, pressed and released this frame,
+/// where each stick is. [`Input`] keeps one per player slot
+/// ([`Input::pad`]) and one for every pad at once (`Input::pad_held` and
+/// the rest).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PadState {
+    connected: bool,
+    held: HashSet<PadButton>,
+    pressed: HashSet<PadButton>,
+    released: HashSet<PadButton>,
+    axes: std::collections::HashMap<PadAxis, f32>,
+}
+
+impl PadState {
+    /// Whether a pad is in this slot now. A slot whose pad went keeps its
+    /// number, empty, until it (or the next pad) comes back.
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
+    pub fn held(&self, button: PadButton) -> bool {
+        self.held.contains(&button)
+    }
+    pub fn pressed(&self, button: PadButton) -> bool {
+        self.pressed.contains(&button)
+    }
+    pub fn released(&self, button: PadButton) -> bool {
+        self.released.contains(&button)
+    }
+    /// Buttons that went down this frame.
+    pub fn pressed_buttons(&self) -> impl Iterator<Item = PadButton> + '_ {
+        self.pressed.iter().copied()
+    }
+    /// An analog input, the [`DEAD_ZONE`] taken out of the sticks (see
+    /// [`Input::pad_axis`]).
+    pub fn axis(&self, axis: PadAxis) -> f32 {
+        let value = self.raw(axis);
+        match axis {
+            PadAxis::LeftTrigger | PadAxis::RightTrigger => value.clamp(0.0, 1.0),
+            _ if value.abs() < DEAD_ZONE => 0.0,
+            _ => value.signum() * (value.abs() - DEAD_ZONE) / (1.0 - DEAD_ZONE),
+        }
+    }
+    fn raw(&self, axis: PadAxis) -> f32 {
+        self.axes.get(&axis).copied().unwrap_or(0.0)
+    }
+    fn begin_frame(&mut self) {
+        self.pressed.clear();
+        self.released.clear();
+    }
+    fn down(&mut self, button: PadButton) {
+        if self.held.insert(button) {
+            self.pressed.insert(button);
+        }
+    }
+    fn up(&mut self, button: PadButton) {
+        if self.held.remove(&button) {
+            self.released.insert(button);
+        }
+    }
+    /// Everything held let go, the sticks back to rest.
+    fn let_go(&mut self) {
+        for button in std::mem::take(&mut self.held) {
+            self.released.insert(button);
+        }
+        self.axes.clear();
+    }
+}
+
+/// Which player slot each physical pad is in: the first pad that comes is
+/// slot 0, the next slot 1, by the order they come — a couch's player 1 is
+/// whoever plugged in first. A pad that goes keeps its slot empty for its
+/// return; a pad seen for the first time takes the lowest empty slot before
+/// a new one, so a pad that lost its battery and came back as another
+/// device is still player 1. Devices are whatever number the platform
+/// gives a pad for as long as it is connected (gilrs' id in the window).
+#[derive(Debug, Clone, Default)]
+pub struct PadSlots {
+    /// Each slot's device, and whether it is in.
+    slots: Vec<(u64, bool)>,
+}
+
+impl PadSlots {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A device came in: its slot.
+    pub fn connect(&mut self, device: u64) -> usize {
+        if let Some(i) = self.slots.iter().position(|(d, _)| *d == device) {
+            self.slots[i].1 = true;
+            return i;
+        }
+        if let Some(i) = self.slots.iter().position(|(_, on)| !on) {
+            self.slots[i] = (device, true);
+            return i;
+        }
+        self.slots.push((device, true));
+        self.slots.len() - 1
+    }
+
+    /// A device went: the slot it leaves empty.
+    pub fn disconnect(&mut self, device: u64) -> Option<usize> {
+        let i = self.slot(device)?;
+        self.slots[i].1 = false;
+        Some(i)
+    }
+
+    /// The slot a connected device is in.
+    pub fn slot(&self, device: u64) -> Option<usize> {
+        self.slots.iter().position(|(d, on)| *d == device && *on)
+    }
+}
+
 /// Everything held, pressed and released, plus where the mouse is.
 #[derive(Debug, Clone, Default)]
 pub struct Input {
@@ -247,10 +382,10 @@ pub struct Input {
     scroll: Vec2,
     text: String,
     has_position: bool,
-    pad_held: HashSet<PadButton>,
-    pad_pressed: HashSet<PadButton>,
-    pad_released: HashSet<PadButton>,
-    pad_axes: std::collections::HashMap<PadAxis, f32>,
+    /// Every pad at once: what a game with one player reads.
+    pad: PadState,
+    /// Each player slot's pad ([`InputEvent::PadDownOn`] and its kin).
+    pads: Vec<PadState>,
     touches: Vec<Touch>,
     /// The touch the mouse follows: the first finger down, as Unity's
     /// simulated mouse, so buttons and sliders work under a finger.
@@ -269,8 +404,10 @@ impl Input {
         self.released.clear();
         self.buttons_pressed.clear();
         self.buttons_released.clear();
-        self.pad_pressed.clear();
-        self.pad_released.clear();
+        self.pad.begin_frame();
+        for pad in &mut self.pads {
+            pad.begin_frame();
+        }
         self.motion = Vec2::ZERO;
         self.scroll = Vec2::ZERO;
         self.text.clear();
@@ -321,18 +458,38 @@ impl Input {
                 }
             }
             InputEvent::Scroll { x, y } => self.scroll += Vec2::new(*x, *y),
-            InputEvent::PadDown(button) => {
-                if self.pad_held.insert(*button) {
-                    self.pad_pressed.insert(*button);
-                }
-            }
-            InputEvent::PadUp(button) => {
-                if self.pad_held.remove(button) {
-                    self.pad_released.insert(*button);
-                }
-            }
+            InputEvent::PadDown(button) => self.pad.down(*button),
+            InputEvent::PadUp(button) => self.pad.up(*button),
             InputEvent::PadMoved { axis, value } => {
-                self.pad_axes.insert(*axis, value.clamp(-1.0, 1.0));
+                self.pad.axes.insert(*axis, value.clamp(-1.0, 1.0));
+            }
+            InputEvent::PadDownOn { pad, button } => {
+                self.heard(*pad).down(*button);
+                self.pad.down(*button);
+            }
+            InputEvent::PadUpOn { pad, button } => {
+                self.heard(*pad).up(*button);
+                self.merge_up(*button);
+            }
+            InputEvent::PadMovedOn { pad, axis, value } => {
+                self.heard(*pad).axes.insert(*axis, value.clamp(-1.0, 1.0));
+                self.merge_axis(*axis);
+            }
+            InputEvent::PadConnected(pad) => {
+                self.heard(*pad);
+            }
+            InputEvent::PadDisconnected(pad) => {
+                let gone = self.slot(*pad);
+                gone.connected = false;
+                let buttons: Vec<PadButton> = gone.held.iter().copied().collect();
+                let axes: Vec<PadAxis> = gone.axes.keys().copied().collect();
+                gone.let_go();
+                for button in buttons {
+                    self.merge_up(button);
+                }
+                for axis in axes {
+                    self.merge_axis(axis);
+                }
             }
             InputEvent::Touch { id, phase, x, y } => {
                 let at = Vec2::new(*x, *y);
@@ -373,10 +530,10 @@ impl Input {
                 }
             }
             InputEvent::FocusLost => {
-                for button in std::mem::take(&mut self.pad_held) {
-                    self.pad_released.insert(button);
+                self.pad.let_go();
+                for pad in &mut self.pads {
+                    pad.let_go();
                 }
-                self.pad_axes.clear();
                 for key in std::mem::take(&mut self.held) {
                     self.released.insert(key);
                 }
@@ -387,26 +544,71 @@ impl Input {
         }
     }
 
+    /// A slot's pad, made (connected) when a slot is first heard of: a
+    /// script's `PadDownOn(pad: 1, …)` needs no `PadConnected` first.
+    fn slot(&mut self, pad: usize) -> &mut PadState {
+        if self.pads.len() <= pad {
+            self.pads.resize_with(pad + 1, PadState::default);
+        }
+        &mut self.pads[pad]
+    }
+
+    /// A slot's pad that just said something: it is there.
+    fn heard(&mut self, pad: usize) -> &mut PadState {
+        let state = self.slot(pad);
+        state.connected = true;
+        state
+    }
+
+    /// Merged, a button is up when no slot's pad holds it.
+    fn merge_up(&mut self, button: PadButton) {
+        if !self.pads.iter().any(|p| p.held(button)) {
+            self.pad.up(button);
+        }
+    }
+
+    /// The merged pad's axis: the slot's pad pushed furthest, so one pad
+    /// resting off centre does not drown the other's push.
+    fn merge_axis(&mut self, axis: PadAxis) {
+        let value = self
+            .pads
+            .iter()
+            .map(|p| p.raw(axis))
+            .fold(0.0f32, |best, v| if v.abs() > best.abs() { v } else { best });
+        self.pad.axes.insert(axis, value);
+    }
+
+    /// One player slot's pad ([`PadSlots`]): `None` for a slot no pad has
+    /// been in. What a game of two players on two pads reads, each its own.
+    pub fn pad(&self, slot: usize) -> Option<&PadState> {
+        self.pads.get(slot)
+    }
+
+    /// Every slot a pad has been in, by slot, connected or not now.
+    pub fn pads(&self) -> &[PadState] {
+        &self.pads
+    }
+
+    /// Every pad at once, as [`Input::pad_held`] and the rest read it.
+    pub fn any_pad(&self) -> &PadState {
+        &self.pad
+    }
+
     pub fn pad_held(&self, button: PadButton) -> bool {
-        self.pad_held.contains(&button)
+        self.pad.held(button)
     }
     pub fn pad_pressed(&self, button: PadButton) -> bool {
-        self.pad_pressed.contains(&button)
+        self.pad.pressed(button)
     }
     pub fn pad_released(&self, button: PadButton) -> bool {
-        self.pad_released.contains(&button)
+        self.pad.released(button)
     }
 
     /// An analog input, with the [`DEAD_ZONE`] taken out of the sticks and
     /// what is left stretched back to the full range, so a stick pushed just
     /// past the zone moves slowly rather than jumping to 15%.
     pub fn pad_axis(&self, axis: PadAxis) -> f32 {
-        let value = self.pad_axes.get(&axis).copied().unwrap_or(0.0);
-        match axis {
-            PadAxis::LeftTrigger | PadAxis::RightTrigger => value.clamp(0.0, 1.0),
-            _ if value.abs() < DEAD_ZONE => 0.0,
-            _ => value.signum() * (value.abs() - DEAD_ZONE) / (1.0 - DEAD_ZONE),
-        }
+        self.pad.axis(axis)
     }
 
     /// Keys that went down this frame, mouse buttons and pad buttons —
@@ -418,7 +620,7 @@ impl Input {
         self.buttons_pressed.iter().copied()
     }
     pub fn pressed_pad_buttons(&self) -> impl Iterator<Item = PadButton> + '_ {
-        self.pad_pressed.iter().copied()
+        self.pad.pressed_buttons()
     }
 
     pub fn held(&self, key: Key) -> bool {
@@ -588,7 +790,10 @@ mod tests {
 /// the last. The shell hands them to the same [`Input`] the keyboard
 /// does, so what a script plays is played through the real window, the
 /// real frame and the real loop: what a test harness beside the game
-/// cannot vouch for.
+/// cannot vouch for. A pad of a player slot is addressed by its number —
+/// `(1.0, PadDownOn(pad: 1, button: South))`, `(1.0, PadMovedOn(pad: 1,
+/// axis: LeftX, value: 1.0))` — which is how two pads are played without
+/// two pads.
 #[derive(Debug, Clone, Default)]
 pub struct InputScript {
     events: Vec<(f32, InputEvent)>,
@@ -665,5 +870,67 @@ mod script_tests {
         assert!(!input.held(Key::W));
         s.quit_after = Some(1.0);
         assert!(!s.over(2.5) && s.over(3.0));
+    }
+
+    #[test]
+    fn a_script_drives_the_second_pad_and_not_the_first() {
+        let mut s = InputScript::parse(
+            "[(0.0, PadDownOn(pad: 1, button: South)), (0.0, PadMovedOn(pad: 1, axis: LeftX, value: 1.0)),
+              (0.5, PadDownOn(pad: 0, button: East)), (1.0, PadUpOn(pad: 1, button: South))]",
+        )
+        .unwrap();
+        let mut input = Input::new();
+        s.play(0.1, &mut input);
+        let (first, second) = (input.pad(0), input.pad(1).unwrap());
+        assert!(first.is_none_or(|p| !p.held(PadButton::South)), "the first pad is not pressed");
+        assert!(second.pressed(PadButton::South) && second.axis(PadAxis::LeftX) == 1.0);
+        assert!(input.pad_pressed(PadButton::South), "the merged pad sees both");
+        input.begin_frame();
+        s.play(0.6, &mut input);
+        assert!(input.pad(0).unwrap().pressed(PadButton::East));
+        assert!(!input.pad(1).unwrap().held(PadButton::East));
+        input.begin_frame();
+        s.play(1.1, &mut input);
+        assert!(input.pad(1).unwrap().released(PadButton::South) && !input.pad_held(PadButton::South));
+    }
+}
+
+#[cfg(test)]
+mod pad_tests {
+    use super::*;
+
+    #[test]
+    fn pads_take_slots_by_the_order_they_came_and_keep_them_while_away() {
+        let mut slots = PadSlots::new();
+        assert_eq!(slots.connect(70), 0);
+        assert_eq!(slots.connect(12), 1);
+        assert_eq!(slots.disconnect(70), Some(0));
+        assert_eq!(slots.slot(12), Some(1), "the other player stays player 2");
+        // Back as another device: the empty slot, not a third.
+        assert_eq!(slots.connect(99), 0);
+        assert_eq!(slots.connect(5), 2);
+        assert_eq!(slots.disconnect(1234), None);
+    }
+
+    #[test]
+    fn a_button_held_on_two_pads_is_held_merged_until_both_let_go() {
+        let mut input = Input::new();
+        let on = |pad, button| InputEvent::PadDownOn { pad, button };
+        input.handle(&on(0, PadButton::South));
+        input.handle(&on(1, PadButton::South));
+        input.handle(&InputEvent::PadUpOn { pad: 0, button: PadButton::South });
+        assert!(input.pad_held(PadButton::South), "pad 1 still holds it");
+        assert!(!input.pad(0).unwrap().held(PadButton::South));
+        // A pad unplugged lets go of what it held, and its stick rests.
+        input.handle(&InputEvent::PadMovedOn { pad: 1, axis: PadAxis::LeftY, value: -1.0 });
+        input.handle(&InputEvent::PadMovedOn { pad: 0, axis: PadAxis::LeftY, value: 0.05 });
+        assert_eq!(input.pad_axis(PadAxis::LeftY), -1.0, "the push wins over the rest");
+        input.handle(&InputEvent::PadDisconnected(1));
+        assert!(!input.pad_held(PadButton::South) && input.pad_released(PadButton::South));
+        assert_eq!(input.pad_axis(PadAxis::LeftY), 0.0);
+        assert!(!input.pad(1).unwrap().connected() && input.pad(0).unwrap().connected());
+        // Unchanged for a game of one: the old events still drive the merged pad.
+        input.handle(&InputEvent::PadDown(PadButton::North));
+        assert!(input.pad_held(PadButton::North));
     }
 }

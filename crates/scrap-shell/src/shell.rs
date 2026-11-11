@@ -329,7 +329,7 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         loop_times: scrap_core::perf::Profiler::new(600),
         say_times: std::env::var_os("SCRAP_LOOP_TIMES").map(|_| Instant::now()),
         pads: match gilrs::Gilrs::new() {
-            Ok(pads) => Some(pads),
+            Ok(pads) => Some((pads, scrap_core::input::PadSlots::new())),
             Err(e) => {
                 eprintln!("no gamepads: {e}");
                 None
@@ -463,9 +463,9 @@ struct Shell<G: Game> {
     /// `SCRAP_LOOP_TIMES`: the loop's times to stderr every few seconds,
     /// and when it last said them.
     say_times: Option<Instant>,
-    /// Gamepads. `None` where the platform has no way to ask — the game
-    /// still runs, on keyboard and mouse.
-    pads: Option<gilrs::Gilrs>,
+    /// Gamepads, and the player slot each is in. `None` where the platform
+    /// has no way to ask — the game still runs, on keyboard and mouse.
+    pads: Option<(gilrs::Gilrs, scrap_core::input::PadSlots)>,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
     /// What the game last asked of the pointer: captured only while the
@@ -1144,9 +1144,19 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
         for event in crate::web::drain() {
             self.input.handle(&event);
         }
-        if let Some(pads) = self.pads.as_mut() {
+        if let Some((pads, slots)) = self.pads.as_mut() {
+            // Pads in before the loop began say nothing of it: they take
+            // their slots first, in the platform's order.
+            for (id, _) in pads.gamepads() {
+                let device = usize::from(id) as u64;
+                if slots.slot(device).is_none() {
+                    let slot = slots.connect(device);
+                    self.input.handle(&InputEvent::PadConnected(slot));
+                }
+            }
             while let Some(event) = pads.next_event() {
-                if let Some(event) = translate_pad(event.event) {
+                let device = usize::from(event.id) as u64;
+                for event in pad_events(slots, device, event.event) {
                     self.input.handle(&event);
                 }
             }
@@ -1238,6 +1248,39 @@ fn translate_pad(event: gilrs::EventType) -> Option<InputEvent> {
         EventType::AxisChanged(axis, value, _) => {
             pad_stick(axis).map(|axis| InputEvent::PadMoved { axis, value })
         }
+        _ => None,
+    }
+}
+
+/// One gilrs event of a device as ours, by the player slot the device is
+/// in ([`scrap_core::input::PadSlots`]): a pad coming or going, or its
+/// button or stick on its slot — which the merged pad sees as well.
+fn pad_events(
+    slots: &mut scrap_core::input::PadSlots,
+    device: u64,
+    event: gilrs::EventType,
+) -> Vec<InputEvent> {
+    use gilrs::EventType;
+    match event {
+        EventType::Connected => vec![InputEvent::PadConnected(slots.connect(device))],
+        EventType::Disconnected => slots
+            .disconnect(device)
+            .map(InputEvent::PadDisconnected)
+            .into_iter()
+            .collect(),
+        other => {
+            let pad = slots.slot(device).unwrap_or_else(|| slots.connect(device));
+            translate_pad(other).and_then(|e| on_slot(pad, e)).into_iter().collect()
+        }
+    }
+}
+
+/// A pad's event as one of slot `pad`'s.
+fn on_slot(pad: usize, event: InputEvent) -> Option<InputEvent> {
+    match event {
+        InputEvent::PadDown(button) => Some(InputEvent::PadDownOn { pad, button }),
+        InputEvent::PadUp(button) => Some(InputEvent::PadUpOn { pad, button }),
+        InputEvent::PadMoved { axis, value } => Some(InputEvent::PadMovedOn { pad, axis, value }),
         _ => None,
     }
 }
@@ -1412,6 +1455,19 @@ mod pad_tests {
         assert_eq!(pad_stick(Axis::LeftStickY), Some(PadAxis::LeftY));
         assert_eq!(pad_stick(Axis::LeftZ), None);
         assert_eq!(translate_pad(EventType::Connected), None);
+    }
+
+    #[test]
+    fn each_pad_reports_on_its_own_slot() {
+        let mut slots = scrap_core::input::PadSlots::new();
+        assert_eq!(pad_events(&mut slots, 7, EventType::Connected), [InputEvent::PadConnected(0)]);
+        assert_eq!(pad_events(&mut slots, 3, EventType::Connected), [InputEvent::PadConnected(1)]);
+        assert_eq!(
+            on_slot(1, InputEvent::PadDown(PadButton::South)),
+            Some(InputEvent::PadDownOn { pad: 1, button: PadButton::South })
+        );
+        assert_eq!(pad_events(&mut slots, 7, EventType::Disconnected), [InputEvent::PadDisconnected(0)]);
+        assert_eq!(pad_events(&mut slots, 7, EventType::Disconnected), [], "gone already");
     }
 }
 
