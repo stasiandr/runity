@@ -137,6 +137,24 @@ pub fn data_root(dev_root: &str) -> PathBuf {
     data_file(dev_root, "")
 }
 
+/// In a build (a `data/` beside the executable, or where the host put it),
+/// read every path under the project the game was compiled in from that
+/// data instead ([`crate::files::route`]): code that names a file by
+/// `env!("CARGO_MANIFEST_DIR")` finds it on a phone, which has only the
+/// app's bundle. Nothing in development. [`GameSettings::load`] does it,
+/// the first thing a game reads.
+pub fn route_to_build(dev_root: &str) {
+    let shipped = DATA_DIR.get().cloned().or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join(DATA)))
+            .filter(|dir| dir.join(FILE).is_file())
+    });
+    if let Some(dir) = shipped {
+        crate::files::route(dev_root, dir);
+    }
+}
+
 /// The scene called `name` in a game's data, wherever it lies
 /// ([`crate::layout`]): what `scrap run --scene cave` and the start scene
 /// open. A path from the root (`content/game/maps/cave`) is taken as it is.
@@ -207,6 +225,47 @@ pub struct Manifest {
     /// modules were listed, empty: the engine's default set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
+    /// What `scrap build` needs beyond the standard layout: files the game
+    /// reads as they are, and how an app for a phone is named, drawn and
+    /// held (docs/ios.md). Absent: none, and the defaults.
+    #[serde(default, skip_serializing_if = "BuildSettings::is_default")]
+    pub build: BuildSettings,
+}
+
+/// `scrap.ron`'s `build: (…)`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BuildSettings {
+    /// More of the project to ship in `data/`, as paths from its root with
+    /// `*` within a name and `**` for any folders: what the game reads
+    /// itself and the standard layout does not know (`content/**/*.json`,
+    /// `content/game/ui/**/*.png`).
+    pub ship: Vec<String>,
+    /// An app's identifier (`com.example.game`); `dev.scrap.<name>` when
+    /// empty.
+    pub bundle_id: String,
+    /// The app's icon: a square PNG of 1024 pixels, from the project's root.
+    pub icon: String,
+    /// How a phone is held: `landscape`, `portrait` or `any` (the default).
+    pub orientation: String,
+    /// The colour the screen is while the app starts (`#0b0a0d`); black
+    /// when empty.
+    pub background: String,
+}
+
+impl BuildSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The app's identifier for a project called `name`.
+    pub fn bundle_id_for(&self, name: &str) -> String {
+        if !self.bundle_id.is_empty() {
+            return self.bundle_id.clone();
+        }
+        let tail: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        format!("dev.scrap.{}", if tail.is_empty() { "game" } else { &tail })
+    }
 }
 
 /// The game's window, clock, first scene and language.
@@ -249,6 +308,7 @@ impl GameSettings {
     /// project in development ([`data_file`]). What does not read is an
     /// error in words, not the defaults quietly.
     pub fn load(dev_root: &str) -> Result<(String, GameSettings), String> {
+        route_to_build(dev_root);
         let path = data_file(dev_root, FILE);
         let text =
             crate::files::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -395,6 +455,7 @@ impl Project {
             modules: modules
                 .map(|(listed, _)| listed.to_vec())
                 .unwrap_or_default(),
+            build: BuildSettings::default(),
         };
         let pretty = ron::ser::PrettyConfig::new();
         let text = ron::ser::to_string_pretty(&manifest, pretty)

@@ -21,7 +21,8 @@ pub const USER_DIR_VAR: &str = "SCRAP_USER_DIR";
 /// Where a game keeps the player's own files, made if missing: the
 /// platform's per-user data folder with the game's name under it.
 /// `$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application
-/// Support` on macOS, `%APPDATA%` on Windows — or `SCRAP_USER_DIR`.
+/// Support` on macOS (and in an iOS app's container), `%APPDATA%` on
+/// Windows — or `SCRAP_USER_DIR`.
 pub fn user_dir(game: &str) -> std::io::Result<PathBuf> {
     // A browser has no folders: the player's files are kept in memory
     // under this path, and the web host keeps them between visits.
@@ -35,7 +36,9 @@ pub fn user_dir(game: &str) -> std::io::Result<PathBuf> {
     }
     let base = if cfg!(windows) {
         env("APPDATA")
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(any(target_os = "macos", target_os = "ios")) {
+        // On iOS HOME is the app's own container: its Application Support
+        // is backed up with the app and never shown to the player.
         env("HOME").map(|h| h.join("Library/Application Support"))
     } else {
         env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))

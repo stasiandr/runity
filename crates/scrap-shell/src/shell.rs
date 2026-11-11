@@ -49,10 +49,10 @@ use scrap_core::web_time::{Duration, Instant};
 mod embedded;
 mod frame_debugger;
 /// A running game driven from outside (`SCRAP_CONTROL`).
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub mod control;
 /// Programs of the control's commands, in Rhai (`script`).
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub mod script;
 /// A window the caller's own loop draws into.
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
@@ -67,6 +67,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::gpu::Gpu;
+use crate::touch_pad::TouchMode;
 use crate::input::{Input, InputEvent, Key, MouseButton};
 use crate::render::{Frame, Renderer};
 use crate::surface::{Surface, SurfaceError};
@@ -84,10 +85,22 @@ pub struct WindowConfig {
     /// turns it off, as does a target with no threads.
     pub render_thread: bool,
     /// Sticks and buttons drawn on the screen and fed in as a pad's
-    /// ([`crate::touch_pad`]), while the pointer is captured. The
-    /// standard layout on iOS and Android and with `SCRAP_TOUCH_PAD=1`;
-    /// none elsewhere. A game lays out its own or turns it off.
+    /// ([`crate::touch_pad`]): a first-person game's while the pointer is
+    /// captured ([`TouchLayout::standard`](crate::touch_pad::TouchLayout::standard)),
+    /// or a whole gamepad on a slot of its own while touch is the device
+    /// in use ([`TouchLayout::gamepad`](crate::touch_pad::TouchLayout::gamepad);
+    /// `SCRAP_TOUCH_PAD=pad`). The standard layout on iOS and Android and
+    /// with `SCRAP_TOUCH_PAD=1`; none elsewhere. A game lays out its own or
+    /// turns it off.
     pub touch_pad: Option<crate::touch_pad::TouchLayout>,
+    /// On a screen the platform gives whole (a phone's): the game's picture
+    /// kept to this aspect (width over height, `16.0 / 9.0`), as large as
+    /// fits inside the safe area and centred in it, black round it — out
+    /// of a notch's way and the shape a game laid out for a window
+    /// expects. The game is told that rectangle's size and draws as in a
+    /// window of it; its views and overlay are moved there, and the touch
+    /// pad has the whole screen. None: the whole screen is the game's.
+    pub letterbox: Option<f32>,
     /// Where the control socket listens (`control`): a running game
     /// driven from outside its window — shots, input, pause and step, the
     /// game's own commands. `SCRAP_CONTROL=1` (or a path) by default;
@@ -97,9 +110,9 @@ pub struct WindowConfig {
 
 /// The control socket `SCRAP_CONTROL` asks for, where there can be one.
 fn control_from_env() -> Option<std::path::PathBuf> {
-    #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     return std::env::var(control::CONTROL_VAR).ok().filter(|v| v != "0").map(|v| control::socket_for(&v));
-    #[cfg(any(target_arch = "wasm32", target_os = "ios", target_os = "android"))]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     None
 }
 
@@ -117,12 +130,13 @@ impl Default for WindowConfig {
             render_thread: cfg!(not(target_arch = "wasm32"))
                 && std::env::var("SCRAP_RENDER_THREAD").map_or(true, |v| v != "0"),
             touch_pad: match std::env::var("SCRAP_TOUCH_PAD").as_deref() {
-                Ok("1") => true,
-                Ok(_) => false,
-                Err(_) => cfg!(any(target_os = "ios", target_os = "android")),
-            }
-            .then(crate::touch_pad::TouchLayout::standard),
+                Ok("1") => Some(crate::touch_pad::TouchLayout::standard()),
+                Ok("pad") => Some(crate::touch_pad::TouchLayout::gamepad()),
+                Ok(_) => None,
+                Err(_) => cfg!(any(target_os = "ios", target_os = "android")).then(crate::touch_pad::TouchLayout::standard),
+            },
             control: control_from_env(),
+            letterbox: None,
         }
     }
 }
@@ -164,11 +178,16 @@ pub struct Context<'a> {
     pub commands: &'a [String],
     /// Whether the window fills its screen now ([`Context::set_fullscreen`]).
     pub fullscreen: bool,
+    /// What of the drawable a notch, rounded corners or a home bar cover:
+    /// insets in pixels from its edges (left, top, right, bottom). Zero
+    /// where the whole window is the game's (a desktop's, a page's).
+    pub safe_area: glam::Vec4,
     /// Input the game asked to be played ([`Context::inject`]).
     injected: Vec<(u32, InputEvent)>,
     quit: bool,
     capture: Option<bool>,
     fullscreen_asked: Option<bool>,
+    keyboard_asked: Option<bool>,
     asked: TimeAsk,
 }
 
@@ -228,6 +247,15 @@ impl Context<'_> {
         self.fullscreen_asked = Some(on);
     }
 
+    /// Bring the platform's keyboard onto the screen while the game wants
+    /// text typed (a name, a room's code), or put it away: on a phone,
+    /// whose keyboard is only on the glass. What is typed comes in as a
+    /// keyboard's would — `InputEvent::Text`, Backspace, Enter as "\n".
+    /// Nothing where a keyboard is always at hand.
+    pub fn show_keyboard(&mut self, on: bool) {
+        self.keyboard_asked = Some(on);
+    }
+
     /// Play `event` as if a device sent it, `after` frames from now (0:
     /// before the next frame's steps): what a control command that acts
     /// like a player (`Game::control`) presses and lets go with. Only
@@ -266,12 +294,19 @@ pub trait Game {
     /// carry it across.
     fn patched(&mut self, _ctx: &mut Context) {}
 
+    /// The app went to the background (`false`: a phone's home gesture, a
+    /// call, the screen locked) or came back (`true`). Between the two
+    /// nothing is stepped or drawn and the clock does not run; a game
+    /// pauses its play, saves, quiets its sound, tells an online partner.
+    /// Only where the platform sends the app away (iOS, Android).
+    fn active(&mut self, _active: bool) {}
+
     /// A request from the control socket (`SCRAP_CONTROL`, module
     /// `control`) that the shell does not answer itself: the game's own —
     /// its state, its cheats, a player's move. Called during the frame,
     /// after [`Game::frame`]; [`control::Answer::Pending`] is asked again
     /// next frame. Unknown by default.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn control(&mut self, _ctx: &mut Context, _cmd: &str, _args: &control::Value) -> control::Answer {
         control::Answer::Unknown
     }
@@ -398,19 +433,19 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
                 None
             }
         },
-        #[cfg(target_arch = "wasm32")]
         page_slots: scrap_core::input::PadSlots::new(),
         captured: false,
         wants_capture: false,
         focused: true,
         touch_pad: None,
-        #[cfg(target_os = "android")]
+        keyboard_shown: false,
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         suspended: false,
         debugger: Default::default(),
         frozen: None,
         #[cfg(not(target_arch = "wasm32"))]
         frame_log: FrameLog::from_env(),
-        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         desk: None,
         recent: Default::default(),
         scale_before_pause: 1.0,
@@ -439,6 +474,46 @@ pub struct Running {
     drawing: Option<Box<Drawing>>,
     #[cfg(not(target_arch = "wasm32"))]
     render: Option<RenderThread>,
+    /// [`WindowConfig::letterbox`]: the game's rectangle of the screen, in
+    /// pixels (x, y, width, height), this frame.
+    content: Option<(u32, u32, u32, u32)>,
+}
+
+/// The largest rectangle of `aspect` inside `screen` less the `safe`
+/// insets, centred in what the insets leave: x, y, width, height.
+pub fn letterbox(screen: (u32, u32), safe: glam::Vec4, aspect: f32) -> (u32, u32, u32, u32) {
+    let (x0, y0) = (safe.x.max(0.0), safe.y.max(0.0));
+    let w = (screen.0 as f32 - x0 - safe.z.max(0.0)).max(1.0);
+    let h = (screen.1 as f32 - y0 - safe.w.max(0.0)).max(1.0);
+    let (cw, ch) = if w / h > aspect { (h * aspect, h) } else { (w, w / aspect) };
+    let (cw, ch) = (cw.floor().max(1.0), ch.floor().max(1.0));
+    ((x0 + (w - cw) * 0.5).round() as u32, (y0 + (h - ch) * 0.5).round() as u32, cw as u32, ch as u32)
+}
+
+/// A frame made for a picture of `content`'s size, drawn into that
+/// rectangle of the screen: its views moved there (one view of its camera
+/// when it had none).
+fn letterboxed(mut frame: Frame, content: (u32, u32, u32, u32)) -> Frame {
+    use crate::render::{FrameView, ViewRect};
+    let (ox, oy, w, h) = content;
+    if frame.views.is_empty() {
+        frame.views.push(FrameView { camera: frame.camera, rect: ViewRect::Share { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }, draws: Vec::new() });
+    }
+    for view in &mut frame.views {
+        let (x, y, vw, vh) = view.rect.pixels((w, h));
+        view.rect = ViewRect::Pixels { x: x + ox, y: y + oy, width: vw, height: vh };
+    }
+    frame
+}
+
+/// A pointer's or a finger's place in the game's part of the screen, `at`
+/// being where that part begins ([`WindowConfig::letterbox`]).
+fn within(event: InputEvent, at: (f32, f32)) -> InputEvent {
+    match event {
+        InputEvent::MouseMoved { x, y } => InputEvent::MouseMoved { x: x - at.0, y: y - at.1 },
+        InputEvent::Touch { id, phase, x, y } => InputEvent::Touch { id, phase, x: x - at.0, y: y - at.1 },
+        other => other,
+    }
 }
 
 /// What a frame is drawn with: handed to the render thread and back.
@@ -542,8 +617,8 @@ struct Shell<G: Game> {
     /// Gamepads, and the player slot each is in. `None` where the platform
     /// has no way to ask — the game still runs, on keyboard and mouse.
     pads: Option<(gilrs::Gilrs, scrap_core::input::PadSlots)>,
-    /// The page's pad's slot where there are no `pads` to share theirs.
-    #[cfg(target_arch = "wasm32")]
+    /// The page's pad's slot (or the glass's, [`TouchMode::Pad`](crate::touch_pad::TouchMode))
+    /// where there are no `pads` to share theirs.
     page_slots: scrap_core::input::PadSlots,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
@@ -554,9 +629,13 @@ struct Shell<G: Game> {
     focused: bool,
     /// The pad on the screen, where there is one.
     touch_pad: Option<crate::touch_pad::TouchPad>,
-    /// On Android, between the Activity going to the background and
-    /// coming back: its window is gone, and nothing is drawn.
-    #[cfg(target_os = "android")]
+    /// The platform's keyboard is on the screen ([`Context::show_keyboard`]):
+    /// its keys are typing, not a keyboard taking over from the glass's pad.
+    keyboard_shown: bool,
+    /// On a phone, between the app going to the background and coming
+    /// back: nothing is stepped or drawn (Android's window is gone; iOS
+    /// lets no GPU work from the background).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     suspended: bool,
     /// The Frame Debugger's window (F9), and the frame it takes apart.
     debugger: frame_debugger::Panel,
@@ -564,7 +643,7 @@ struct Shell<G: Game> {
     #[cfg(not(target_arch = "wasm32"))]
     frame_log: Option<FrameLog>,
     /// The control socket and what it asked for (`control`).
-    #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     desk: Option<control::Desk>,
     /// The last frames: interval ms, steps, GPU ms — `perf` on the socket.
     recent: std::collections::VecDeque<(f32, u32, f32)>,
@@ -589,17 +668,19 @@ impl<G: Game> Shell<G> {
             time,
             input,
             gpu: &state.gpu,
-            size: (drawing.surface.width(), drawing.surface.height()),
+            size: state.content.map_or((drawing.surface.width(), drawing.surface.height()), |c| (c.2, c.3)),
             renderer: &mut drawing.renderer,
             overlay: &mut drawing.overlay,
             cursor_captured: captured,
             loop_times,
             commands: &[],
             fullscreen: !SCREEN_IS_GIVEN && state.window.fullscreen().is_some(),
+            safe_area: safe_area(&state.window),
             injected: Vec::new(),
             quit: false,
             capture: None,
             fullscreen_asked: None,
+            keyboard_asked: None,
             asked: TimeAsk::default(),
         }
     }
@@ -732,7 +813,7 @@ impl<G: Game> Shell<G> {
     /// steps are owed, draw once — with a render thread, the next frame's
     /// steps beside the drawing.
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if self.suspended {
             return;
         }
@@ -768,6 +849,12 @@ impl<G: Game> Shell<G> {
             self.draw_debugged(size);
             return;
         }
+        // The whole screen, and the game's part of it (`letterbox`): what
+        // the game is told and draws for from here on is its part.
+        let screen = size;
+        state.content = self.config.letterbox.map(|aspect| letterbox(screen, safe_area(&state.window), aspect));
+        let content = state.content;
+        let size = content.map_or(screen, |c| (c.2, c.3));
 
         let mut quit = false;
         let turn_began = Instant::now();
@@ -786,7 +873,7 @@ impl<G: Game> Shell<G> {
         }
         // The control socket: what came, the input due, the shell's own
         // commands answered; the game's are asked after its frame.
-        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
             if let Some(desk) = self.desk.as_mut() {
                 quit |= desk_before(desk, &mut self.input, &mut self.time, &mut self.scale_before_pause, self.forced_steps, &self.recent, &self.config.title, size);
@@ -807,7 +894,7 @@ impl<G: Game> Shell<G> {
             self.time.ask(asked);
         }
         // Paused from the socket: only the steps it asked for.
-        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         if let Some(desk) = self.desk.as_mut().filter(|d| d.paused && d.steps_owed > 0) {
             let owed = std::mem::take(&mut desk.steps_owed);
             for _ in 0..owed {
@@ -831,15 +918,20 @@ impl<G: Game> Shell<G> {
         let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
         let game = &mut self.game;
         let frame = hot(|| game.frame(&mut ctx));
+        let frame = match content {
+            Some(content) => letterboxed(frame, content),
+            None => frame,
+        };
         quit |= ctx.quit;
         wanted = ctx.capture.or(wanted);
         let fullscreen = ctx.fullscreen_asked;
+        let keyboard = ctx.keyboard_asked;
         let mut injected = std::mem::take(&mut ctx.injected);
         let asked = ctx.asked;
         self.time.ask(asked);
         let frame_ms = start.elapsed().as_secs_f32() * 1e3;
         self.loop_times.record("frame", start.elapsed());
-        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
             // The game's own commands, with the frame's context.
             let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
@@ -863,27 +955,40 @@ impl<G: Game> Shell<G> {
                 state.window.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
             }
         }
+        // A phone's keyboard on the glass (UIKit's first responder).
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        if let Some(on) = keyboard {
+            state.window.set_ime_allowed(on);
+            self.keyboard_shown = on;
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        let _ = keyboard;
         if let Some(on) = wanted.map(|on| on && self.focused).filter(|on| *on != self.captured) {
             set_captured(&state.window, on);
             self.captured = on;
-            if let (false, Some(pad)) = (on, self.touch_pad.as_mut()) {
+            if let Some(pad) = self.touch_pad.as_mut().filter(|p| !on && p.mode() == TouchMode::Look) {
                 for event in pad.release_all() {
                     self.input.handle(&event);
                 }
             }
         }
-        // The pad on the screen over the game's overlay, while playing.
-        let padded = match self.touch_pad.as_mut() {
-            Some(pad) if self.captured => {
-                pad.resize(
-                    glam::Vec2::new(size.0 as f32, size.1 as f32),
-                    state.window.scale_factor() as f32,
-                );
-                let mut ui = self.game.overlay().clone();
-                pad.draw(&mut ui);
-                Some(ui)
+        // The pad on the screen over the game's overlay: while playing
+        // (`Look`), or while touch is the device in use (`Pad`).
+        // The game's overlay moved into its part of a letterboxed screen.
+        let pad_on = self.touch_pad.as_ref().is_some_and(|pad| (pad.mode() == TouchMode::Look && self.captured) || (pad.mode() == TouchMode::Pad && pad.shown()));
+        let padded = if pad_on || state.content.is_some() {
+            let mut ui = self.game.overlay().clone();
+            if let Some((x, y, _, _)) = state.content {
+                ui.shift(x as f32, y as f32);
             }
-            _ => None,
+            if let Some(pad) = self.touch_pad.as_mut().filter(|_| pad_on) {
+                pad.resize(glam::Vec2::new(screen.0 as f32, screen.1 as f32), state.window.scale_factor() as f32);
+                pad.set_safe_area(safe_area(&state.window));
+                pad.draw(&mut ui);
+            }
+            Some(ui)
+        } else {
+            None
         };
 
         let mut times = Vec::with_capacity(3);
@@ -1053,7 +1158,7 @@ impl<G: Game> Shell<G> {
 /// The control socket at the start of a turn: requests taken in, the
 /// input due played, shots written, the shell's own commands answered.
 /// Whether one asked to quit.
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 #[allow(clippy::too_many_arguments)]
 fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, scale_before_pause: &mut f32, forced_steps: u64, recent: &std::collections::VecDeque<(f32, u32, f32)>, title: &str, size: (u32, u32)) -> bool {
     use control::{Until, Value};
@@ -1292,7 +1397,7 @@ fn desk_before(desk: &mut control::Desk, input: &mut Input, time: &mut Time, sca
 
 /// The game's commands waiting on the desk, asked with the frame's
 /// context; answered, failed, or kept for the next frame.
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn desk_game<G: Game>(desk: &mut control::Desk, game: &mut G, ctx: &mut Context) {
     use control::{Answer, Until};
     for r in std::mem::take(&mut desk.waiting) {
@@ -1370,13 +1475,40 @@ impl<G: Game> Shell<G> {
     }
 
     /// The device and the window are there: the game starts.
+    /// What the glass's pad said, as a pad of its own: its slot taken or
+    /// left, its sticks and buttons on that slot.
+    fn glass(&mut self, said: Vec<PagePad>) {
+        let slots = match self.pads.as_mut() {
+            Some((_, slots)) => slots,
+            None => &mut self.page_slots,
+        };
+        let events: Vec<InputEvent> = said.into_iter().flat_map(|s| page_pad_events(slots, s)).collect();
+        for event in events {
+            self.input.handle(&event);
+        }
+    }
+
+    /// Another device is used: the glass's pad lets go and leaves its slot.
+    fn hide_glass(&mut self) {
+        let Some(pad) = self.touch_pad.as_mut().filter(|p| p.mode() == TouchMode::Pad && p.shown()) else {
+            return;
+        };
+        let mut said: Vec<PagePad> = pad.show(false).into_iter().map(PagePad::Event).collect();
+        said.push(PagePad::Shown(false));
+        self.glass(said);
+    }
+
     fn begin(&mut self, mut state: Running) {
-        #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         if let Some(socket) = self.config.control.clone() {
             match control::Desk::open(&socket, &self.config.title) {
                 Ok(desk) => self.desk = Some(desk),
                 Err(e) => eprintln!("control {}: {e}", socket.display()),
             }
+        }
+        // The glass's pad is a pad plugged in from the start.
+        if self.touch_pad.as_ref().is_some_and(|p| p.mode() == TouchMode::Pad && p.shown()) {
+            self.glass(vec![PagePad::Shown(true)]);
         }
         let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured, &self.loop_times);
         self.game.start(&mut ctx);
@@ -1548,6 +1680,15 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // iOS: back in the foreground. The view and its layer stayed (UIKit
+        // keeps them), so the surface is the same; the clock starts again
+        // from here rather than counting the time away.
+        #[cfg(target_os = "ios")]
+        if std::mem::take(&mut self.suspended) {
+            self.time.resume_clock();
+            self.game.active(true);
+            return;
+        }
         // Called again after the window is destroyed and recreated, which on
         // Android happens whenever the app comes back to the foreground.
         // Android's is a new window under the same `Window`: the surface
@@ -1560,6 +1701,8 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                     Err(e) => eprintln!("no surface on the window come back: {e}"),
                 }
             }
+            self.time.resume_clock();
+            self.game.active(true);
             return;
         }
         if self.state.is_some() || self.proxy.is_none() {
@@ -1585,6 +1728,18 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             attributes = attributes
                 .with_position(winit::dpi::LogicalPosition::new(x, y))
                 .with_inner_size(winit::dpi::LogicalSize::new(width, height));
+        }
+        // A phone's game owns the screen: no status bar, the home bar
+        // fading until touched, and a swipe from an edge goes to the game
+        // first (a second swipe to the system), as a thumb on a stick
+        // near the edge would otherwise leave the app.
+        #[cfg(target_os = "ios")]
+        {
+            use winit::platform::ios::{ScreenEdge, WindowAttributesExtIOS};
+            attributes = attributes
+                .with_prefers_status_bar_hidden(true)
+                .with_prefers_home_indicator_hidden(true)
+                .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL);
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1662,6 +1817,33 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
     #[cfg(target_os = "android")]
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.suspended = self.state.is_some();
+        if self.suspended {
+            self.game.active(false);
+        }
+    }
+
+    /// iOS: the app is going to the background (or a call, Control
+    /// Centre, the lock came over it). No GPU work may be sent from the
+    /// background, so nothing is drawn — nor stepped — until
+    /// [`Self::resumed`]; fingers on the glass are let go.
+    #[cfg(target_os = "ios")]
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.state.is_none() || self.suspended {
+            return;
+        }
+        self.suspended = true;
+        if let Some(pad) = self.touch_pad.as_mut() {
+            let glass = pad.mode() == TouchMode::Pad;
+            let events = pad.release_all();
+            if glass {
+                self.glass(events.into_iter().map(PagePad::Event).collect());
+            } else {
+                for event in events {
+                    self.input.handle(&event);
+                }
+            }
+        }
+        self.game.active(false);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1684,7 +1866,7 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                 if on != self.captured {
                     set_captured(&state.window, on);
                     self.captured = on;
-                    if let (false, Some(pad)) = (on, self.touch_pad.as_mut()) {
+                    if let Some(pad) = self.touch_pad.as_mut().filter(|p| !on && p.mode() == TouchMode::Look) {
                         for event in pad.release_all() {
                             self.input.handle(&event);
                         }
@@ -1706,12 +1888,32 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                     winit::event::TouchPhase::Cancelled => crate::input::TouchPhase::Cancelled,
                 };
                 let (x, y) = (touch.location.x as f32, touch.location.y as f32);
-                for event in pad.touch(touch.id, phase, x, y, self.captured) {
-                    self.input.handle(&event);
+                let glass = pad.mode() == TouchMode::Pad;
+                // The glass's pad back with a touch, on its slot again.
+                let mut said = Vec::new();
+                if glass && !pad.shown() && phase == crate::input::TouchPhase::Started {
+                    pad.show(true);
+                    said.push(PagePad::Shown(true));
+                }
+                let events = pad.touch(touch.id, phase, x, y, self.captured);
+                let at = state.content.map_or((0.0, 0.0), |c| (c.0 as f32, c.1 as f32));
+                if glass {
+                    said.extend(events.into_iter().map(PagePad::Event));
+                    self.glass(said);
+                } else {
+                    for event in events {
+                        self.input.handle(&within(event, at));
+                    }
                 }
             }
             other => {
-                for event in translate(&other) {
+                let at = state.content.map_or((0.0, 0.0), |c| (c.0 as f32, c.1 as f32));
+                let events: Vec<InputEvent> = translate(&other).into_iter().map(|e| within(e, at)).collect();
+                // A key: the glass's pad steps aside (a touch brings it back).
+                if !self.keyboard_shown && events.iter().any(|e| matches!(e, InputEvent::KeyDown(_))) {
+                    self.hide_glass();
+                }
+                for event in events {
                     self.input.handle(&event);
                 }
             }
@@ -1754,22 +1956,51 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
                     self.input.handle(&InputEvent::PadConnected(slot));
                 }
             }
+            let mut pressed = false;
             while let Some(event) = pads.next_event() {
                 let device = usize::from(event.id) as u64;
+                pressed |= matches!(event.event, gilrs::EventType::ButtonPressed(..));
                 for event in pad_events(slots, device, event.event) {
                     self.input.handle(&event);
                 }
             }
+            // A real pad in the hands: the glass's steps aside.
+            if pressed {
+                self.hide_glass();
+            }
         }
         // Asking for a redraw here rather than drawing here is what keeps the
         // frame on the compositor's schedule instead of ahead of it.
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if self.suspended {
             return;
         }
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
+    }
+}
+
+/// The window's safe area as insets in pixels from its edges (left, top,
+/// right, bottom): on iOS winit's inner rectangle is the safe area and the
+/// outer the whole screen; elsewhere the two are the same window.
+fn safe_area(window: &Window) -> glam::Vec4 {
+    #[cfg(target_os = "ios")]
+    {
+        let outer = window.outer_size();
+        let inner = window.inner_size();
+        let at = window.inner_position().unwrap_or_default();
+        let outer_at = window.outer_position().unwrap_or_default();
+        let left = (at.x - outer_at.x).max(0) as f32;
+        let top = (at.y - outer_at.y).max(0) as f32;
+        let right = (outer.width as f32 - inner.width as f32 - left).max(0.0);
+        let bottom = (outer.height as f32 - inner.height as f32 - top).max(0.0);
+        glam::Vec4::new(left, top, right, bottom)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = window;
+        glam::Vec4::ZERO
     }
 }
 
@@ -1788,6 +2019,7 @@ fn running(gpu: Gpu, window: Arc<Window>) -> Result<Running, String> {
         })),
         #[cfg(not(target_arch = "wasm32"))]
         render: None,
+        content: None,
     })
 }
 
@@ -1888,8 +2120,7 @@ pub const PAGE_PAD: u64 = u64::MAX;
 
 /// The page's pad as a pad of its own: a slot taken when it comes (or at
 /// its first touch), its sticks and buttons on that slot, the slot left
-/// when it goes.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+/// when it goes. The glass's pad on a phone ([`TouchMode::Pad`]) is one too.
 fn page_pad_events(slots: &mut scrap_core::input::PadSlots, said: PagePad) -> Vec<InputEvent> {
     match said {
         PagePad::Shown(true) => match slots.slot(PAGE_PAD) {
@@ -2143,5 +2374,25 @@ mod placement_tests {
         assert_eq!(placement("40,60,640"), None);
         assert_eq!(placement("40,60,640,360,1"), None);
         assert_eq!(placement("left,top,640,360"), None);
+    }
+}
+
+#[cfg(test)]
+mod letterbox_tests {
+    use super::letterbox;
+
+    /// An iPhone 15 held sideways: 2556 × 1179 pixels, the island's 59
+    /// points (177 px) each side, the home bar's 21 (63 px) below. A 16:9
+    /// picture is as tall as the safe area lets it be and centred in it.
+    #[test]
+    fn a_letterbox_is_the_largest_of_its_aspect_inside_the_safe_area() {
+        let (x, y, w, h) = letterbox((2556, 1179), glam::Vec4::new(177.0, 0.0, 177.0, 63.0), 16.0 / 9.0);
+        assert_eq!((w, h), (1984, 1116));
+        assert_eq!(y, 0);
+        assert_eq!(x, 286);
+        // A screen narrower than the aspect: as wide as it, centred down.
+        let (x, y, w, h) = letterbox((1200, 1600), glam::Vec4::ZERO, 16.0 / 9.0);
+        assert_eq!((x, w, h), (0, 1200, 675));
+        assert_eq!(y, 463);
     }
 }

@@ -10,5 +10,9 @@ repository.workspace = true
 [dependencies]
 scrap-core = { path = "../scrap-core" }
 scrap-net = { path = "../scrap-net" }
-steamworks = "0.13"
 tracing = "0.1.44"
+
+# The SDK only where a Steam client runs; a phone's or a browser's build
+# gets the same API without it (src/absent.rs).
+[target.'cfg(not(any(target_os = "ios", target_os = "android", target_arch = "wasm32")))'.dependencies]
+steamworks = "0.13"

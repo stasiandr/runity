@@ -18,7 +18,7 @@ mod ios;
 pub mod web;
 
 pub use shell::{run, set_canvas_height_cap, Game, StepContext, WindowConfig};
-pub use touch_pad::{TouchButton, TouchLayout, TouchPad};
+pub use touch_pad::{Corner, Glyph, Shape, TouchButton, TouchLayout, TouchMode, TouchPad};
 
 // The core, the GPU, the render and the overlay, under the names this
 // module's code knows them by.

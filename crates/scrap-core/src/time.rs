@@ -127,6 +127,13 @@ impl Time {
         self.advance(raw);
     }
 
+    /// Start the clock again from the next tick, as if it were the first:
+    /// the time an app spent in the background (or a window asleep) is
+    /// not a frame's delta.
+    pub fn resume_clock(&mut self) {
+        self.last = None;
+    }
+
     /// Advance by a delta given directly — for tests, for recorded runs, and
     /// for headless work where wall-clock time is the wrong clock entirely.
     pub fn advance(&mut self, raw_delta: f32) {

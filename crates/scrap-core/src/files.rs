@@ -35,6 +35,43 @@ pub fn mount(root: impl AsRef<Path>, files: impl IntoIterator<Item = (String, Ve
     }
 }
 
+/// Folders read from another folder on disk: `(from, to)`.
+fn routes() -> &'static Mutex<Vec<(PathBuf, PathBuf)>> {
+    static ROUTES: OnceLock<Mutex<Vec<(PathBuf, PathBuf)>>> = OnceLock::new();
+    ROUTES.get_or_init(Default::default)
+}
+
+/// Read the files under `from` from `to` on disk from now on: a built
+/// game's project paths (its `CARGO_MANIFEST_DIR`, which only the machine
+/// it was compiled on has) answered from the `data/` it shipped with — an
+/// iPhone app's bundle, a desktop build's folder. Reads only; what is
+/// written goes where it is told.
+pub fn route(from: impl AsRef<Path>, to: impl AsRef<Path>) {
+    let (from, to) = (normal(from.as_ref()), normal(to.as_ref()));
+    if from == to {
+        return;
+    }
+    let mut routes = routes().lock().unwrap();
+    routes.retain(|(f, _)| *f != from);
+    routes.push((from, to));
+}
+
+/// Where `path` is read on disk: under a [`route`]'s `to` if it is under
+/// its `from`.
+fn routed(path: &Path) -> std::borrow::Cow<'_, Path> {
+    let routes = routes().lock().unwrap();
+    if routes.is_empty() {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    let n = normal(path);
+    for (from, to) in routes.iter() {
+        if let Ok(rest) = n.strip_prefix(from) {
+            return std::borrow::Cow::Owned(to.join(rest));
+        }
+    }
+    std::borrow::Cow::Borrowed(path)
+}
+
 /// `a/./b/../c` as `a/c`: the same file however it was spelled.
 fn normal(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -71,7 +108,7 @@ pub fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     #[cfg(target_arch = "wasm32")]
     return Err(not_found(path));
     #[cfg(not(target_arch = "wasm32"))]
-    std::fs::read(path)
+    std::fs::read(routed(path))
 }
 
 /// A file's text.
@@ -167,7 +204,7 @@ pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
 pub fn is_file(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
     in_memory(path, |map, p| map.contains_key(p))
-        || (!cfg!(target_arch = "wasm32") && path.is_file())
+        || (!cfg!(target_arch = "wasm32") && routed(path).is_file())
 }
 
 /// Whether a folder is there: in memory, whether any file is under it.
@@ -175,7 +212,7 @@ pub fn is_dir(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
     in_memory(path, |map, p| {
         map.range(p.to_path_buf()..).take_while(|(k, _)| k.starts_with(p)).any(|(k, _)| k != p)
-    }) || (!cfg!(target_arch = "wasm32") && path.is_dir())
+    }) || (!cfg!(target_arch = "wasm32") && routed(path).is_dir())
 }
 
 /// Whether anything is there.
@@ -203,9 +240,10 @@ pub fn list(path: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
     });
     #[cfg(not(target_arch = "wasm32"))]
     if out.is_empty() {
-        out = std::fs::read_dir(path)?
+        // Named under the folder asked for, wherever it was read from.
+        out = std::fs::read_dir(routed(path))?
             .flatten()
-            .map(|e| e.path())
+            .map(|e| path.join(e.file_name()))
             .collect();
     }
     if out.is_empty() && !is_dir(path) {
@@ -248,12 +286,28 @@ pub fn modified(path: impl AsRef<Path>) -> Option<SystemTime> {
     if cfg!(target_arch = "wasm32") || in_memory(path.as_ref(), |map, p| map.contains_key(p)) {
         return None;
     }
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    std::fs::metadata(routed(path.as_ref())).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_routed_folder_is_read_from_another_on_disk() {
+        let dir = std::env::temp_dir().join(format!("scrap-route-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("data/content")).unwrap();
+        std::fs::write(dir.join("data/content/a.ron"), "(a: 1)").unwrap();
+        let home = Path::new("/nowhere/compiled-here");
+        route(home, dir.join("data"));
+        assert_eq!(read_to_string(home.join("content/a.ron")).unwrap(), "(a: 1)");
+        assert!(is_file(home.join("content/./a.ron")) && is_dir(home.join("content")));
+        assert_eq!(list(home.join("content")).unwrap(), vec![home.join("content/a.ron")]);
+        assert!(modified(home.join("content/a.ron")).is_some());
+        routes().lock().unwrap().retain(|(f, _)| f != home);
+        assert!(!is_file(home.join("content/a.ron")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn mounted_files_read_list_and_write_like_a_disk() {

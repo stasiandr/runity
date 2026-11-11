@@ -238,6 +238,7 @@ pub fn package_for(project: &Project, executable: &Path, out: &Path, platform: P
     let mut files: Vec<PathBuf> = scrap::layout::index(root).into_iter().map(|(path, _)| path).collect();
     files.extend(scrap::layout::data_files(root));
     files.extend(scrap::layout::walk(project.strings_dir()));
+    files.extend(shipped(root, &project.manifest().build.ship));
     files.sort();
     files.dedup();
     for path in files {
@@ -258,6 +259,46 @@ pub fn package_for(project: &Project, executable: &Path, out: &Path, platform: P
     );
     std::fs::copy(executable, &shipped)?;
     Ok(shipped)
+}
+
+/// The project's files that `scrap.ron`'s `build: (ship: [...])` names
+/// (`content/**/*.json`): what a game reads as it is, beyond the standard
+/// layout. Never `target/`, `.git` and the like, nor a `developers/` sandbox.
+pub fn shipped(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+    scrap::layout::walk(root)
+        .into_iter()
+        .filter(|path| {
+            let relative = scrap::layout::relative(root, path);
+            !scrap::layout::in_developers(&relative) && patterns.iter().any(|p| glob(p, &relative))
+        })
+        .collect()
+}
+
+/// Whether `path` (`a/b/c.json`) matches `pattern`: `*` is any run of
+/// characters within a name, `**` any folders (none too).
+pub fn glob(pattern: &str, path: &str) -> bool {
+    fn name(p: &[u8], s: &[u8]) -> bool {
+        match (p.first(), s.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => name(&p[1..], s) || (!s.is_empty() && name(p, &s[1..])),
+            (Some(a), Some(b)) if a == b => name(&p[1..], &s[1..]),
+            _ => false,
+        }
+    }
+    fn parts(p: &[&str], s: &[&str]) -> bool {
+        match (p.first(), s.first()) {
+            (None, None) => true,
+            (Some(&"**"), _) => parts(&p[1..], s) || (!s.is_empty() && parts(p, &s[1..])),
+            (Some(a), Some(b)) if name(a.as_bytes(), b.as_bytes()) => parts(&p[1..], &s[1..]),
+            _ => false,
+        }
+    }
+    let p: Vec<&str> = pattern.trim_matches('/').split('/').collect();
+    let s: Vec<&str> = path.split('/').collect();
+    parts(&p, &s)
 }
 
 /// A file of the project into `data`, at the same path.
@@ -288,6 +329,23 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ship_tests {
+    use super::glob;
+
+    #[test]
+    fn ship_patterns_match_names_and_folders() {
+        assert!(glob("content/**/*.json", "content/a/b/kit.json"));
+        assert!(glob("content/**/*.json", "content/kit.json"));
+        assert!(!glob("content/**/*.json", "content/a/kit.glb"));
+        assert!(glob("content/game/ui/**/*.png", "content/game/ui/icons/x.png"));
+        assert!(!glob("content/game/ui/**/*.png", "content/game/voxel/x.png"));
+        assert!(glob("content/**/palette*.png", "content/game/voxel/palette_crypt.png"));
+        assert!(glob("config/input.ron", "config/input.ron"));
+        assert!(!glob("config/*.ron", "config/a/input.ron"));
+    }
 }
 
 #[cfg(test)]

@@ -159,6 +159,26 @@ impl Ui {
         self.quads.is_empty() && self.texts.is_empty()
     }
 
+    /// Move everything by `dx`, `dy` pixels: an interface laid out for a
+    /// picture that the screen shows away from its corner (a phone's
+    /// letterbox).
+    pub fn shift(&mut self, dx: f32, dy: f32) {
+        for q in &mut self.quads {
+            q.x += dx;
+            q.y += dy;
+        }
+        for t in &mut self.texts {
+            t.x += dx;
+            t.y += dy;
+            if let Some(c) = t.clip.as_mut() {
+                *c = [c[0] + dx, c[1] + dy, c[2] + dx, c[3] + dy];
+            }
+        }
+        for c in &mut self.clips {
+            *c = [c[0] + dx, c[1] + dy, c[2] + dx, c[3] + dy];
+        }
+    }
+
     pub fn quad(&mut self, quad: Quad) -> &mut Self {
         let Some(&[left, top, right, bottom]) = self.clips.last() else {
             self.quads.push(quad);

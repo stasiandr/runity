@@ -2,6 +2,12 @@
 //! friends and peer-to-peer through NAT, as one more transport of the
 //! network module ([`steam::Steam`]).
 
+/// The SDK where Steam runs (Windows, macOS, Linux); elsewhere the same
+/// API, there being no Steam ([`Steam::init`] says so).
+#[cfg(not(any(target_os = "ios", target_os = "android", target_arch = "wasm32")))]
+pub mod steam;
+#[cfg(any(target_os = "ios", target_os = "android", target_arch = "wasm32"))]
+#[path = "absent.rs"]
 pub mod steam;
 
 pub use steam::Steam;

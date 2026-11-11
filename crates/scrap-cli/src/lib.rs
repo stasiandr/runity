@@ -5,6 +5,8 @@ pub mod add;
 pub mod build;
 pub mod check;
 pub mod hub;
+/// `scrap build --platform ios|ios-sim`: the game as an iPhone app (docs/ios.md).
+pub mod ios;
 pub mod lines;
 pub mod merge;
 pub mod migrate;

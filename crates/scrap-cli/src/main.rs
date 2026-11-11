@@ -3,7 +3,7 @@
 //! ```text
 //! scrap new <folder> [--name NAME] [--engine-path PATH] [--set bare|basic|full | --template NAME]
 //! scrap test  [PROJECT]  the game's tests, headless
-//! scrap run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]  the game
+//! scrap run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]] [--platform ios|ios-sim …]  the game
 //! scrap sync  [PROJECT]     build library/ from the sources
 //! scrap check [PROJECT]     what does not resolve, with file and entity
 //! scrap lines [PROJECT] [--out DIR]  what the dialogues say, a sheet per language
@@ -49,13 +49,17 @@ scrap new <folder> [--name NAME] [--engine-path PATH] [--set SET | --template NA
     listed in scrap.ron; add or drop one there and `scrap modules sync`.
     --template NAME copies one of the engine's example projects instead.
 scrap run [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]
+    [--platform ios|ios-sim [--device NAME|UDID] [--env K=V]... [--console]]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
     assets, shaders and configs reload while it runs; with --hot, so does its
     own Rust (under `dx serve --hotpatch`, from `cargo install dioxus-cli`).
     With --players 2 to 4, that many windows play together on this machine:
     player 1 hosts, the others join, each line marked with whose it is.
     --link poor|awful|latency=80,jitter=10,loss=3 plays the others over a
-    bad link on purpose.
+    bad link on purpose. --platform ios-sim: built as an app, installed on
+    the Simulator (--device NAME, else the booted one) and started; ios:
+    on the paired iPhone (--device NAME|UDID), signed for development.
+    --env K=V for its environment, --console its output here (Simulator).
 scrap relay [--port N]
     Run a relay (UDP, 47778 by default): players behind NAT in different
     homes play through it, in a room whose code the host reads out.
@@ -103,13 +107,17 @@ scrap modules [PROJECT]
 scrap modules sync [PROJECT]
     Write the engine's features in the game's Cargo.toml from the modules
     scrap.ron lists and what they stand on. `check` says when they part.
-scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform desktop|mobile|none]
+scrap build [PROJECT] [--out DIR] [--debug | --size] [--platform desktop|mobile|ios|ios-sim|none]
     Sync the library, compile the game, and lay out DIR (build/ in the
     project by default): the executable and data/ with scenes, prefabs and
     the built library. Sources stay home. Compiled for speed by default;
     --size for the smallest download (opt-level z, LTO, stripped); --debug
     quick to make. Textures are cooked into the GPU blocks of --platform:
     BC7 for desktop (the default), ASTC for mobile, none as imported.
+    ios / ios-sim: an app, build/ios[-sim]/<Title>.app (docs/ios.md) — for
+    a phone signed for development with the keychain's Apple Development
+    identity and a profile Xcode downloaded ([--identity NAME] [--profile
+    FILE] [--device UDID] to choose).
 scrap cook [PROJECT] --platform desktop|mobile|web --out DIR
     The library cooked for a platform into DIR, for a build made by other
     means: web cooks it twice (its sounds as IMA ADPCM), DIR/bc7 and DIR/astc, for a page to fetch
@@ -296,11 +304,26 @@ fn run() -> Result<ExitCode> {
             let mut scene: Option<String> = None;
             let mut count = 1u32;
             let mut link = String::new();
+            let mut apple: Option<scrap_cli::ios::Target> = None;
+            let mut device: Option<String> = None;
+            let mut env: Vec<(String, String)> = Vec::new();
+            let mut console = false;
             let mut args = rest.iter();
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--hot" => hot = true,
                     "--release" => release = true,
+                    "--platform" => {
+                        let name = args.next().context("--platform wants ios or ios-sim")?;
+                        apple = Some(scrap_cli::ios::Target::parse(name).with_context(|| format!("scrap run --platform ios|ios-sim, not {name}"))?);
+                    }
+                    "--device" => device = Some(args.next().context("--device wants a phone's or a Simulator's name or id")?.clone()),
+                    "--env" => {
+                        let pair = args.next().context("--env wants NAME=VALUE")?;
+                        let (k, v) = pair.split_once('=').context("--env wants NAME=VALUE")?;
+                        env.push((k.to_string(), v.to_string()));
+                    }
+                    "--console" => console = true,
                     "--scene" => scene = Some(args.next().context("--scene wants a name")?.clone()),
                     "--link" => {
                         link = args
@@ -322,6 +345,9 @@ fn run() -> Result<ExitCode> {
             let scene = scene
                 .map(|name| scrap_cli::run::scene(&project, &name))
                 .transpose()?;
+            if let Some(target) = apple {
+                return run_apple(&project, target, release, device, env, scene, console);
+            }
             if count > 1 {
                 if hot {
                     bail!("--hot patches one process; play together without it");
@@ -900,23 +926,84 @@ fn uses(rest: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `scrap run --platform ios|ios-sim`: built (debug unless `--release`),
+/// installed on the Simulator or the phone, started with `env`.
+fn run_apple(
+    project: &scrap::Project,
+    target: scrap_cli::ios::Target,
+    release: bool,
+    device: Option<String>,
+    mut env: Vec<(String, String)>,
+    scene: Option<String>,
+    console: bool,
+) -> Result<ExitCode> {
+    use scrap_cli::ios::{self, Target};
+    if let Some(name) = scene {
+        env.push((scrap_cli::run::SCENE_VAR.to_string(), name));
+    }
+    let profile = if release { scrap_cli::build::Profile::Speed } else { scrap_cli::build::Profile::Debug };
+    let folder = if target == Target::Device { "ios" } else { "ios-sim" };
+    let out = project.root().join("build").join(folder);
+    let ok = match target {
+        Target::Simulator => {
+            let app = ios::build(project, &out, profile, target, &ios::Signing::AdHoc)?;
+            let udid = ios::simulator(device.as_deref())?;
+            println!("built {}; on the Simulator {udid}", app.path.display());
+            ios::run_on_simulator(&app, &udid, &env, console)?
+        }
+        Target::Device => {
+            let (udid, name, reachable) = ios::phone(device.as_deref(), &out.join("work"))?;
+            let signing = ios::Signing::Automatic { identity: None, profile: None, device: Some(udid.clone()) };
+            let app = ios::build(project, &out, profile, target, &signing)?;
+            println!("built {}, signed {}", app.path.display(), app.signed);
+            if !reachable {
+                bail!(
+                    "{name} is paired but cannot be reached now: unlock it, keep it on the same Wi-Fi as this Mac (or cable it), Developer Mode on — then\n  xcrun devicectl device install app --device {udid} '{}'",
+                    app.path.display()
+                );
+            }
+            ios::run_on_phone(&app, &udid, &env)?
+        }
+    };
+    Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
 fn build(rest: &[String]) -> Result<ExitCode> {
     let mut at: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
     let mut profile = scrap_cli::build::Profile::Speed;
     let mut platform = scrap_cli::build::Platform::Desktop;
+    let mut apple: Option<scrap_cli::ios::Target> = None;
+    let (mut identity, mut provisioning, mut device): (Option<String>, Option<PathBuf>, Option<String>) = (None, None, None);
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
             "--debug" => profile = scrap_cli::build::Profile::Debug,
             "--size" => profile = scrap_cli::build::Profile::Size,
-            "--platform" => platform = scrap_cli::build::Platform::parse(args.next().context("--platform wants desktop, mobile or none")?)?,
+            "--platform" => {
+                let name = args.next().context("--platform wants desktop, mobile, ios, ios-sim or none")?;
+                match scrap_cli::ios::Target::parse(name) {
+                    Some(target) => apple = Some(target),
+                    None => platform = scrap_cli::build::Platform::parse(name)?,
+                }
+            }
+            "--identity" => identity = Some(args.next().context("--identity wants a signing identity's name or SHA-1")?.clone()),
+            "--profile" => provisioning = Some(args.next().context("--profile wants a .mobileprovision")?.into()),
+            "--device" => device = Some(args.next().context("--device wants a phone's name or UDID")?.clone()),
             other if other.starts_with('-') => bail!("unknown option {other}"),
             other => at.push(other.to_string()),
         }
     }
     let project = find(&at)?;
+    if let Some(target) = apple {
+        let folder = if target == scrap_cli::ios::Target::Device { "ios" } else { "ios-sim" };
+        let out = out.unwrap_or_else(|| project.root().join("build").join(folder));
+        let signing = scrap_cli::ios::Signing::Automatic { identity, profile: provisioning, device };
+        let app = scrap_cli::ios::build(&project, &out, profile, target, &signing)?;
+        println!("built {} ({}) into {}\n  signed {}", project.name(), app.bundle_id, app.path.display(), app.signed);
+        return Ok(ExitCode::SUCCESS);
+    }
     let out = out.unwrap_or_else(|| project.root().join("build"));
     let built = scrap_cli::build::build_for(&project, &out, profile, platform)?;
     for line in &built.stale {

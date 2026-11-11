@@ -135,10 +135,12 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 loop_times: &loop_times,
                 commands: &commands,
                 fullscreen: false,
+                safe_area: glam::Vec4::ZERO,
                 injected: Vec::new(),
                 quit: false,
                 capture: None,
                 fullscreen_asked: None,
+                keyboard_asked: None,
                 asked: TimeAsk::default(),
             }
         };
