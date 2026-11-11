@@ -68,18 +68,32 @@ pub struct Limits {
     /// Two see-through draws (neither writes depth) do not fight: whichever
     /// is drawn last is on top, every frame.
     pub skip_both_transparent: bool,
+    /// Faces nobody can see are left out: shared face whose front, a few
+    /// millimetres out, is inside a closed mesh (the end of a wall inside
+    /// the post at its corner, a neck inside its collar).
+    pub only_seen: bool,
+    /// Report faces back to back (one drawn from both sides). Closed meshes
+    /// meeting face to face hide both: only open sheets (a quad drawn from
+    /// both sides) show it, so it is off by default.
+    pub back_to_back: bool,
+    /// Faces turned this way (a unit direction, and the dot above which a
+    /// face counts as turned so) are never seen by the game's cameras —
+    /// the undersides, for a game whose cameras all look down — and are
+    /// left out.
+    pub unseen_facing: Option<(Vec3, f32)>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { coplanar: 0.002, near: 0.006, parallel: 0.999, min_area: 1e-4, skip_both_transparent: true }
+        Self { coplanar: 0.002, near: 0.006, parallel: 0.999, min_area: 1e-4, skip_both_transparent: true, only_seen: true, back_to_back: false, unseen_facing: None }
     }
 }
 
 /// What kind of fight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Kind {
-    /// The same mesh at the same place, drawn twice.
+    /// The same mesh at the same place drawn twice, looking different (the
+    /// same look twice is only wasted work).
     Duplicate,
     /// Faces facing the same way in (nearly) one plane.
     Coplanar,
@@ -122,6 +136,8 @@ pub fn overlaps<'g>(draws: &[Draw], geometry: impl Fn(MeshHandle) -> Option<&'g 
     // The same mesh at the same place: a duplicate, whatever its faces.
     let mut placed: HashMap<(MeshHandle, [i32; 12]), u32> = HashMap::new();
     let mut tris: Vec<Tri> = Vec::new();
+    // Each draw's triangles (a range of `tris`) and box.
+    let mut solids: Vec<(std::ops::Range<usize>, Vec3, Vec3)> = Vec::new();
     for (i, draw) in draws.iter().enumerate() {
         let Some(g) = geometry(draw.mesh) else { continue };
         let cols = draw.transform.to_cols_array();
@@ -130,12 +146,17 @@ pub fn overlaps<'g>(draws: &[Draw], geometry: impl Fn(MeshHandle) -> Option<&'g 
             (v * 1000.0).round() as i32
         });
         if let Some(&first) = placed.get(&(draw.mesh, key)) {
+            let earlier = &draws[first as usize];
+            if earlier.material == draw.material && earlier.texture == draw.texture {
+                continue;
+            }
             let area: f32 = g.triangles(draw.transform).map(|t| (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5).sum();
             let at = draw.transform.w_axis.xyz();
             out.insert((first, i as u32), Overlap { a: first as usize, b: i, kind: Kind::Duplicate, area, gap: 0.0, at, normal: Vec3::Y });
             continue;
         }
         placed.insert((draw.mesh, key), i as u32);
+        let first = tris.len();
         for p in g.triangles(draw.transform) {
             let n = (p[1] - p[0]).cross(p[2] - p[0]);
             let len = n.length();
@@ -145,7 +166,34 @@ pub fn overlaps<'g>(draws: &[Draw], geometry: impl Fn(MeshHandle) -> Option<&'g 
             let n = n / len;
             tris.push(Tri { draw: i as u32, p, n, d: n.dot(p[0]), min: p[0].min(p[1]).min(p[2]), max: p[0].max(p[1]).max(p[2]) });
         }
+        if tris.len() > first {
+            let (lo, hi) = tris[first..].iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), t| (a.min(t.min), b.max(t.max)));
+            solids.push((first..tris.len(), lo, hi));
+        }
     }
+    // Where each draw's box is, by two-metre squares: what a point may be
+    // inside of.
+    let mut boxes: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    for (k, (_, lo, hi)) in solids.iter().enumerate() {
+        for x in (lo.x / 2.0).floor() as i32..=(hi.x / 2.0).floor() as i32 {
+            for z in (lo.z / 2.0).floor() as i32..=(hi.z / 2.0).floor() as i32 {
+                boxes.entry((x, z)).or_default().push(k as u32);
+            }
+        }
+    }
+    let hidden = |at: Vec3| -> bool {
+        let Some(list) = boxes.get(&((at.x / 2.0).floor() as i32, (at.z / 2.0).floor() as i32)) else { return false };
+        // Off every axis and edge: a ray that meets edges counts twice.
+        let dir = Vec3::new(0.3127, 0.8413, 0.4402).normalize();
+        list.iter().any(|k| {
+            let (range, lo, hi) = &solids[*k as usize];
+            if at.cmplt(*lo).any() || at.cmpgt(*hi).any() {
+                return false;
+            }
+            let crossings = tris[range.clone()].iter().filter(|t| ray_hits(at, dir, &t.p)).count();
+            crossings % 2 == 1
+        })
+    };
     // Buckets: the facing's main axis (a face near a diagonal in both of
     // its), the plane's distance in steps of `near`, and a metre's square
     // of the plane's other two axes.
@@ -205,11 +253,14 @@ pub fn overlaps<'g>(draws: &[Draw], geometry: impl Fn(MeshHandle) -> Option<&'g 
                     if (t.min - Vec3::splat(gap0)).cmpgt(u.max).any() || (u.min - Vec3::splat(gap0)).cmpgt(t.max).any() {
                         continue;
                     }
+                    if limits.unseen_facing.is_some_and(|(away, k)| t.n.dot(away) > k) {
+                        continue;
+                    }
                     let dot = t.n.dot(u.n);
                     let same = dot > limits.parallel;
                     let (a, b) = (&draws[t.draw as usize], &draws[u.draw as usize]);
                     let both_faces = a.material.render_face == RenderFace::Both || b.material.render_face == RenderFace::Both;
-                    if !same && !(dot < -limits.parallel && both_faces) {
+                    if !same && !(limits.back_to_back && dot < -limits.parallel && both_faces) {
                         continue;
                     }
                     if limits.skip_both_transparent && a.material.surface == SurfaceType::Transparent && b.material.surface == SurfaceType::Transparent {
@@ -224,6 +275,9 @@ pub fn overlaps<'g>(draws: &[Draw], geometry: impl Fn(MeshHandle) -> Option<&'g 
                         continue;
                     }
                     let gap = (u.n.dot(centre) - u.d).abs();
+                    if limits.only_seen && hidden(centre + t.n * 0.004) {
+                        continue;
+                    }
                     let kind = if !same {
                         if gap > limits.coplanar {
                             continue;
@@ -302,6 +356,28 @@ fn shared(t: &Tri, u: &Tri) -> Option<(f32, Vec3)> {
     // Back into the world, on t's plane.
     let centre = e1 * mid.x + e2 * mid.y + n * t.d;
     Some((area, centre))
+}
+
+/// A ray from `from` along `dir` meets triangle `p` ahead.
+fn ray_hits(from: Vec3, dir: Vec3, p: &[Vec3; 3]) -> bool {
+    let (e1, e2) = (p[1] - p[0], p[2] - p[0]);
+    let h = dir.cross(e2);
+    let det = e1.dot(h);
+    if det.abs() < 1e-12 {
+        return false;
+    }
+    let f = 1.0 / det;
+    let s = from - p[0];
+    let u = f * s.dot(h);
+    if !(0.0..=1.0).contains(&u) {
+        return false;
+    }
+    let q = s.cross(e1);
+    let v = f * dir.dot(q);
+    if v < 0.0 || u + v > 1.0 {
+        return false;
+    }
+    f * e2.dot(q) > 0.0
 }
 
 fn signed_area(p: &[Vec2]) -> f32 {
@@ -721,7 +797,8 @@ mod tests {
         assert!(overlaps(&draws, geometry, &Limits::default()).is_empty());
         let mut both = flipped;
         both.material.render_face = RenderFace::Both;
-        let found = overlaps(&[draw(Vec3::ZERO), both], geometry, &Limits::default());
+        assert!(overlaps(&[draw(Vec3::ZERO), both], geometry, &Limits::default()).is_empty(), "off by default");
+        let found = overlaps(&[draw(Vec3::ZERO), both], geometry, &Limits { back_to_back: true, ..Limits::default() });
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, Kind::BackToBack);
     }
@@ -729,9 +806,28 @@ mod tests {
     #[test]
     fn the_same_mesh_twice_in_one_place_is_a_duplicate() {
         let floor = quad(2.0);
-        let found = overlaps(&[draw(Vec3::ONE), draw(Vec3::ONE)], |_| Some(&floor), &Limits::default());
+        // The same look twice: wasted, not a fight.
+        assert!(overlaps(&[draw(Vec3::ONE), draw(Vec3::ONE)], |_| Some(&floor), &Limits::default()).is_empty());
+        let mut red = draw(Vec3::ONE);
+        red.material.base_color = [1.0, 0.0, 0.0];
+        let found = overlaps(&[draw(Vec3::ONE), red], |_| Some(&floor), &Limits::default());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, Kind::Duplicate);
+    }
+
+    #[test]
+    fn faces_inside_another_solid_are_not_seen() {
+        // Two slabs' tops in one plane, the shared strip under a lid box
+        // sitting on them: nobody sees it.
+        let cube = cube();
+        let slab = |z: f32| Draw { transform: Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.0, 0.4), Default::default(), Vec3::new(0.0, 0.5, z)), ..draw(Vec3::ZERO) };
+        let lid = Draw { transform: Mat4::from_scale_rotation_translation(Vec3::new(3.0, 0.5, 1.0), Default::default(), Vec3::new(0.0, 1.2, 0.0)), ..draw(Vec3::ZERO) };
+        let open = overlaps(&[slab(0.0), slab(0.2)], |_| Some(&cube), &Limits::default());
+        assert!(!open.is_empty());
+        // The lid covers the tops (and the slabs' ends stay out in the open).
+        let covered = overlaps(&[slab(0.0), slab(0.2), lid], |_| Some(&cube), &Limits::default());
+        let tops: f32 = covered.iter().filter(|o| o.normal.y > 0.9).map(|o| o.area).sum();
+        assert_eq!(tops, 0.0, "{covered:?}");
     }
 
     #[test]
