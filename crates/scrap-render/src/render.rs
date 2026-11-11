@@ -1636,6 +1636,9 @@ pub struct Renderer {
     /// Meshes' and textures' names from their assets, for the debugger to
     /// call a draw by.
     mesh_names: std::collections::HashMap<u32, std::sync::Arc<str>>,
+    /// Each mesh's triangles on the CPU, kept from the upload on when
+    /// [`Renderer::keep_geometry`] asked for them (a checker's: `zfight`).
+    geometry: Option<std::collections::HashMap<u32, crate::zfight::MeshGeometry>>,
     /// A mesh of more than one run (a submesh a material): each run's
     /// indices, for the parts drawn each with its own ([`Self::mesh_part`]).
     mesh_runs: std::collections::HashMap<u32, Vec<Vec<u32>>>,
@@ -4382,6 +4385,7 @@ impl Renderer {
             clustering: None,
             clusters_waiting: 0,
             mesh_names: Default::default(),
+            geometry: None,
             mesh_runs: Default::default(),
             texture_names: Default::default(),
             timing: std::env::var_os("SCRAP_GPU_TIMES").is_some(),
@@ -4583,7 +4587,11 @@ impl Renderer {
             clusters: None,
         };
         let name = self.mesh_names.get(&whole.0).map(|n| format!("{n}#{part}"));
+        let kept = self.geometry.as_ref().and_then(|g| g.get(&whole.0)).map(|g| crate::zfight::MeshGeometry::new(g.positions.clone(), run.clone()));
         let handle = self.take_slot(piece);
+        if let (Some(g), Some(kept)) = (self.geometry.as_mut(), kept) {
+            g.insert(handle.0, kept);
+        }
         if let Some(name) = name {
             self.mesh_names.insert(handle.0, name.into());
         }
@@ -4605,6 +4613,7 @@ impl Renderer {
         let cut = baked.map(|b| b.clusters.as_ref().map(crate::cluster::unbake));
         let mesh = self.gpu_mesh_cut(gpu, vertices, colors, indices, true, false, cut);
         let handle = self.take_slot(mesh);
+        self.keep(handle, vertices, indices);
         self.cluster_later(handle, vertices, indices);
         match baked {
             Some(baked) => self.baked_lods(gpu, handle, baked),
@@ -6420,6 +6429,37 @@ impl Renderer {
         }
         let replaced = self.gpu_mesh(gpu, vertices, &[], indices, true, true);
         self.meshes[mesh.0 as usize] = replaced;
+        self.keep(mesh, vertices, indices);
+    }
+
+    /// Keep every mesh's triangles on the CPU from now on (`false`: drop
+    /// them): what a checker of the frame's geometry reads
+    /// ([`crate::zfight::overlaps`] through [`Renderer::mesh_geometry`]).
+    /// Off by default — a game pays nothing for it. Ask before uploading.
+    pub fn keep_geometry(&mut self, on: bool) {
+        match (on, self.geometry.is_some()) {
+            (true, false) => self.geometry = Some(Default::default()),
+            (false, true) => self.geometry = None,
+            _ => {}
+        }
+    }
+
+    /// A mesh's triangles, as uploaded, when [`Renderer::keep_geometry`]
+    /// was on then.
+    pub fn mesh_geometry(&self, mesh: MeshHandle) -> Option<&crate::zfight::MeshGeometry> {
+        self.geometry.as_ref()?.get(&mesh.0)
+    }
+
+    /// A mesh's name from its asset (or as uploaded), if it has one.
+    pub fn mesh_name(&self, mesh: MeshHandle) -> Option<&str> {
+        self.mesh_names.get(&mesh.0).map(|n| &**n)
+    }
+
+    fn keep(&mut self, handle: MeshHandle, vertices: &[crate::asset::Vertex], indices: &[u32]) {
+        if let Some(g) = self.geometry.as_mut() {
+            let positions = vertices.iter().map(|v| Vec3::from_array(v.position)).collect();
+            g.insert(handle.0, crate::zfight::MeshGeometry::new(positions, indices.to_vec()));
+        }
     }
 
     /// Unity's procedural sky into the sky-view table, when the frame's sky

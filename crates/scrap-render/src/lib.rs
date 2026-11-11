@@ -58,6 +58,7 @@ pub mod volume;
 pub mod vsm;
 pub mod weather;
 pub mod world_look;
+pub mod zfight;
 
 pub use material::{Material, Shading};
 pub use render::{

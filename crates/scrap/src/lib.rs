@@ -155,6 +155,7 @@ pub use scrap_render::particles_gpu;
 pub use scrap_render::fullscreen;
 pub use scrap_render::upscale;
 pub use scrap_render::vsm;
+pub use scrap_render::zfight;
 pub mod live;
 pub use scrap_core::merge;
 pub use scrap_core::numbers;
