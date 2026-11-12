@@ -156,7 +156,7 @@ pub const IGNORE_MARKER: &str = ".scrapignore";
 
 /// Whether `folder` holds an [`IGNORE_MARKER`].
 pub fn ignored(folder: &Path) -> bool {
-    crate::files::is_file(&folder.join(IGNORE_MARKER))
+    crate::files::is_file(folder.join(IGNORE_MARKER))
 }
 
 /// Where a person tries things out (Unreal's `Developers/`): read by the
@@ -250,7 +250,7 @@ pub fn walk(root: impl AsRef<Path>) -> Vec<PathBuf> {
 /// (a game's hot reload four times a second, `scrap sync`) cost a hundred
 /// milliseconds and more.
 fn cargo_build(folder: &Path, name: &str) -> bool {
-    name == "target" && crate::files::is_file(&folder.join("Cargo.toml"))
+    name == "target" && crate::files::is_file(folder.join("Cargo.toml"))
 }
 
 /// A path relative to `root`, forward slashes; the path itself when it is
