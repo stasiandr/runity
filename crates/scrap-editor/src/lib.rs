@@ -140,6 +140,8 @@ pub struct Session {
     listed_own: std::sync::atomic::AtomicU64,
     /// A listing being read beside the frames ([`Session::assets_soon`]):
     /// for the disk as it was when it started.
+    // A stamp and a thread behind a lock.
+    #[allow(clippy::type_complexity)]
     listing: std::sync::Mutex<Option<(u64, std::thread::JoinHandle<EditResult<Vec<scrap_import::assets::Entry>>>)>>,
     /// [`Session::disk`] when the scene's stamps were last compared.
     reload_seen: Option<u64>,

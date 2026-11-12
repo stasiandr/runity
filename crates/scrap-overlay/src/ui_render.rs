@@ -411,7 +411,6 @@ impl UiRenderer {
                 });
                 under
                     .into_iter()
-                    .map(|(d, c)| (d, c))
                     .chain(std::iter::once((0.0, run.color)))
                     .map(move |(d, color)| (buffer, *run, d, color))
             })

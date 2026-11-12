@@ -184,7 +184,7 @@ impl Session {
         let served = Arc::new(AtomicU64::new(0));
         {
             let party = Party::alone("netsim", &components);
-            return Self {
+            Self {
                 peers: vec![Peer::new(party, scene, 0, &mut |_, _| Some(MeshHandle::TEST))],
                 components,
                 sent,
@@ -195,7 +195,7 @@ impl Session {
                 clock: Instant::now(),
                 tick: 0,
                 late: Vec::new(),
-            };
+            }
         }
     }
 

@@ -651,7 +651,7 @@ pub fn convert_with(
         let name = match builtin_in(m, slot).and_then(builtin_texture) {
             Some((name, _)) => name.to_string(),
             None => match unity.named(&guid) {
-                Some((kind, name)) if kind == "texture" => name.to_string(),
+                Some(("texture", name)) => name.to_string(),
                 _ => continue,
             },
         };

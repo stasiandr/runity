@@ -199,7 +199,7 @@ fn projects(rest: &[String]) -> Result<ExitCode> {
     match rest.first().map(String::as_str) {
         None | Some("--json") => {
             let entries = hub::entries(&hub::Known::load(&dir).map_err(err)?);
-            if rest.first().is_some() {
+            if !rest.is_empty() {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
                 return Ok(ExitCode::SUCCESS);
             }

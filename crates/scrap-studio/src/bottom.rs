@@ -869,19 +869,19 @@ impl Bottom {
             }
             ui.clear(self.crumbs);
             self.tiles.clear();
-            self.update_files(ui, session, &all, &folders, &sources);
+            self.update_files(ui, session, all, folders, sources);
         } else {
             empty(ui, self.files);
             self.file_lines.clear();
             self.file_depths.clear();
             self.line_looks.clear();
             self.line_arrows.clear();
-            self.update_tree(ui, &folders);
+            self.update_tree(ui, folders);
             self.update_crumbs(ui);
-            self.update_grid(ui, session, &all, &folders, &sources);
+            self.update_grid(ui, session, all, folders, sources);
         }
         self.show_marks(ui);
-        self.update_path(ui, session, &sources);
+        self.update_path(ui, session, sources);
         if self.reveal {
             self.reveal = false;
             let (list, shown) = if one {

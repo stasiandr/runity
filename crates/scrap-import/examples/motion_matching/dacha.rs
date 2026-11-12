@@ -125,6 +125,8 @@ fn place_of(line: &EntityDesc, root_of: &dyn Fn(&str) -> Option<scrap::EntityId>
 
 /// The pawn prefab's pieces — the rig's slots' and the head's — each with
 /// its place in its frame, and the rig's place under the pawn.
+// The return is read apart at once by its one caller.
+#[allow(clippy::type_complexity)]
 fn pieces_of(dir: &Path) -> Option<(Vec<(String, Result<String, ()>, Mat4)>, Mat4)> {
     let prefabs = dir.join("prefabs");
     let (_, pawn) = scrap::Prefabs::read(prefabs.join(format!("{PAWN}.prefab"))).ok()?;
@@ -231,6 +233,8 @@ impl Robot {
     /// each hand's point in the world, or `None` to follow the animation.
     pub fn pose(&mut self, world: &mut World, placed: Mat4, posed: &[Mat4], holds: [Option<Vec3>; 2], dt: f32) {
         let ease = 1.0 - (-std::f32::consts::LN_2 * dt / 0.05).exp();
+        // `side` is the hand: in what is held and in the grip.
+        #[allow(clippy::needless_range_loop)]
         for side in 0..2 {
             let on = holds[side].is_some() as u8 as f32;
             self.grip[side] += (on - self.grip[side]) * ease;

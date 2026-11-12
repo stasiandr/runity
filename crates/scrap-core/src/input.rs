@@ -1000,6 +1000,7 @@ impl LiveInput {
 
     /// The next event written, if any: for a shell that hands it to more
     /// than the [`Input`] — the game's UI tree, as it hands the window's.
+    #[allow(clippy::should_implement_trait)] // not an iterator: it reads the file as it goes
     pub fn next(&mut self) -> Option<InputEvent> {
         if self.queued.is_empty() {
             if let Ok(text) = std::fs::read_to_string(&self.path) {

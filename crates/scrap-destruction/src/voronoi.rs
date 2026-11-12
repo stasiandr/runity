@@ -35,6 +35,8 @@ pub fn cells(solid: &Solid, points: &[Vec3]) -> Vec<Solid> {
 pub struct Dice(pub u64);
 
 impl Dice {
+    // Public under this name; a roll, not an iterator.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;

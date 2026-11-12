@@ -944,6 +944,8 @@ impl Studio {
     /// would: the pointer over it, the buttons pressed on it, the keys
     /// while the view has the keyboard — except the editor's shortcuts, so
     /// Ctrl/Cmd P still stops. `true` when the event was the game's alone.
+    // "To the game", not a conversion: it hands an event on.
+    #[allow(clippy::wrong_self_convention)]
     fn to_game(
         &mut self,
         event: &InputEvent,

@@ -510,8 +510,7 @@ fn a_character_once_a_scene_is_a_model_and_shares_its_pictures() {
     was.scene = true;
     was.save(&sidecar).unwrap();
     let prefab = scrap_import::scene::prefab_for(was.id.unwrap(), &project.library());
-    let mut pieces = EntityDesc::default();
-    pieces.name = "Ranger".into();
+    let pieces = EntityDesc { name: "Ranger".into(), ..Default::default() };
     Prefabs::save(&pieces, &prefab).unwrap();
     sync(&project);
     assert!(!ImportSettings::load(&sidecar).unwrap().scene);
@@ -558,7 +557,7 @@ fn models_that_share_a_picture_share_its_texture() {
     sync(&project);
 
     let (library, _) = Library::open(project.library()).unwrap();
-    let bark = |file: &str| library.material_by_name(&format!("{file}/bark")).unwrap().clone();
+    let bark = |file: &str| library.material_by_name(&format!("{file}/bark")).unwrap();
     let (tree_bark, bush_bark) = (bark("tree"), bark("bush"));
     assert!(tree_bark.base_map.is_some());
     assert_eq!(tree_bark.base_map, bush_bark.base_map, "one texture of bark.png");

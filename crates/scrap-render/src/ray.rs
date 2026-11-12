@@ -188,6 +188,7 @@ fn triangles(vertex_count: u32, index_count: u32) -> wgpu::BlasTriangleGeometryS
 
 /// Build `blas` again from its buffers, rewritten in place (the same
 /// sizes as it was made with): a live mesh's rays follow it.
+#[cfg(feature = "ray-tracing")]
 pub(crate) fn rebuild(
     gpu: &Gpu,
     blas: &wgpu::Blas,

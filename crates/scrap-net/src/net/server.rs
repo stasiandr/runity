@@ -541,7 +541,7 @@ impl Server {
                 blobs: held
                     .blobs
                     .iter()
-                    .map(|(n, b)| (n.clone(), b.clone()))
+                    .map(|(n, b)| (*n, b.clone()))
                     .collect(),
             })
             .collect();

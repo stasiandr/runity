@@ -297,8 +297,8 @@ mod tests {
         register::<Lamp>("lamp");
         let mut world = hecs::World::new();
         let e = world.spawn((lamp(),));
-        assert_eq!(component(&mut world, e, "lamp", "intensity", Some(5.0)), Some(2.0));
+        assert_eq!(component(&world, e, "lamp", "intensity", Some(5.0)), Some(2.0));
         assert_eq!(world.get::<&Lamp>(e).unwrap().intensity, 5.0);
-        assert_eq!(component(&mut world, e, "nothing", "intensity", Some(5.0)), None);
+        assert_eq!(component(&world, e, "nothing", "intensity", Some(5.0)), None);
     }
 }

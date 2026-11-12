@@ -205,6 +205,8 @@ impl Bounds {
     /// The least cost any frame in the run can have, stopping at `worst`.
     fn nearest(&self, query: &[f32; FEATURES], worst: f32) -> f32 {
         let mut cost = 0.0;
+        // `d` is the feature in the query and in both bounds.
+        #[allow(clippy::needless_range_loop)]
         for d in 0..FEATURES {
             let q = query[d];
             let gap = if q < self.low[d] { self.low[d] - q } else if q > self.high[d] { q - self.high[d] } else { 0.0 };
@@ -395,6 +397,8 @@ impl Database {
                 .collect();
             let mut ground = vec![0.0f32; count];
             let known: Vec<usize> = (0..count).filter(|&i| stands[i].is_some()).collect();
+            // `i` is the frame: looked up among the known ones, and written.
+            #[allow(clippy::needless_range_loop)]
             for i in 0..count {
                 let before = known.iter().rev().find(|&&k| k <= i);
                 let after = known.iter().find(|&&k| k >= i);
@@ -455,7 +459,7 @@ impl Database {
                     while i < count && off(i) {
                         i += 1;
                     }
-                    let rising = i + 0 < count && lift + 2 < count && (at(lift + 2, root).y - at(lift, root).y) * rate / 2.0 > 0.3;
+                    let rising = i < count && lift + 2 < count && (at(lift + 2, root).y - at(lift, root).y) * rate / 2.0 > 0.3;
                     if i - lift >= 6 && i < count && rising && lift >= 10 {
                         jumps.push((start + lift - 10, start + lift, start + i));
                     }
@@ -624,9 +628,7 @@ impl Database {
                 continue;
             }
             let end = r.end.saturating_sub(tail).max(r.start + 1);
-            for f in r.start..end {
-                searchable[f] = open[f];
-            }
+            searchable[r.start..end].copy_from_slice(&open[r.start..end]);
         }
         let climb_starts: Vec<(usize, f32)> = ranges
             .iter()
@@ -2300,6 +2302,8 @@ mod mirror_tests {
         for t in [0.0, 1.0] {
             let a = skeleton.world_matrices(&clip.sample(&skeleton, t, false));
             let b = skeleton.world_matrices(&mirrored.sample(&skeleton, t, false));
+            // `j` is the joint: its mirror, its matrix and its name.
+            #[allow(clippy::needless_range_loop)]
             for j in 0..skeleton.len() {
                 let other = other_side(&skeleton, j);
                 let want = a[other].w_axis.truncate() * flip;

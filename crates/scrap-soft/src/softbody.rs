@@ -507,6 +507,8 @@ fn embed(
 
 /// The lattice's outside: the faces of tetrahedra no other shares, each a
 /// vertex of its own (embedded at a corner), wound outward.
+// The three buffers a skin is, as the caller takes them apart.
+#[allow(clippy::type_complexity)]
 fn skin(tets: &[([u32; 4], f32)], rest: &[Vec3]) -> (Vec<(u32, [f32; 4])>, Vec<[f32; 2]>, Vec<u32>) {
     let mut count: std::collections::HashMap<[u32; 3], (usize, [usize; 3], usize)> = Default::default();
     for (t, (ids, _)) in tets.iter().enumerate() {

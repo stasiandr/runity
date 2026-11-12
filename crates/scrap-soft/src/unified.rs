@@ -133,7 +133,7 @@ pub fn sheet_obstacles(world: &hecs::World) -> Vec<Obstacle> {
         }
         // A little thinner than the contact pass takes it: what lies on
         // the cloth is still pressed into the pass's reach, and weighs.
-        let thick = sheet_thickness(&cloth) * 0.7;
+        let thick = sheet_thickness(cloth) * 0.7;
         let triangles = tris.iter().map(|t| t.map(|k| p[k as usize])).collect();
         out.push(Obstacle::Sheet(std::sync::Arc::new(crate::obstacle::Sheet::new(triangles, thick))));
     }

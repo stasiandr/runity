@@ -600,7 +600,7 @@ mod tests {
                 // The poles and the seam: one position, many vertices.
                 let (st, ct) = theta.sin_cos();
                 let p = if r == 0 || r == rings { [0.0, ct, 0.0] } else { [st * phi.cos(), ct, st * phi.sin()] };
-                let p = if s == segments && r != 0 && r != rings { let q = vertices_at(&vertices, r, segments); q } else { p };
+                let p = if s == segments && r != 0 && r != rings { vertices_at(&vertices, r, segments) } else { p };
                 vertices.push(Vertex { position: p, normal: p, uv: [s as f32 / segments as f32, r as f32 / rings as f32] });
             }
         }

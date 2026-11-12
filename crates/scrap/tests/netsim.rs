@@ -686,10 +686,10 @@ fn ten_chains_swinging_at_once_keep_within_the_budget_and_none_is_left_behind() 
     let mut tracks: Vec<[Vec<Vec3>; 2]> = (0..10).map(|_| [Vec::new(), Vec::new()]).collect();
     for _ in 0..ticks(seconds) {
         session.step();
-        for k in 0..10 {
+        for (k, track) in tracks.iter_mut().enumerate() {
             for (i, p) in session.peers.iter().enumerate() {
                 let e = p.entity(101 + k as u64 * 2).unwrap();
-                tracks[k][i].push(p.world.get::<&Transform>(e).unwrap().position);
+                track[i].push(p.world.get::<&Transform>(e).unwrap().position);
             }
         }
     }

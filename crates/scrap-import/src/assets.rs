@@ -540,6 +540,8 @@ enum Read {
 /// not read again. A project's listing reads every scene and prefab, and
 /// an editor asks for it each time a file changes; Dacha's twelve hundred
 /// prefabs took a quarter of a second to parse.
+// One map under a lock, named where it is made.
+#[allow(clippy::type_complexity)]
 fn documents_read() -> &'static std::sync::Mutex<HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Read)>> {
     static READ: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Read)>>> =
         std::sync::OnceLock::new();

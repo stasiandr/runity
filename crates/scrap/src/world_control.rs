@@ -258,9 +258,9 @@ impl WorldControl {
             "add" => self.add(world, components, args),
             "remove" => self.remove(world, components, args),
             "spawn" => self.spawn(world, components, args),
-            "despawn" => entity_of(world, args.get("entity").unwrap_or(&Value::Null)).and_then(|e| {
+            "despawn" => entity_of(world, args.get("entity").unwrap_or(&Value::Null)).map(|e| {
                 crate::world::despawn_tree(world, e);
-                Ok(json!({ "despawned": e.to_bits().get() }))
+                json!({ "despawned": e.to_bits().get() })
             }),
             "revert" => self.revert(world, components, args),
             "snapshot" => {
@@ -586,12 +586,16 @@ fn leaves(path: &str, a: &Value, b: &Value, out: &mut Vec<Value>) {
 /// whatever the game hands in (itself, usually).
 pub struct Registry<G> {
     resources: BTreeMap<String, Resource<G>>,
+    // A command: its help and what runs it.
+    #[allow(clippy::type_complexity)]
     commands: BTreeMap<String, (String, fn(&mut G, &Value) -> Answer)>,
 }
 
 struct Resource<G> {
     help: String,
     get: fn(&G) -> Value,
+    // One optional function pointer, written out where it is read.
+    #[allow(clippy::type_complexity)]
     set: Option<fn(&mut G, Value) -> Result<(), String>>,
 }
 

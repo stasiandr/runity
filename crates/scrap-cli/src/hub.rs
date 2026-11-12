@@ -581,6 +581,6 @@ mod tests {
         assert_eq!(entry.problem, None);
         assert_eq!(entry.name, "showreel");
         assert!(entry.scene.is_some(), "the showreel has a start scene");
-        assert_eq!(discover(&root.join("..")).len() >= 1, true);
+        assert!(!discover(&root.join("..")).is_empty());
     }
 }

@@ -20,6 +20,8 @@ use crate::asset::Vertex;
 /// `cell` metres: its vertices, their painted colours (averaged, when
 /// `colors` has one a vertex; none when it is empty) and triangles, or
 /// `None` when it would be hardly smaller.
+// The three buffers of a mesh, as every caller takes them apart.
+#[allow(clippy::type_complexity)]
 pub fn simplify(
     vertices: &[Vertex],
     colors: &[[u8; 4]],

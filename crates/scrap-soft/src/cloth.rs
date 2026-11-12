@@ -463,6 +463,8 @@ impl ClothState {
         let count = w * h;
         let mut vertices = Vec::with_capacity(count * 2);
         for side in [1.0f32, -1.0] {
+            // `k` is the particle: its place, its normal and its cell.
+            #[allow(clippy::needless_range_loop)]
             for k in 0..count {
                 let p = back.transform_point3(self.particles.x[k]);
                 let n = back.transform_vector3(normals[k]).normalize_or(Vec3::Z) * side;
