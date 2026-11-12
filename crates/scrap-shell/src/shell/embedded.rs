@@ -141,6 +141,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 capture: None,
                 fullscreen_asked: None,
                 keyboard_asked: None,
+                touch_pad_asked: None,
                 asked: TimeAsk::default(),
             }
         };
