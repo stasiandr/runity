@@ -129,7 +129,7 @@ impl Shortcut {
                     out.push(glyph);
                 }
             }
-            out + &key
+            out + key.as_str()
         } else {
             let mut parts: Vec<String> = [
                 (self.command, "Win"),

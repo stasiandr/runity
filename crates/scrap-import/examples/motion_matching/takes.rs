@@ -182,7 +182,7 @@ fn renamed(text: &str, keep: Option<(usize, usize)>) -> String {
         }
         out.push('\n');
     }
-    out + &frames_out
+    out + frames_out.as_str()
 }
 
 /// Each take's frames worth keeping, from the set's `Frame_Cuts.csv`:
