@@ -33,6 +33,7 @@
 //! [`crate::party::Party::spawn`], by a fresh [`NetId`]. Anything else the
 //! game made is its own business, on its own machine.
 
+pub mod clock;
 pub mod link;
 /// The wire in the browser: the page's data channels.
 #[cfg(target_arch = "wasm32")]

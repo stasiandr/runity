@@ -268,7 +268,7 @@ impl<T: Transport> Laggy<T> {
         if self.roll() < self.conditions.loss {
             return Vec::new();
         }
-        let now = Instant::now();
+        let now = crate::net::clock::now();
         let mut out = vec![now + self.delay()];
         if self.roll() < self.conditions.duplicate {
             out.push(now + self.delay());
@@ -277,7 +277,7 @@ impl<T: Transport> Laggy<T> {
     }
 
     fn due(queue: &mut Vec<(Instant, PeerId, Vec<u8>)>) -> Vec<(PeerId, Vec<u8>)> {
-        let now = Instant::now();
+        let now = crate::net::clock::now();
         let mut due: Vec<_> = Vec::new();
         queue.retain(|(at, peer, bytes)| {
             if *at <= now {

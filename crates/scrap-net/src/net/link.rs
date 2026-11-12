@@ -148,7 +148,7 @@ impl Link {
     /// [`LinkEvent::Disconnected`] if it never does. Dialling again starts
     /// over.
     pub fn dial(&mut self, peer: PeerId) {
-        let now = Instant::now();
+        let now = crate::net::clock::now();
         self.connections.insert(peer, Connection::new(now));
         self.wire.send(peer, vec![PING]);
     }
@@ -163,7 +163,7 @@ impl Link {
         let Some(connection) = self.connections.get_mut(&to) else {
             return;
         };
-        let now = Instant::now();
+        let now = crate::net::clock::now();
         connection.sent = now;
         match mode {
             Mode::Unreliable => {
@@ -207,7 +207,7 @@ impl Link {
     /// Resend what is overdue, ping what is quiet, take in what arrived,
     /// and say what happened — every reliable message once, in order.
     pub fn poll(&mut self) -> Vec<LinkEvent> {
-        let now = Instant::now();
+        let now = crate::net::clock::now();
         let mut events = Vec::new();
         for (peer, connection) in &mut self.connections {
             for (frame, sent) in connection.unacked.values_mut() {
@@ -362,11 +362,11 @@ mod tests {
     fn reliable_arrives_once_and_in_order_over_an_awful_link() {
         let (mut server, mut client) = pair(Conditions::AWFUL);
         let mut got = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = crate::net::clock::now() + Duration::from_secs(10);
         let mut sent = 0u32;
         while got.len() < 200 {
             assert!(
-                Instant::now() < deadline,
+                crate::net::clock::now() < deadline,
                 "only {} of 200 in order",
                 got.len()
             );
