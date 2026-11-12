@@ -166,7 +166,8 @@ pub fn cook_library(library: &Path, out: &Path, coding: TextureCoding, zstd: boo
 /// ([`scrap::adpcm`]): a download's — a browser's page fetches every sound
 /// a game has before it starts, and four bits a sample are an eighth of
 /// the importer's decoded `f32`. The mixer decodes each once, when first
-/// played.
+/// played. A long sound kept compressed by the importer (music in Ogg
+/// Vorbis or MP3, streamed) stays as it is: already smaller than ADPCM.
 pub fn cook_library_with(library: &Path, out: &Path, coding: TextureCoding, zstd: bool, adpcm: bool, cache: &Path) -> Result<Cooked> {
     std::fs::create_dir_all(out).with_context(|| format!("making {}", out.display()))?;
     let mut files: Vec<PathBuf> = Vec::new();
@@ -254,6 +255,13 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
         let body = scrap::asset::split_header(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
         let mut asset: scrap::sound::SoundAsset = rkyv::from_bytes::<scrap::sound::SoundAsset, rkyv::rancor::Error>(body)
             .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+        // A long sound kept compressed (music: Ogg Vorbis, MP3) is already
+        // smaller than ADPCM would make it — a quarter of PCM against a
+        // tenth or less — and streams as it is: kept.
+        if is_compressed_stream(&asset) {
+            std::fs::write(&to, &bytes)?;
+            return Ok((Done::Copied, bytes.len() as u64, bytes.len() as u64));
+        }
         let (rate, samples) = if asset.samples.is_empty() { crate::decode_sound(&asset.encoded, None)? } else { (asset.sample_rate, std::mem::take(&mut asset.samples)) };
         asset.encoded = scrap::adpcm::encode_wav(&samples, rate);
         asset.samples = Vec::new();
@@ -283,6 +291,11 @@ fn cook_file(library: &Path, file: &Path, out: &Path, coding: TextureCoding, zst
     std::fs::write(&kept, &written)?;
     std::fs::write(&to, &written)?;
     Ok((done, bytes.len() as u64, written.len() as u64))
+}
+
+/// A long sound kept as a compressed stream (Ogg, MP3, FLAC): not a WAV.
+fn is_compressed_stream(asset: &scrap::sound::SoundAsset) -> bool {
+    asset.samples.is_empty() && !asset.encoded.is_empty() && !asset.encoded.starts_with(b"RIFF")
 }
 
 /// FNV-1a over 128 bits: the importer's hash of a source, here of the
@@ -403,6 +416,23 @@ mod tests {
         let back = scrap::asset::view::<scrap::sound::SoundAsset>(&cooked).map(|s| (s.samples.len(), s.encoded.to_vec())).unwrap();
         assert_eq!(back.0, 0);
         assert_eq!(scrap::adpcm::decode_wav(&back.1).unwrap().1.len(), 16000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Music in a web build: a long sound the importer kept as Ogg Vorbis
+    /// is not made ADPCM (which would be bigger) — the same bytes, streamed.
+    #[test]
+    fn a_web_cook_keeps_a_compressed_long_sound_as_it_is() {
+        let dir = std::env::temp_dir().join(format!("scrap-cook-music-{}", std::process::id()));
+        let (library, out, cache) = (dir.join("library"), dir.join("out"), dir.join("cache"));
+        std::fs::create_dir_all(&library).unwrap();
+        let ogg = b"OggS\0\x02 a Vorbis stream's bytes".to_vec();
+        let music = scrap::sound::SoundAsset { id: scrap::asset::AssetId(10), name: "theme".into(), sample_rate: 48000, samples: Vec::new(), encoded: ogg.clone(), seconds: 90.0 };
+        std::fs::write(library.join("theme.scrasset"), scrap::asset::to_bytes(&music, scrap::sound::SOUND).unwrap()).unwrap();
+        cook_library_with(&library, &out, TextureCoding::Bc7, true, true, &cache).unwrap();
+        let cooked = scrap::asset::read(out.join("theme.scrasset")).unwrap();
+        let back = scrap::asset::view::<scrap::sound::SoundAsset>(&cooked).map(|s| s.encoded.to_vec()).unwrap();
+        assert_eq!(back, ogg);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

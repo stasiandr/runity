@@ -12,6 +12,10 @@ scrap-core = { path = "../scrap-core" }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 hecs = "0.11.0"
 kira = { version = "0.12.4", optional = true }
+# A long sound pumped on the game's own thread (the browser's streaming):
+# the decoder kira itself uses, and its ring.
+rtrb = { version = "0.3.5", optional = true }
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "flac"], optional = true }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tracing = "0.1.44"
@@ -19,4 +23,4 @@ tracing = "0.1.44"
 [features]
 default = ["kira"]
 # The mixer itself: a device to open and a dependency to build.
-kira = ["dep:kira"]
+kira = ["dep:kira", "dep:rtrb", "dep:symphonia"]

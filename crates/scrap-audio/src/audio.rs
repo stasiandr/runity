@@ -71,6 +71,8 @@ enum Handle {
     Decoded(StaticSoundHandle),
     #[cfg(not(target_arch = "wasm32"))]
     Streamed(StreamingSoundHandle<kira::sound::FromFileError>),
+    /// Streamed on the game's thread ([`crate::pumped`]): the browser's.
+    Pumped(crate::pumped::PumpHandle),
 }
 
 impl Playing {
@@ -79,6 +81,7 @@ impl Playing {
             Handle::Decoded(h) => h.stop(kira::Tween::default()),
             #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.stop(kira::Tween::default()),
+            Handle::Pumped(h) => h.stop(),
         }
     }
 
@@ -89,6 +92,8 @@ impl Playing {
             Handle::Decoded(h) => h.set_playback_rate(rate, kira::Tween::default()),
             #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.set_playback_rate(rate, kira::Tween::default()),
+            // A pumped sound is music: played at its own speed.
+            Handle::Pumped(_) => {}
         }
     }
 
@@ -98,6 +103,7 @@ impl Playing {
             Handle::Decoded(h) => h.set_volume(volume, kira::Tween::default()),
             #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.set_volume(volume, kira::Tween::default()),
+            Handle::Pumped(h) => h.set_volume(gain),
         }
     }
 
@@ -113,6 +119,7 @@ impl Playing {
             Handle::Decoded(h) => h.set_panning(panning, kira::Tween::default()),
             #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.set_panning(panning, kira::Tween::default()),
+            Handle::Pumped(h) => h.set_panning(pan),
         }
     }
 
@@ -123,8 +130,23 @@ impl Playing {
             Handle::Decoded(h) => h.state(),
             #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.state(),
+            Handle::Pumped(h) => return h.is_playing(),
         };
         !matches!(state, kira::sound::PlaybackState::Stopped)
+    }
+
+    /// Whether it streams on the game's thread ([`Audio::pump`]).
+    pub fn is_pumped(&self) -> bool {
+        matches!(self.0, Handle::Pumped(_))
+    }
+
+    /// A pumped sound's frames played (at its own rate) and frames the
+    /// mixer wanted before the pump had them; `None` for the others.
+    pub fn pumped_progress(&self) -> Option<(u64, u64)> {
+        match &self.0 {
+            Handle::Pumped(h) => Some((h.played(), h.starved())),
+            _ => None,
+        }
     }
 }
 
@@ -158,6 +180,12 @@ pub struct Audio<B: Backend = CpalBackend> {
     /// Sounds cooked as IMA ADPCM (a web build's), decoded the first time
     /// each plays and kept: by name and length.
     decoded: std::collections::HashMap<(String, usize), StaticSoundData>,
+    /// Long sounds streamed on the game's thread, decoded ahead each
+    /// [`Self::pump`]: the browser's, which has no thread to stream on.
+    feeds: Vec<crate::pumped::Feed>,
+    /// Long sounds pumped here even where kira could stream them on a
+    /// thread of its own ([`Self::stream_on_this_thread`]).
+    pump_everywhere: bool,
 }
 
 impl<B: Backend> Audio<B>
@@ -198,7 +226,32 @@ where
             groups: Default::default(),
             muted,
             decoded: Default::default(),
+            feeds: Vec::new(),
+            pump_everywhere: false,
         })
+    }
+
+    /// Long compressed sounds decoded a little ahead on this thread, each
+    /// [`Self::pump`], instead of on a thread of kira's: how a browser
+    /// streams (always there), and what a test plays to see it.
+    pub fn stream_on_this_thread(&mut self, on: bool) {
+        self.pump_everywhere = on;
+    }
+
+    /// Decode the pumped sounds ahead (a couple of seconds, at most half a
+    /// second each call) and let the finished go. Once a frame, wherever
+    /// long sounds may play — [`Sources::update`] does — and harmless
+    /// anywhere: with nothing pumped it does nothing.
+    pub fn pump(&mut self) {
+        self.feeds.retain(|f| !f.is_over());
+        for feed in &mut self.feeds {
+            feed.pump();
+        }
+    }
+
+    /// Long sounds streaming on this thread now.
+    pub fn pumped(&self) -> usize {
+        self.feeds.len()
     }
 
     /// Silence everything, or let it be heard again, keeping every volume
@@ -297,23 +350,18 @@ where
             }
         }
         // The browser has no thread to stream on: a long sound is decoded
-        // whole when it starts instead.
-        #[cfg(target_arch = "wasm32")]
-        if !sound.encoded.is_empty() {
-            let mut data =
-                StaticSoundData::from_cursor(std::io::Cursor::new(sound.encoded.to_vec()))
-                    .map_err(|e| format!("{}: {e}", sound.name))?
-                    .volume(volume)
-                    .playback_rate(rate);
-            if looped {
-                data = data.loop_region(0.0..);
-            }
-            let handle = match group {
+        // a little ahead on this one, each frame ([`Self::pump`]).
+        if !sound.encoded.is_empty() && (cfg!(target_arch = "wasm32") || self.pump_everywhere) {
+            let (feed, pumped, handle) = crate::pumped::start(sound.encoded.as_slice().into(), gain.max(0.0), looped)
+                .map_err(|e| format!("{}: {e}", sound.name))?;
+            let data = crate::pumped::PumpedData(pumped);
+            match group {
                 Some(group) => self.group(group)?.0.play(data),
                 None => self.manager.play(data),
             }
             .map_err(|e| e.to_string())?;
-            return Ok(Playing(Handle::Decoded(handle)));
+            self.feeds.push(feed);
+            return Ok(Playing(Handle::Pumped(handle)));
         }
         #[cfg(not(target_arch = "wasm32"))]
         if !sound.encoded.is_empty() {
@@ -532,6 +580,8 @@ impl Sources {
             }
             keep
         });
+        // Long sounds streaming on this thread decoded ahead.
+        audio.pump();
         problems
     }
 
@@ -784,6 +834,34 @@ mod tests {
             audio.play(sound, 1.0).is_err(),
             "said in words, not a crash"
         );
+    }
+
+    #[test]
+    fn a_long_sound_streams_on_the_games_thread_where_there_is_no_other() {
+        // As a browser plays music: Ogg Vorbis, pumped each frame.
+        let mut audio = silent();
+        audio.stream_on_this_thread(true);
+        let long = crate::asset::SoundAsset {
+            samples: Vec::new(),
+            encoded: include_bytes!("../tests/tone_48k.ogg").to_vec(),
+            sample_rate: 48_000,
+            seconds: 1.0,
+            ..tone()
+        };
+        let bytes = crate::asset::to_bytes(&long, crate::sound::SOUND).unwrap();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        let mut music = audio.start(Some("music"), sound, 0.8, true, 1.0).expect("it streams");
+        assert!(music.is_pumped() && music.is_playing());
+        assert_eq!(audio.pumped(), 1);
+        music.set_volume(0.5);
+        music.set_panning(-0.2);
+        audio.pump();
+        assert_eq!(music.pumped_progress(), Some((0, 0)), "nothing played without a device");
+        music.stop();
+        let broken = crate::asset::SoundAsset { encoded: b"OggS but not a sound".to_vec(), ..long };
+        let bytes = crate::asset::to_bytes(&broken, crate::sound::SOUND).unwrap();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        assert!(audio.play(sound, 1.0).is_err(), "said in words, not a crash");
     }
 
     #[test]

@@ -6,6 +6,8 @@
 
 #[cfg(feature = "kira")]
 pub mod audio;
+#[cfg(feature = "kira")]
+pub mod pumped;
 pub mod sound;
 /// Sounds cooked small for a download: IMA ADPCM in a WAV, both ways.
 pub mod adpcm;
