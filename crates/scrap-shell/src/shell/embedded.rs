@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use scrap_core::embed::{self, Packet, ToEditor, ToGame};
 
-use super::{hot, run_steps, translate_pad, Context, Game, WindowConfig, PATCHED};
+use super::{hot, run_steps, Context, Game, WindowConfig, PATCHED};
 use crate::gpu::{Gpu, OffscreenTarget};
 use crate::input::Input;
 use crate::render::Renderer;
@@ -120,7 +120,12 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
     let mut ui_input: Vec<scrap_core::input::InputEvent> = Vec::new();
     let mut time = Time::new(config.time);
     let mut input = Input::new();
-    let mut pads = gilrs::Gilrs::new().ok();
+    // The editor is in front, so the game's pads are read in the
+    // background; nothing turns the platform's loop for this process but
+    // `pump`.
+    let mut pads = crate::pads::open(crate::pads::chosen(), true);
+    let mut slots = scrap_core::input::PadSlots::new();
+    let mut feedback = scrap_core::input::PadFeedback::new();
     let mut captured = false;
     let mut loop_times = scrap_core::perf::Profiler::new(600);
     // Console lines from the editor, for the next frame.
@@ -140,6 +145,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 commands: &commands,
                 fullscreen: false,
                 safe_area: glam::Vec4::ZERO,
+                pads: &mut feedback,
                 injected: Vec::new(),
                 quit: false,
                 capture: None,
@@ -219,11 +225,15 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
             }
         }
         if let Some(pads) = pads.as_mut() {
-            while let Some(event) = pads.next_event() {
-                if let Some(event) = translate_pad(event.event) {
-                    input.handle(&event);
-                }
+            pads.pump(0.0);
+            let mut said = Vec::new();
+            pads.poll(&mut slots, true, &mut said);
+            for event in &said {
+                input.handle(event);
             }
+            pads.apply(&slots, &mut feedback, super::pad_clock());
+        } else {
+            feedback.take_pulses();
         }
 
         let mut quit = false;

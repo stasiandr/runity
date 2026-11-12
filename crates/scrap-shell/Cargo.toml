@@ -1,6 +1,6 @@
 [package]
 name = "scrap-shell"
-description = "scrap's desktop shell: a plain window on winit, gamepads on gilrs, the fixed step and the frame, hot patches through subsecond. The convenience path for running a game without the editor; the engine does not need it."
+description = "scrap's desktop shell: a plain window on winit, gamepads on Apple's GameController (macOS, iOS) or gilrs (elsewhere), the fixed step and the frame, hot patches through subsecond. The convenience path for running a game without the editor; the engine does not need it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -35,6 +35,17 @@ rhai = { version = "1.23", default-features = false, features = ["std", "serde",
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 libc = "0.2"
 log = "0.4"
+
+# On macOS and iOS: gamepads through Apple's GameController framework
+# (`pads::apple`) — the system's game-controller daemon owns a DualSense
+# over Bluetooth, and IOKit (gilrs) gets no reports from it; its light,
+# haptics (CoreHaptics), adaptive triggers, touchpad, motion and battery.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSObject", "NSString", "NSArray", "NSDictionary", "NSEnumerator", "NSSet", "NSNotification", "NSOperation", "NSDate", "NSRunLoop", "NSError", "NSValue", "NSObjCRuntime", "block2"] }
+objc2-game-controller = { version = "0.3.2", default-features = false, features = ["std", "dispatch2", "block2", "GCController", "GCExtendedGamepad", "GCMicroGamepad", "GCDualSenseGamepad", "GCDualShockGamepad", "GCXboxGamepad", "GCControllerButtonInput", "GCControllerDirectionPad", "GCControllerAxisInput", "GCControllerElement", "GCDevice", "GCDeviceLight", "GCColor", "GCDeviceHaptics", "GCDeviceBattery", "GCDualSenseAdaptiveTrigger", "GCPhysicalInputProfile", "GCMotion", "GCProductCategories"] }
+objc2-core-haptics = { version = "0.3.2", default-features = false, features = ["std", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer"] }
 
 # On iOS: the scene delegate UIKit asks for (`ios`).
 [target.'cfg(target_os = "ios")'.dependencies]

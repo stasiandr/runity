@@ -29,7 +29,8 @@ Unity делает это камерами с Viewport Rect, `PlayerInput` по 
    отбрасывает тени и отсекается как общие, но только в проходе своего
    вида. `FrameView::new(camera, rect).with_draws(draws)`.
 2. **Геймпад по устройству (PlayerInput).** Окно больше не выбрасывает
-   id геймпада gilrs: `PadSlots` даёт каждому слот игрока по порядку
+   id устройства (бэкенды — docs/gamepads.md: GameController на macOS и
+   iOS, gilrs на остальных): `PadSlots` даёт каждому слот игрока по порядку
    подключения; ушедший держит слот пустым, вернувшийся (или следующий
    новый) занимает наименьший пустой. События `PadDownOn { pad, button }`,
    `PadUpOn`, `PadMovedOn { pad, axis, value }`, `PadConnected(slot)`,

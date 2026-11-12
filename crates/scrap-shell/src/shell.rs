@@ -106,6 +106,13 @@ pub struct WindowConfig {
     /// game's own commands. `SCRAP_CONTROL=1` (or a path) by default;
     /// none, the default without it. Never in a browser or on a phone.
     pub control: Option<std::path::PathBuf>,
+    /// Gamepads read while the window is in the background (another app,
+    /// the editor in front): off by default — a pad in the hands is for
+    /// the window in front. `SCRAP_PADS_BACKGROUND=1`.
+    pub pads_in_background: bool,
+    /// Where an analog trigger's pull counts as its button
+    /// (`PadButton::LeftTrigger`): half way, back up below 40 %.
+    pub triggers: scrap_core::input::TriggerThreshold,
 }
 
 /// The control socket `SCRAP_CONTROL` asks for, where there can be one.
@@ -137,6 +144,8 @@ impl Default for WindowConfig {
             },
             control: control_from_env(),
             letterbox: None,
+            pads_in_background: std::env::var("SCRAP_PADS_BACKGROUND").is_ok_and(|v| v != "0"),
+            triggers: scrap_core::input::TriggerThreshold::default(),
         }
     }
 }
@@ -182,6 +191,11 @@ pub struct Context<'a> {
     /// insets in pixels from its edges (left, top, right, bottom). Zero
     /// where the whole window is the game's (a desktop's, a page's).
     pub safe_area: glam::Vec4,
+    /// What the game asks of its pads' outputs — light bar, player LEDs,
+    /// rumble, haptics, trigger effects, motion sensors — by player slot
+    /// ([`scrap_core::input::PadFeedback`]); also [`Context::rumble`] and
+    /// its kin. Sent as the next frame begins, only what changed.
+    pub pads: &'a mut scrap_core::input::PadFeedback,
     /// Input the game asked to be played ([`Context::inject`]).
     injected: Vec<(u32, InputEvent)>,
     quit: bool,
@@ -272,6 +286,30 @@ impl Context<'_> {
     /// with the control socket on; nothing otherwise.
     pub fn inject(&mut self, after: u32, event: InputEvent) {
         self.injected.push((after, event));
+    }
+
+    /// Rumble the pad in `slot`: `low` the heavy motor, `high` the light
+    /// one, 0..1, for `seconds` (replacing its rumble before). Nothing on a
+    /// pad or backend without it.
+    pub fn rumble(&mut self, slot: usize, low: f32, high: f32, seconds: f32) {
+        self.pads.rumble(slot, low, high, seconds);
+    }
+
+    /// A short haptic on the pad in `slot` ([`scrap_core::input::Haptic::tap`]).
+    pub fn haptic(&mut self, slot: usize, haptic: scrap_core::input::Haptic) {
+        self.pads.haptic(slot, haptic);
+    }
+
+    /// The light bar of the pad in `slot`, 0..1 RGB, held until set again;
+    /// a colour set each frame is fine (it is sent as it changes, at most
+    /// 30 times a second). By default each pad shows its player's colour.
+    pub fn set_pad_light(&mut self, slot: usize, rgb: [f32; 3]) {
+        self.pads.set_light(slot, rgb);
+    }
+
+    /// A DualSense trigger's resistance on the pad in `slot`.
+    pub fn set_trigger_effect(&mut self, slot: usize, side: scrap_core::input::TriggerSide, effect: scrap_core::input::TriggerEffect) {
+        self.pads.set_trigger_effect(slot, side, effect);
     }
 
     pub fn aspect(&self) -> f32 {
@@ -447,14 +485,9 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         last_steps: Duration::ZERO,
         loop_times: scrap_core::perf::Profiler::new(600),
         say_times: std::env::var_os("SCRAP_LOOP_TIMES").map(|_| Instant::now()),
-        pads: match gilrs::Gilrs::new() {
-            Ok(pads) => Some((pads, scrap_core::input::PadSlots::new())),
-            Err(e) => {
-                eprintln!("no gamepads: {e}");
-                None
-            }
-        },
-        page_slots: scrap_core::input::PadSlots::new(),
+        pads: None,
+        slots: scrap_core::input::PadSlots::new(),
+        feedback: scrap_core::input::PadFeedback::new(),
         captured: false,
         wants_capture: false,
         focused: true,
@@ -477,6 +510,12 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         ui_input: Vec::new(),
     };
     shell.touch_pad = shell.config.touch_pad.clone().map(crate::touch_pad::TouchPad::new);
+    // One backend for the platform (`SCRAP_PADS` to choose): a pad is
+    // never read twice.
+    shell.pads = crate::pads::open(crate::pads::chosen(), shell.config.pads_in_background);
+    if let Some(pads) = shell.pads.as_mut() {
+        pads.set_thresholds(shell.config.triggers);
+    }
     #[cfg(target_os = "ios")]
     crate::ios::register();
     #[cfg(not(target_arch = "wasm32"))]
@@ -645,12 +684,15 @@ struct Shell<G: Game> {
     /// `SCRAP_LOOP_TIMES`: the loop's times to stderr every few seconds,
     /// and when it last said them.
     say_times: Option<Instant>,
-    /// Gamepads, and the player slot each is in. `None` where the platform
-    /// has no way to ask — the game still runs, on keyboard and mouse.
-    pads: Option<(gilrs::Gilrs, scrap_core::input::PadSlots)>,
-    /// The page's pad's slot (or the glass's, [`TouchMode::Pad`](crate::touch_pad::TouchMode))
-    /// where there are no `pads` to share theirs.
-    page_slots: scrap_core::input::PadSlots,
+    /// The gamepads' backend ([`crate::pads`]: GameController on macOS and
+    /// iOS, gilrs elsewhere). `None` where the platform has no way to ask
+    /// — the game still runs, on keyboard, mouse and touch.
+    pads: Option<Box<dyn crate::pads::PadSource>>,
+    /// The player slot each pad is in — real ones, the page's and the
+    /// glass's ([`TouchMode::Pad`](crate::touch_pad::TouchMode)) alike.
+    slots: scrap_core::input::PadSlots,
+    /// What the game asks of the pads' outputs ([`Context::pads`]).
+    feedback: scrap_core::input::PadFeedback,
     /// The pointer is captured ([`Context::capture_cursor`]).
     captured: bool,
     /// What the game last asked of the pointer: captured only while the
@@ -700,6 +742,7 @@ impl<G: Game> Shell<G> {
         input: &'a Input,
         captured: bool,
         loop_times: &'a scrap_core::perf::Profiler,
+        pads: &'a mut scrap_core::input::PadFeedback,
     ) -> Context<'a> {
         let drawing = state.drawing.as_deref_mut().expect("back from the render thread");
         Context {
@@ -714,6 +757,7 @@ impl<G: Game> Shell<G> {
             commands: &[],
             fullscreen: !SCREEN_IS_GIVEN && state.window.fullscreen().is_some(),
             safe_area: safe_area(&state.window),
+            pads,
             injected: Vec::new(),
             quit: false,
             capture: None,
@@ -975,7 +1019,7 @@ impl<G: Game> Shell<G> {
         // Before this frame's steps — though with a render thread the steps
         // run beside the last frame's drawing were the old code's.
         if PATCHED.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times, &mut self.feedback);
             let game = &mut self.game;
             hot(|| game.patched(&mut ctx));
             quit |= ctx.quit;
@@ -1009,7 +1053,7 @@ impl<G: Game> Shell<G> {
         feed_ui(&mut self.game, &mut self.ui_input, size);
 
         let start = Instant::now();
-        let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+        let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times, &mut self.feedback);
         let game = &mut self.game;
         let frame = hot(|| game.frame(&mut ctx));
         let frame = match content {
@@ -1029,7 +1073,7 @@ impl<G: Game> Shell<G> {
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
             // The game's own commands, with the frame's context.
-            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times, &mut self.feedback);
             if let Some(desk) = self.desk.as_mut() {
                 let game = &mut self.game;
                 desk_game(desk, game, &mut ctx);
@@ -1442,6 +1486,23 @@ fn desk_before(desk: &mut control::Desk, input: &mut Input, ui_input: &mut Vec<I
                 r.drawn_then = drawn;
                 desk.waiting.push(r);
             }
+            "pads" => {
+                let slots: Vec<Value> = input
+                    .pads()
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, p)| {
+                        let mut held: Vec<String> = p.held_buttons().map(|b| format!("{b:?}")).collect();
+                        held.sort();
+                        control::json::json!({
+                            "slot": slot, "connected": p.connected(), "kind": format!("{:?}", p.kind()),
+                            "glyphs": format!("{:?}", p.kind().glyphs()), "info": p.info(), "held": held,
+                            "axes": p.raw_axes().map(|(a, v)| (format!("{a:?}"), v)).collect::<std::collections::BTreeMap<_, _>>(),
+                        })
+                    })
+                    .collect();
+                r.answer(Ok(control::json::json!({ "pads": slots, "backend": crate::pads::chosen().name() })));
+            }
             "perf" => {
                 let n = arg("frames").unwrap_or(240.0).max(1.0) as usize;
                 let recent: Vec<&(f32, u32, f32)> = recent.iter().rev().take(n).collect();
@@ -1562,7 +1623,7 @@ impl<G: Game> Shell<G> {
     fn draw_debugged(&mut self, size: (u32, u32)) {
         let Some(state) = self.state.as_mut() else { return };
         if self.frozen.is_none() {
-            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times);
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured, &self.loop_times, &mut self.feedback);
             let game = &mut self.game;
             self.frozen = Some(hot(|| game.frame(&mut ctx)));
         }
@@ -1591,10 +1652,7 @@ impl<G: Game> Shell<G> {
     /// What the glass's pad said, as a pad of its own: its slot taken or
     /// left, its sticks and buttons on that slot.
     fn glass(&mut self, said: Vec<PagePad>) {
-        let slots = match self.pads.as_mut() {
-            Some((_, slots)) => slots,
-            None => &mut self.page_slots,
-        };
+        let slots = &mut self.slots;
         let events: Vec<InputEvent> = said.into_iter().flat_map(|s| page_pad_events(slots, s)).collect();
         for event in events {
             self.input.handle(&event);
@@ -1642,7 +1700,7 @@ impl<G: Game> Shell<G> {
         if self.touch_pad.as_ref().is_some_and(|p| p.mode() == TouchMode::Pad && p.shown()) {
             self.glass(vec![PagePad::Shown(true)]);
         }
-        let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured, &self.loop_times);
+        let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured, &self.loop_times, &mut self.feedback);
         self.game.start(&mut ctx);
         startup("the game started");
         if let Some(on) = ctx.capture {
@@ -1964,6 +2022,11 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             return;
         }
         self.suspended = true;
+        // Real pads: haptics stop, everything held let go.
+        if let Some(pads) = self.pads.as_mut() {
+            pads.suspend();
+            self.input.handle(&InputEvent::FocusLost);
+        }
         if let Some(pad) = self.touch_pad.as_mut() {
             let glass = pad.mode() == TouchMode::Pad;
             let events = pad.release_all();
@@ -2079,37 +2142,33 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         #[cfg(target_arch = "wasm32")]
         for said in crate::web::drain() {
-            let slots = match self.pads.as_mut() {
-                Some((_, slots)) => slots,
-                None => &mut self.page_slots,
-            };
-            for event in page_pad_events(slots, said) {
+            for event in page_pad_events(&mut self.slots, said) {
                 self.input.handle(&event);
                 self.ui_input.push(event);
             }
         }
-        if let Some((pads, slots)) = self.pads.as_mut() {
-            // Pads in before the loop began say nothing of it: they take
-            // their slots first, in the platform's order.
-            for (id, _) in pads.gamepads() {
-                let device = usize::from(id) as u64;
-                if slots.slot(device).is_none() {
-                    let slot = slots.connect(device);
-                    self.input.handle(&InputEvent::PadConnected(slot));
-                }
+        if let Some(pads) = self.pads.as_mut() {
+            // In front, or asked for in the background; never while a
+            // phone's app is away.
+            #[allow(unused_mut)]
+            let mut live = self.focused || self.config.pads_in_background;
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            {
+                live &= !self.suspended;
             }
-            let mut pressed = false;
-            while let Some(event) = pads.next_event() {
-                let device = usize::from(event.id) as u64;
-                pressed |= matches!(event.event, gilrs::EventType::ButtonPressed(..));
-                for event in pad_events(slots, device, event.event) {
-                    self.input.handle(&event);
-                }
+            let mut said = Vec::new();
+            let pressed = pads.poll(&mut self.slots, live, &mut said);
+            for event in &said {
+                self.input.handle(event);
             }
+            // What the game asked of the pads last frame.
+            pads.apply(&self.slots, &mut self.feedback, pad_clock());
             // A real pad in the hands: the glass's steps aside.
             if pressed {
                 self.hide_glass();
             }
+        } else {
+            self.feedback.take_pulses();
         }
         // Asking for a redraw here rather than drawing here is what keeps the
         // frame on the compositor's schedule instead of ahead of it.
@@ -2166,88 +2225,11 @@ fn running(gpu: Gpu, window: Arc<Window>) -> Result<Running, String> {
     })
 }
 
-/// A gilrs button as ours, by where it is on the pad.
-fn pad_button(b: gilrs::Button) -> Option<crate::input::PadButton> {
-    use crate::input::PadButton;
-    use gilrs::Button;
-    Some(match b {
-        Button::South => PadButton::South,
-        Button::East => PadButton::East,
-        Button::West => PadButton::West,
-        Button::North => PadButton::North,
-        // gilrs calls the bumpers triggers and the triggers "2".
-        Button::LeftTrigger => PadButton::LeftBumper,
-        Button::RightTrigger => PadButton::RightBumper,
-        Button::LeftTrigger2 => PadButton::LeftTrigger,
-        Button::RightTrigger2 => PadButton::RightTrigger,
-        Button::Select => PadButton::Select,
-        Button::Start => PadButton::Start,
-        Button::LeftThumb => PadButton::LeftStick,
-        Button::RightThumb => PadButton::RightStick,
-        Button::DPadUp => PadButton::DPadUp,
-        Button::DPadDown => PadButton::DPadDown,
-        Button::DPadLeft => PadButton::DPadLeft,
-        Button::DPadRight => PadButton::DPadRight,
-        _ => return None,
-    })
-}
-
-/// A gilrs stick axis as ours; gilrs already has up and right positive.
-fn pad_stick(a: gilrs::Axis) -> Option<crate::input::PadAxis> {
-    use crate::input::PadAxis;
-    use gilrs::Axis;
-    Some(match a {
-        Axis::LeftStickX => PadAxis::LeftX,
-        Axis::LeftStickY => PadAxis::LeftY,
-        Axis::RightStickX => PadAxis::RightX,
-        Axis::RightStickY => PadAxis::RightY,
-        _ => return None,
-    })
-}
-
-/// Turn one gilrs event into ours: triggers as both a value and a button.
-fn translate_pad(event: gilrs::EventType) -> Option<InputEvent> {
-    use crate::input::PadAxis;
-    use gilrs::{Button, EventType};
-    match event {
-        EventType::ButtonPressed(b, _) => pad_button(b).map(InputEvent::PadDown),
-        EventType::ButtonReleased(b, _) => pad_button(b).map(InputEvent::PadUp),
-        EventType::ButtonChanged(Button::LeftTrigger2, value, _) => Some(InputEvent::PadMoved {
-            axis: PadAxis::LeftTrigger,
-            value,
-        }),
-        EventType::ButtonChanged(Button::RightTrigger2, value, _) => Some(InputEvent::PadMoved {
-            axis: PadAxis::RightTrigger,
-            value,
-        }),
-        EventType::AxisChanged(axis, value, _) => {
-            pad_stick(axis).map(|axis| InputEvent::PadMoved { axis, value })
-        }
-        _ => None,
-    }
-}
-
-/// One gilrs event of a device as ours, by the player slot the device is
-/// in ([`scrap_core::input::PadSlots`]): a pad coming or going, or its
-/// button or stick on its slot — which the merged pad sees as well.
-fn pad_events(
-    slots: &mut scrap_core::input::PadSlots,
-    device: u64,
-    event: gilrs::EventType,
-) -> Vec<InputEvent> {
-    use gilrs::EventType;
-    match event {
-        EventType::Connected => vec![InputEvent::PadConnected(slots.connect(device))],
-        EventType::Disconnected => slots
-            .disconnect(device)
-            .map(InputEvent::PadDisconnected)
-            .into_iter()
-            .collect(),
-        other => {
-            let pad = slots.slot(device).unwrap_or_else(|| slots.connect(device));
-            translate_pad(other).and_then(|e| on_slot(pad, e)).into_iter().collect()
-        }
-    }
+/// Real seconds since the pads were first asked: the light's pace, which a
+/// paused or slowed game clock must not hold up.
+fn pad_clock() -> f64 {
+    static BEGAN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    BEGAN.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
 /// What the page's pad on the screen said (the browser's `web.rs`): it
@@ -2268,7 +2250,7 @@ fn page_pad_events(slots: &mut scrap_core::input::PadSlots, said: PagePad) -> Ve
     match said {
         PagePad::Shown(true) => match slots.slot(PAGE_PAD) {
             Some(_) => Vec::new(),
-            None => vec![InputEvent::PadConnected(slots.connect(PAGE_PAD))],
+            None => screen_pad(slots.connect(PAGE_PAD)).to_vec(),
         },
         PagePad::Shown(false) => slots.disconnect(PAGE_PAD).map(InputEvent::PadDisconnected).into_iter().collect(),
         PagePad::Event(event) => {
@@ -2277,7 +2259,7 @@ fn page_pad_events(slots: &mut scrap_core::input::PadSlots, said: PagePad) -> Ve
                 Some(pad) => pad,
                 None => {
                     let pad = slots.connect(PAGE_PAD);
-                    out.push(InputEvent::PadConnected(pad));
+                    out.extend(screen_pad(pad));
                     pad
                 }
             };
@@ -2287,14 +2269,13 @@ fn page_pad_events(slots: &mut scrap_core::input::PadSlots, said: PagePad) -> Ve
     }
 }
 
-/// A pad's event as one of slot `pad`'s.
-fn on_slot(pad: usize, event: InputEvent) -> Option<InputEvent> {
-    match event {
-        InputEvent::PadDown(button) => Some(InputEvent::PadDownOn { pad, button }),
-        InputEvent::PadUp(button) => Some(InputEvent::PadUpOn { pad, button }),
-        InputEvent::PadMoved { axis, value } => Some(InputEvent::PadMovedOn { pad, axis, value }),
-        _ => None,
-    }
+use crate::pads::gilrs_pads::on_slot;
+
+/// The pad on the screen comes into `slot`: what it is — a pad of its
+/// own, drawn with ✕ ○ □ △.
+fn screen_pad(slot: usize) -> [InputEvent; 2] {
+    let info = scrap_core::input::PadInfo::new(scrap_core::input::PadKind::Screen, "screen");
+    [InputEvent::PadConnected(slot), InputEvent::PadInfo { pad: slot, info }]
 }
 
 /// Turn one winit event into ours. A list, because a single winit event can
@@ -2454,40 +2435,16 @@ fn key_from(code: KeyCode) -> Key {
 mod pad_tests {
     use super::*;
     use crate::input::{PadAxis, PadButton};
-    use gilrs::{Axis, Button, EventType};
-
-    #[test]
-    fn a_pad_is_read_by_position() {
-        assert_eq!(pad_button(Button::South), Some(PadButton::South));
-        assert_eq!(pad_button(Button::LeftTrigger), Some(PadButton::LeftBumper));
-        assert_eq!(
-            pad_button(Button::RightTrigger2),
-            Some(PadButton::RightTrigger)
-        );
-        assert_eq!(pad_stick(Axis::LeftStickY), Some(PadAxis::LeftY));
-        assert_eq!(pad_stick(Axis::LeftZ), None);
-        assert_eq!(translate_pad(EventType::Connected), None);
-    }
-
-    #[test]
-    fn each_pad_reports_on_its_own_slot() {
-        let mut slots = scrap_core::input::PadSlots::new();
-        assert_eq!(pad_events(&mut slots, 7, EventType::Connected), [InputEvent::PadConnected(0)]);
-        assert_eq!(pad_events(&mut slots, 3, EventType::Connected), [InputEvent::PadConnected(1)]);
-        assert_eq!(
-            on_slot(1, InputEvent::PadDown(PadButton::South)),
-            Some(InputEvent::PadDownOn { pad: 1, button: PadButton::South })
-        );
-        assert_eq!(pad_events(&mut slots, 7, EventType::Disconnected), [InputEvent::PadDisconnected(0)]);
-        assert_eq!(pad_events(&mut slots, 7, EventType::Disconnected), [], "gone already");
-    }
 
     #[test]
     fn the_pages_pad_is_a_pad_of_its_own() {
         let mut slots = scrap_core::input::PadSlots::new();
-        assert_eq!(pad_events(&mut slots, 7, EventType::Connected), [InputEvent::PadConnected(0)]);
-        // Shown: the next slot, said once.
-        assert_eq!(page_pad_events(&mut slots, PagePad::Shown(true)), [InputEvent::PadConnected(1)]);
+        assert_eq!(slots.connect(7), 0, "a real pad first");
+        // Shown: the next slot, said once, as the screen's pad.
+        assert_eq!(page_pad_events(&mut slots, PagePad::Shown(true)), screen_pad(1));
+        let mut input = Input::new();
+        screen_pad(1).iter().for_each(|e| input.handle(e));
+        assert_eq!(input.pad(1).unwrap().kind(), scrap_core::input::PadKind::Screen);
         assert_eq!(page_pad_events(&mut slots, PagePad::Shown(true)), []);
         assert_eq!(
             page_pad_events(&mut slots, PagePad::Event(InputEvent::PadDown(PadButton::South))),
@@ -2501,7 +2458,7 @@ mod pad_tests {
         assert_eq!(page_pad_events(&mut slots, PagePad::Shown(false)), [InputEvent::PadDisconnected(1)]);
         assert_eq!(
             page_pad_events(&mut slots, PagePad::Event(InputEvent::PadUp(PadButton::South))),
-            [InputEvent::PadConnected(1), InputEvent::PadUpOn { pad: 1, button: PadButton::South }]
+            [screen_pad(1)[0].clone(), screen_pad(1)[1].clone(), InputEvent::PadUpOn { pad: 1, button: PadButton::South }]
         );
     }
 }

@@ -33,7 +33,8 @@ scrap — запросы к её миру ECS (компоненты движка
    (события как от устройства, каждое в свой кадр: `["KeyDown(Space)",
    [6,"KeyUp(Space)"]]`), `pause` / `resume` / `step steps=N` / `frames
    frames=N` / `time_scale`, `perf` (последние кадры: fps, avg, p50, p99,
-   худший, шагов на кадр, GPU), `script`, `quit`.
+   худший, шагов на кадр, GPU), `pads` (геймпад каждого слота: вид,
+   бэкенд, батарея, зажатое — docs/gamepads.md), `script`, `quit`.
 3. **Мир** (`scrap::world_control::WorldControl`) — одна строка в
    `Game::control` игры (kitchen: `self.world_control.answer(&mut
    self.world, &self.components, cmd, args)`). Сущность — номер

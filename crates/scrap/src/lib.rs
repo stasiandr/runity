@@ -138,6 +138,9 @@ pub use scrap_animation::graph_text;
 pub use scrap_animation::{keys, overlay};
 pub use scrap_core::id;
 pub use scrap_core::input;
+/// A gamepad's kind, abilities and the feedback a game sends it (light,
+/// rumble, haptics, trigger effects): docs/gamepads.md.
+pub use scrap_core::pad;
 pub use scrap_core::layers;
 pub use scrap_core::library;
 pub use scrap_core::links;

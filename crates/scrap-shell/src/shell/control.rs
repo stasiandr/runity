@@ -75,7 +75,7 @@ pub(super) enum Until {
 }
 
 /// The shell's own commands (the rest are the game's: `help` lists all).
-pub const SHELL_COMMANDS: [[&str; 2]; 11] = [
+pub const SHELL_COMMANDS: [[&str; 2]; 12] = [
     ["script", "source=… | path=file.rhai [lib=helpers.rhai] [timeout=600]: a Rhai program of these commands, its cases and asserts (one at a time)"],
     ["script_cancel", "the script under way stops at its next step"],
     ["hello", "the game, the drawable's size, paused or not, the turn and the step"],
@@ -86,6 +86,7 @@ pub const SHELL_COMMANDS: [[&str; 2]; 11] = [
     ["step", "steps=N: so many fixed steps, paused"],
     ["frames", "frames=N: answered N frames later"],
     ["time_scale", "scale=0.5"],
+    ["pads", "each player slot's pad: connected, kind, name, backend, abilities, battery, held buttons and axes"],
     ["perf", "[frames=240]: the last frames' fps, avg, p50, p99, longest, steps a frame, GPU ms, size"],
 ];
 

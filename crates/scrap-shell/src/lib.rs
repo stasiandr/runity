@@ -1,10 +1,13 @@
 //! The desktop shell: a plain window for running a game without the
-//! editor — winit's window, gilrs' gamepads, the fixed step and the frame,
+//! editor — winit's window, the gamepads (`pads`), the fixed step and the frame,
 //! hot patches through subsecond ([`shell::run`]). The engine never
 //! creates a window (it is a guest); this module is the host that does,
 //! on the desktop. The editor, iOS and Android are hosts of their own.
 
 pub mod shell;
+/// Gamepads: GameController on macOS and iOS, gilrs elsewhere; slots,
+/// buttons by position, and the feedback a game sends them.
+pub mod pads;
 /// Sticks and buttons drawn on a touch screen, fed in as a pad's.
 pub mod touch_pad;
 /// The Activity's app, the data unpacked from the APK, logcat.

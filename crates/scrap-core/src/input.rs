@@ -145,6 +145,26 @@ pub enum PadButton {
     DPadDown,
     DPadLeft,
     DPadRight,
+    /// The pad's own button (PS, Xbox, Home) — where the platform lets a
+    /// game have it.
+    Home,
+    /// A DualSense's or DualShock's touchpad pressed down.
+    Touchpad,
+    /// A DualSense's microphone button — where the platform hands it to
+    /// games ([`crate::pad::PadCaps::mute_button`]).
+    Mute,
+    /// A Share button apart from Select (Xbox Series' middle one). A
+    /// DualSense's Create is [`PadButton::Select`].
+    Share,
+    /// Back paddles (Xbox Elite, DualSense Edge), in the platform's order.
+    Paddle1,
+    Paddle2,
+    Paddle3,
+    Paddle4,
+    /// A finger on the touchpad (first, second): where, in
+    /// `PadAxis::Finger1X` and its kin while it is down.
+    Finger1,
+    Finger2,
 }
 
 /// A gamepad's analog inputs. Sticks run −1..1 with up and right positive;
@@ -157,7 +177,29 @@ pub enum PadAxis {
     RightY,
     LeftTrigger,
     RightTrigger,
+    /// A touchpad finger's place, −1..1, right and up positive, while
+    /// `PadButton::Finger1` (or `Finger2`) is held. No dead zone.
+    Finger1X,
+    Finger1Y,
+    Finger2X,
+    Finger2Y,
 }
+
+impl PadAxis {
+    /// The axes that run 0..1 and have no dead zone: triggers.
+    pub fn is_trigger(self) -> bool {
+        matches!(self, PadAxis::LeftTrigger | PadAxis::RightTrigger)
+    }
+    /// A touchpad finger's coordinate: no dead zone.
+    pub fn is_finger(self) -> bool {
+        matches!(self, PadAxis::Finger1X | PadAxis::Finger1Y | PadAxis::Finger2X | PadAxis::Finger2Y)
+    }
+}
+
+pub use crate::pad::{
+    Battery, BatteryState, Haptic, HapticPlace, PadCaps, PadFeedback, PadGlyphs, PadInfo, PadKind, PadMotion, PadPulse, Rumble,
+    TriggerEffect, TriggerSide, TriggerThreshold,
+};
 
 /// How far a stick has to move before it counts. Every stick rests a little
 /// off centre, and a character that creeps while nobody touches the pad is
@@ -219,6 +261,19 @@ pub enum InputEvent {
     /// go, and the slot waits for it ([`PadSlots`]).
     PadConnected(usize),
     PadDisconnected(usize),
+    /// What the pad in a slot is: kind, name, backend, abilities, battery
+    /// ([`PadState::info`]). Sent when it comes and when its battery
+    /// changes; a script can send it to be a DualSense.
+    PadInfo {
+        pad: usize,
+        info: PadInfo,
+    },
+    /// A slot's pad's motion sensors, while switched on
+    /// ([`PadFeedback::set_motion`]).
+    PadMotion {
+        pad: usize,
+        motion: PadMotion,
+    },
     /// A finger on a touch screen, by the id the platform gives it for as
     /// long as it is down.
     Touch {
@@ -266,9 +321,30 @@ pub struct PadState {
     pressed: HashSet<PadButton>,
     released: HashSet<PadButton>,
     axes: std::collections::HashMap<PadAxis, f32>,
+    /// The axes as the frame before ended: a threshold crossed this frame.
+    axes_before: std::collections::HashMap<PadAxis, f32>,
+    info: Option<PadInfo>,
+    motion: Option<PadMotion>,
 }
 
 impl PadState {
+    /// What the pad in this slot is (kind, name, backend, abilities,
+    /// battery) — `None` until the backend said (a script's pad).
+    pub fn info(&self) -> Option<&PadInfo> {
+        self.info.as_ref()
+    }
+    /// Its kind: the glyphs to draw ([`PadKind::glyphs`]).
+    pub fn kind(&self) -> PadKind {
+        self.info.as_ref().map_or(PadKind::Generic, |i| i.kind)
+    }
+    /// Its motion sensors, while switched on.
+    pub fn motion(&self) -> Option<&PadMotion> {
+        self.motion.as_ref()
+    }
+    /// An analog input as it was when the frame before ended.
+    pub fn axis_before(&self, axis: PadAxis) -> f32 {
+        shape(axis, self.axes_before.get(&axis).copied().unwrap_or(0.0))
+    }
     /// Whether a pad is in this slot now. A slot whose pad went keeps its
     /// number, empty, until it (or the next pad) comes back.
     pub fn connected(&self) -> bool {
@@ -283,6 +359,14 @@ impl PadState {
     pub fn released(&self, button: PadButton) -> bool {
         self.released.contains(&button)
     }
+    /// Buttons held now.
+    pub fn held_buttons(&self) -> impl Iterator<Item = PadButton> + '_ {
+        self.held.iter().copied()
+    }
+    /// Every axis it reported, as it reported it (no dead zone).
+    pub fn raw_axes(&self) -> impl Iterator<Item = (PadAxis, f32)> + '_ {
+        self.axes.iter().map(|(a, v)| (*a, *v))
+    }
     /// Buttons that went down this frame.
     pub fn pressed_buttons(&self) -> impl Iterator<Item = PadButton> + '_ {
         self.pressed.iter().copied()
@@ -290,12 +374,7 @@ impl PadState {
     /// An analog input, the [`DEAD_ZONE`] taken out of the sticks (see
     /// [`Input::pad_axis`]).
     pub fn axis(&self, axis: PadAxis) -> f32 {
-        let value = self.raw(axis);
-        match axis {
-            PadAxis::LeftTrigger | PadAxis::RightTrigger => value.clamp(0.0, 1.0),
-            _ if value.abs() < DEAD_ZONE => 0.0,
-            _ => value.signum() * (value.abs() - DEAD_ZONE) / (1.0 - DEAD_ZONE),
-        }
+        shape(axis, self.raw(axis))
     }
     fn raw(&self, axis: PadAxis) -> f32 {
         self.axes.get(&axis).copied().unwrap_or(0.0)
@@ -303,6 +382,7 @@ impl PadState {
     fn begin_frame(&mut self) {
         self.pressed.clear();
         self.released.clear();
+        self.axes_before.clone_from(&self.axes);
     }
     fn down(&mut self, button: PadButton) {
         if self.held.insert(button) {
@@ -320,6 +400,21 @@ impl PadState {
             self.released.insert(button);
         }
         self.axes.clear();
+        self.motion = None;
+    }
+}
+
+/// An axis as a game reads it: triggers 0..1, finger places as they are,
+/// sticks with the [`DEAD_ZONE`] taken out and stretched back to −1..1.
+fn shape(axis: PadAxis, value: f32) -> f32 {
+    if axis.is_trigger() {
+        value.clamp(0.0, 1.0)
+    } else if axis.is_finger() {
+        value.clamp(-1.0, 1.0)
+    } else if value.abs() < DEAD_ZONE {
+        0.0
+    } else {
+        value.signum() * (value.abs() - DEAD_ZONE) / (1.0 - DEAD_ZONE)
     }
 }
 
@@ -365,6 +460,11 @@ impl PadSlots {
     /// The slot a connected device is in.
     pub fn slot(&self, device: u64) -> Option<usize> {
         self.slots.iter().position(|(d, on)| *d == device && *on)
+    }
+
+    /// The device connected in a slot.
+    pub fn device(&self, slot: usize) -> Option<u64> {
+        self.slots.get(slot).filter(|(_, on)| *on).map(|(d, _)| *d)
     }
 }
 
@@ -529,6 +629,8 @@ impl Input {
                     }
                 }
             }
+            InputEvent::PadInfo { pad, info } => self.heard(*pad).info = Some(info.clone()),
+            InputEvent::PadMotion { pad, motion } => self.heard(*pad).motion = Some(*motion),
             InputEvent::FocusLost => {
                 self.pad.let_go();
                 for pad in &mut self.pads {

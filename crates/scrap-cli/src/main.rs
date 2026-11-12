@@ -167,6 +167,11 @@ scrap frame-debug SCENE [PROJECT] [--seconds S] [--stop N] [--size WxH] [--out F
     plays the scene S seconds first, as the game's fixed steps do: its
     animators started (a character in its clip's pose, not the bind pose),
     physics, ropes and water run. What did not resolve is said on stderr.
+scrap pads [--seconds N] [--light RRGGBB] [--rumble] [--trigger MODE] [--motion] [--backend gilrs]
+    The gamepads as a game reads them: each with its slot, kind, backend
+    and what it can do (light, rumble, adaptive triggers, touchpad, motion,
+    battery, mic button), then every button and axis change for N seconds
+    (20). The flags exercise the outputs (docs/gamepads.md).
 scrap world <command> [key=value …]
     A running game started with its control on (SCRAP_CONTROL=1): its
     world queried, read, written, snapshotted, waited on; shots, input,
@@ -437,6 +442,7 @@ fn run() -> Result<ExitCode> {
         }
         "rebuild-time" => rebuild_time(&rest),
         "perf" => perf(&rest),
+        "pads" => scrap_cli::pads::run(&rest),
         #[cfg(unix)]
         "world" => scrap_cli::world::run(&rest),
         "frame-debug" => frame_debug(&rest),

@@ -11,6 +11,7 @@ pub mod lines;
 pub mod merge;
 pub mod migrate;
 pub mod modules;
+pub mod pads;
 pub mod perf;
 pub mod rebuild;
 pub mod run;

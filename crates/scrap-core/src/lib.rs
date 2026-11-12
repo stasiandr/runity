@@ -31,6 +31,8 @@ pub mod embed;
 pub mod hash;
 pub mod id;
 pub mod input;
+/// What a pad is and the feedback a game sends it (light, rumble, triggers).
+pub mod pad;
 pub mod jobs;
 pub mod layout;
 pub mod layers;

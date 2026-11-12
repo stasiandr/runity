@@ -82,6 +82,11 @@ pub enum Binding {
     Key(Key),
     Mouse(MouseButton),
     Pad(PadButton),
+    /// A pad's analog input past a point, in percent: `PadPast(RightTrigger,
+    /// 30)` — the right trigger pulled past 30 %; `PadPast(LeftY, -50)` —
+    /// the left stick pushed down past half. Held while past it, pressed
+    /// the frame it crosses; [`Actions::value_by`] reads how far.
+    PadPast(PadAxis, i8),
 }
 
 impl Binding {
@@ -90,7 +95,7 @@ impl Binding {
         match self {
             Binding::Key(_) => Device::Keyboard,
             Binding::Mouse(_) => Device::Mouse,
-            Binding::Pad(_) => Device::Gamepad,
+            Binding::Pad(_) | Binding::PadPast(..) => Device::Gamepad,
         }
     }
 }
@@ -360,7 +365,7 @@ impl Actions {
                 // A side's own pad bindings are as anyone's: sides are keys.
                 Binding::Key(_) => seat.side_counts(side),
                 Binding::Mouse(_) => seat.mouse,
-                Binding::Pad(_) => seat.pads != Pads::None,
+                Binding::Pad(_) | Binding::PadPast(..) => seat.pads != Pads::None,
             }
     }
 
@@ -459,7 +464,35 @@ impl Actions {
             Binding::Key(key) => input.pressed(key),
             Binding::Mouse(button) => input.mouse_pressed(button),
             Binding::Pad(button) => pad.is_some_and(|p| p.pressed(button)),
+            Binding::PadPast(axis, at) => pad.is_some_and(|p| past(p.axis(axis), at) && !past(p.axis_before(axis), at)),
         })
+    }
+
+    /// How far an action is in, 0..1: 1 for a key or button held, how far
+    /// past nothing its analog bindings are (`PadPast`: the trigger's own
+    /// travel once past the point, 0 before) — the largest of its bindings.
+    /// What a trigger bound with a threshold reads as its pull.
+    pub fn value(&self, input: &Input, name: &str) -> f32 {
+        self.value_by(input, &Seat::everything(), name)
+    }
+
+    /// [`Actions::value`] for one player.
+    pub fn value_by(&self, input: &Input, seat: &Seat, name: &str) -> f32 {
+        let pad = seat.pad_of(input);
+        self.bindings(seat, name)
+            .iter()
+            .map(|b| match *b {
+                Binding::PadPast(axis, at) => pad.map_or(0.0, |p| {
+                    let v = p.axis(axis);
+                    if past(v, at) {
+                        v.abs()
+                    } else {
+                        0.0
+                    }
+                }),
+                other => f32::from(held(input, seat, other)),
+            })
+            .fold(0.0, f32::max)
     }
 
     /// [`Actions::released`] for one player.
@@ -469,6 +502,7 @@ impl Actions {
             Binding::Key(key) => input.released(key),
             Binding::Mouse(button) => input.mouse_released(button),
             Binding::Pad(button) => pad.is_some_and(|p| p.released(button)),
+            Binding::PadPast(axis, at) => pad.is_some_and(|p| !past(p.axis(axis), at) && past(p.axis_before(axis), at)),
         })
     }
 
@@ -514,7 +548,7 @@ impl Actions {
             .filter(|k| *k != Key::Escape)
             .map(Binding::Key)
             .chain(input.pressed_buttons().map(Binding::Mouse))
-            .chain(input.pressed_pad_buttons().map(Binding::Pad));
+            .chain(input.pressed_pad_buttons().filter(|b| !matches!(b, PadButton::Finger1 | PadButton::Finger2)).map(Binding::Pad));
         let first = found.next()?;
         found.next().is_none().then_some(first)
     }
@@ -616,6 +650,17 @@ fn held(input: &Input, seat: &Seat, binding: Binding) -> bool {
         Binding::Key(key) => input.held(key),
         Binding::Mouse(button) => input.mouse_held(button),
         Binding::Pad(button) => seat.pad_of(input).is_some_and(|p| p.held(button)),
+        Binding::PadPast(axis, at) => seat.pad_of(input).is_some_and(|p| past(p.axis(axis), at)),
+    }
+}
+
+/// Whether `value` is past `at` percent, on `at`'s side of zero.
+fn past(value: f32, at: i8) -> bool {
+    let at = f32::from(at) / 100.0;
+    if at >= 0.0 {
+        value >= at.max(1e-3)
+    } else {
+        value <= at
     }
 }
 
@@ -849,5 +894,35 @@ mod tests {
         let all = Seat::pad(0).with_whole_keyboard();
         assert_eq!(actions.axis_by(&input, &all, "move_x"), 1.0);
         assert!(actions.missing(&["use", "move_x", "pause"]).is_empty());
+    }
+
+    #[test]
+    fn a_trigger_bound_past_a_point_presses_there_and_reads_its_pull() {
+        use crate::input::{PadAxis, PadButton};
+        let map: ActionMap = ron::from_str(r#"(actions: { "aim": [PadPast(LeftTrigger, 30)], "fire": [Pad(RightTrigger)], "duck": [PadPast(LeftY, -50)] })"#).unwrap();
+        let actions = Actions::new(map);
+        let seat = Seat::pad(0);
+        let mut input = Input::new();
+        let pull = |input: &mut Input, axis, value| input.handle(&InputEvent::PadMovedOn { pad: 0, axis, value });
+        pull(&mut input, PadAxis::LeftTrigger, 0.2);
+        assert!(!actions.held_by(&input, &seat, "aim"));
+        assert_eq!(actions.value_by(&input, &seat, "aim"), 0.0);
+        input.begin_frame();
+        pull(&mut input, PadAxis::LeftTrigger, 0.55);
+        assert!(actions.pressed_by(&input, &seat, "aim") && actions.held_by(&input, &seat, "aim"));
+        assert_eq!(actions.value_by(&input, &seat, "aim"), 0.55, "not quantised: the trigger's own pull");
+        input.begin_frame();
+        pull(&mut input, PadAxis::LeftTrigger, 0.8);
+        assert!(!actions.pressed_by(&input, &seat, "aim"), "pressed once, as it crossed");
+        input.begin_frame();
+        pull(&mut input, PadAxis::LeftTrigger, 0.1);
+        assert!(actions.released_by(&input, &seat, "aim") && !actions.held_by(&input, &seat, "aim"));
+        // A stick down past half, on its own side of zero.
+        pull(&mut input, PadAxis::LeftY, -0.9);
+        assert!(actions.held_by(&input, &seat, "duck"));
+        // A digital binding's value is 1 or 0.
+        input.handle(&InputEvent::PadDownOn { pad: 0, button: PadButton::RightTrigger });
+        assert_eq!(actions.value_by(&input, &seat, "fire"), 1.0);
+        assert_eq!(actions.value_by(&input, &Seat::pad(1), "fire"), 0.0, "another seat's pad");
     }
 }
