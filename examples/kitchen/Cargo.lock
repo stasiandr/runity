@@ -2862,8 +2862,10 @@ dependencies = [
  "hecs",
  "kira",
  "rkyv",
+ "rtrb",
  "scrap-core",
  "serde",
+ "symphonia",
  "tracing",
 ]
 
