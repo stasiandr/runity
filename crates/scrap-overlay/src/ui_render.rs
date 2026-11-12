@@ -321,18 +321,22 @@ impl UiRenderer {
                 rect: [q.x, q.y, q.width, q.height],
                 color: q.color.to_array(),
                 shape: [q.radius, q.soft, q.stroke, q.sweep],
-                uv: q.image.map_or([0.0, 0.0, 1.0, 1.0], |(_, uv)| uv),
+                // A plain quad says so by its uv (past 1): it reads no
+                // picture, so it can share any run's.
+                uv: q.image.map_or([2.0, 2.0, 2.0, 2.0], |(_, uv)| uv),
                 color_bottom: q.color_bottom.unwrap_or(q.color).to_array(),
             })
             .collect();
-        // Runs of rectangles with one picture, in the list's order.
+        // Runs of rectangles with one picture, in the list's order; a plain
+        // rectangle reads no picture and joins whatever run it is in, so a
+        // panel's flat parts between its sprites cost no draw of their own.
         let mut runs: Vec<(usize, std::ops::Range<u32>)> = Vec::new();
         for (i, q) in ui.quads.iter().enumerate() {
-            let image = q.image.map_or(0, |(image, _)| image.0 as usize);
-            let image = if image < self.images.len() { image } else { 0 };
-            match runs.last_mut() {
-                Some((last, range)) if *last == image => range.end = i as u32 + 1,
-                _ => runs.push((image, i as u32..i as u32 + 1)),
+            let image = q.image.map(|(image, _)| image.0 as usize).map(|i| if i < self.images.len() { i } else { 0 });
+            match (runs.last_mut(), image) {
+                (Some((_, range)), None) => range.end = i as u32 + 1,
+                (Some((last, range)), Some(image)) if *last == image => range.end = i as u32 + 1,
+                (_, image) => runs.push((image.unwrap_or(0), i as u32..i as u32 + 1)),
             }
         }
         if quads.len() as u64 > self.capacity {

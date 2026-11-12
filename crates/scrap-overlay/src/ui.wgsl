@@ -60,7 +60,9 @@ fn vs(@builtin(vertex_index) index: u32, instance: Instance) -> Output {
 
 @fragment
 fn fs(in: Output) -> @location(0) vec4<f32> {
-    let color = in.color * textureSample(picture, picture_sampler, in.uv);
+    // A plain quad (uv past 1) reads no picture: it shares any run's.
+    let texel = textureSample(picture, picture_sampler, min(in.uv, vec2<f32>(1.0)));
+    let color = select(in.color * texel, in.color, in.uv.x > 1.5);
     let soft = in.shape.x;
     let stroke = in.shape.y;
     let sweep = in.shape.z;

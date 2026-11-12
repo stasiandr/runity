@@ -410,3 +410,26 @@ fn text_can_be_heavier_and_carry_a_shadow() {
     // them all. Never lighter for a heavier weight.
     assert!(lit(&heavy) >= lit(&light), "a heavier weight is never thinner");
 }
+
+#[test]
+fn a_plain_quad_between_pictures_is_drawn_as_itself() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    // Plain quads join the run of the picture before them (one draw); they
+    // must still be their own colour, and the pictures theirs.
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut overlay = UiRenderer::new(&gpu, &target);
+    let red = overlay.add_image(&gpu, 1, 1, &[255, 0, 0, 255]);
+    let mut ui = Ui::new();
+    ui.quad(Quad::new(0.0, 0.0, 64.0, 64.0, Vec4::ONE).image(red, [0.0, 0.0, 1.0, 1.0]));
+    ui.quad(Quad::new(64.0, 0.0, 64.0, 64.0, Vec4::new(0.0, 1.0, 0.0, 1.0)));
+    ui.quad(Quad::new(128.0, 0.0, 64.0, 64.0, Vec4::ONE).image(red, [0.0, 0.0, 1.0, 1.0]));
+    overlay.render(&gpu, &target, &ui);
+    let pixels = target.read_rgba(&gpu);
+    let (a, b, c) = (pixel(&pixels, 30, 30), pixel(&pixels, 96, 30), pixel(&pixels, 160, 30));
+    assert!(a[0] > 250 && a[1] < 5, "the picture: {a:?}");
+    assert!(b[1] > 250 && b[0] < 5, "the plain quad is green, not the picture: {b:?}");
+    assert!(c[0] > 250 && c[1] < 5, "the picture again: {c:?}");
+}
