@@ -569,7 +569,8 @@ impl Project {
         }
         match kind {
             Kind::Scene => self.content().join(MAPS),
-            Kind::Screen => self.content().join("ui/screens"),
+            Kind::Screen | Kind::HtmlScreen => self.content().join("ui/screens"),
+            Kind::Stylesheet => self.content().join("ui"),
             _ => self.content(),
         }
     }
@@ -1950,6 +1951,7 @@ Kinds, by extension — find them anywhere with a glob (`**/*.prefab`):
 *.prefab        one entity subtree per file; a scene places it with `prefab: \"name\"`
 *.scrmat        materials: `(color: \"#rrggbb\")`, sRGB hex
 *.screen.ron    the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
+*.screen.html   screens in HTML, and the *.css they link: flexbox, bound to the game's model by data-bind-* (scrap::html, docs/html-ui.md)
 *.animator.ron  which animation plays when: states and transitions (scrap::animgraph)
 *.clip.ron      clips that move things, not bones — a line's `animator` plays them (scrap::motion)
 *.dialogue.ron  conversations: lines, answers and the flags they set (scrap::dialogue)

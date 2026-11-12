@@ -3665,6 +3665,7 @@ dependencies = [
  "ron",
  "scrap-engine",
  "scrap-import",
+ "scrap-ui",
  "serde",
  "serde_json",
 ]
@@ -3763,6 +3764,7 @@ dependencies = [
  "scrap-soft",
  "scrap-spline",
  "scrap-steam",
+ "scrap-ui",
  "scrap-wires",
  "serde",
  "tracing",
@@ -4009,6 +4011,7 @@ dependencies = [
  "scrap-gpu",
  "scrap-overlay",
  "scrap-render",
+ "scrap-ui",
  "serde_json",
  "subsecond",
  "wasm-bindgen",
@@ -4085,6 +4088,8 @@ dependencies = [
  "resvg",
  "scrap-core",
  "scrap-gpu",
+ "serde",
+ "serde_json",
  "taffy",
  "wgpu",
 ]

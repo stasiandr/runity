@@ -119,8 +119,22 @@ pub struct TextStyle {
     /// 400 regular, 500 medium, 700 bold.
     pub weight: u16,
     pub mono: bool,
+    /// A family the game added ([`crate::Ui::add_font`]) by its name;
+    /// `None` is Inter (or the monospace, with `mono`).
+    pub family: Option<std::sync::Arc<str>>,
     /// One line, cut at the node's width rather than wrapped.
     pub nowrap: bool,
+    /// Where the lines sit across the node's box: CSS's `text-align`.
+    pub align: TextAlign,
+}
+
+/// Where a text's lines sit across its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 impl Default for TextStyle {
@@ -131,7 +145,9 @@ impl Default for TextStyle {
             color: Color::hex(0xe9e9ed),
             weight: 400,
             mono: false,
+            family: None,
             nowrap: false,
+            align: TextAlign::Left,
         }
     }
 }
@@ -495,6 +511,12 @@ impl Style {
 
     pub fn nowrap(mut self) -> Self {
         self.text.nowrap = true;
+        self
+    }
+
+    /// The lines centred, or to the right, across the node's box.
+    pub fn text_align(mut self, align: TextAlign) -> Self {
+        self.text.align = align;
         self
     }
 

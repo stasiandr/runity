@@ -1,0 +1,30 @@
+:root {
+  --ground: #161826;
+  --card: #232532;
+  --accent: #e07a5f;
+  --good: #4caf50;
+  --late: #c0392b;
+}
+
+body { background: var(--ground); padding: 24px; gap: 16px; }
+
+.top { flex-direction: row; justify-content: space-between; align-items: center; }
+.clock { font-size: 36px; font-weight: 700; }
+.score { font-size: 24px; color: var(--accent); }
+
+.health { width: 240px; height: 16px; background: var(--card); border-radius: 8px; }
+.fill { height: 100%; background: var(--good); border-radius: 8px; }
+
+.orders { width: 260px; gap: 8px; }
+.order {
+  flex-direction: row;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--card);
+  border: 1px solid #3a3d4f;
+  border-radius: 8px;
+}
+.order.late { background: var(--late); }
+.left { color: rgba(255, 255, 255, 0.7); }
+
+#leave { align-self: center; margin-top: auto; }

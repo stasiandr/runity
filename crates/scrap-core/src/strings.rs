@@ -53,6 +53,11 @@ impl Strings {
         &self.language
     }
 
+    /// Every key and its words, as the file has them now.
+    pub fn table(&self) -> &Table {
+        &self.table
+    }
+
     /// Switch language while running; the old one stays if the new file is
     /// not there or does not read.
     pub fn switch(&mut self, dir: impl AsRef<Path>, language: &str) -> Result<(), String> {

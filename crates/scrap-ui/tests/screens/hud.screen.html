@@ -1,0 +1,23 @@
+<!-- A round's HUD, the way kitchen's would be written in HTML: the clock
+     and the score along the top, health as a bar, the orders down the
+     left, a button when the round is over. What it shows is the game's
+     model; what is pressed comes back by id. -->
+<link rel="stylesheet" href="hud.css">
+
+<header class="top">
+  <span id="clock" class="clock">{{round.clock}}</span>
+  <span class="score">Score {{round.score}}</span>
+</header>
+
+<div class="health">
+  <div class="fill" data-bind-style-width="{{player.hp / player.max * 100}}%"></div>
+</div>
+
+<div id="orders" class="orders">
+  <div class="order" data-bind-for="order:{{orders}}" data-bind-class-toggle="late:{{order.left < 10}}">
+    <span class="dish">{{order.dish}}</span>
+    <span class="left">{{order.left}}s</span>
+  </div>
+</div>
+
+<button id="leave" data-bind-if="{{round.over}}">Leave</button>

@@ -21,19 +21,21 @@
 mod field;
 pub mod graph_view;
 mod icons;
+pub mod markup;
 pub mod render;
 mod style;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 use scrap_core::input::{InputEvent, Key, MouseButton};
+use scrap_core::web_time::Instant;
 use taffy::{AvailableSpace, TaffyTree};
 
 pub use field::Clipboard;
-pub use style::{Color, Look, Sense, Style, TextStyle};
+pub use style::{Color, Look, Sense, Style, TextAlign, TextStyle};
 
 /// The font every UI is set in unless told otherwise: Inter, shipped with
 /// the crate (SIL Open Font License, `assets/fonts/Inter-LICENSE.txt`), so a
@@ -433,6 +435,33 @@ impl Ui {
         }
     }
 
+    /// Add a font from its file's bytes (TTF or OTF), for text whose style
+    /// names its family — CSS's `font-family: "Kenney Future"`. Returns
+    /// the families the file has.
+    pub fn add_font(&mut self, bytes: Vec<u8>) -> Vec<String> {
+        let db = self.fonts.db_mut();
+        let before: std::collections::HashSet<_> = db.faces().map(|f| f.id).collect();
+        db.load_font_data(bytes);
+        let mut names: Vec<String> = db
+            .faces()
+            .filter(|f| !before.contains(&f.id))
+            .flat_map(|f| f.families.iter().map(|(n, _)| n.clone()))
+            .collect();
+        names.sort();
+        names.dedup();
+        // Text already shaped may have fallen back for want of it.
+        self.layout_dirty = true;
+        names
+    }
+
+    /// Whether a family is there to set text in: Inter, or one added.
+    pub fn has_font(&self, family: &str) -> bool {
+        self.fonts
+            .db()
+            .faces()
+            .any(|f| f.families.iter().any(|(n, _)| n == family))
+    }
+
     /// The window's size in logical pixels, and its pixels per point.
     pub fn set_viewport(&mut self, width: f32, height: f32, scale: f32) {
         if (width, height, scale) != (self.width, self.height, self.scale) {
@@ -479,6 +508,21 @@ impl Ui {
             .expect("taffy takes any leaf");
         self.tree
             .add_child(parent.0, id)
+            .expect("the parent is in the tree");
+        self.layout_dirty = true;
+        NodeId(id)
+    }
+
+    /// A new node at `index` among `parent`'s children (at the end when
+    /// there are fewer): a row of a list from data put where it belongs.
+    pub fn add_at(&mut self, parent: NodeId, index: usize, style: Style) -> NodeId {
+        let id = self
+            .tree
+            .new_leaf_with_context(style.layout.clone(), Node::new(style))
+            .expect("taffy takes any leaf");
+        let count = self.tree.children(parent.0).map_or(0, |c| c.len());
+        self.tree
+            .insert_child_at_index(parent.0, index.min(count), id)
             .expect("the parent is in the tree");
         self.layout_dirty = true;
         NodeId(id)
@@ -679,6 +723,26 @@ impl Ui {
             }
         }
         let _ = self.tree.add_child(parent.0, id.0);
+        self.layout_dirty = true;
+    }
+
+    /// Put a node at `index` among its siblings (the last place when there
+    /// are fewer): a row made after the rows below it, put above them.
+    pub fn place_at(&mut self, id: NodeId, index: usize) {
+        let Some(parent) = self.parent(id) else {
+            return;
+        };
+        let mut kids: Vec<taffy::NodeId> = self.tree.children(parent.0).unwrap_or_default();
+        let Some(now) = kids.iter().position(|k| *k == id.0) else {
+            return;
+        };
+        let to = index.min(kids.len() - 1);
+        if now == to {
+            return;
+        }
+        let k = kids.remove(now);
+        kids.insert(to, k);
+        let _ = self.tree.set_children(parent.0, &kids);
         self.layout_dirty = true;
     }
 
@@ -958,7 +1022,9 @@ impl Ui {
         // measure may have tried others on the way.
         if let Some(node) = self.tree.get_node_context_mut(id.0) {
             if let Some(text) = node.text.as_mut() {
-                let width = if node.style.text.nowrap {
+                // Lines set in the middle or to the right are set across
+                // the box, which one line cut at its own width is not.
+                let width = if node.style.text.nowrap && node.style.text.align == TextAlign::Left {
                     None
                 } else {
                     Some(layout.content_box_width())
@@ -1635,14 +1701,21 @@ fn shape(fonts: &mut FontSystem, node: &mut Node) {
     };
     text.buffer
         .set_metrics(Metrics::new(style.size, style.size * style.line_height));
-    let family = if style.mono {
+    let family = if let Some(name) = style.family.as_deref() {
+        Family::Name(name)
+    } else if style.mono {
         Family::Monospace
     } else {
         Family::Name(SANS)
     };
     let attrs = Attrs::new().family(family).weight(Weight(style.weight));
+    let align = match style.align {
+        TextAlign::Left => None,
+        TextAlign::Center => Some(glyphon::cosmic_text::Align::Center),
+        TextAlign::Right => Some(glyphon::cosmic_text::Align::Right),
+    };
     text.buffer
-        .set_text(&text.string, &attrs, Shaping::Advanced, None);
+        .set_text(&text.string, &attrs, Shaping::Advanced, align);
     text.buffer.shape_until_scroll(fonts, false);
     text.style = style;
     text.drawn_at = None;

@@ -30,6 +30,7 @@ scrap-spline = { path = "../scrap-spline", optional = true }
 scrap-geometry = { path = "../scrap-geometry" }
 scrap-gpu = { path = "../scrap-gpu" }
 scrap-overlay = { path = "../scrap-overlay" }
+scrap-ui = { path = "../scrap-ui" }
 scrap-physics = { path = "../scrap-physics", default-features = false }
 scrap-soft = { path = "../scrap-soft", optional = true }
 scrap-destruction = { path = "../scrap-destruction", optional = true }

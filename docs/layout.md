@@ -99,6 +99,7 @@
 | модель, текстура, звук, шрифт | `.glb`, `.png`, `.wav`, … | только в `assets/` |
 | шейдер | `.wgsl`, `.graph.ron`, `.vfx.ron`, `.post.ron` | только в `shaders/` |
 | экран | `.screen.ron` | `ui/*.ron` |
+| экран на HTML, его стили | `.screen.html`, `.css` | — (docs/html-ui.md) |
 | граф анимации | `.animator.ron` | `animators/*.ron` |
 | клип | `.clip.ron` | `clips/*.ron` |
 | диалог | `.dialogue.ron` | `dialogues/*.ron` |

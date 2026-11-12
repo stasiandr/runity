@@ -149,7 +149,7 @@ impl Pumped {
         let d = state.drawing.as_deref_mut().expect("never handed away");
         d.surface.resize(&state.gpu, width, height);
         let mut times = Vec::new();
-        match draw_frame(&state.gpu, &d.surface, &mut d.renderer, &mut d.overlay, frame, ui, &mut times) {
+        match draw_frame(&state.gpu, &d.surface, &mut d.renderer, &mut d.overlay, None, frame, ui, &mut times) {
             Drawn::Shown => {}
             Drawn::Outdated => {
                 d.surface.reconfigure(&state.gpu);

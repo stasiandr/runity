@@ -12,6 +12,8 @@ scrap-core = { path = "../scrap-core" }
 scrap-gpu = { path = "../scrap-gpu", features = ["winit"] }
 scrap-overlay = { path = "../scrap-overlay" }
 scrap-render = { path = "../scrap-render" }
+# The game's own UI tree — screens in HTML among it — drawn over the frame.
+scrap-ui = { path = "../scrap-ui" }
 anyhow = "1.0.104"
 glam = "0.32"
 gilrs = "0.11"

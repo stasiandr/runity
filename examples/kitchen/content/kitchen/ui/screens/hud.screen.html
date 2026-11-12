@@ -1,0 +1,33 @@
+<!-- Over the round: the clock, the score and who is in, the orders down
+     the left with how long each will still wait, a word when something
+     happens, the keys. What it shows is the round as the host sends it —
+     src/front.rs puts it in the model (`Front::fill_hud`) — and "leave"
+     comes back by its id. docs/html-ui.md in the engine says what reads. -->
+<link rel="stylesheet" href="hud.css">
+
+<div class="hud" data-bind-if="{{shown}}">
+  <header class="top">
+    <div class="side"></div>
+    <span id="clock" class="clock">{{round.clock}}</span>
+    <div class="side right">
+      <span id="score" class="score">{{round.score}}</span>
+      <span id="players" class="players">{{round.players}}</span>
+    </div>
+  </header>
+
+  <div id="orders" class="orders" data-bind-if="{{round.cooking}}">
+    <div class="card" data-bind-for="order:{{orders}}" data-bind-class-toggle="hurry:{{order.patience < 0.25}}">
+      <span class="dish">{{order.dish}}</span>
+      <div class="patience">
+        <div class="left" data-bind-style-width="{{order.patience * 100}}%"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="bottom">
+    <span id="note" class="note">{{round.note}}</span>
+    <span id="keys" class="keys">@hud.keys</span>
+  </footer>
+
+  <button id="leave" data-bind-if="{{round.open}}">@hud.leave</button>
+</div>

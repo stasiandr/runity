@@ -155,6 +155,22 @@ pub fn check(project: &Project) -> Vec<Finding> {
             keys.extend(scrap::screen::Screen::keys(&layout));
         }
     }
+    // Screens in HTML: what does not read or cannot be drawn, at its line
+    // and column (docs/html-ui.md).
+    for path in project.files(scrap::layout::Kind::HtmlScreen) {
+        match scrap_ui::markup::Screen::load(&path) {
+            Ok(screen) => keys.extend(screen.keys()),
+            Err(problems) => {
+                for p in problems.0 {
+                    let at = relative(project, Path::new(&p.file));
+                    out.push(error(
+                        &at,
+                        format!("{}:{}: {}", p.at.line, p.at.column, p.message),
+                    ));
+                }
+            }
+        }
+    }
     // Dialogues and quests: what does not join up, their cases played,
     // the flags between them, and their texts' keys, checked against
     // strings/ with the screens'.

@@ -14,7 +14,8 @@ use scrap::glam::Vec2;
 use scrap::hecs::{Entity, World};
 use scrap::input::Input;
 use scrap::party::Party;
-use scrap::screen::{Anchor, Element, Kind, Layout, Screen};
+use scrap::screen::Screen;
+use serde::Serialize;
 use scrap::strings::Strings;
 use scrap::ui::Ui;
 use scrap::widgets::Widgets;
@@ -68,10 +69,36 @@ pub const LEVELS: [&str; 2] = ["main", "rush"];
 /// The languages the menu offers, in its order, by file.
 pub const LANGUAGES: [&str; 2] = ["en", "ru"];
 
+/// The round as the HUD shows it: its model's `round`.
+#[derive(Debug, Default, Serialize)]
+struct HudRound {
+    open: bool,
+    cooking: bool,
+    clock: String,
+    score: String,
+    players: String,
+    note: String,
+}
+
+/// An order as its card shows it: what (an `@order.*` word) and how much
+/// of its patience is left, 0 to 1.
+#[derive(Debug, Serialize)]
+struct Card {
+    dish: &'static str,
+    patience: f32,
+}
+
 pub struct Front {
     pub phase: Phase,
     pub menu: Screen,
-    pub hud: Screen,
+    /// Over the round, written in HTML (`ui/screens/hud.screen.html`): the
+    /// clock, the score, the orders. Built into [`Front::ui`].
+    pub hud: scrap::html::Screen,
+    /// The UI tree the HTML screens live in, which the shell draws over the
+    /// frame and hands the pointer (`Game::ui`).
+    pub ui: scrap::scrap_ui::Ui,
+    /// What the HTML screens' player did since the last frame.
+    clicked: scrap::html::Done,
     pub results: Screen,
     pub pause: Screen,
     /// Who is in, and the host's start, while the doors are shut.
@@ -91,9 +118,6 @@ pub struct Front {
     floaters: scrap::floaters::Floaters,
     /// Escape was pressed in the kitchen: the pause card is up.
     pub paused: bool,
-    /// A card for each order, laid out for how many there are.
-    orders: Screen,
-    cards: usize,
     /// What the menu says under its buttons.
     pub status: String,
     /// Whether each of this player's cooks is working, as last sent.
@@ -132,7 +156,13 @@ impl Front {
                 menu.set_value("sfx", 0.8);
                 menu
             },
-            hud: screen("hud")?,
+            hud: scrap::html::Screen::load(find(scrap::layout::Kind::HtmlScreen, "hud")?).map_err(|p| p.to_string())?,
+            ui: {
+                let mut ui = scrap::scrap_ui::Ui::new();
+                ui.add_font(FONT.to_vec());
+                ui
+            },
+            clicked: Default::default(),
             results: screen("results")?,
             pause: screen("pause")?,
             lobby: screen("lobby")?,
@@ -144,8 +174,6 @@ impl Front {
             last_score: None,
             floaters: scrap::floaters::Floaters::new(),
             paused: false,
-            orders: Screen::from_layout(Layout::default()),
-            cards: usize::MAX,
             status: String::new(),
             working: HashMap::new(),
             best: 0,
@@ -154,20 +182,51 @@ impl Front {
             chef: scrap::dialogue::Dialogue::load(chef)?,
             talk: None,
         })
+        .map(|mut front: Self| {
+            let root = front.ui.root();
+            front.hud.mount(&mut front.ui, root);
+            front
+        })
     }
 
     /// The screens saved since, reloaded; what did not parse, said.
     pub fn poll(&mut self, delta: f32) -> Vec<String> {
-        [&mut self.menu, &mut self.hud, &mut self.results, &mut self.speech, &mut self.pause, &mut self.lobby, &mut self.lost]
+        let mut out: Vec<String> = [&mut self.menu, &mut self.results, &mut self.speech, &mut self.pause, &mut self.lobby, &mut self.lost]
             .into_iter()
             .filter_map(|s| s.poll(delta))
             .filter_map(Result::err)
-            .collect()
+            .collect();
+        if let Some(Err(problems)) = self.hud.poll(&mut self.ui, delta) {
+            out.push(problems.to_string());
+        }
+        out
     }
 
-    /// Draw what the phase shows, and say what was pressed.
+    /// Draw what the phase shows, and say what was pressed: the screens in
+    /// RON into `ui`, the overlay, and the HUD into [`Front::ui`], which the
+    /// shell has handed this frame's pointer already.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
+        &mut self,
+        world: &World,
+        party: &Party,
+        widgets: &mut Widgets,
+        ui: &mut Ui,
+        input: &Input,
+        size: Vec2,
+        strings: &Strings,
+    ) -> Option<Wish> {
+        self.clicked = self.hud.read(&self.ui.events());
+        self.hud.set_strings(strings);
+        // Shown only over a round going, and not when the host is gone.
+        self.hud.set("shown", false);
+        let wish = self.draw_phase(world, party, widgets, ui, input, size, strings);
+        self.hud.update(&mut self.ui);
+        wish
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_phase(
         &mut self,
         world: &World,
         party: &Party,
@@ -225,11 +284,8 @@ impl Front {
                 let over = round.as_ref().is_some_and(|r| r.over);
                 let open = round.as_ref().is_some_and(|r| r.open);
                 self.fill_hud(round.as_ref(), party);
-                // The lobby has its own way out.
-                self.hud.set_hidden("leave", !open);
                 let mut wish = None;
-                let done = self.hud.draw_localized(widgets, ui, input, size, strings);
-                if done.clicked("leave") {
+                if self.clicked.clicked("leave") {
                     wish = Some(Wish::Leave);
                 }
                 if open && !self.was_open {
@@ -285,9 +341,6 @@ impl Front {
                 } else if over {
                     // The round is done: no orders, and the chef is quiet.
                     self.talk = None;
-                } else {
-                    self.fill_orders(round.as_ref());
-                    self.orders.draw_localized(widgets, ui, input, size, strings);
                 }
                 if let Some((line, speaker)) = self.line() {
                     self.speech.set_text("line", line);
@@ -373,29 +426,43 @@ impl Front {
     }
 
     fn fill_hud(&mut self, round: Option<&Round>, party: &Party) {
+        self.hud.set("shown", true);
         let Some(round) = round.filter(|r| r.open) else {
-            self.hud.set_text("clock", "");
-            self.hud.set_text("score", "");
-            self.hud.set_text("players", "");
-            self.hud.set_text("keys", "@hud.keys");
+            // The lobby: the keys, and nothing of a round.
+            self.hud.set("round", HudRound::default());
+            self.hud.set("orders", Vec::<Card>::new());
             return;
         };
         let seconds = round.time_left.ceil() as u32;
-        self.hud
-            .set_text("clock", format!("{}:{:02}", seconds / 60, seconds % 60));
-        self.hud.set_text("score", format!("Score {}", round.score));
-        self.hud.set_text(
-            "note",
-            round.note.as_ref().map(|(w, _)| w.clone()).unwrap_or_default(),
-        );
         let names: Vec<String> = party.roster().into_iter().map(|(_, n)| n).collect();
         let ping = party
             .round_trip()
             .filter(|_| !party.is_host())
             .map(|rtt| format!(" · {:.0} ms", rtt * 1000.0))
             .unwrap_or_default();
-        self.hud.set_text("players", format!("{}{ping}", names.join(", ")));
-        self.hud.set_text("keys", "@hud.keys");
+        self.hud.set(
+            "round",
+            HudRound {
+                open: true,
+                // The orders while cooking, not over the results or the pause.
+                cooking: !round.over && !self.paused,
+                clock: format!("{}:{:02}", seconds / 60, seconds % 60),
+                score: format!("Score {}", round.score),
+                players: format!("{}{ping}", names.join(", ")),
+                note: round.note.as_ref().map(|(w, _)| w.clone()).unwrap_or_default(),
+            },
+        );
+        self.hud.set(
+            "orders",
+            round
+                .orders
+                .iter()
+                .map(|o| Card {
+                    dish: o.dish.key(),
+                    patience: (o.left / o.total).clamp(0.0, 1.0),
+                })
+                .collect::<Vec<_>>(),
+        );
     }
 
     /// The head chef starts talking: the dialogue from its start.
@@ -424,21 +491,6 @@ impl Front {
     pub fn line(&self) -> Option<(String, String)> {
         let line = self.talk.as_ref()?.0.line()?;
         Some((line.text.clone(), line.speaker.clone()))
-    }
-
-    /// A card an order: what it is, and a bar of how long it will wait.
-    fn fill_orders(&mut self, round: Option<&Round>) {
-        let orders = round.map(|r| r.orders.clone()).unwrap_or_default();
-        if orders.len() != self.cards {
-            self.cards = orders.len();
-            self.orders = Screen::from_layout(order_cards(orders.len()));
-        }
-        for (i, order) in orders.iter().enumerate() {
-            let what = order.dish.key();
-            self.orders.set_text(&format!("order {i}"), what);
-            self.orders
-                .set_value(&format!("patience {i}"), order.left / order.total);
-        }
     }
 
     /// The keys, for the cook this player drives: walking straight onto
@@ -624,38 +676,6 @@ pub fn claim(world: &mut World, party: &Party) {
 }
 
 /// The order cards, top left: a panel, the soup's name, and the bar.
-fn order_cards(count: usize) -> Layout {
-    let mut elements = Vec::new();
-    for i in 0..count {
-        let top = 16.0 + i as f32 * 66.0;
-        let element = |id: String, at: (f32, f32), size: (f32, f32), kind: Kind, text_size: f32| Element {
-            id,
-            anchor: Anchor::TopLeft,
-            at,
-            size,
-            kind,
-            text_size,
-            align: Default::default(),
-        };
-        elements.push(element(format!("card {i}"), (16.0, top), (240.0, 58.0), Kind::Panel, 18.0));
-        elements.push(element(
-            format!("order {i}"),
-            (28.0, top + 6.0),
-            (216.0, 26.0),
-            Kind::Text(String::new()),
-            20.0,
-        ));
-        elements.push(element(
-            format!("patience {i}"),
-            (28.0, top + 36.0),
-            (216.0, 12.0),
-            Kind::Bar,
-            18.0,
-        ));
-    }
-    Layout { elements }
-}
-
 /// The bell over the window rings: its graph (stations/window/window.animator.ron) is told
 /// `serve`, and plays its clip on the things under the window.
 pub fn ring(world: &mut World) {

@@ -836,13 +836,24 @@ impl InputScript {
 
     /// The events due by `seconds` since the start, into `input`.
     pub fn play(&mut self, seconds: f32, input: &mut Input) {
+        for event in self.due(seconds) {
+            input.handle(&event);
+        }
+    }
+
+    /// The events due by `seconds` since the start, not given before: for
+    /// a shell that hands them to more than the [`Input`] — the game's UI
+    /// tree, as it hands the window's.
+    pub fn due(&mut self, seconds: f32) -> Vec<InputEvent> {
+        let mut out = Vec::new();
         while let Some((at, event)) = self.events.get(self.next) {
             if *at > seconds {
                 break;
             }
-            input.handle(event);
+            out.push(event.clone());
             self.next += 1;
         }
+        out
     }
 
     /// Whether the script says the game is over by `seconds`.
@@ -880,6 +891,14 @@ impl LiveInput {
 
     /// The next event written, if any, into `input`.
     pub fn play(&mut self, input: &mut Input) {
+        if let Some(event) = self.next() {
+            input.handle(&event);
+        }
+    }
+
+    /// The next event written, if any: for a shell that hands it to more
+    /// than the [`Input`] — the game's UI tree, as it hands the window's.
+    pub fn next(&mut self) -> Option<InputEvent> {
         if self.queued.is_empty() {
             if let Ok(text) = std::fs::read_to_string(&self.path) {
                 // Whole lines only: one being written waits for its end.
@@ -895,9 +914,7 @@ impl LiveInput {
                 }
             }
         }
-        if let Some(event) = self.queued.pop_front() {
-            input.handle(&event);
-        }
+        self.queued.pop_front()
     }
 }
 
