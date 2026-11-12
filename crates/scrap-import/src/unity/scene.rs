@@ -310,13 +310,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 // A renderer that only casts shadows (a light blocker) is
                 // not drawn: scrap has no shadow-only draw, so its shadow
                 // is lost rather than the blocker shown.
-                let shadows_only = own().any(|c| renderer(&c) && c.body.i64("m_CastShadows") == Some(3));
+                let shadows_only = own().any(|c| renderer(c) && c.body.i64("m_CastShadows") == Some(3));
                 if shadows_only {
                     report.skip("a shadows-only renderer (not drawn; its shadow is lost)");
                 }
-                let hidden = own().any(|c| renderer(&c) && c.body.i64("m_Enabled") == Some(0))
+                let hidden = own().any(|c| renderer(c) && c.body.i64("m_Enabled") == Some(0))
                     || shadows_only
-                    || (own().any(|c| c.kind == "MeshFilter") && !own().any(|c| renderer(&c)));
+                    || (own().any(|c| c.kind == "MeshFilter") && !own().any(renderer));
                 // A mesh collider keeps its mesh as its collision model.
                 if hidden {
                     if desc.part::<Collider>() == Some(Collider::Model)
@@ -924,8 +924,7 @@ fn instance(
         // The part made again from all it has — its colliders first, then
         // its body, as a whole object is — the changed one as changed, so
         // a trigger turned solid on a Rigidbody stays that Rigidbody's.
-        let mut made = EntityDesc::default();
-        made.name = desc.name.clone();
+        let mut made = EntityDesc { name: desc.name.clone(), ..Default::default() };
         let siblings: Vec<&Builtin> = of
             .as_ref()
             .map(|o| o.builtins.iter().filter(|(_, x)| x.part == b.part).map(|(_, x)| x).collect())
@@ -2613,7 +2612,7 @@ fn piece(unity: &Unity, model: String, object: &str) -> String {
     let bare = bare.strip_suffix(" (").unwrap_or(object).trim();
     for name in [object, bare] {
         let wanted = super::piece_name(name);
-        if pieces.iter().any(|p| *p == wanted) {
+        if pieces.contains(&wanted) {
             return format!("{model}@{wanted}");
         }
     }
@@ -3313,7 +3312,7 @@ MonoBehaviour:
         let mut report = Report::default();
         let roots = convert_file(&unity, scene, &mut report);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(roots[0].components.get("door").is_none(), "the prefab's own door counts: {:?}", roots[0].components);
+        assert!(!roots[0].components.contains_key("door"), "the prefab's own door counts: {:?}", roots[0].components);
     }
 
     /// Level2's health crates: each instance's event calls Ellen's heal,

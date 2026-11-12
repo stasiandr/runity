@@ -27,7 +27,7 @@ fn cards() -> Vec<PathBuf> {
         .filter(|p| p.to_string_lossy().ends_with(".sock.json"))
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .collect();
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|a| std::cmp::Reverse(a.0));
     found.into_iter().map(|(_, p)| p).collect()
 }
 

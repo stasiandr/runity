@@ -60,17 +60,6 @@ pub fn set_wind(world: &mut hecs::World, wind: scrap_core::wind::Wind) {
 /// the fields of a line it reads.
 pub const MANIFEST: &str = include_str!("../module.ron");
 
-#[cfg(test)]
-mod manifest {
-    #[test]
-    fn the_manifest_reads_and_lists_the_fields_the_module_reads() {
-        let manifest = scrap_core::module::Manifest::parse(super::MANIFEST).unwrap();
-        assert_eq!(manifest.name, "soft");
-        let problems = manifest.part_problems(&super::part_kinds());
-        assert!(problems.is_empty(), "{problems:?}");
-    }
-}
-
 /// Lets clips move the numbers of this crate's parts on the entities that
 /// have them: each part, by its name, where its module keeps it.
 pub fn register_numbers() {
@@ -82,4 +71,15 @@ pub fn register_numbers() {
     softbody::register_numbers();
     hair::register_numbers();
     rope::register_numbers();
+}
+
+#[cfg(test)]
+mod manifest {
+    #[test]
+    fn the_manifest_reads_and_lists_the_fields_the_module_reads() {
+        let manifest = scrap_core::module::Manifest::parse(super::MANIFEST).unwrap();
+        assert_eq!(manifest.name, "soft");
+        let problems = manifest.part_problems(&super::part_kinds());
+        assert!(problems.is_empty(), "{problems:?}");
+    }
 }

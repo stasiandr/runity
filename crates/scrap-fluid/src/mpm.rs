@@ -662,11 +662,13 @@ fn svd(f: Mat3) -> (Mat3, Vec3, Mat3) {
             let t = if theta == 0.0 { 1.0 } else { t };
             let c = 1.0 / (t * t + 1.0).sqrt();
             let s = t * c;
-            for k in 0..3 {
-                let (mkp, mkq) = (m[k][p], m[k][q]);
-                m[k][p] = c * mkp - s * mkq;
-                m[k][q] = s * mkp + c * mkq;
+            for row in &mut m {
+                let (mkp, mkq) = (row[p], row[q]);
+                row[p] = c * mkp - s * mkq;
+                row[q] = s * mkp + c * mkq;
             }
+            // `k` walks along two rows of the one matrix at once.
+            #[allow(clippy::needless_range_loop)]
             for k in 0..3 {
                 let (mpk, mqk) = (m[p][k], m[q][k]);
                 m[p][k] = c * mpk - s * mqk;

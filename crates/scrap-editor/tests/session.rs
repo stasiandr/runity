@@ -1562,7 +1562,7 @@ fn the_git_tab_commits_chosen_files_and_says_what_a_commit_changed() {
         .set_transform(crate_id, transform([6.0, 0.5, 0.0], [0.0; 3], [1.0; 3]))
         .unwrap();
     let scene = session.scene_path().unwrap().to_path_buf();
-    let err = session.commit(&[scene.clone()], "move it").unwrap_err();
+    let err = session.commit(std::slice::from_ref(&scene), "move it").unwrap_err();
     assert!(err.to_string().contains("unsaved"), "{err}");
     session.save_scene(None).unwrap();
     write_all(root.join("notes.txt"), "not this one").unwrap();
@@ -1575,9 +1575,9 @@ fn the_git_tab_commits_chosen_files_and_says_what_a_commit_changed() {
         .collect();
     assert_eq!(letters.len(), 2, "{status:?}");
     assert!(letters.contains(&('A', true)) && letters.contains(&('M', false)));
-    assert!(session.commit(&[scene.clone()], "  ").is_err(), "a message is needed");
+    assert!(session.commit(std::slice::from_ref(&scene), "  ").is_err(), "a message is needed");
 
-    let short = session.commit(&[scene.clone()], "move the crate").unwrap();
+    let short = session.commit(std::slice::from_ref(&scene), "move the crate").unwrap();
     let status = session.git_status().unwrap();
     assert_eq!(status.files.len(), 1, "only the chosen file went: {status:?}");
     assert!(status.files[0].name.ends_with("notes.txt"));

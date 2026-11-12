@@ -483,10 +483,10 @@ impl Session {
         }
         // Its engine parts', each whose module moves it live.
         for name in desc.parts.names() {
-            if !scrap::motion::movable_part(&name) {
+            if !scrap::motion::movable_part(name) {
                 continue;
             }
-            if let Some(raw) = desc.parts.raw(&name) {
+            if let Some(raw) = desc.parts.raw(name) {
                 for (p, v) in scrap::numbers::all(raw) {
                     out.push((Property::Field(format!("{name}.{p}")), v));
                 }

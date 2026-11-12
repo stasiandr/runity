@@ -901,7 +901,7 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
         .first()
         .and_then(|t| ui.children(*t).first().copied())
         .and_then(|label| ui.text(label));
-    if shown.as_deref() != label {
+    if shown != label {
         ui.clear(slot);
         if let Some(p) = label {
             tag(ui, slot, p, scrap_ui::Color::TRANSPARENT, MUTED);

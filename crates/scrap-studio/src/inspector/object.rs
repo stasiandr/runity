@@ -354,6 +354,8 @@ impl Inspector {
     /// in full (`shown.name` `None`). Its ◎ opens the picker; an asset's
     /// arrow shows it in the Project, an entity's eyedropper picks one in
     /// the Scene view.
+    // A field is its place, its value and what it may hold: one over the limit.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn object_field(
         &mut self,
         ui: &mut Ui,

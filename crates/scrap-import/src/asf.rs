@@ -136,11 +136,10 @@ pub fn read(asf: &str, amc: &str, name: &str, scale: f32, rate: f32) -> Result<(
                     }
                 }
             },
-            "hierarchy" => {
-                if words[0] != "begin" && words[0] != "end" {
+            "hierarchy"
+                if words[0] != "begin" && words[0] != "end" => {
                     children.push((words[0].to_string(), words[1..].iter().map(|w| w.to_string()).collect()));
                 }
-            }
             _ => {}
         }
     }
@@ -198,7 +197,7 @@ pub fn read(asf: &str, amc: &str, name: &str, scale: f32, rate: f32) -> Result<(
             continue;
         }
         let Some(frame) = frames.last_mut() else { continue };
-        let values: Vec<f32> = words.map(|w| w.parse()).collect::<Result<_, _>>().with_context(|| format!("{line}"))?;
+        let values: Vec<f32> = words.map(|w| w.parse()).collect::<Result<_, _>>().with_context(|| line.to_string())?;
         frame.insert(first, values);
     }
     if frames.is_empty() {

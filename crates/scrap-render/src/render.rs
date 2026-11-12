@@ -1609,6 +1609,8 @@ pub struct Renderer {
     /// Dense meshes being cut into clusters on a worker (a game's window
     /// does not wait for it: until they are in, the mesh is drawn whole),
     /// and what is done, for the next frame to put in.
+    // The two ends of a channel; a name for the pair would say no more.
+    #[allow(clippy::type_complexity)]
     clustering: Option<(
         std::sync::mpsc::Sender<ClusterJob>,
         std::sync::mpsc::Receiver<(MeshHandle, wgpu::Buffer, Option<(Vec<u32>, Vec<crate::cluster::ClusterRaw>)>)>,

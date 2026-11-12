@@ -1292,7 +1292,7 @@ fn desk_before(desk: &mut control::Desk, input: &mut Input, ui_input: &mut Vec<I
         let id = job.request;
         if let Some(r) = desk.waiting.iter_mut().find(|r| r.turn == id && r.cmd == "shot") {
             if let Some(Until::Shots { files, .. }) = r.until.as_mut() {
-                files.push(written.unwrap_or_else(|e| Value::String(e)));
+                files.push(written.unwrap_or_else(Value::String));
             }
         }
     }

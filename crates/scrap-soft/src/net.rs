@@ -86,6 +86,8 @@ impl Frame {
             let mut firsts = Vec::new();
             let mut bends = Vec::with_capacity(lattice.len() * 3);
             for i in 1..lattice.len() {
+                // `c` picks the same axis of three rows of the lattice.
+                #[allow(clippy::needless_range_loop)]
                 for c in 0..3 {
                     let step = lattice[i][c] - lattice[i - 1][c];
                     if i == 1 {

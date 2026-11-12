@@ -231,7 +231,7 @@ fn a_link_in_a_prefab_spawned_at_run_time_finds_its_own_instances_part() {
     );
     let mut components = scrap::Components::new();
     components.register::<LitBy>("lit");
-    let (live, _) = LiveScene::open(&project.scenes().join("main.scene.ron")).unwrap();
+    let (live, _) = LiveScene::open(project.scenes().join("main.scene.ron")).unwrap();
     let mut live = live.with_components(components);
     let mut world = hecs::World::new();
     live.spawn_headless(&mut world);
@@ -259,7 +259,7 @@ fn a_joint_in_a_prefab_spawned_at_run_time_holds_its_parts_together() {
                         collider: Sphere(radius: 0.2), body: Dynamic,
                         joint: Ball(to: "0000000000000b01", anchor: (0.0, 0.5, 0.0)))])"#,
     );
-    let (live, _) = LiveScene::open(&project.scenes().join("main.scene.ron")).unwrap();
+    let (live, _) = LiveScene::open(project.scenes().join("main.scene.ron")).unwrap();
     let mut live = live;
     let mut world = hecs::World::new();
     live.spawn_headless(&mut world);

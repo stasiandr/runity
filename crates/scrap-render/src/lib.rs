@@ -143,6 +143,14 @@ mod prelude {
 /// the fields of a line it reads.
 pub const MANIFEST: &str = include_str!("../module.ron");
 
+/// Lets clips move the numbers of this crate's parts on the entities that
+/// have them: each part, by its name, where its module keeps it.
+pub fn register_numbers() {
+    world_look::register_numbers();
+    particles::register_numbers();
+    footprints::register_numbers();
+}
+
 #[cfg(test)]
 mod manifest {
     #[test]
@@ -152,12 +160,4 @@ mod manifest {
         let problems = manifest.part_problems(&crate::look::part_kinds());
         assert!(problems.is_empty(), "{problems:?}");
     }
-}
-
-/// Lets clips move the numbers of this crate's parts on the entities that
-/// have them: each part, by its name, where its module keeps it.
-pub fn register_numbers() {
-    world_look::register_numbers();
-    particles::register_numbers();
-    footprints::register_numbers();
 }

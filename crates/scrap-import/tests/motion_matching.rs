@@ -322,7 +322,7 @@ fn debug_jumps() {
                 let start = i;
                 while i < n && low(i) > 0.12 { i += 1; }
                 let end = i.min(n - 1);
-                let peak = (start..end).map(|k| low(k)).fold(0.0f32, f32::max);
+                let peak = (start..end).map(&low).fold(0.0f32, f32::max);
                 let dist = Vec3::new(p(end, hips).x - p(start, hips).x, 0.0, p(end, hips).z - p(start, hips).z).length();
                 let run = if start > 15 { Vec3::new(p(start, hips).x - p(start - 15, hips).x, 0.0, p(start, hips).z - p(start - 15, hips).z).length() * 2.0 } else { 0.0 };
                 flights.push((start, end - start, peak, dist, run));

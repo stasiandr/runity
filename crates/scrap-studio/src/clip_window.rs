@@ -143,6 +143,8 @@ pub struct Animation {
     add_path: Option<String>,
     /// What each thing's shader calls the slots of its material's
     /// `params`, by the thing's path: read when a clip opens.
+    // Paths with their named slots.
+    #[allow(clippy::type_complexity)]
     param_names: Vec<(String, Vec<(usize, String, Option<&'static str>)>)>,
     /// The seconds written over the ruler, and the times they say.
     ruler_labels: Vec<(NodeId, f32)>,
@@ -632,7 +634,7 @@ impl Animation {
                 }
                 RowKind::Track(p, what) => {
                     ui.restyle(name, |s| s.padding_left(SPACE_3 + 26.0));
-                    ui.add(name, Style::row().size(3.0, 12.0).fixed().radius(1.5).background(axis_color(&what)));
+                    ui.add(name, Style::row().size(3.0, 12.0).fixed().radius(1.5).background(axis_color(what)));
                     ui.add_text(name, text().fill().text_color(LABEL), &self.label_of(p, what));
                     let value = ui.add_text(name, caption().mono(), "");
                     self.row_values.push((value, p.clone(), what.clone()));
@@ -734,18 +736,18 @@ impl Animation {
                     times.into_iter().map(|t| (t, self.chosen.iter().any(|c| c.path == *p && (c.time - t).abs() < 1e-4))).collect()
                 }
                 RowKind::Track(p, what) => {
-                    let Some(track) = doc.track(p, &what) else { continue };
+                    let Some(track) = doc.track(p, what) else { continue };
                     // A hold: two keys of one value, a bar between them.
                     for pair in track.keys.windows(2) {
                         if (pair[0].value - pair[1].value).abs() < 1e-5 {
                             lines.push(line(self.x_of(pair[0].time), ROW_H / 2.0, self.x_of(pair[1].time), ROW_H / 2.0, NEUTRAL_800, 4.0));
                         }
                     }
-                    track.keys.iter().map(|k| (k.time, self.is_chosen(p, &what, k.time))).collect()
+                    track.keys.iter().map(|k| (k.time, self.is_chosen(p, what, k.time))).collect()
                 }
             };
             let written = match &kind {
-                RowKind::Track(p, w) => doc.kind != ClipKind::Model || doc.is_written(p, &w),
+                RowKind::Track(p, w) => doc.kind != ClipKind::Model || doc.is_written(p, w),
                 RowKind::Group(p) => doc.kind != ClipKind::Model || doc.motion.tracks.iter().any(|t| t.path == *p),
                 RowKind::Summary => true,
             };
@@ -1273,7 +1275,7 @@ impl Animation {
         let Some((from, targets)) = &self.tweening else { return };
         let mut doc = from.clone();
         for (path, what, idx, defaults) in targets {
-            let Some(t) = from.track(path, &what) else { continue };
+            let Some(t) = from.track(path, what) else { continue };
             let default = |time: f32| defaults.iter().find(|(at, _)| (*at - time).abs() < 1e-4).map_or(0.0, |d| d.1);
             let keys = scrap::keys::blend(&t.keys, idx, self.tween_how, amount, &default);
             doc.set_track(Track { keys, ..t.clone() });
@@ -1499,6 +1501,8 @@ impl Animation {
                 continue;
             }
             // What of it can move, in groups: a chip adds every axis of it.
+            // Groups of chips of properties, built and read right here.
+            #[allow(clippy::type_complexity)]
             let mut groups: Vec<(String, Vec<(String, Vec<Property>)>)> = vec![(
                 "Transform".into(),
                 vec![
@@ -1742,7 +1746,7 @@ impl Animation {
         let Some(doc) = &self.doc else { return Vec::new() };
         let mut best: Option<f32> = None;
         let tracks: Vec<&Track> = match kind {
-            RowKind::Track(p, w) => doc.track(p, &w).into_iter().collect(),
+            RowKind::Track(p, w) => doc.track(p, w).into_iter().collect(),
             RowKind::Group(p) => doc.tracks.iter().filter(|t| t.path == *p).collect(),
             RowKind::Summary => doc.tracks.iter().collect(),
         };

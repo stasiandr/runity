@@ -238,7 +238,7 @@ pub mod motion {
     /// * `Field("components.player.speed")` — a number of a game's
     ///   component that can be written down ([`crate::numbers`]).
     pub fn access(world: &hecs::World, entity: hecs::Entity, what: &Property, to: Option<f32>) -> Option<f32> {
-        use crate::world::{CameraLens, LightSource, Sounding, Surface, SurfaceParts};
+        use crate::world::{Sounding, Surface, SurfaceParts};
         match what {
             Property::Volume => {
                 let mut s = world.get::<&mut Sounding>(entity).ok()?;

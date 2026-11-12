@@ -2987,6 +2987,22 @@ fn eval(text: &str) -> Option<f32> {
     None
 }
 
+/// A material's eight numbers as its `params` field says them.
+fn material_params(fields: &[(String, String, bool)]) -> Vec<f32> {
+    fields
+        .iter()
+        .find(|(k, _, _)| k == "params")
+        .map(|(_, v, _)| {
+            v.trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .filter_map(|t| t.trim().parse::<f32>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3038,20 +3054,4 @@ mod tests {
         );
         assert_eq!(trim_number("-0.0"), "0");
     }
-}
-
-/// A material's eight numbers as its `params` field says them.
-fn material_params(fields: &[(String, String, bool)]) -> Vec<f32> {
-    fields
-        .iter()
-        .find(|(k, _, _)| k == "params")
-        .map(|(_, v, _)| {
-            v.trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .filter_map(|t| t.trim().parse::<f32>().ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }

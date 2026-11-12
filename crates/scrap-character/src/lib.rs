@@ -28,6 +28,13 @@ pub fn part_kinds() -> Vec<scrap_core::parts::PartKind> {
 /// This module's manifest (`module.ron`).
 pub const MANIFEST: &str = include_str!("../module.ron");
 
+/// Lets clips move the numbers of this crate's parts on the entities that
+/// have them: each part, by its name, where its module keeps it.
+pub fn register_numbers() {
+    crawler::register_numbers();
+    ragdoll::register_numbers();
+}
+
 #[cfg(test)]
 mod manifest {
     #[test]
@@ -37,11 +44,4 @@ mod manifest {
         let problems = manifest.part_problems(&super::part_kinds());
         assert!(problems.is_empty(), "{problems:?}");
     }
-}
-
-/// Lets clips move the numbers of this crate's parts on the entities that
-/// have them: each part, by its name, where its module keeps it.
-pub fn register_numbers() {
-    crawler::register_numbers();
-    ragdoll::register_numbers();
 }

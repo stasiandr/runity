@@ -265,7 +265,7 @@ fn film(gpu: &Gpu, half: &OffscreenTarget, mut shot: Shot, file: &Path) -> Resul
                 scrap::soft::show(&mut p.world, 0.0);
                 scrap::destruction::show(&mut p.world, 0.0);
                 scrap::character::show(&mut p.world, 0.0);
-                scrap::build_frame(&p.world, camera, lighting.clone(), fog.clone())
+                scrap::build_frame(&p.world, camera, lighting, fog)
             });
             frames.push(pair);
         }

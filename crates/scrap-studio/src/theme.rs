@@ -726,6 +726,84 @@ pub fn spacer(ui: &mut Ui, parent: NodeId) -> NodeId {
     ui.add(parent, Style::row().fill())
 }
 
+// --- segmented groups ---------------------------------------------------
+
+/// A segmented group, as a tool's bar has it: cells side by side in one
+/// outline, not pills.
+pub fn segmented(ui: &mut Ui, parent: NodeId) -> NodeId {
+    ui.add(
+        parent,
+        Style::row()
+            .height(22.0)
+            .fixed()
+            .center_items()
+            .radius(RADIUS_SM)
+            .border(1.0, DIVIDER)
+            .clip(),
+    )
+}
+
+/// A cell of a segmented group that is an icon.
+pub fn icon_cell(ui: &mut Ui, parent: NodeId, name: &str, icon_name: &str) -> NodeId {
+    let b = ui.add(parent, word_toggle_style(false).width(26.0).padding_x(0.0));
+    ui.set_name(b, name);
+    icon(ui, b, icon_name, LABEL);
+    b
+}
+
+/// An icon cell lit or not, in place.
+pub fn set_icon_cell(ui: &mut Ui, b: NodeId, on: bool, color: Color) {
+    ui.set_style(b, word_toggle_style(on).width(26.0).padding_x(0.0));
+    for child in ui.children(b) {
+        ui.restyle(child, |s| s.text_color(if on { color } else { LABEL }));
+    }
+}
+
+pub fn word_toggle_style(on: bool) -> Style {
+    let s = Style::row()
+        .full_height()
+        .fixed()
+        .padding_x(SPACE_3)
+        .center()
+        .clickable();
+    if on {
+        s.background(ACCENT.alpha(12)).hover(ACCENT.alpha(16))
+    } else {
+        s.hover(HOVER)
+    }
+}
+
+/// The line between two segments.
+pub fn word_divider(ui: &mut Ui, parent: NodeId) {
+    ui.add(
+        parent,
+        Style::row()
+            .width(1.0)
+            .full_height()
+            .fixed()
+            .background(DIVIDER),
+    );
+}
+
+/// A word that is on or off: the grid.
+pub fn word_toggle(ui: &mut Ui, parent: NodeId, name: &str, word: &str) -> NodeId {
+    let b = ui.add(parent, word_toggle_style(false));
+    ui.set_name(b, name);
+    ui.add_text(
+        b,
+        Style::default().text_size(11.5).text_color(LABEL).nowrap(),
+        word,
+    );
+    b
+}
+
+pub fn set_word_toggle(ui: &mut Ui, b: NodeId, on: bool) {
+    ui.set_style(b, word_toggle_style(on));
+    for child in ui.children(b) {
+        ui.restyle(child, |s| s.text_color(if on { ACCENT } else { LABEL }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,84 +942,6 @@ mod tests {
             .unwrap_err()
             .contains("ACCENT"));
         assert!(parse(r##"{"BG": "black"}"##).is_err());
-    }
-}
-
-// --- segmented groups ---------------------------------------------------
-
-/// A segmented group, as a tool's bar has it: cells side by side in one
-/// outline, not pills.
-pub fn segmented(ui: &mut Ui, parent: NodeId) -> NodeId {
-    ui.add(
-        parent,
-        Style::row()
-            .height(22.0)
-            .fixed()
-            .center_items()
-            .radius(RADIUS_SM)
-            .border(1.0, DIVIDER)
-            .clip(),
-    )
-}
-
-/// A cell of a segmented group that is an icon.
-pub fn icon_cell(ui: &mut Ui, parent: NodeId, name: &str, icon_name: &str) -> NodeId {
-    let b = ui.add(parent, word_toggle_style(false).width(26.0).padding_x(0.0));
-    ui.set_name(b, name);
-    icon(ui, b, icon_name, LABEL);
-    b
-}
-
-/// An icon cell lit or not, in place.
-pub fn set_icon_cell(ui: &mut Ui, b: NodeId, on: bool, color: Color) {
-    ui.set_style(b, word_toggle_style(on).width(26.0).padding_x(0.0));
-    for child in ui.children(b) {
-        ui.restyle(child, |s| s.text_color(if on { color } else { LABEL }));
-    }
-}
-
-pub fn word_toggle_style(on: bool) -> Style {
-    let s = Style::row()
-        .full_height()
-        .fixed()
-        .padding_x(SPACE_3)
-        .center()
-        .clickable();
-    if on {
-        s.background(ACCENT.alpha(12)).hover(ACCENT.alpha(16))
-    } else {
-        s.hover(HOVER)
-    }
-}
-
-/// The line between two segments.
-pub fn word_divider(ui: &mut Ui, parent: NodeId) {
-    ui.add(
-        parent,
-        Style::row()
-            .width(1.0)
-            .full_height()
-            .fixed()
-            .background(DIVIDER),
-    );
-}
-
-/// A word that is on or off: the grid.
-pub fn word_toggle(ui: &mut Ui, parent: NodeId, name: &str, word: &str) -> NodeId {
-    let b = ui.add(parent, word_toggle_style(false));
-    ui.set_name(b, name);
-    ui.add_text(
-        b,
-        Style::default().text_size(11.5).text_color(LABEL).nowrap(),
-        word,
-    );
-    b
-}
-
-pub fn set_word_toggle(ui: &mut Ui, b: NodeId, on: bool) {
-    ui.set_style(b, word_toggle_style(on));
-    for child in ui.children(b) {
-        ui.restyle(child, |s| s.text_color(if on { ACCENT } else { LABEL }));
     }
 }
 
