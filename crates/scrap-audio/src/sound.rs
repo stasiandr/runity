@@ -176,3 +176,25 @@ impl SoundLibrary for Library {
 pub(crate) fn register_numbers() {
     scrap_core::numbers::register_part("sound", |c: &mut Sounding| &mut c.0);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A browser's late pack: a sound mounted into the library's folder
+    /// after the game opened its library is found once the library looks
+    /// for new files (`Library::add_new`, `LiveScene::add_arrived`).
+    #[test]
+    fn a_sound_mounted_after_the_start_joins_the_library() {
+        let dir = std::path::Path::new("/nowhere/scrap-late-pack/library");
+        let mut library = Library::new();
+        assert!(library.add_new(dir).is_empty());
+        let music = SoundAsset { id: AssetId(77), name: "mus_late".into(), sample_rate: 48_000, samples: Vec::new(), encoded: b"OggS and the rest".to_vec(), seconds: 90.0 };
+        let bytes = crate::asset::to_bytes(&music, SOUND).unwrap();
+        scrap_core::files::mount(dir, [("77.scrasset".to_string(), bytes)]);
+        assert_eq!(library.add_new(dir).len(), 1);
+        let found = library.sound_by_name("mus_late").expect("arrived");
+        assert_eq!(found.encoded.as_slice(), b"OggS and the rest");
+        assert!(library.add_new(dir).is_empty(), "added once");
+    }
+}

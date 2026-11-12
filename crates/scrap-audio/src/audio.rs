@@ -22,6 +22,11 @@ use std::sync::Arc;
 
 use crate::asset::ArchivedSoundAsset;
 
+/// A mixer with no device (`Audio::<MockBackend>::new()`): a game's tests
+/// play their sounds through it — a stream opened, a sound decoded — on a
+/// machine with no sound card.
+pub use kira::backend::mock::MockBackend;
+
 /// How a sound fades with distance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Falloff {

@@ -232,6 +232,18 @@ impl LiveScene {
         self.library.as_ref()
     }
 
+    /// Assets that arrived after the start — a browser's page fetching a
+    /// pack of music while the game plays, mounted where the library is
+    /// (`scrap::files::mount`) — taken into the library. Nothing that is
+    /// there already is read again (in a browser nothing changes behind the
+    /// game's back, and [`Self::poll`] does not look). What was added.
+    pub fn add_arrived(&mut self) -> Vec<Reloaded> {
+        let Some(directory) = self.project.as_ref().map(Project::library) else {
+            return Vec::new();
+        };
+        self.library.get_or_insert_with(Library::new).add_new(&directory)
+    }
+
     /// The world's streamed regions brought to where the camera is
     /// ([`crate::streaming`]): in as it nears them, out as it leaves; and
     /// the textures' levels to what the last frame needed. Once a frame,
