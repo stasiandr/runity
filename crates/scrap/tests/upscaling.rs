@@ -46,6 +46,8 @@ fn scene(renderer: &mut Renderer, gpu: &Gpu, post: scrap::post::PostProcess) -> 
     }
     Frame {
         post,
+        // The same picture every time: not the renderer's own clock.
+        time: Some(0.0),
         camera: Camera {
             position: Vec3::new(0.4, 0.6, 5.0),
             target: Vec3::new(0.4, 0.0, 0.0),
@@ -110,6 +112,10 @@ fn half_the_pixels_made_up_to_the_screen_are_close_to_all_of_them() {
     let shader_off = difference(&full, &shader);
     eprintln!("engine's own: {shader_off:.2}");
     assert!(shader_off < 6.0, "the engine's own is near: {shader_off:.2}");
+    // Drawn again it is the same picture: nothing in it goes by the
+    // wall's clock (the frame says its time, and there is no dither).
+    let (again, _) = picture(half(Method::Shader));
+    assert!(shader == again, "the engine's own, twice: {:.4} apart", difference(&shader, &again));
 
     let (auto, used) = picture(half(Method::Auto));
     let auto_off = difference(&full, &auto);

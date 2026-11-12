@@ -367,6 +367,9 @@ pub struct Ui {
     press: Option<Press>,
     focused: Option<NodeId>,
     last_click: Option<(NodeId, Instant, u32)>,
+    /// The clock clicks are counted by, when held still
+    /// ([`Ui::hold_clock`]).
+    held_clock: Option<Instant>,
     events: Vec<(NodeId, Event)>,
     shift: bool,
     ctrl: bool,
@@ -425,6 +428,7 @@ impl Ui {
             press: None,
             focused: None,
             last_click: None,
+            held_clock: None,
             events: Vec::new(),
             shift: false,
             ctrl: false,
@@ -1444,7 +1448,7 @@ impl Ui {
                 } else if self.hovered.is_some_and(|h| {
                     self.sensing(h, |s| s.click || s.drag || s.focus) == Some(press.node)
                 }) {
-                    let now = Instant::now();
+                    let now = self.held_clock.unwrap_or_else(Instant::now);
                     let count = match self.last_click {
                         Some((node, at, n)) if node == press.node && now - at < DOUBLE_CLICK => {
                             n + 1
@@ -1607,6 +1611,16 @@ impl Ui {
         self.children(id)
             .into_iter()
             .find_map(|c| self.find_under(c, name))
+    }
+
+    /// The clock clicks are counted by held still at now (`true`), or the
+    /// wall's again. A double click is two within [`DOUBLE_CLICK`] of the
+    /// wall's time, and what the first click sets going is between them:
+    /// a test that sends both at once holds the clock, or a slow machine
+    /// makes them two single clicks (a row that runs `git` when chosen
+    /// took over 400 ms on a loaded four-core box).
+    pub fn hold_clock(&mut self, hold: bool) {
+        self.held_clock = hold.then(Instant::now);
     }
 
     /// The tree as text: one node a line, indented, with its name, text,

@@ -104,10 +104,13 @@ fn double_click(studio: &mut Studio, name: &str) {
     scroll_into_view(studio, node);
     let (x, y) = studio.ui.rect(node).center();
     studio.handle(&InputEvent::MouseMoved { x, y });
+    // Two clicks at one moment, however long the first one's work takes.
+    studio.ui.hold_clock(true);
     for _ in 0..2 {
         studio.handle(&InputEvent::MouseDown(MouseButton::Left));
         studio.handle(&InputEvent::MouseUp(MouseButton::Left));
     }
+    studio.ui.hold_clock(false);
     studio.frame();
 }
 

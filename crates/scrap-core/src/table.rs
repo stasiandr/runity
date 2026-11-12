@@ -1733,7 +1733,11 @@ mod tests {
             "{e}"
         );
         assert_eq!(table.named("Кремень").unwrap().tags[0].1, 2);
-        // A new file of the folder is in the table.
+        // A new file of the folder is in the table. (A change is known by
+        // the file's time, and two writes within one tick of the system's
+        // clock — a few milliseconds on Linux — bear the same.)
+        let tick = || std::thread::sleep(std::time::Duration::from_millis(20));
+        tick();
         std::fs::write(
             dir.join("stone.ron"),
             r#"{ "Кремень": (id: "2", tags: [(Sharp, 3, 1)]) }"#,
@@ -1748,6 +1752,7 @@ mod tests {
         assert_eq!(table.len(), 3);
         assert_eq!(table.named("Кремень").unwrap().tags[0].1, 3);
         // One name in two files of the folder: not a table.
+        tick();
         std::fs::write(dir.join("resin.ron"), r#"{ "Палка": (id: "3", tags: []) }"#).unwrap();
         assert!(table
             .reload_if_changed()
