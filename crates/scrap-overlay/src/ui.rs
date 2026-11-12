@@ -32,6 +32,21 @@ pub struct Quad {
     /// it — left, top, right, bottom, 0 to 1 from its top left — a sprite
     /// of a sheet. `None` fills it with `color` alone.
     pub image: Option<(UiImage, [f32; 4])>,
+    /// The colour at its bottom edge: `color` at the top fades to this
+    /// down the quad (a lit bevel, a bar's sheen, a vignette's edge).
+    /// `None` is `color` all the way.
+    pub color_bottom: Option<Vec4>,
+    /// Pixels its edge fades out over, inward from the rounded outline: 0
+    /// is the one-pixel edge every quad has; a few pixels is a soft shadow
+    /// or a glow drawn as a plain rectangle.
+    pub soft: f32,
+    /// Only its outline, this many pixels thick (inside the rounded edge):
+    /// a focus ring, a frame. 0 fills it.
+    pub stroke: f32,
+    /// Only this share of it, 0 to 1, swept clockwise from twelve o'clock
+    /// round its middle: a cooldown's dial, a held button's progress. 1
+    /// (the default) is all of it.
+    pub sweep: f32,
 }
 
 /// A picture the overlay renderer holds
@@ -49,6 +64,10 @@ impl Quad {
             color,
             radius: 0.0,
             image: None,
+            color_bottom: None,
+            soft: 0.0,
+            stroke: 0.0,
+            sweep: 1.0,
         }
     }
 
@@ -62,6 +81,30 @@ impl Quad {
     /// The same, its corners rounded by `radius` pixels.
     pub fn rounded(mut self, radius: f32) -> Self {
         self.radius = radius;
+        self
+    }
+
+    /// The same, `color` at the top fading to `bottom` at the bottom.
+    pub fn gradient(mut self, bottom: Vec4) -> Self {
+        self.color_bottom = Some(bottom);
+        self
+    }
+
+    /// The same, its edge faded over `pixels` (a soft shadow, a glow).
+    pub fn soft(mut self, pixels: f32) -> Self {
+        self.soft = pixels.max(0.0);
+        self
+    }
+
+    /// Only its outline, `pixels` thick.
+    pub fn stroke(mut self, pixels: f32) -> Self {
+        self.stroke = pixels.max(0.0);
+        self
+    }
+
+    /// Only `share` (0 to 1) of it, swept clockwise from twelve o'clock.
+    pub fn sweep(mut self, share: f32) -> Self {
+        self.sweep = share.clamp(0.0, 1.0);
         self
     }
 
@@ -85,6 +128,12 @@ pub struct TextRun {
     /// left, 0.5 the middle, 1 the right. The renderer measures the shaped
     /// words, so it holds for any font; `None` starts them at `x`.
     pub within: Option<(f32, f32)>,
+    /// How heavy the face is drawn, 100–900 (400 regular, 700 bold) — a
+    /// variable font gives every one; `None` is the face's own.
+    pub weight: Option<u16>,
+    /// A copy in this colour drawn under it, a twelfth of its size down
+    /// and right (a pixel at least): words that read over any picture.
+    pub shadow: Option<Vec4>,
 }
 
 impl TextRun {
@@ -97,6 +146,8 @@ impl TextRun {
             text: text.into(),
             clip: None,
             within: None,
+            weight: None,
+            shadow: None,
         }
     }
 
@@ -104,6 +155,18 @@ impl TextRun {
     /// its left, 0.5 in its middle, 1 at its right.
     pub fn within(mut self, width: f32, across: f32) -> Self {
         self.within = Some((width, across));
+        self
+    }
+
+    /// Drawn this heavy (100–900; 700 bold).
+    pub fn weight(mut self, weight: u16) -> Self {
+        self.weight = Some(weight.clamp(100, 900));
+        self
+    }
+
+    /// With a shadow of this colour under it.
+    pub fn shadow(mut self, color: Vec4) -> Self {
+        self.shadow = Some(color);
         self
     }
 }

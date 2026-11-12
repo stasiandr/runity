@@ -25,10 +25,13 @@ struct QuadInstance {
     /// x, y, width, height in pixels from the top left.
     rect: [f32; 4],
     color: [f32; 4],
-    /// The corner radius, and padding.
+    /// The corner radius, the edge's softness, the outline's thickness
+    /// (0 filled), the share swept (1 whole).
     shape: [f32; 4],
     /// The part of its picture: left, top, right, bottom.
     uv: [f32; 4],
+    /// The colour at its bottom edge.
+    color_bottom: [f32; 4],
 }
 
 #[repr(C)]
@@ -205,7 +208,7 @@ impl UiRenderer {
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<QuadInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4],
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4],
                     })],
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -317,8 +320,9 @@ impl UiRenderer {
             .map(|q| QuadInstance {
                 rect: [q.x, q.y, q.width, q.height],
                 color: q.color.to_array(),
-                shape: [q.radius, 0.0, 0.0, 0.0],
+                shape: [q.radius, q.soft, q.stroke, q.sweep],
                 uv: q.image.map_or([0.0, 0.0, 1.0, 1.0], |(_, uv)| uv),
+                color_bottom: q.color_bottom.unwrap_or(q.color).to_array(),
             })
             .collect();
         // Runs of rectangles with one picture, in the list's order.
@@ -361,12 +365,16 @@ impl UiRenderer {
             // in its rectangle).
             let wrap = run.within.map(|(w, _)| w).filter(|w| *w > 0.0).unwrap_or(width as f32);
             buffer.set_size(Some(wrap), Some(height as f32));
+            let mut attrs = Attrs::new().family(match &self.family {
+                Some(name) => Family::Name(name),
+                None => Family::SansSerif,
+            });
+            if let Some(w) = run.weight {
+                attrs = attrs.weight(glyphon::Weight(w));
+            }
             buffer.set_text(
                 &run.text,
-                &Attrs::new().family(match &self.family {
-                    Some(name) => Family::Name(name),
-                    None => Family::SansSerif,
-                }),
+                &attrs,
                 // Advanced, not basic: basic shaping cannot handle scripts
                 // that need it, and the text in this project is Cyrillic
                 // before it is anything else.
@@ -388,13 +396,26 @@ impl UiRenderer {
             buffer.shape_until_scroll(&mut self.font_system, false);
             buffers.push((buffer, run));
         }
+        // A shadowed run is drawn twice from one shaping: its shadow first,
+        // a twelfth of its size down and right.
         let areas: Vec<TextArea> = buffers
             .iter()
-            .map(|(buffer, run)| TextArea {
+            .flat_map(|(buffer, run)| {
+                let under = run.shadow.map(|c| {
+                    let d = (run.size / 12.0).round().max(1.0);
+                    (d, c)
+                });
+                under
+                    .into_iter()
+                    .map(|(d, c)| (d, c))
+                    .chain(std::iter::once((0.0, run.color)))
+                    .map(move |(d, color)| (buffer, *run, d, color))
+            })
+            .map(|(buffer, run, d, color)| TextArea {
                 buffer,
                 // Within a box, the lines are set in it already.
-                left: run.x,
-                top: run.y,
+                left: run.x + d,
+                top: run.y + d,
                 scale: 1.0,
                 bounds: match run.clip {
                     Some([left, top, right, bottom]) => TextBounds {
@@ -411,10 +432,10 @@ impl UiRenderer {
                     },
                 },
                 default_color: glyphon::Color::rgba(
-                    (run.color.x * 255.0) as u8,
-                    (run.color.y * 255.0) as u8,
-                    (run.color.z * 255.0) as u8,
-                    (run.color.w * 255.0) as u8,
+                    (color.x * 255.0) as u8,
+                    (color.y * 255.0) as u8,
+                    (color.z * 255.0) as u8,
+                    (color.w * 255.0) as u8,
                 ),
                 custom_glyphs: &[],
             })

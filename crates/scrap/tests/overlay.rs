@@ -355,3 +355,58 @@ fn a_nearest_picture_stays_flat_squares_when_drawn_large() {
     let blended = pixel(&pixels, 128 + 30, 10);
     assert!(blended[0] < 250 && blended[2] > 5, "blended: the seam runs together, got {blended:?}");
 }
+
+#[test]
+fn a_quad_can_fade_down_glow_soft_be_an_outline_or_a_dial() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let mut ui = Ui::new();
+    // White at the top fading to black at the bottom, the left quarter.
+    ui.quad(Quad::new(0.0, 0.0, 64.0, 128.0, Vec4::ONE).gradient(Vec4::new(0.0, 0.0, 0.0, 1.0)));
+    // An outline 4 px thick: its middle is the scene's.
+    ui.quad(Quad::new(64.0, 0.0, 64.0, 64.0, Vec4::ONE).stroke(4.0));
+    // Half a dial, swept clockwise from twelve: the right half only.
+    ui.quad(Quad::new(128.0, 0.0, 64.0, 64.0, Vec4::ONE).sweep(0.5));
+    // A soft-edged glow 16 px soft: full in the middle, faint near the edge.
+    ui.quad(Quad::new(192.0, 0.0, 64.0, 64.0, Vec4::ONE).soft(16.0));
+    let pixels = shoot(&gpu, &ui);
+
+    let (top, bottom) = (pixel(&pixels, 32, 2), pixel(&pixels, 32, 125));
+    assert!(top[1] > 200 && bottom[1] < 40, "the gradient runs from white to black: {top:?} → {bottom:?}");
+    let mid = pixel(&pixels, 32, 64);
+    assert!(mid[1] > 40 && mid[1] < 220, "and is between halfway down: {mid:?}");
+
+    assert!(pixel(&pixels, 66, 32)[1] > 200, "the outline's band is drawn");
+    assert!(pixel(&pixels, 96, 32)[1] < 40, "its middle is not");
+
+    assert!(pixel(&pixels, 128 + 48, 32)[1] > 200, "the right half of the dial is drawn");
+    assert!(pixel(&pixels, 128 + 16, 32)[1] < 40, "the left half is not");
+
+    let (centre, edge) = (pixel(&pixels, 224, 32), pixel(&pixels, 193, 32));
+    assert!(centre[1] > 200, "a glow is full in its middle: {centre:?}");
+    assert!(edge[1] < 60, "and fades at its edge: {edge:?}");
+}
+
+#[test]
+fn text_can_be_heavier_and_carry_a_shadow() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let lit = |ui: &Ui| shoot(&gpu, ui).chunks_exact(4).filter(|p| p[1] > 100).count();
+    let mut plain = Ui::new();
+    plain.text(TextRun::new(8.0, 30.0, 28.0, Vec4::ONE, "Подземелье"));
+    let mut shadowed = Ui::new();
+    shadowed.text(TextRun::new(8.0, 30.0, 28.0, Vec4::ONE, "Подземелье").shadow(Vec4::new(0.0, 1.0, 0.0, 1.0)));
+    let (a, b) = (lit(&plain), lit(&shadowed));
+    assert!(b > a + 40, "a shadow adds its own pixels beside the words: {a} → {b}");
+    let mut heavy = Ui::new();
+    heavy.text(TextRun::new(8.0, 30.0, 28.0, Vec4::ONE, "Подземелье").weight(900));
+    let mut light = Ui::new();
+    light.text(TextRun::new(8.0, 30.0, 28.0, Vec4::ONE, "Подземелье").weight(100));
+    // The system's face may have one weight only; a game's variable face has
+    // them all. Never lighter for a heavier weight.
+    assert!(lit(&heavy) >= lit(&light), "a heavier weight is never thinner");
+}
