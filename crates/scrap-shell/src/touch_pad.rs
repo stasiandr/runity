@@ -218,6 +218,11 @@ enum Finger {
     Look { at: Vec2 },
     /// Holding a button down (until it lifts, wherever it goes).
     Button(PadButton),
+    /// One of two fingers pinching on the right stick's side
+    /// ([`TouchMode::Pad`]): the right stick's up and down by how they
+    /// spread — a camera's zoom, as a pad's right stick is in most games.
+    /// `partner` the other finger; `spread` their distance last seen.
+    Pinch { at: Vec2, partner: u64, spread: f32 },
     /// On the pad but on nothing: kept so its lift says nothing.
     Idle,
 }
@@ -362,6 +367,16 @@ impl TouchPad {
                 } else if p.x < self.size.x * self.layout.stick_zone && !holds_stick(self, false) {
                     self.fingers.push((id, Finger::Stick { right: false, home: p, at: p }));
                     out.extend(self.stick(false, p, p));
+                } else if pad && holds_stick(self, true) && p.x >= self.size.x * self.layout.stick_zone {
+                    // A second finger by the right stick: a pinch.
+                    let j = self.fingers.iter().position(|(_, f)| matches!(f, Finger::Stick { right: true, .. })).expect("held");
+                    let (partner, Finger::Stick { at, .. }) = self.fingers[j] else { unreachable!() };
+                    let spread = (p - at).length().max(1.0);
+                    self.fingers[j].1 = Finger::Pinch { at, partner: id, spread };
+                    self.fingers.push((id, Finger::Pinch { at: p, partner, spread }));
+                    let (x, y) = axes(true);
+                    out.push(InputEvent::PadMoved { axis: x, value: 0.0 });
+                    out.push(InputEvent::PadMoved { axis: y, value: 0.0 });
                 } else if pad && !holds_stick(self, true) && p.x >= self.size.x * self.layout.stick_zone {
                     self.fingers.push((id, Finger::Stick { right: true, home: p, at: p }));
                     out.extend(self.stick(true, p, p));
@@ -382,6 +397,20 @@ impl TouchPad {
                             let d = (p - at) / self.scale * self.layout.look_speed;
                             self.fingers[i].1 = Finger::Look { at: p };
                             out.push(InputEvent::MouseMotion { dx: d.x, dy: d.y });
+                        }
+                        Finger::Pinch { partner, spread, .. } => {
+                            let other = self.fingers.iter().position(|(f, _)| *f == partner);
+                            let Some(j) = other else { return out };
+                            let Finger::Pinch { at: there, .. } = self.fingers[j].1 else { return out };
+                            let now = (p - there).length().max(1.0);
+                            // Apart: in (the stick up); together: out.
+                            let value = ((now / spread - 1.0) * 18.0).clamp(-1.0, 1.0);
+                            self.fingers[i].1 = Finger::Pinch { at: p, partner, spread: now };
+                            if let Finger::Pinch { at, partner: q, .. } = self.fingers[j].1 {
+                                self.fingers[j].1 = Finger::Pinch { at, partner: q, spread: now };
+                            }
+                            let (_, y) = axes(true);
+                            out.push(InputEvent::PadMoved { axis: y, value });
                         }
                         Finger::Button(_) | Finger::Idle => {}
                     }
@@ -412,6 +441,14 @@ impl TouchPad {
 
     fn lift(&mut self, i: usize) -> Vec<InputEvent> {
         match self.fingers.remove(i).1 {
+            Finger::Pinch { partner, .. } => {
+                // The other finger stays on the glass, holding nothing.
+                if let Some(j) = self.fingers.iter().position(|(f, _)| *f == partner) {
+                    self.fingers[j].1 = Finger::Idle;
+                }
+                let (x, y) = axes(true);
+                vec![InputEvent::PadMoved { axis: x, value: 0.0 }, InputEvent::PadMoved { axis: y, value: 0.0 }]
+            }
             Finger::Stick { right, .. } => {
                 let (x, y) = axes(right);
                 vec![InputEvent::PadMoved { axis: x, value: 0.0 }, InputEvent::PadMoved { axis: y, value: 0.0 }]
@@ -666,6 +703,27 @@ mod tests {
         }
         // The top bar brings no stick.
         assert!(pad.touch(4, TouchPhase::Started, 1300.0, 100.0, false).is_empty());
+    }
+
+    #[test]
+    fn two_fingers_by_the_right_stick_pinch_its_up_and_down() {
+        let mut pad = gamepad();
+        // The right thumb on its stick, a second finger beside it: a pinch.
+        pad.touch(2, TouchPhase::Started, 1500.0, 800.0, false);
+        let both = pad.touch(3, TouchPhase::Started, 1700.0, 800.0, false);
+        assert_eq!(axis(&both, PadAxis::RightY), Some(0.0), "the stick let go");
+        // Apart: the stick up (a camera in); together: down (out).
+        let apart = pad.touch(3, TouchPhase::Moved, 1760.0, 800.0, false);
+        assert!(axis(&apart, PadAxis::RightY).unwrap() > 0.5, "{apart:?}");
+        let together = pad.touch(2, TouchPhase::Moved, 1600.0, 800.0, false);
+        assert!(axis(&together, PadAxis::RightY).unwrap() < -0.5, "{together:?}");
+        // One lifts: nothing held; the other holds nothing either.
+        assert_eq!(axis(&pad.touch(3, TouchPhase::Ended, 0.0, 0.0, false), PadAxis::RightY), Some(0.0));
+        assert!(pad.touch(2, TouchPhase::Moved, 1300.0, 900.0, false).is_empty());
+        assert!(pad.touch(2, TouchPhase::Ended, 0.0, 0.0, false).is_empty());
+        // A new thumb is a stick again.
+        let again = pad.touch(4, TouchPhase::Started, 1500.0, 800.0, false);
+        assert_eq!(axis(&again, PadAxis::RightX), Some(0.0));
     }
 
     #[test]
