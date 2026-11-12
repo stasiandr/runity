@@ -188,6 +188,7 @@ pub struct Context<'a> {
     capture: Option<bool>,
     fullscreen_asked: Option<bool>,
     keyboard_asked: Option<bool>,
+    touch_pad_asked: Option<bool>,
     asked: TimeAsk,
 }
 
@@ -254,6 +255,15 @@ impl Context<'_> {
     /// Nothing where a keyboard is always at hand.
     pub fn show_keyboard(&mut self, on: bool) {
         self.keyboard_asked = Some(on);
+    }
+
+    /// The pad on the glass ([`WindowConfig::touch_pad`]) in use or not —
+    /// a player's setting. Off, it is hidden and lets go of its slot, and a
+    /// touch no longer brings it back (touches reach the game as they would
+    /// without one); on again, it is there as at the start. Nothing without
+    /// a touch pad.
+    pub fn use_touch_pad(&mut self, on: bool) {
+        self.touch_pad_asked = Some(on);
     }
 
     /// Play `event` as if a device sent it, `after` frames from now (0:
@@ -449,6 +459,8 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         wants_capture: false,
         focused: true,
         touch_pad: None,
+        touch_pad_off: false,
+        touch_pad_wanted: None,
         keyboard_shown: false,
         #[cfg(any(target_os = "android", target_os = "ios"))]
         suspended: false,
@@ -648,6 +660,10 @@ struct Shell<G: Game> {
     focused: bool,
     /// The pad on the screen, where there is one.
     touch_pad: Option<crate::touch_pad::TouchPad>,
+    /// The player switched the pad on the glass off ([`Context::use_touch_pad`]).
+    touch_pad_off: bool,
+    /// Asked last frame, applied as the next one begins.
+    touch_pad_wanted: Option<bool>,
     /// The platform's keyboard is on the screen ([`Context::show_keyboard`]):
     /// its keys are typing, not a keyboard taking over from the glass's pad.
     keyboard_shown: bool,
@@ -703,6 +719,7 @@ impl<G: Game> Shell<G> {
             capture: None,
             fullscreen_asked: None,
             keyboard_asked: None,
+            touch_pad_asked: None,
             asked: TimeAsk::default(),
         }
     }
@@ -888,6 +905,7 @@ impl<G: Game> Shell<G> {
         if self.input.pressed(frame_debugger::KEY) {
             self.toggle_debugger();
         }
+        self.apply_touch_pad_wanted();
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -1002,6 +1020,7 @@ impl<G: Game> Shell<G> {
         wanted = ctx.capture.or(wanted);
         let fullscreen = ctx.fullscreen_asked;
         let keyboard = ctx.keyboard_asked;
+        let touch_pad_asked = ctx.touch_pad_asked;
         let mut injected = std::mem::take(&mut ctx.injected);
         let asked = ctx.asked;
         self.time.ask(asked);
@@ -1039,6 +1058,11 @@ impl<G: Game> Shell<G> {
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = keyboard;
+        // The glass's pad switched off (or on) by the player: applied as
+        // the next frame begins.
+        if let Some(on) = touch_pad_asked {
+            self.touch_pad_wanted = Some(on);
+        }
         if let Some(on) = wanted.map(|on| on && self.focused).filter(|on| *on != self.captured) {
             set_captured(&state.window, on);
             self.captured = on;
@@ -1051,7 +1075,7 @@ impl<G: Game> Shell<G> {
         // The pad on the screen over the game's overlay: while playing
         // (`Look`), or while touch is the device in use (`Pad`).
         // The game's overlay moved into its part of a letterboxed screen.
-        let pad_on = self.touch_pad.as_ref().is_some_and(|pad| (pad.mode() == TouchMode::Look && self.captured) || (pad.mode() == TouchMode::Pad && pad.shown()));
+        let pad_on = !self.touch_pad_off && self.touch_pad.as_ref().is_some_and(|pad| (pad.mode() == TouchMode::Look && self.captured) || (pad.mode() == TouchMode::Pad && pad.shown()));
         let padded = if pad_on || state.content.is_some() {
             let mut ui = self.game.overlay().clone();
             if let Some((x, y, _, _)) = state.content {
@@ -1577,6 +1601,25 @@ impl<G: Game> Shell<G> {
         }
     }
 
+    /// The player's [`Context::use_touch_pad`], as a frame begins.
+    fn apply_touch_pad_wanted(&mut self) {
+        let Some(on) = self.touch_pad_wanted.take().filter(|on| *on == self.touch_pad_off) else { return };
+        self.touch_pad_off = !on;
+        if on {
+            if let Some(pad) = self.touch_pad.as_mut().filter(|p| p.mode() == TouchMode::Pad && !p.shown()) {
+                pad.show(true);
+                self.glass(vec![PagePad::Shown(true)]);
+            }
+        } else {
+            self.hide_glass();
+            if let Some(pad) = self.touch_pad.as_mut().filter(|p| p.mode() == TouchMode::Look) {
+                for event in pad.release_all() {
+                    self.input.handle(&event);
+                }
+            }
+        }
+    }
+
     /// Another device is used: the glass's pad lets go and leaves its slot.
     fn hide_glass(&mut self) {
         let Some(pad) = self.touch_pad.as_mut().filter(|p| p.mode() == TouchMode::Pad && p.shown()) else {
@@ -1969,7 +2012,7 @@ impl<G: Game> ApplicationHandler<Running> for Shell<G> {
             // Captured, the pointer's position means nothing: only how far
             // it moves counts, and that comes as device motion.
             WindowEvent::CursorMoved { .. } if self.captured => {}
-            WindowEvent::Touch(touch) if self.touch_pad.is_some() => {
+            WindowEvent::Touch(touch) if self.touch_pad.is_some() && !self.touch_pad_off => {
                 let pad = self.touch_pad.as_mut().expect("just checked");
                 let phase = match touch.phase {
                     winit::event::TouchPhase::Started => crate::input::TouchPhase::Started,
