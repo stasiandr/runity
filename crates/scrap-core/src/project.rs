@@ -287,6 +287,20 @@ pub struct GameSettings {
     /// reference shows, navigation bakes for and the game's controller
     /// reads (docs/player.md).
     pub player: crate::player::PlayerMetrics,
+    /// Levels of detail: a dense mesh's coarser versions, drawn where it
+    /// is small on the screen; its clusters' coarser levels (`cluster_lod`);
+    /// and nothing drawn of what covers under a couple of pixels. `false`:
+    /// every mesh is drawn whole at every distance — the import cuts no
+    /// coarser levels into the library (`scrap sync` builds it again when
+    /// this changes) and the renderer swaps nothing. For a game whose
+    /// meshes are as few triangles as their look already (a voxel kit),
+    /// where a coarser level only breaks the silhouette.
+    #[serde(skip_serializing_if = "is_true")]
+    pub lod: bool,
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 impl Default for GameSettings {
@@ -299,6 +313,7 @@ impl Default for GameSettings {
             steps_per_second: 60,
             language: "en".into(),
             player: Default::default(),
+            lod: true,
         }
     }
 }

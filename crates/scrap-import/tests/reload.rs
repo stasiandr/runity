@@ -394,6 +394,46 @@ fn a_terrain_is_described_imported_as_a_mesh_and_rebuilt_when_its_seed_changes()
     assert!(err.contains("resolution"), "{err}");
 }
 
+/// `scrap.ron`'s `game: (lod: false)`: the next sync builds every model
+/// again whole — no coarser levels, marked to be drawn as it is at every
+/// distance — and the one after has nothing to do; `lod` back on, the
+/// levels come back.
+#[test]
+fn a_project_without_levels_of_detail_bakes_its_meshes_whole() {
+    let (project, root) = project("no-lod");
+    let source = root.join("assets/hills.scrterrain");
+    write(&source, "(size: (100.0, 60.0), resolution: 33, height: 12.0, noise: (seed: 7, scale: 30.0))");
+    assert_eq!(sync(&project).len(), 1);
+    let baked = |project: &Project| {
+        let (library, _) = Library::open(project.library()).unwrap();
+        let mesh = library.mesh_by_name("hills").unwrap();
+        let baked = mesh.baked.as_ref().expect("baked");
+        (baked.recipe.to_native() & scrap::cluster::WHOLE != 0, baked.levels.len())
+    };
+    let (whole, levels) = baked(&project);
+    assert!(!whole && levels > 0, "levels of detail by default: {levels}");
+
+    let set_lod = |on: bool| {
+        let mut manifest = project.manifest().clone();
+        manifest.game.lod = on;
+        std::fs::write(root.join("scrap.ron"), ron::ser::to_string_pretty(&manifest, Default::default()).unwrap()).unwrap();
+        Project::open(&root).unwrap()
+    };
+    let off = set_lod(false);
+    assert!(std::fs::read_to_string(root.join("scrap.ron")).unwrap().contains("lod: false"));
+    let done = sync(&off);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].change, Change::Outdated);
+    assert_eq!(baked(&off), (true, 0), "whole, no levels");
+    assert!(sync(&off).is_empty(), "and nothing to do the next time");
+
+    let on = set_lod(true);
+    assert!(!std::fs::read_to_string(root.join("scrap.ron")).unwrap().contains("lod:"), "the default is not written");
+    assert_eq!(sync(&on).len(), 1);
+    let (whole, levels) = baked(&on);
+    assert!(!whole && levels > 0);
+}
+
 #[test]
 fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
     let (project, root) = project("heightmap");

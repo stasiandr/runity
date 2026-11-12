@@ -61,11 +61,40 @@ pub(crate) struct ClusterRaw {
 /// library baked the old way is cut again at load rather than drawn wrong.
 pub const RECIPE: u32 = 1;
 
+/// Set in a baked mesh's recipe ([`bake_whole`]): the mesh is drawn whole
+/// at every distance — no coarser levels, its clusters only the finest,
+/// and drawn however small it is on the screen.
+pub const WHOLE: u32 = 1 << 31;
+
 /// Cut `mesh` at import, as loading would: its clusters, its coarser
 /// levels and theirs, kept in the asset ([`crate::asset::MeshBaked`]) so a
 /// game loads them rather than working them out before its first frame.
 pub fn bake(mesh: &mut crate::asset::MeshAsset) {
     mesh.baked = baked(&mesh.vertices, &mesh.colors, &mesh.indices);
+}
+
+/// [`bake`] for a project without levels of detail (`scrap.ron`'s
+/// `game: (lod: false)`): only its finest clusters, no coarser levels, and
+/// the asset marked [`WHOLE`] — always, even a mesh with nothing to cut —
+/// so the renderer draws it as it is at every distance.
+pub fn bake_whole(mesh: &mut crate::asset::MeshAsset) {
+    mesh.baked = Some(baked_whole(&mesh.vertices, &mesh.indices));
+}
+
+/// What [`bake_whole`] keeps for these triangles.
+pub fn baked_whole(vertices: &[Vertex], indices: &[u32]) -> crate::asset::MeshBaked {
+    use crate::asset::{BakedCluster, BakedClusters, MeshBaked};
+    let clusters = (indices.len() / 3 >= FROM_TRIANGLES && !vertices.is_empty()).then(|| {
+        let (indices, clusters) = split(vertices, indices, 0);
+        BakedClusters {
+            indices,
+            clusters: clusters
+                .iter()
+                .map(|c| BakedCluster { sphere: c.sphere, cone: c.cone, first: c.first, count: c.count, error: c.error, lod: c.lod })
+                .collect(),
+        }
+    });
+    MeshBaked { recipe: RECIPE | WHOLE, clusters, levels: Vec::new() }
 }
 
 /// What [`bake`] keeps for these triangles: `None` when there is nothing

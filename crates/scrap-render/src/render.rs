@@ -1583,6 +1583,10 @@ pub struct Renderer {
     /// share of the screen each is drawn for.
     lods: scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
     lod_meshes: Vec<GpuMesh>,
+    /// The meshes drawn whole at every distance, however small on the
+    /// screen: baked so by an import without levels of detail
+    /// ([`crate::cluster::WHOLE`], `scrap.ron`'s `game: (lod: false)`).
+    whole: scrap_core::hash::FastSet<u32>,
     /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
     timer: Option<crate::gpu_timer::GpuTimer>,
     /// The Frame Debugger's recording and picture ([`crate::frame_debugger`]).
@@ -4363,6 +4367,7 @@ impl Renderer {
             fullscreen: crate::fullscreen::Fullscreen::new(gpu),
             lods: scrap_core::hash::FastMap::default(),
             lod_meshes: Vec::new(),
+            whole: Default::default(),
             timer: None,
             debugger: Default::default(),
             lean: Default::default(),
@@ -4594,12 +4599,20 @@ impl Renderer {
         indices: &[u32],
         baked: Option<&crate::asset::ArchivedMeshBaked>,
     ) -> MeshHandle {
-        let baked = baked.filter(|b| b.recipe.to_native() == crate::cluster::RECIPE);
+        let baked = baked.filter(|b| b.recipe.to_native() & !crate::cluster::WHOLE == crate::cluster::RECIPE);
+        let whole = baked.is_some_and(|b| b.recipe.to_native() & crate::cluster::WHOLE != 0);
         let cut = baked.map(|b| b.clusters.as_ref().map(crate::cluster::unbake));
         let mesh = self.gpu_mesh_cut(gpu, vertices, colors, indices, true, false, cut);
         let handle = self.take_slot(mesh);
         self.keep(handle, vertices, indices);
         self.cluster_later(handle, vertices, indices);
+        if whole {
+            // Drawn as it is at every distance: no levels, none made here.
+            self.lods.remove(&handle.0);
+            self.whole.insert(handle.0);
+            return handle;
+        }
+        self.whole.remove(&handle.0);
         match baked {
             Some(baked) => self.baked_lods(gpu, handle, baked),
             None => self.make_lods(gpu, handle, vertices, colors, indices),
@@ -4675,6 +4688,7 @@ impl Renderer {
             }
         }
         self.looks.remove(&handle);
+        self.whole.remove(&handle.0);
         self.free_meshes.push(handle.0);
     }
 
@@ -4689,6 +4703,18 @@ impl Renderer {
     pub fn mesh_vertices(&self, mesh: MeshHandle) -> Option<u32> {
         let m = self.meshes.get(mesh.0 as usize)?;
         Some((m.vertices.size() / std::mem::size_of::<crate::asset::Vertex>() as u64) as u32)
+    }
+
+    /// The coarser levels a mesh has ([`crate::lod`]): 0 for one drawn
+    /// whole at every distance.
+    pub fn mesh_levels(&self, mesh: MeshHandle) -> usize {
+        self.lods.get(&mesh.0).map_or(0, Vec::len)
+    }
+
+    /// Whether a mesh is drawn as it is at every distance, however small
+    /// on the screen ([`crate::cluster::WHOLE`]).
+    pub fn mesh_is_whole(&self, mesh: MeshHandle) -> bool {
+        self.whole.contains(&mesh.0)
     }
 
     /// Meshes uploaded and not released.
@@ -4928,6 +4954,7 @@ impl Renderer {
         DrawLookup {
             meshes: &self.meshes,
             lods: &self.lods,
+            whole: &self.whole,
             looks: &self.looks,
             by_asset: &self.by_asset,
             shader_textures: &self.shader_textures,
@@ -8979,6 +9006,8 @@ type Batches = Vec<(BatchKey, Vec<InstanceRaw>)>;
 struct DrawLookup<'a> {
     meshes: &'a [GpuMesh],
     lods: &'a scrap_core::hash::FastMap<u32, Vec<(MeshHandle, f32)>>,
+    /// [`Renderer::whole`]: never a coarser level, never too small.
+    whole: &'a scrap_core::hash::FastSet<u32>,
     looks: &'a scrap_core::hash::FastMap<MeshHandle, TextureHandle>,
     by_asset: &'a scrap_core::hash::FastMap<crate::asset::AssetId, TextureHandle>,
     shader_textures: &'a scrap_core::hash::FastMap<crate::asset::AssetId, Vec<(String, TextureHandle)>>,
@@ -9046,6 +9075,9 @@ impl DrawLookup<'_> {
 
     fn level_of(&self, draw: &Draw, eye: Vec3, camera: &Camera, skinned: bool) -> Option<MeshHandle> {
         let base = self.meshes.get(draw.mesh.0 as usize)?;
+        if self.whole.contains(&draw.mesh.0) {
+            return Some(draw.mesh);
+        }
         let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
         let (scale, _, _) = draw.transform.to_scale_rotation_translation();
         let centre = draw.transform.transform_point3((min + max) * 0.5);

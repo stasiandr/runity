@@ -419,7 +419,7 @@ pub fn build_in(
                 look: None,
                 baked: None,
             };
-            written.push((id, crate::mesh_bytes(&mut asset)?));
+            written.push((id, crate::mesh_bytes(&mut asset, settings.no_lod)?));
             these.push((AssetLink::to(name, id), primitive.material));
         }
         models.push(these);

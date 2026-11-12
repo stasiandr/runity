@@ -132,6 +132,12 @@ pub struct ImportSettings {
     /// pixel art), `Linear` (the default) blends and has mips.
     #[serde(default, skip_serializing_if = "is_linear")]
     pub filter: TextureFilter,
+    /// The project draws without levels of detail (`scrap.ron`'s `game:
+    /// (lod: false)`): a mesh is baked whole ([`scrap::cluster::bake_whole`])
+    /// — no coarser levels. The project's, not the sidecar's: [`sync`] and
+    /// [`import_into`] set it, and nothing writes it.
+    #[serde(skip)]
+    pub no_lod: bool,
 }
 
 fn is_linear(f: &TextureFilter) -> bool {
@@ -179,6 +185,7 @@ impl Default for ImportSettings {
             clips: Vec::new(),
             max_size: None,
             filter: TextureFilter::Linear,
+            no_lod: false,
         }
     }
 }
@@ -2043,7 +2050,7 @@ pub fn import_to(
                 }
             }
             (
-                mesh_bytes(&mut mesh)?,
+                mesh_bytes(&mut mesh, settings.no_lod)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
@@ -2051,7 +2058,7 @@ pub fn import_to(
         "obj" => {
             let mut mesh = mesh_from_obj(source, &settings)?;
             (
-                mesh_bytes(&mut mesh)?,
+                mesh_bytes(&mut mesh, settings.no_lod)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
@@ -2059,7 +2066,7 @@ pub fn import_to(
         "scrpoly" => {
             let mut mesh = poly::mesh_from_poly(source, &settings)?;
             (
-                mesh_bytes(&mut mesh)?,
+                mesh_bytes(&mut mesh, settings.no_lod)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
@@ -2067,7 +2074,7 @@ pub fn import_to(
         "scrbrush" => {
             let mut mesh = brush::mesh_from_brushes(source, &settings)?;
             (
-                mesh_bytes(&mut mesh)?,
+                mesh_bytes(&mut mesh, settings.no_lod)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
@@ -2075,7 +2082,7 @@ pub fn import_to(
         "scrterrain" => {
             let mut mesh = terrain::mesh_from_terrain(source, &settings)?;
             (
-                mesh_bytes(&mut mesh)?,
+                mesh_bytes(&mut mesh, settings.no_lod)?,
                 mesh.id,
                 scrap::asset::MESH,
             )
@@ -2174,6 +2181,7 @@ pub fn import_into(
     };
     settings.id = existing.and_then(|e| e.id);
     settings.source = name;
+    settings.no_lod = !project.manifest().game.lod;
     let imported = import_to(source, &project.library(), &sidecar, settings)?;
     Ok(ImportReport { imported, warning })
 }
@@ -2239,6 +2247,12 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
                 .is_some_and(|age| age < settle)
     };
     let library = project.library();
+    // Levels of detail on or off (`scrap.ron`'s `game: (lod)`): the
+    // library says which it was built with, and every model is built again
+    // when the project changed its mind.
+    let no_lod = !project.manifest().game.lod;
+    let mark = library.join(NO_LOD_MARK);
+    let relod = mark.is_file() != no_lod;
     // Built before assets were named by ID: gone, and built again below.
     if let Ok(entries) = std::fs::read_dir(&library) {
         for path in entries.flatten().map(|e| e.path()) {
@@ -2284,7 +2298,7 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
 
     for sidecar in &sidecars {
         let settings = match ImportSettings::load(sidecar) {
-            Ok(settings) => settings,
+            Ok(settings) => ImportSettings { no_lod, ..settings },
             Err(e) => {
                 out.push(Reimported {
                     source: sidecar.clone(),
@@ -2307,7 +2321,7 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
         let asset = output_for(&settings, &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
-        } else if outdated(&settings, &asset, &library) {
+        } else if outdated(&settings, &asset, &library) || (relod && is_model(&source)) {
             Some(Change::Outdated)
         } else if settings.scene
             && source.extension().is_some_and(|e| e.eq_ignore_ascii_case("gltf") || e.eq_ignore_ascii_case("glb"))
@@ -2400,7 +2414,7 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
         let name = project
             .relative(&source)
             .unwrap_or_else(|| source.to_string_lossy().into_owned());
-        let result = import_file(&source, &library, ImportSettings::for_source(name))
+        let result = import_file(&source, &library, ImportSettings { no_lod, ..ImportSettings::for_source(name) })
             .map(|imported| imported.id)
             .map_err(|e| format!("{e:#}"));
         out.push(Reimported {
@@ -2409,10 +2423,28 @@ pub fn sync_settled(project: &scrap::Project, settle: std::time::Duration) -> Ve
             result,
         });
     }
+    if relod && out.iter().all(|r| r.result.is_ok()) {
+        if no_lod {
+            let _ = std::fs::create_dir_all(&library);
+            let _ = std::fs::write(&mark, "Built without levels of detail (scrap.ron: game: (lod: false)).\n");
+        } else {
+            let _ = std::fs::remove_file(&mark);
+        }
+    }
     // Prefabs, scenes, graphs and screens get their IDs too. Not reported:
     // nothing in the library changed for them.
     identify(project);
     out
+}
+
+/// The file in a library built without levels of detail ([`sync`]).
+const NO_LOD_MARK: &str = "no-lod";
+
+/// Whether a source is imported as meshes: what levels of detail change.
+fn is_model(source: &Path) -> bool {
+    source.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(e.to_ascii_lowercase().as_str(), "gltf" | "glb" | "obj" | "blend" | "scrpoly" | "scrbrush" | "scrterrain")
+    })
 }
 
 /// The kinds of the project's own text assets — prefabs, scenes, animator
@@ -2609,9 +2641,15 @@ fn touch(path: &Path) {
 
 /// A mesh's bytes for the library: cut into its clusters and coarser
 /// levels first, as a game loading it would cut it
-/// (`scrap::cluster::bake`), so the game does not have to.
-pub(crate) fn mesh_bytes(mesh: &mut MeshAsset) -> Result<Vec<u8>> {
-    scrap::cluster::bake(mesh);
+/// (`scrap::cluster::bake`), so the game does not have to; `no_lod`: its
+/// finest clusters only, marked to be drawn whole at every distance
+/// (`scrap::cluster::bake_whole`).
+pub(crate) fn mesh_bytes(mesh: &mut MeshAsset, no_lod: bool) -> Result<Vec<u8>> {
+    if no_lod {
+        scrap::cluster::bake_whole(mesh);
+    } else {
+        scrap::cluster::bake(mesh);
+    }
     Ok(scrap::asset::to_bytes(&*mesh, scrap::asset::MESH)?)
 }
 
