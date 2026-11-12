@@ -210,7 +210,7 @@ struct Clock {
 impl Clock {
     fn new() -> Self {
         Self {
-            began: Instant::now(),
+            began: crate::net::clock::now(),
             // Asks as soon as it can.
             since_ask: f32::MAX,
             samples: Default::default(),
@@ -218,7 +218,7 @@ impl Clock {
     }
 
     fn now(&self) -> f64 {
-        self.began.elapsed().as_secs_f64()
+        crate::net::clock::since(self.began).as_secs_f64()
     }
 
     fn heard(&mut self, sent: f64, server: f64) {
@@ -585,10 +585,10 @@ impl Party {
             }
         }
         if let Stage::Lost { retry } = self.stage {
-            if Instant::now() >= retry {
+            if crate::net::clock::now() >= retry {
                 self.link.dial(SERVER);
                 self.stage = Stage::Lost {
-                    retry: Instant::now() + Duration::from_secs(3),
+                    retry: crate::net::clock::now() + Duration::from_secs(3),
                 };
             }
         }
@@ -653,7 +653,7 @@ impl Party {
             return;
         }
         self.stage = Stage::Lost {
-            retry: Instant::now() + Duration::from_secs(1),
+            retry: crate::net::clock::now() + Duration::from_secs(1),
         };
         self.welcomed = false;
         self.was_lost = true;
@@ -750,7 +750,7 @@ impl Party {
             return;
         }
         self.since_watch = 0.0;
-        let now = Instant::now();
+        let now = crate::net::clock::now();
         for (entity, tick) in world
             .query::<(hecs::Entity, &NetTick)>()
             .with::<&Replica>()

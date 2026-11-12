@@ -209,7 +209,7 @@ pub fn net_lines(world: &hecs::World) -> Vec<crate::save_core::NetLine> {
             id: id.0,
             owner: crate::net::owner_of(world, entity).0,
             replica: replica.is_some(),
-            tick: tick.map(|t| (t.tick, t.at.elapsed().as_secs_f32() * 1000.0)),
+            tick: tick.map(|t| (t.tick, crate::net::clock::since(t.at).as_secs_f32() * 1000.0)),
         })
         .collect();
     out.sort_by_key(|l| l.id);

@@ -189,6 +189,12 @@ fn target(gpu: &Gpu, label: &str, size: (u32, u32), format: wgpu::TextureFormat,
 pub(crate) struct Upscaler {
     /// The scale drawn at now: the settings', or the dynamic one.
     pub(crate) scale: f32,
+    /// The dynamic scale is this upscaler's own now: started from the
+    /// settings' once, moved only by [`Self::adjust`] since. Not the same
+    /// as `used`: at the screen's own size nothing is made up (`used` is
+    /// none wherever there is no temporal upscaler to antialias with), and
+    /// the scale found must still be kept.
+    pub(crate) following: bool,
     frames_since_change: u32,
     /// The picture made, at the screen's size.
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
@@ -323,6 +329,7 @@ impl Upscaler {
         .create_view(&Default::default());
         Self {
             scale: 1.0,
+            following: false,
             frames_since_change: 0,
             output: None,
             motion: None,
@@ -347,8 +354,10 @@ impl Upscaler {
     pub(crate) fn render_size(&mut self, settings: &Upscaling, output: (u32, u32)) -> (u32, u32) {
         if !settings.dynamic.enabled {
             self.scale = settings.scale;
-        } else if self.used.is_none() {
+            self.following = false;
+        } else if !self.following {
             self.scale = settings.scale.max(settings.dynamic.min_scale);
+            self.following = true;
         }
         self.scale = self.scale.clamp(0.33, 1.0);
         (

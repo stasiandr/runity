@@ -211,7 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Play a shot in real time, gathering both peers' frames; then draw them
+/// Play a shot, gathering both peers' frames; then draw them
 /// side by side into ffmpeg.
 fn film(gpu: &Gpu, half: &OffscreenTarget, mut shot: Shot, file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderers = [Renderer::new(gpu, half), Renderer::new(gpu, half)];

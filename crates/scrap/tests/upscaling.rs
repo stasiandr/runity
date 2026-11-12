@@ -71,6 +71,11 @@ fn post(upscaling: Upscaling) -> scrap::post::PostProcess {
         upscaling,
         // A still picture: the eye already used to it.
         auto_exposure: scrap::exposure::AutoExposure::OFF,
+        // And no dither: its noise moves 24 times a second by the wall's
+        // clock, so two pictures drawn alike differ by however long each
+        // took (a 0.0004 of a level on a slow machine: `Auto` is held to
+        // the engine's own exactly where there is no other upscaler).
+        dithering: false,
         ..scrap::post::PostProcess::default()
     }
 }
@@ -133,7 +138,7 @@ fn dynamic_resolution_goes_down_when_the_frame_is_too_slow_for_its_target() {
         return;
     }
     let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
-    let scale_after = |target_ms: f32, scale: f32| {
+    let scale_after = |method: Method, target_ms: f32, scale: f32| {
         let mut renderer = Renderer::new(&gpu, &target);
         let frame = scene(
             &mut renderer,
@@ -141,6 +146,7 @@ fn dynamic_resolution_goes_down_when_the_frame_is_too_slow_for_its_target() {
             post(Upscaling {
                 enabled: true,
                 scale,
+                method,
                 dynamic: DynamicResolution {
                     enabled: true,
                     target_ms,
@@ -154,9 +160,16 @@ fn dynamic_resolution_goes_down_when_the_frame_is_too_slow_for_its_target() {
         }
         renderer.upscaled().map(|(_, s)| s)
     };
-    // No frame is drawn in a hundredth of a millisecond: down to the least.
-    assert_eq!(scale_after(0.01, 1.0), Some(0.5));
-    // A second a frame is time enough: up to the screen's own size.
-    let up = scale_after(1000.0, 0.5);
-    assert!(up.is_none() || up == Some(1.0), "up to the full size: {up:?}");
+    // With the device's best upscaler and with the engine's own: at the
+    // screen's own size the engine's own has nothing to make up (MetalFX
+    // temporal still antialiases there), and the scale must go down from
+    // it all the same — where there is no MetalFX or DLSS that is `Auto`'s
+    // way too, and dynamic resolution never left the full size there.
+    for method in [Method::Auto, Method::Shader] {
+        // No frame is drawn in a hundredth of a millisecond: down to the least.
+        assert_eq!(scale_after(method, 0.01, 1.0), Some(0.5), "{method:?}");
+        // A second a frame is time enough: up to the screen's own size.
+        let up = scale_after(method, 1000.0, 0.5);
+        assert!(up.is_none() || up == Some(1.0), "{method:?} up to the full size: {up:?}");
+    }
 }

@@ -170,7 +170,7 @@ impl Server {
             fingerprint,
             outboxes: BTreeMap::new(),
             log: Vec::new(),
-            began: web_time::Instant::now(),
+            began: super::clock::now(),
             shorts: HashMap::new(),
             by_short: HashMap::new(),
             next_short: 1,
@@ -187,7 +187,7 @@ impl Server {
         }
         let short = self.next_short;
         self.next_short += 1;
-        self.shorts.insert(id, (short, web_time::Instant::now()));
+        self.shorts.insert(id, (short, super::clock::now()));
         self.by_short.insert(short, id);
         self.given.push((id, short));
         short
@@ -303,7 +303,7 @@ impl Server {
             ToServer::Ready { epoch } => self.ready(peer, epoch),
             ToServer::Leave => self.leave(peer, true),
             ToServer::Clock { sent } => {
-                let server = self.began.elapsed().as_secs_f64();
+                let server = super::clock::since(self.began).as_secs_f64();
                 self.outboxes
                     .entry(peer)
                     .or_default()
@@ -480,7 +480,7 @@ impl Server {
                 pending: HashMap::new(),
                 // A tenth of a second's worth to begin with.
                 allowance: self.client_budget * 0.1,
-                reckoned: web_time::Instant::now(),
+                reckoned: super::clock::now(),
             },
         );
         let accepted = ToClient::JoinAccepted {
@@ -663,7 +663,7 @@ impl Server {
     /// Named short once everyone has had time to hear the number.
     fn shortened(&self, entry: Entry) -> Entry {
         match self.shorts.get(&entry.id) {
-            Some(&(short, given)) if given.elapsed() >= self.short_age => entry.shortened(short),
+            Some(&(short, given)) if super::clock::since(given) >= self.short_age => entry.shortened(short),
             _ => entry,
         }
     }
@@ -672,7 +672,7 @@ impl Server {
     /// waited first (Fiedler's priority accumulator, as the peers' own
     /// budget): what does not fit gains a point and waits.
     fn send_pending(&mut self) {
-        let now = web_time::Instant::now();
+        let now = super::clock::now();
         let budget = self.client_budget;
         let mut out: Vec<(PeerId, ToClient)> = Vec::new();
         for (&peer, client) in &mut self.clients {

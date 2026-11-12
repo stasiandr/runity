@@ -6622,6 +6622,7 @@ impl Renderer {
         };
         if !scaling {
             self.upscaler.used = None;
+            self.upscaler.following = false;
         }
         // The screen's frame timed, when asked — or when dynamic resolution
         // needs the GPU's time: not a probe's face or a picture's.

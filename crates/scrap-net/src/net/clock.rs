@@ -1,7 +1,9 @@
 //! The link's clock: the wall's, or a simulated one a test steps by hand.
 //!
-//! [`super::Laggy`]'s delays and [`super::Link`]'s resends and timeouts read
-//! [`now`]. A test that plays two peers in one thread calls [`simulate`]
+//! [`super::Laggy`]'s delays, [`super::Link`]'s resends and timeouts, and
+//! everything a session times by — the server's clock that everyone agrees
+//! on, each client's allowance, how late a replica's ticks arrive and how
+//! long one has been silent, a lost party's retry — read [`now`]. A test that plays two peers in one thread calls [`simulate`]
 //! and then [`advance`]s the clock by each frame's length: a 40 ms
 //! latency is then 40 ms of the frames' time, however fast or slow the
 //! machine runs them — the same run on every machine, no sleeps, no
@@ -42,6 +44,11 @@ pub fn advance(d: Duration) {
             s.set(Some((base, at + d)));
         }
     });
+}
+
+/// How long since `t`, by [`now`] (nothing when `t` is ahead of it).
+pub fn since(t: Instant) -> Duration {
+    now().saturating_duration_since(t)
 }
 
 /// Whether this thread's link clock is simulated.

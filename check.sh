@@ -12,6 +12,11 @@
 # steps. Logs: target/check/<mode>/<n>-<step>.log and summary.txt.
 # CHECK_ONLY="clippy tests" runs the named steps only.
 #
+# CHECK_SLOW=1 says the machine is a weak one (the fleet's N100 box exports
+# it): the one wall-clock budget measured for a developer's machine —
+# scrap-studio's a_big_scene_stays_quick — is held at three times its length
+# there, and says so in its output. Nothing is skipped.
+#
 # `fmt` is a step of its own and not in `full` yet: the tree is not formatted
 # (290 files on 2026-11-12). Put it into `full` when it is.
 set -uo pipefail

@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hecs::World;
 
@@ -148,7 +148,6 @@ pub struct Session {
     pub sent_kinds: Arc<Kinds>,
     pub served_kinds: Arc<Kinds>,
     networked: bool,
-    clock: Instant,
     /// Ticks played.
     pub tick: usize,
     /// Ends of the network kept for peers who join late, with the link
@@ -192,8 +191,7 @@ impl Session {
                 sent_kinds: Default::default(),
                 served_kinds: Default::default(),
                 networked: false,
-                clock: Instant::now(),
-                tick: 0,
+                                tick: 0,
                 late: Vec::new(),
             }
         }
@@ -206,6 +204,8 @@ impl Session {
         let served = Arc::new(AtomicU64::new(0));
         let sent_kinds: Arc<Kinds> = Default::default();
         let served_kinds: Arc<Kinds> = Default::default();
+        // Before any link is made: each takes its first times from it.
+        crate::net::clock::simulate();
         let mut ends = Loopback::network((peers + late) as u32).into_iter();
         let listener = ends.next().expect("the host's end");
         let host = Party::host(
@@ -229,7 +229,7 @@ impl Session {
                 waiting.push((lagged, scene.clone()));
             }
         }
-        Self { peers: all, components, sent, served, sent_kinds, served_kinds, networked: true, clock: Instant::now(), tick: 0, late: waiting }
+        Self { peers: all, components, sent, served, sent_kinds, served_kinds, networked: true, tick: 0, late: waiting }
     }
 
     /// The next late peer comes in: it loads the scene afresh and joins
@@ -248,8 +248,13 @@ impl Session {
         false
     }
 
-    /// One tick for everyone, at the pace of real time when there is a
-    /// link (its delays are the clock's).
+    /// One tick for everyone. With a link, the link's clock
+    /// ([`crate::net::clock`]) is this thread's simulated one, moved on by a
+    /// tick's length each step: the link's delays, resends and losses, and
+    /// everything the session times, fall on the same ticks on every
+    /// machine however fast it plays them — and nothing sleeps. (By the
+    /// wall's clock the same session went one way on macOS and another,
+    /// the same to the bit on two machines, on Linux.)
     pub fn step(&mut self) {
         self.step_with(|_, _| {});
     }
@@ -262,14 +267,7 @@ impl Session {
         }
         self.tick += 1;
         if self.networked {
-            self.clock += Duration::from_secs_f32(1.0 / HZ);
-            let now = Instant::now();
-            if self.clock > now {
-                std::thread::sleep(self.clock - now);
-            } else if now - self.clock > Duration::from_millis(200) {
-                // Fell far behind (a slow machine): time is what it is.
-                self.clock = now;
-            }
+            crate::net::clock::advance(Duration::from_secs_f32(1.0 / HZ));
         }
     }
 

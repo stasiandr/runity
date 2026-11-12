@@ -891,10 +891,21 @@ fn a_big_scene_stays_quick() {
         select += t.elapsed();
     }
     let select = select / 10;
-    eprintln!("2000 entities: first {first:?}, idle frame {idle:?}, selection frame {select:?}");
-    // Debug build, our crates unoptimised: a budget with room, not a target.
-    assert!(select.as_millis() < 80, "a selection took {select:?}");
-    assert!(idle.as_millis() < 20, "an idle frame took {idle:?}");
+    // Debug build, our crates unoptimised: a budget with room, not a target
+    // — and a budget for a developer's machine (an M-series Mac: 10 ms idle,
+    // 33 ms a selection). `CHECK_SLOW=1` says the machine is a weak one
+    // (the test fleet's N100 box exports it; ./check.sh): its cores are
+    // about three times slower (27 ms and 100 ms there), so the budget is
+    // three times longer — still a budget: twice the work per line fails
+    // there too.
+    let slow = if std::env::var("CHECK_SLOW").as_deref() == Ok("1") { 3 } else { 1 };
+    let (select_ms, idle_ms) = (80 * slow, 20 * slow);
+    eprintln!(
+        "2000 entities: first {first:?}, idle frame {idle:?} (budget {idle_ms} ms), selection frame {select:?} (budget {select_ms} ms{})",
+        if slow > 1 { ", CHECK_SLOW" } else { "" }
+    );
+    assert!(select.as_millis() < select_ms, "a selection took {select:?}, over its budget of {select_ms} ms");
+    assert!(idle.as_millis() < idle_ms, "an idle frame took {idle:?}, over its budget of {idle_ms} ms");
 }
 
 #[test]
