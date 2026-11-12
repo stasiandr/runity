@@ -152,7 +152,8 @@ impl App {
 
 impl ApplicationHandler<Chosen> for App {
     /// A line of the system's menu bar.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+    // Off the Mac the menu's half is not compiled, and the early return is the last line.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables, clippy::needless_return))]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, chosen: Chosen) {
         // An agent's message: answered now — a window hidden behind
         // others may not be asked to draw for seconds — and drawn next.
