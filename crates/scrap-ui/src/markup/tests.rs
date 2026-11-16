@@ -177,6 +177,18 @@ fn a_list_grows_and_shrinks_with_the_model_and_keeps_its_rows() {
 }
 
 #[test]
+fn a_rows_button_is_found_by_its_row_and_clicks_as_that_row() {
+    let (mut screen, mut ui) = hud();
+    let second = screen.node_in_row("cancel", 1).expect("the second order's cancel");
+    assert_ne!(Some(second), screen.node("cancel"), "not the first row's");
+    assert_eq!(screen.node_in_row("cancel", 0), screen.node("cancel"));
+    ui.click(second);
+    let done = screen.read(&ui.events());
+    assert_eq!(done.clicked_row("cancel"), Some(1));
+    assert_eq!(screen.node_in_row("cancel", 99), None);
+}
+
+#[test]
 fn clicks_come_back_by_id_and_row() {
     let (mut screen, mut ui) = hud();
     let orders = screen.node("orders").unwrap();

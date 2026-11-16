@@ -517,6 +517,29 @@ impl Screen {
         })
     }
 
+    /// The node built for the element with this id in row `row` of the
+    /// innermost list it is in — the third order's cancel button is
+    /// `node_in_row("cancel", 2)`: what [`Ui::click`] takes in a test that
+    /// presses a row's button the way a player does. `None` past the last
+    /// row.
+    pub fn node_in_row(&self, id: &str, row: usize) -> Option<NodeId> {
+        fn walk(inst: &Inst, want: &dyn Fn(NodeId) -> bool) -> Option<NodeId> {
+            if want(inst.node) {
+                return Some(inst.node);
+            }
+            inst.kids.iter().find_map(|k| match k {
+                IKid::One(i) => walk(i, want),
+                IKid::Many(rows) => rows.iter().find_map(|i| walk(i, want)),
+                IKid::Text(_) => None,
+            })
+        }
+        let m = self.mounted.as_ref()?;
+        walk(&m.inst, &|n| {
+            self.own_id.contains(&n)
+                && self.targets.get(&n).is_some_and(|t| t.id == id && t.index == Some(row))
+        })
+    }
+
     /// The words the element with this id shows (the first, in a list):
     /// its text boxes, joined. What a test or an agent reads.
     pub fn text(&self, ui: &Ui, id: &str) -> Option<String> {
