@@ -642,8 +642,16 @@ impl Ui {
     }
 
     /// The icon a node shows, by name.
-    pub fn icon(&self, id: NodeId) -> Option<&'static str> {
-        self.node(id).icon.map(|i| icons::ICONS[i as usize].0)
+    pub fn icon(&self, id: NodeId) -> Option<String> {
+        self.node(id).icon.and_then(icons::name)
+    }
+
+    /// Add an icon of the game's own (an SVG; filled shapes and strokes
+    /// both draw, in the text colour), to name in `icon` / `data-bind-icon` and [`Ui::add_icon`]
+    /// like a built-in. The same name as a built-in replaces it everywhere.
+    pub fn register_icon(&mut self, name: &str, svg: &[u8]) {
+        icons::add(name, svg);
+        self.paint_dirty = true;
     }
 
     /// The names of the built-in icons.
@@ -1123,7 +1131,7 @@ impl Ui {
         if let Some(icon) = icon {
             // Bold text draws its icon with a heavier line: the same icon
             // under a second number, which the renderer strokes thicker.
-            let icon = if node_weight >= 600 { icon + icons::ICONS.len() as u16 } else { icon };
+            let icon = if node_weight >= 600 { icon | icons::HEAVY } else { icon };
             layer.icons.push(IconPaint {
                 icon,
                 rect,

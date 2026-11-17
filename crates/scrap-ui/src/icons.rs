@@ -249,10 +249,55 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("zap", include_bytes!("../assets/icons/zap.svg")),
 ];
 
-/// An icon's number, by name.
+/// Where a game's own icons start among the numbers: after every built-in.
+const ADDED_FROM: u16 = 0x2000;
+
+/// The same icon drawn with a heavier line, for bold text: its number with
+/// this bit set.
+pub(crate) const HEAVY: u16 = 0x4000;
+
+/// Icons a game added ([`crate::Ui::add_icon`]), by name. A name a built-in
+/// has is taken over by the game's own.
+static ADDED: std::sync::RwLock<Vec<(String, std::sync::Arc<[u8]>)>> = std::sync::RwLock::new(Vec::new());
+
+/// Add a game's icon, or replace one it added before (a replacement shows
+/// once its old picture leaves the atlas: add them at start).
+pub(crate) fn add(name: &str, svg: &[u8]) {
+    let mut added = ADDED.write().unwrap_or_else(|e| e.into_inner());
+    match added.iter_mut().find(|(n, _)| n == name) {
+        Some(slot) => slot.1 = svg.into(),
+        None => added.push((name.to_string(), svg.into())),
+    }
+}
+
+/// An icon's number, by name: the game's own first, then the built-ins.
 pub(crate) fn find(name: &str) -> Option<u16> {
+    let added = ADDED.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = added.iter().position(|(n, _)| n == name) {
+        return Some(ADDED_FROM + i as u16);
+    }
     ICONS
         .binary_search_by(|(n, _)| n.cmp(&name))
         .ok()
         .map(|i| i as u16)
+}
+
+/// An icon's name, by its number (the heavy bit ignored).
+pub(crate) fn name(id: u16) -> Option<String> {
+    let id = id & !HEAVY;
+    if id >= ADDED_FROM {
+        let added = ADDED.read().unwrap_or_else(|e| e.into_inner());
+        return added.get((id - ADDED_FROM) as usize).map(|(n, _)| n.clone());
+    }
+    ICONS.get(id as usize).map(|(n, _)| n.to_string())
+}
+
+/// An icon's SVG, by its number (the heavy bit ignored).
+pub(crate) fn svg(id: u16) -> Option<std::borrow::Cow<'static, [u8]>> {
+    let id = id & !HEAVY;
+    if id >= ADDED_FROM {
+        let added = ADDED.read().unwrap_or_else(|e| e.into_inner());
+        return added.get((id - ADDED_FROM) as usize).map(|(_, d)| std::borrow::Cow::Owned(d.to_vec()));
+    }
+    ICONS.get(id as usize).map(|(_, d)| std::borrow::Cow::Borrowed(*d))
 }

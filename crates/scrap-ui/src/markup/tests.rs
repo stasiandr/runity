@@ -435,8 +435,21 @@ fn an_icon_bound_to_the_model_follows_it() {
     let root = ui.root();
     screen.mount(&mut ui, root);
     let node = screen.node("part").unwrap();
-    assert_eq!(ui.icon(node), Some("cpu"));
+    assert_eq!(ui.icon(node).as_deref(), Some("cpu"));
     screen.set("part", serde_json::json!({"icon": "fan"}));
     screen.update(&mut ui);
-    assert_eq!(ui.icon(node), Some("fan"));
+    assert_eq!(ui.icon(node).as_deref(), Some("fan"));
+}
+
+#[test]
+fn a_games_own_icon_is_named_like_a_built_in() {
+    let mut ui = Ui::new();
+    ui.register_icon("toy-hammer-test", br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/></svg>"#);
+    let src = r#"<div><i id="tool" icon="toy-hammer-test"></i></div>"#;
+    let mut screen = Screen::from_source("icons.screen.html", src, &[]).unwrap();
+    ui.set_viewport(1280.0, 720.0, 1.0);
+    let root = ui.root();
+    screen.mount(&mut ui, root);
+    let node = screen.node("tool").unwrap();
+    assert_eq!(ui.icon(node).as_deref(), Some("toy-hammer-test"));
 }
