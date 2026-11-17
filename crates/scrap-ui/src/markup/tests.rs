@@ -400,3 +400,27 @@ fn a_screen_is_fitted_to_the_window_as_a_canvas_scaler_does() {
         [scrap_core::input::InputEvent::MouseMoved { x: 400.0, y: 200.0 }]
     );
 }
+
+#[test]
+fn an_icon_is_named_by_its_attribute_and_a_wrong_name_is_a_problem() {
+    let ok = r#"<div><i class="ico" icon="phone"></i><button id="call"><i icon="zap"></i></button></div>"#;
+    let mut screen = Screen::from_source("icons.screen.html", ok, &[]).unwrap();
+    let mut ui = Ui::new();
+    ui.set_viewport(1280.0, 720.0, 1.0);
+    let root = ui.root();
+    screen.mount(&mut ui, root);
+    let mut icons = Vec::new();
+    let mut todo = vec![root];
+    while let Some(n) = todo.pop() {
+        icons.extend(ui.icon(n));
+        todo.extend(ui.children(n));
+    }
+    icons.sort();
+    assert_eq!(icons, ["phone", "zap"]);
+
+    let wrong = r#"<div><i icon="no-such-icon"></i></div>"#;
+    let Err(problems) = Screen::from_source("icons.screen.html", wrong, &[]) else {
+        panic!("a wrong icon name should be a problem");
+    };
+    assert!(format!("{problems:?}").contains("no-such-icon"));
+}

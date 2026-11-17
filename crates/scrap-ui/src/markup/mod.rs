@@ -156,9 +156,9 @@ pub fn pointer(
 const UA: &str = include_str!("ua.css");
 
 /// The tags that are boxes and words.
-const BOXES: [&str; 22] = [
+const BOXES: [&str; 23] = [
     "body", "div", "section", "header", "footer", "main", "nav", "aside", "article", "ul", "ol",
-    "li", "span", "p", "label", "strong", "b", "small", "h1", "h2", "h3", "h4",
+    "li", "span", "p", "label", "strong", "b", "small", "h1", "h2", "h3", "h4", "i",
 ];
 
 /// What an element is to the UI.
@@ -196,6 +196,9 @@ struct Tmpl {
     toggles: Vec<(String, Template)>,
     styles: Vec<(String, Template, Pos)>,
     repeat: Option<Repeat>,
+    /// A built-in icon drawn over the box in its text colour:
+    /// `<i icon="phone"></i>`.
+    icon: Option<String>,
     at: Pos,
 }
 
@@ -724,6 +727,9 @@ impl Screen {
                 if let Some(id) = &t.id {
                     ui.set_name(node, id.clone());
                 }
+                if let Some(icon) = &t.icon {
+                    ui.set_icon(node, icon);
+                }
                 node
             }
         };
@@ -1148,6 +1154,7 @@ fn compile(
         toggles: Vec::new(),
         styles: Vec::new(),
         repeat: None,
+        icon: None,
         at: e.at,
     };
     let mut value: Option<Template> = None;
@@ -1158,6 +1165,17 @@ fn compile(
                 t.id = Some(a.value.clone());
             }
             "class" => {}
+            "icon" => {
+                if crate::icons::find(&a.value).is_some() {
+                    t.icon = Some(a.value.clone());
+                } else {
+                    problems.push(Problem::new(
+                        name,
+                        a.at,
+                        format!("no icon called `{}`: the built-in ones are in crates/scrap-ui/assets/icons", a.value),
+                    ));
+                }
+            }
             "style" => match css::parse(name, &format!("*{{{}}}", a.value), a.at) {
                 Ok(s) => {
                     problems.extend(css::check(&s).into_iter().map(|mut p| {

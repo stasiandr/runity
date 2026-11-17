@@ -630,6 +630,11 @@ impl Ui {
         }
     }
 
+    /// The icon a node shows, by name.
+    pub fn icon(&self, id: NodeId) -> Option<&'static str> {
+        self.node(id).icon.map(|i| icons::ICONS[i as usize].0)
+    }
+
     /// The names of the built-in icons.
     pub fn icon_names() -> impl Iterator<Item = &'static str> {
         icons::ICONS.iter().map(|(n, _)| *n)
