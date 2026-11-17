@@ -154,7 +154,16 @@ pub(super) struct ShotJob {
 }
 
 impl Desk {
+    /// The control socket is a Unix socket: elsewhere (Windows) the game
+    /// runs without one and says why.
+    #[cfg(not(unix))]
+    pub fn open(socket: &Path, _title: &str) -> std::io::Result<Self> {
+        let _ = (socket, token);
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "the control socket is Unix-only for now"))
+    }
+
     /// Listen at `socket`; the token and the path said.
+    #[cfg(unix)]
     pub fn open(socket: &Path, title: &str) -> std::io::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixListener;
@@ -211,6 +220,7 @@ impl Drop for Desk {
 
 /// One connection: lines in, each handed to the loop and its answer
 /// written back, in order.
+#[cfg(unix)]
 fn serve(stream: std::os::unix::net::UnixStream, token: &str, to_loop: &Sender<Request>) {
     let Ok(mut out) = stream.try_clone() else { return };
     for line in BufReader::new(stream).lines() {
@@ -314,7 +324,7 @@ pub fn frame() -> u64 {
     super::LOOP_TURN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};

@@ -58,7 +58,15 @@ pub fn find(socket: Option<&Path>) -> Result<(PathBuf, String)> {
     bail!("no running game with its control on: start one with its debug flag (a scrap game: SCRAP_CONTROL=1; Not Divinity: ND_DEBUG=1)")
 }
 
+/// Send one request and wait for its answer. The control socket is a Unix
+/// socket: elsewhere this says so.
+#[cfg(not(unix))]
+pub fn request(socket: &Path, _token: &str, _cmd: &str, _args: Value) -> Result<Value> {
+    bail!("{}: the control socket is Unix-only for now", socket.display())
+}
+
 /// Send one request and wait for its answer.
+#[cfg(unix)]
 pub fn request(socket: &Path, token: &str, cmd: &str, args: Value) -> Result<Value> {
     let stream = std::os::unix::net::UnixStream::connect(socket).with_context(|| format!("{}", socket.display()))?;
     let mut out = stream.try_clone()?;
