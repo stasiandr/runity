@@ -677,8 +677,21 @@ fn rasterize_icon(
     let svg = match svgs.entry(request.id) {
         std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
         std::collections::hash_map::Entry::Vacant(e) => {
-            let (_, data) = crate::icons::ICONS.get(request.id as usize)?;
-            e.insert(resvg::usvg::Tree::from_data(data, &Default::default()).ok()?)
+            // Numbers past the list are the same icons drawn heavier, for
+            // bold text: the 2 px Lucide line becomes 2.75.
+            let n = crate::icons::ICONS.len();
+            let (index, heavy) = match request.id as usize {
+                i if i >= n => (i - n, true),
+                i => (i, false),
+            };
+            let (_, data) = crate::icons::ICONS.get(index)?;
+            let tree = if heavy {
+                let svg = String::from_utf8_lossy(data).replace("stroke-width=\"2\"", "stroke-width=\"2.75\"");
+                resvg::usvg::Tree::from_data(svg.as_bytes(), &Default::default()).ok()?
+            } else {
+                resvg::usvg::Tree::from_data(data, &Default::default()).ok()?
+            };
+            e.insert(tree)
         }
     };
     let size = svg.size();

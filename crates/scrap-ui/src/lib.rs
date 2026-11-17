@@ -1094,6 +1094,7 @@ impl Ui {
         };
         let image = node.image;
         let icon = node.icon;
+        let node_weight = node.style.text.weight;
         let is_field = node.field.is_some();
         let focused = self.focused == Some(id);
         let has_text = node.text.is_some();
@@ -1120,6 +1121,9 @@ impl Ui {
             });
         }
         if let Some(icon) = icon {
+            // Bold text draws its icon with a heavier line: the same icon
+            // under a second number, which the renderer strokes thicker.
+            let icon = if node_weight >= 600 { icon + icons::ICONS.len() as u16 } else { icon };
             layer.icons.push(IconPaint {
                 icon,
                 rect,
