@@ -30,8 +30,9 @@
 //! smooths the grain; there is no denoiser. The terrain is seen as its
 //! coarse heightfield, so its rays start past a gap (`RAY_TERRAIN_GAP` in
 //! render.wgsl) rather than crack its ripples with shadow. Everything in the acceleration
-//! structure is opaque: a cut-out leaf shadows as its whole card, and a
-//! skinned mesh is traced in its bind pose. And it is off unless a frame
+//! structure is opaque: a cut-out leaf shadows as its whole card. A
+//! skinned mesh is traced in its frame's pose ([`Posed`]): its vertices
+//! skinned again by a compute pass, its own structure built from them. And it is off unless a frame
 //! asks ([`RayTracing`]); on a device without ray queries the ask changes
 //! nothing and the frame is drawn as ever. DNA, postulate 7, wants one
 //! render path: this is a second, and is kept as an experiment — to see
@@ -378,6 +379,197 @@ pub(crate) fn scene(gpu: &Gpu) -> Option<RayScene> {
     }
 }
 
+/// The posing pass for skinned meshes, where there is a rays' scene.
+pub(crate) fn posed(gpu: &Gpu) -> Option<Posed> {
+    #[cfg(feature = "ray-tracing")]
+    return gpu.ray_tracing.then(|| Posed::new(gpu));
+    #[cfg(not(feature = "ray-tracing"))]
+    {
+        let _ = gpu;
+        None
+    }
+}
+
+/// Skinned meshes as the rays see them: each skinned draw's vertices posed
+/// as the frame poses it (the vertex shader's skinning, in a compute pass)
+/// and a structure of its own built from them — else a character's shadow
+/// stands in its bind pose while he walks. Slots are kept by (mesh, nth
+/// posed draw of it) and reused frame to frame.
+#[cfg(feature = "ray-tracing")]
+pub(crate) struct Posed {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    slots: std::collections::HashMap<(u32, u32), PosedSlot>,
+}
+
+#[cfg(feature = "ray-tracing")]
+struct PosedSlot {
+    out: wgpu::Buffer,
+    joints: wgpu::Buffer,
+    blas: wgpu::Blas,
+    bind: wgpu::BindGroup,
+    vertex_count: u32,
+}
+
+/// The joints a pose may have: the vertex shader's `Pose`.
+#[cfg(feature = "ray-tracing")]
+const POSE_JOINTS: usize = 128;
+
+#[cfg(feature = "ray-tracing")]
+const POSE_SHADER: &str = r#"
+// A skinned mesh's vertices posed: render.wgsl's skinned_vertex, for rays.
+@group(0) @binding(0) var<storage, read> src: array<f32>;        // Vertex: position, normal, uv
+@group(0) @binding(1) var<storage, read> skin: array<u32>;       // SkinVertex: joints u16 x4, weights f32 x4
+@group(0) @binding(2) var<storage, read> joints: array<mat4x4<f32>>;
+@group(0) @binding(3) var<storage, read_write> dst: array<f32>;
+
+@compute @workgroup_size(64)
+fn pose(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= arrayLength(&src) / 8u { return; }
+    let s = i * 6u;
+    let j = vec4<u32>(skin[s] & 0xffffu, skin[s] >> 16u, skin[s + 1u] & 0xffffu, skin[s + 1u] >> 16u);
+    let w = vec4<f32>(bitcast<f32>(skin[s + 2u]), bitcast<f32>(skin[s + 3u]), bitcast<f32>(skin[s + 4u]), bitcast<f32>(skin[s + 5u]));
+    var m = joints[j.x] * w.x + joints[j.y] * w.y + joints[j.z] * w.z + joints[j.w] * w.w;
+    if w.x + w.y + w.z + w.w < 0.0001 {
+        m = mat4x4<f32>(vec4<f32>(1.0, 0.0, 0.0, 0.0), vec4<f32>(0.0, 1.0, 0.0, 0.0), vec4<f32>(0.0, 0.0, 1.0, 0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0));
+    }
+    let v = i * 8u;
+    let p = m * vec4<f32>(src[v], src[v + 1u], src[v + 2u], 1.0);
+    dst[v] = p.x;
+    dst[v + 1u] = p.y;
+    dst[v + 2u] = p.z;
+    for (var k = 3u; k < 8u; k = k + 1u) {
+        dst[v + k] = src[v + k];
+    }
+}
+"#;
+
+#[cfg(feature = "ray-tracing")]
+impl Posed {
+    pub(crate) fn new(gpu: &Gpu) -> Self {
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("pose for rays"),
+            source: wgpu::ShaderSource::Wgsl(POSE_SHADER.into()),
+        });
+        let entry = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pose for rays"),
+            entries: &[entry(0, true), entry(1, true), entry(2, true), entry(3, false)],
+        });
+        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pose for rays"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("pose for rays"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("pose"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        Self { pipeline, layout, slots: Default::default() }
+    }
+
+    /// Pose slot `key`'s vertices as `joints` say, and build its structure
+    /// again. `vertices` and `skin` are the mesh's own (STORAGE), `indices`
+    /// its whole index buffer (BLAS_INPUT).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pose(
+        &mut self,
+        gpu: &Gpu,
+        key: (u32, u32),
+        vertices: &wgpu::Buffer,
+        vertex_count: u32,
+        skin: &wgpu::Buffer,
+        indices: &wgpu::Buffer,
+        index_count: u32,
+        joints: &[glam::Mat4],
+    ) {
+        let fresh = self.slots.get(&key).is_none_or(|s| s.vertex_count != vertex_count);
+        if fresh {
+            let out = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("posed vertices"),
+                size: vertices.size(),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
+                mapped_at_creation: false,
+            });
+            let joints_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("posed joints"),
+                size: (POSE_JOINTS * 64) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("pose for rays"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: vertices.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: skin.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: joints_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: out.as_entire_binding() },
+                ],
+            });
+            let blas = blas(gpu, &out, vertex_count, indices, index_count, true);
+            self.slots.insert(key, PosedSlot { out, joints: joints_buffer, blas, bind, vertex_count });
+        }
+        let slot = &self.slots[&key];
+        let mut padded = [glam::Mat4::IDENTITY; POSE_JOINTS];
+        for (to, from) in padded.iter_mut().zip(joints) {
+            *to = *from;
+        }
+        gpu.queue.write_buffer(&slot.joints, 0, bytemuck::cast_slice(&padded));
+        // The pass that writes the posed vertices, waited for before the
+        // build that reads them: wgpu does not order a compute write before
+        // an acceleration structure's input (on Metal the build read the
+        // buffer before the pass had written it, in one encoder or two).
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pose for rays") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("pose for rays"), timestamp_writes: None });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &slot.bind, &[]);
+            pass.dispatch_workgroups(vertex_count.div_ceil(64), 1, 1);
+        }
+        gpu.queue.submit(Some(encoder.finish()));
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("build posed rays") });
+        let size = triangles(vertex_count, index_count);
+        encoder.build_acceleration_structures(
+            std::iter::once(&wgpu::BlasBuildEntry {
+                blas: &slot.blas,
+                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
+                    size: &size,
+                    vertex_buffer: &slot.out,
+                    first_vertex: 0,
+                    vertex_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                    index_buffer: Some(indices),
+                    first_index: Some(0),
+                    transform_buffer: None,
+                    transform_buffer_offset: None,
+                }]),
+            }),
+            std::iter::empty(),
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+    }
+
+    /// The structure slot `key` was last posed into.
+    pub(crate) fn blas(&self, key: (u32, u32)) -> Option<&wgpu::Blas> {
+        self.slots.get(&key).map(|s| &s.blas)
+    }
+}
+
 // Built without the `ray-tracing` feature: no rays' scene can be made, so
 // nothing below is ever called — what stands in for it is so the lit pass
 // compiles unchanged.
@@ -396,6 +588,21 @@ impl RayScene {
         _: &mut wgpu::CommandEncoder,
         _: &[(&wgpu::Blas, glam::Mat4, u8, RayMaterial)],
     ) -> bool {
+        match *self {}
+    }
+}
+
+#[cfg(not(feature = "ray-tracing"))]
+pub(crate) enum Posed {}
+
+#[cfg(not(feature = "ray-tracing"))]
+impl Posed {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pose(&mut self, _: &Gpu, _: (u32, u32), _: &wgpu::Buffer, _: u32, _: &wgpu::Buffer, _: &wgpu::Buffer, _: u32, _: &[glam::Mat4]) {
+        match *self {}
+    }
+
+    pub(crate) fn blas(&self, _: (u32, u32)) -> Option<&wgpu::Blas> {
         match *self {}
     }
 }

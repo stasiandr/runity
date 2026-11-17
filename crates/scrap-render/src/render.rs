@@ -1381,6 +1381,9 @@ struct GpuMesh {
     bounds: crate::asset::Bounds,
     /// What rays hit, on a device that traces.
     blas: Option<wgpu::Blas>,
+    /// The mesh this one is a run of ([`Renderer::mesh_part`]): its
+    /// vertices, skin and rays' structure are the whole's.
+    whole: Option<u32>,
     /// Its clusters, when it is dense enough to be culled by them
     /// ([`crate::cluster`]): its indices are then in their order.
     clusters: Option<crate::cluster::MeshClusters>,
@@ -1480,6 +1483,8 @@ pub struct Renderer {
     terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
+    /// Skinned draws posed for the rays: their structures, by (mesh, nth).
+    posed: Option<crate::ray::Posed>,
     /// Which passes run, whatever the frame asks for: the game's graphics
     /// settings ([`crate::passes`]).
     passes: crate::passes::Passes,
@@ -3835,6 +3840,7 @@ impl Renderer {
             });
         let ssao = crate::ssao::SsaoRenderer::new(gpu);
         let ray = crate::ray::scene(gpu);
+        let posed = crate::ray::posed(gpu);
         let shadow_resolution = ShadowSettings::default().resolution;
         let (shadow_map, shadow_layers) = shadow_view(gpu, shadow_resolution);
         let shadow_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -4307,6 +4313,7 @@ impl Renderer {
             clipmap: None,
             terrain_made: None,
             ray,
+            posed,
             passes: crate::passes::Passes::MAX,
             quality: None,
             light_buffer,
@@ -4552,7 +4559,8 @@ impl Renderer {
 
     /// Give an uploaded mesh its per-vertex joint bindings.
     fn attach_skin(&mut self, gpu: &Gpu, handle: MeshHandle, bindings: &[SkinVertex]) {
-        let buffer = gpu.buffer_init("skin", bytemuck::cast_slice(bindings), wgpu::BufferUsages::VERTEX);
+        // Read by the vertex shader, and by the pass that poses it for rays.
+        let buffer = gpu.buffer_init("skin", bytemuck::cast_slice(bindings), wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE);
         if let Some(mesh) = self.meshes.get_mut(handle.0 as usize) {
             mesh.skin = Some(buffer);
         }
@@ -4574,6 +4582,7 @@ impl Renderer {
             index_count: run.len() as u32,
             bounds: mesh.bounds,
             blas: None,
+            whole: Some(whole.0),
             clusters: None,
         };
         let name = self.mesh_names.get(&whole.0).map(|n| format!("{n}#{part}"));
@@ -4788,7 +4797,9 @@ impl Renderer {
 
         let traced = traced && self.ray.is_some();
         let mut usage = if traced {
-            wgpu::BufferUsages::BLAS_INPUT
+            // STORAGE too: a skinned mesh's vertices are posed for rays by a
+            // compute pass (`ray::Posed`).
+            wgpu::BufferUsages::BLAS_INPUT | wgpu::BufferUsages::STORAGE
         } else {
             wgpu::BufferUsages::empty()
         };
@@ -4829,6 +4840,7 @@ impl Renderer {
             index_count: own as u32,
             bounds,
             blas,
+            whole: None,
             clusters: clustered.map(|(_, c)| crate::cluster::MeshClusters::new(gpu, &c)),
         }
     }
@@ -8073,6 +8085,36 @@ impl Renderer {
         let lit_by_probes = probe.is_none() && view.is_some() && !self.picturing && self.ddgi.on();
         let traced = self.ray.is_some() && (frame.ray_tracing.any() || lit_by_probes);
         if traced {
+            // Skinned draws in their frame's pose: each (mesh, pose) posed
+            // once, its structure kept in a slot by the nth time that mesh
+            // is posed this frame.
+            let mut posed_as: Vec<Option<(u32, u32)>> = vec![None; frame.draws.len()];
+            let mut first_of_pose = vec![false; frame.draws.len()];
+            if let Some(posed) = self.posed.as_mut() {
+                let meshes = &self.meshes;
+                let mut keys: std::collections::HashMap<(u32, u32), (u32, u32)> = Default::default();
+                let mut nth: std::collections::HashMap<u32, u32> = Default::default();
+                for (i, d) in frame.draws.iter().enumerate() {
+                    let Some(pose) = d.pose else { continue };
+                    let Some(joints) = frame.poses.get(pose as usize) else { continue };
+                    let whole = meshes.get(d.mesh.0 as usize).and_then(|m| m.whole).unwrap_or(d.mesh.0);
+                    let Some(m) = meshes.get(whole as usize) else { continue };
+                    let (Some(skin), true) = (m.skin.as_ref(), m.blas.is_some()) else { continue };
+                    let fresh = !keys.contains_key(&(whole, pose));
+                    let key = *keys.entry((whole, pose)).or_insert_with(|| {
+                        let n = nth.entry(whole).or_insert(0);
+                        *n += 1;
+                        (whole, *n - 1)
+                    });
+                    if fresh {
+                        let count = (m.vertices.size() / std::mem::size_of::<crate::asset::Vertex>() as u64) as u32;
+                        posed.pose(gpu, key, &m.vertices, count, skin, &m.indices, m.index_count, &joints.0);
+                        first_of_pose[i] = true;
+                    }
+                    posed_as[i] = Some(key);
+                }
+            }
+            let posed = &self.posed;
             let meshes = &self.meshes;
             // The terrain apart from the rest (RAY_TERRAIN in render.wgsl):
             // rays start past its coarse triangles.
@@ -8080,17 +8122,24 @@ impl Renderer {
             let instances: Vec<(&wgpu::Blas, Mat4, u8, crate::ray::RayMaterial)> = frame
                 .draws
                 .iter()
+                .enumerate()
                 // Glass lets the light through, and what is unlit is a light
                 // itself — a lamp's bulb must not shadow its own lamp.
                 // Glass goes in apart (RAY_GLASS), for what is seen through
                 // it to find its far side; water has its own way.
-                .filter(|d| {
+                .filter(|(_, d)| {
                     d.material.shading != Shading::Unlit
                         && d.material.shading != Shading::Water
                         && (!d.material.is_transparent() || frame.ray_tracing.refractions)
                 })
-                .filter_map(|d| {
-                    let blas = meshes.get(d.mesh.0 as usize)?.blas.as_ref()?;
+                .filter_map(|(i, d)| {
+                    // A posed draw goes in once, as its pose (all its runs
+                    // are the one mesh); the rest as their meshes are.
+                    let blas = match posed_as[i] {
+                        Some(key) if first_of_pose[i] => posed.as_ref()?.blas(key)?,
+                        Some(_) => return None,
+                        None => meshes.get(d.mesh.0 as usize)?.blas.as_ref()?,
+                    };
                     let mask = if d.material.is_transparent() {
                         RAY_GLASS
                     } else if Some(d.mesh) == terrain {
