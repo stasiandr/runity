@@ -23,9 +23,12 @@
 //! `<socket>.json` (0600) and said on stderr; a request without the token
 //! is refused. Off unless asked for; never in a browser.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+#[cfg(unix)]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, Sender};
 
 use scrap_core::web_time::Instant;
 
