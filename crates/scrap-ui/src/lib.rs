@@ -630,6 +630,17 @@ impl Ui {
         }
     }
 
+    /// Show a built-in icon by name, or none: an unknown name shows none
+    /// and says so with `false`.
+    pub fn show_icon(&mut self, id: NodeId, name: &str) -> bool {
+        let icon = icons::find(name);
+        if self.node(id).icon != icon {
+            self.node_mut(id).icon = icon;
+            self.paint_dirty = true;
+        }
+        icon.is_some() || name.is_empty()
+    }
+
     /// The icon a node shows, by name.
     pub fn icon(&self, id: NodeId) -> Option<&'static str> {
         self.node(id).icon.map(|i| icons::ICONS[i as usize].0)

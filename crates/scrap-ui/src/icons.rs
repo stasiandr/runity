@@ -4,9 +4,14 @@
 
 /// Every icon, by name, sorted: an icon's number is its place here.
 pub(crate) static ICONS: &[(&str, &[u8])] = &[
+    ("armchair", include_bytes!("../assets/icons/armchair.svg")),
     (
         "arrow-up-from-line",
         include_bytes!("../assets/icons/arrow-up-from-line.svg"),
+    ),
+    (
+        "battery-charging",
+        include_bytes!("../assets/icons/battery-charging.svg"),
     ),
     ("bone", include_bytes!("../assets/icons/bone.svg")),
     ("box", include_bytes!("../assets/icons/box.svg")),
@@ -99,6 +104,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         "folder-open",
         include_bytes!("../assets/icons/folder-open.svg"),
     ),
+    ("fuel", include_bytes!("../assets/icons/fuel.svg")),
     (
         "git-branch",
         include_bytes!("../assets/icons/git-branch.svg"),
@@ -124,6 +130,10 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("image", include_bytes!("../assets/icons/image.svg")),
     ("info", include_bytes!("../assets/icons/info.svg")),
     ("keyboard", include_bytes!("../assets/icons/keyboard.svg")),
+    (
+        "lamp-floor",
+        include_bytes!("../assets/icons/lamp-floor.svg"),
+    ),
     ("layers-2", include_bytes!("../assets/icons/layers-2.svg")),
     (
         "layout-dashboard",

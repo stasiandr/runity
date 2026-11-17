@@ -23,7 +23,7 @@
 //! game gives it — [`Screen::set`] takes anything `Serialize` — and the
 //! `data-bind-*` attributes say where each value goes: `data-bind-value`
 //! (or `{{ }}` in the text), `data-bind-if`, `data-bind-for`,
-//! `data-bind-class-toggle`, `data-bind-style-<property>`. What the player
+//! `data-bind-class-toggle`, `data-bind-style-<property>`, `data-bind-icon`. What the player
 //! did comes back as data, by element id: [`Screen::read`] gives a
 //! [`Done`], and `done.clicked("leave")` is a system's `if`. The logic stays
 //! the game's Rust (DNA, postulate 5).
@@ -199,6 +199,8 @@ struct Tmpl {
     /// A built-in icon drawn over the box in its text colour:
     /// `<i icon="phone"></i>`.
     icon: Option<String>,
+    /// An icon named by the model: `data-bind-icon="{{part.icon}}"`.
+    icon_bind: Option<Template>,
     at: Pos,
 }
 
@@ -686,6 +688,7 @@ impl Screen {
             .iter()
             .map(|(p, v, at)| (p.clone(), v.text(&scope, &mut missing), *at))
             .collect();
+        let icon_name = t.icon_bind.as_ref().map(|v| v.text(&scope, &mut missing));
         self.missing.extend(missing);
 
         let me = Owned {
@@ -733,6 +736,11 @@ impl Screen {
                 node
             }
         };
+        if let Some(name) = &icon_name {
+            if !ui.show_icon(node, name) {
+                self.missing.insert(format!("icon `{name}`"));
+            }
+        }
         let owner = t.id.clone().or_else(|| walk.owner.clone());
         if let Some(id) = &owner {
             self.targets.insert(
@@ -1155,6 +1163,7 @@ fn compile(
         styles: Vec::new(),
         repeat: None,
         icon: None,
+        icon_bind: None,
         at: e.at,
     };
     let mut value: Option<Template> = None;
@@ -1192,6 +1201,10 @@ fn compile(
             "placeholder" | "value" | "type" if e.tag == "input" => {}
             "data-bind-value" => match template(&a.value) {
                 Ok(v) => value = Some(v),
+                Err(m) => problems.push(Problem::new(name, a.at, m)),
+            },
+            "data-bind-icon" => match template(&a.value) {
+                Ok(v) => t.icon_bind = Some(v),
                 Err(m) => problems.push(Problem::new(name, a.at, m)),
             },
             "data-bind-if" => match template(&a.value) {

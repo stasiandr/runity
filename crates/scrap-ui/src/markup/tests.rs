@@ -424,3 +424,19 @@ fn an_icon_is_named_by_its_attribute_and_a_wrong_name_is_a_problem() {
     };
     assert!(format!("{problems:?}").contains("no-such-icon"));
 }
+
+#[test]
+fn an_icon_bound_to_the_model_follows_it() {
+    let src = r#"<div><i id="part" data-bind-icon="{{part.icon}}"></i></div>"#;
+    let mut screen = Screen::from_source("icons.screen.html", src, &[]).unwrap();
+    screen.set("part", serde_json::json!({"icon": "cpu"}));
+    let mut ui = Ui::new();
+    ui.set_viewport(1280.0, 720.0, 1.0);
+    let root = ui.root();
+    screen.mount(&mut ui, root);
+    let node = screen.node("part").unwrap();
+    assert_eq!(ui.icon(node), Some("cpu"));
+    screen.set("part", serde_json::json!({"icon": "fan"}));
+    screen.update(&mut ui);
+    assert_eq!(ui.icon(node), Some("fan"));
+}
